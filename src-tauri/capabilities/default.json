@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default desktop capability for Game Media Vault",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
