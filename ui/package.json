@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
-    "build": "tsc -b && vite build",
+    "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "cd .. && node ui/node_modules/@tauri-apps/cli/tauri.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
