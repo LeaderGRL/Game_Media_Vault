@@ -37,6 +37,7 @@ impl ObjectStorePort for ContentAddressedStore {
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
 
         let (staging_path, mut output) = create_staging_file(&staging_dir)?;
+        let _staging_cleanup = StagingCleanup(staging_path.clone());
         let mut hasher = blake3::Hasher::new();
         let mut byte_len = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
@@ -135,11 +136,17 @@ fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError>
             .open(&staging_path)
         {
             Ok(file) => return Ok((staging_path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(&staging_path);
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
         }
+    }
+}
+
+struct StagingCleanup(PathBuf);
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 
