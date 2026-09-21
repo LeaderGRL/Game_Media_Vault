@@ -1,0 +1,10 @@
+fn main() {
+    match game_media_vault_cli::run(std::env::args_os()) {
+        Ok(output) if !output.is_empty() => println!("{output}"),
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
