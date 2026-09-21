@@ -14,6 +14,8 @@ use rusqlite::{
 pub struct SqliteCatalog {
     path: PathBuf,
     mode: CatalogOpenMode,
+    #[cfg(test)]
+    busy_handler: Option<fn(i32) -> bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -34,6 +36,8 @@ impl SqliteCatalog {
         let catalog = Self {
             path,
             mode: CatalogOpenMode::CreateOrOpen,
+            #[cfg(test)]
+            busy_handler: None,
         };
         let connection = catalog.connect()?;
         initialize_schema(&connection)?;
@@ -52,6 +56,8 @@ impl SqliteCatalog {
         let catalog = Self {
             path,
             mode: CatalogOpenMode::ExistingOnly,
+            #[cfg(test)]
+            busy_handler: None,
         };
         let connection = catalog.connect()?;
         let table_count: i64 = connection
@@ -84,6 +90,10 @@ impl SqliteCatalog {
         connection
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(sql_error)?;
+        #[cfg(test)]
+        if let Some(handler) = self.busy_handler {
+            connection.busy_handler(Some(handler)).map_err(sql_error)?;
+        }
         Ok(connection)
     }
 }
@@ -353,7 +363,7 @@ fn find_existing_import(
     while let Some(row) = rows.next().map_err(sql_error)? {
         let matched_source_location: String = row.get(3).map_err(sql_error)?;
         if !equivalent_source_location(&matched_source_location, &record.source_location)
-            && !legacy_relative_source_location(&matched_source_location, &record.original_filename)
+            && !legacy_relative_source_location(&matched_source_location, &record.source_location)
         {
             continue;
         }
@@ -387,12 +397,57 @@ fn canonicalize_location(location: &str) -> Option<PathBuf> {
     fs::canonicalize(Path::new(location)).ok()
 }
 
-fn legacy_relative_source_location(location: &str, original_filename: &str) -> bool {
-    let path = Path::new(location);
-    path.is_relative()
-        && path
-            .file_name()
-            .is_some_and(|filename| filename == original_filename)
+fn legacy_relative_source_location(stored: &str, current: &str) -> bool {
+    if is_absolute_location(stored) {
+        return false;
+    }
+
+    let Some(stored_components) = normalized_path_components(stored, true) else {
+        return false;
+    };
+    let Some(current_components) = normalized_path_components(current, false) else {
+        return false;
+    };
+
+    !stored_components.is_empty() && current_components.ends_with(&stored_components)
+}
+
+fn is_absolute_location(location: &str) -> bool {
+    let bytes = location.as_bytes();
+    Path::new(location).is_absolute()
+        || location.starts_with("\\\\")
+        || matches!(bytes.get(1), Some(b':'))
+}
+
+fn normalized_path_components(location: &str, reject_parent_escape: bool) -> Option<Vec<String>> {
+    let normalized = location.replace('\\', "/");
+    let mut components = Vec::new();
+
+    for component in normalized.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if components.pop().is_none() && reject_parent_escape {
+                    return None;
+                }
+            }
+            other => components.push(normalize_path_component(other)),
+        }
+    }
+
+    Some(components)
+}
+
+fn normalize_path_component(component: &str) -> String {
+    #[cfg(windows)]
+    {
+        component.to_lowercase()
+    }
+
+    #[cfg(not(windows))]
+    {
+        component.to_owned()
+    }
 }
 
 fn normalize_existing_provenance(
@@ -549,4 +604,97 @@ fn io_error(error: std::io::Error) -> PortError {
 
 fn sql_error(error: rusqlite::Error) -> PortError {
     PortError(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet,
+        sync::{Condvar, Mutex, OnceLock},
+        thread,
+        time::Duration,
+    };
+
+    use game_media_vault_application::CatalogPort;
+    use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    static BUSY_THREADS: OnceLock<(Mutex<HashSet<thread::ThreadId>>, Condvar)> = OnceLock::new();
+
+    fn record_busy_thread(_: i32) -> bool {
+        let (threads, ready) =
+            BUSY_THREADS.get_or_init(|| (Mutex::new(HashSet::new()), Condvar::new()));
+        threads.lock().unwrap().insert(thread::current().id());
+        ready.notify_all();
+        true
+    }
+
+    #[test]
+    fn duplicate_lookup_is_serialized_with_concurrent_writes() {
+        let temp = tempdir().unwrap();
+        let catalog_path = temp.path().join("catalog.sqlite3");
+        SqliteCatalog::open(&catalog_path).unwrap();
+        let blocker = Connection::open(&catalog_path).unwrap();
+        blocker
+            .execute_batch("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;")
+            .unwrap();
+
+        let (busy_threads, ready) =
+            BUSY_THREADS.get_or_init(|| (Mutex::new(HashSet::new()), Condvar::new()));
+        busy_threads.lock().unwrap().clear();
+
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let catalog_path = catalog_path.clone();
+                thread::spawn(move || {
+                    let catalog = SqliteCatalog {
+                        path: catalog_path,
+                        mode: CatalogOpenMode::ExistingOnly,
+                        busy_handler: Some(record_busy_thread),
+                    };
+                    catalog
+                        .persist_asset(PersistAsset {
+                            existing_game_id: None,
+                            game_title: "Concurrent Game".to_owned(),
+                            platform: "Windows".to_owned(),
+                            region: "Worldwide".to_owned(),
+                            edition_name: "Standard".to_owned(),
+                            asset_type: AssetType::BoxFront,
+                            object_hash: "shared-object-hash".to_owned(),
+                            byte_len: 42,
+                            original_filename: "front.png".to_owned(),
+                            source_kind: SourceKind::LocalImport,
+                            source_location: "C:/collection/front.png".to_owned(),
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+
+        let observed = busy_threads.lock().unwrap();
+        let (observed, timeout) = ready
+            .wait_timeout_while(observed, Duration::from_secs(5), |threads| {
+                threads.len() < 2
+            })
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "both workers should contend on the SQLite write lock"
+        );
+        assert_eq!(observed.len(), 2);
+        drop(observed);
+
+        blocker.execute_batch("COMMIT;").unwrap();
+
+        let imported: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(imported[0].asset_id, imported[1].asset_id);
+
+        let catalog = SqliteCatalog::open_existing(&catalog_path).unwrap();
+        assert_eq!(catalog.list_library().unwrap().len(), 1);
+    }
 }

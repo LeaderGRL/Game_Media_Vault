@@ -2,7 +2,6 @@ use std::{
     fs,
     sync::{Arc, Barrier},
     thread,
-    time::Duration,
 };
 
 use game_media_vault_application::{
@@ -114,11 +113,6 @@ fn concurrent_reimports_persist_one_logical_asset() {
     fs::write(&source, b"shared cover bytes").unwrap();
     let workers = 2;
     let barrier = Arc::new(Barrier::new(workers + 1));
-    let blocker = Connection::open(&catalog_path).unwrap();
-    blocker
-        .execute_batch("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;")
-        .unwrap();
-
     let handles: Vec<_> = (0..workers)
         .map(|_| {
             let barrier = Arc::clone(&barrier);
@@ -147,8 +141,6 @@ fn concurrent_reimports_persist_one_logical_asset() {
         .collect();
 
     barrier.wait();
-    thread::sleep(Duration::from_millis(150));
-    blocker.execute_batch("COMMIT;").unwrap();
 
     let imported: Vec<_> = handles
         .into_iter()
@@ -245,7 +237,9 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
 #[test]
 fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
     let temp = tempdir().unwrap();
-    let source = temp.path().join("legacy-front.png");
+    let source_dir = temp.path().join("previous-session");
+    fs::create_dir_all(&source_dir).unwrap();
+    let source = source_dir.join("legacy-front.png");
     fs::write(&source, b"legacy cover bytes").unwrap();
     let relative_source = std::path::PathBuf::from("previous-session/legacy-front.png");
     let vault = temp.path().join("vault");
@@ -333,6 +327,80 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
     .unwrap();
     assert_eq!(repeated.asset_id, 1);
     assert_eq!(list_library(&catalog).unwrap()[0].provenance.len(), 2);
+}
+
+#[test]
+fn legacy_relative_provenance_does_not_merge_same_named_distinct_games() {
+    let temp = tempdir().unwrap();
+    let source_dir = temp.path().join("second-copy");
+    fs::create_dir_all(&source_dir).unwrap();
+    let source = source_dir.join("front.png");
+    fs::write(&source, b"shared legacy bytes").unwrap();
+    let vault = temp.path().join("vault");
+    let catalog_path = vault.join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let stored = store.store_original(&source).unwrap();
+
+    let connection = Connection::open(&catalog_path).unwrap();
+    for (game_id, relative_source) in [
+        (1_i64, "first-copy/front.png"),
+        (2_i64, "second-copy/front.png"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO games (id, title, normalized_title)
+                 VALUES (?1, 'Same Legacy Title', 'same legacy title')",
+                params![game_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO release_editions (
+                    id, game_id, platform, normalized_platform, region, normalized_region,
+                    edition_name, normalized_edition_name
+                 ) VALUES (?1, ?1, 'Windows', 'windows', 'Worldwide', 'worldwide', 'Standard', 'standard')",
+                params![game_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO assets (
+                    id, release_edition_id, asset_type, object_hash, byte_len, original_filename
+                 ) VALUES (?1, ?1, 'box_front', ?2, ?3, 'front.png')",
+                params![
+                    game_id,
+                    stored.hash,
+                    i64::try_from(stored.byte_len).unwrap()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO asset_provenance (id, asset_id, source_kind, source_location)
+                 VALUES (?1, ?1, 'local_import', ?2)",
+                params![game_id, relative_source],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    let imported = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
+            existing_game_id: None,
+            game_title: "Same Legacy Title".to_owned(),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            source_path: source,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(imported.game_id, 2);
+    assert_eq!(imported.asset_id, 2);
 }
 
 #[test]
