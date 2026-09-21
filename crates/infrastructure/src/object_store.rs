@@ -61,9 +61,17 @@ impl ObjectStorePort for ContentAddressedStore {
         fs::create_dir_all(parent).map_err(io_error)?;
 
         if target.exists() {
+            if let Err(error) = verify_existing_object(&target, &hash, byte_len) {
+                let _ = fs::remove_file(&staging_path);
+                return Err(error);
+            }
             fs::remove_file(&staging_path).map_err(io_error)?;
         } else if let Err(error) = fs::rename(&staging_path, &target) {
             if target.exists() {
+                if let Err(error) = verify_existing_object(&target, &hash, byte_len) {
+                    let _ = fs::remove_file(&staging_path);
+                    return Err(error);
+                }
                 fs::remove_file(&staging_path).map_err(io_error)?;
             } else {
                 return Err(io_error(error));
@@ -72,6 +80,48 @@ impl ObjectStorePort for ContentAddressedStore {
 
         Ok(StoredObject { hash, byte_len })
     }
+}
+
+fn verify_existing_object(
+    path: &Path,
+    expected_hash: &str,
+    expected_len: u64,
+) -> Result<(), PortError> {
+    let metadata = fs::metadata(path).map_err(io_error)?;
+    if !metadata.is_file() {
+        return Err(PortError(format!(
+            "object integrity check failed: {} is not a file",
+            path.display()
+        )));
+    }
+    if metadata.len() != expected_len {
+        return Err(PortError(format!(
+            "object integrity check failed: {} has length {}, expected {expected_len}",
+            path.display(),
+            metadata.len()
+        )));
+    }
+
+    let mut input = File::open(path).map_err(io_error)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut buffer).map_err(io_error)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let actual_hash = hasher.finalize().to_hex().to_string();
+    if actual_hash != expected_hash {
+        return Err(PortError(format!(
+            "object integrity check failed: {} hashes to {actual_hash}, expected {expected_hash}",
+            path.display()
+        )));
+    }
+
+    Ok(())
 }
 
 fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError> {

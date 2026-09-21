@@ -36,6 +36,23 @@ fn stores_identical_original_bytes_only_once() {
 }
 
 #[test]
+fn reimport_rejects_a_corrupted_existing_object() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("cover.png");
+    fs::write(&source, b"trusted original bytes").unwrap();
+    let store = ContentAddressedStore::new(temp.path().join("vault"));
+
+    let stored = store.store_original(&source).unwrap();
+    let object_path = store.object_path(&stored.hash);
+    fs::write(&object_path, b"corrupted bytes").unwrap();
+
+    let error = store.store_original(&source).unwrap_err();
+
+    assert!(error.0.contains("integrity"));
+    assert_eq!(fs::read(object_path).unwrap(), b"corrupted bytes");
+}
+
+#[test]
 fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("mgs-front.png");
