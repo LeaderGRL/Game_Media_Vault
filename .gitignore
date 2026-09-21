@@ -1,0 +1,10 @@
+/target/
+/ui/node_modules/
+/ui/dist/
+/ui/*.tsbuildinfo
+/ui/vite.config.js
+/ui/vite.config.d.ts
+/ui/vitest.config.js
+/ui/vitest.config.d.ts
+/src-tauri/gen/
+/.game-media-vault/

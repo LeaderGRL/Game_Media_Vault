@@ -1,0 +1,21 @@
+[package]
+name = "game-media-vault-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "game_media_vault_tauri"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+game-media-vault-application.workspace = true
+game-media-vault-domain.workspace = true
+game-media-vault-infrastructure.workspace = true
+tauri = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile.workspace = true

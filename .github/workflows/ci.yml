@@ -56,9 +56,39 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install Tauri Linux dependencies
+        if: steps.rust.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
       - name: Cache Rust build artifacts
         if: steps.rust.outputs.enabled == 'true'
         uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: ui
+        run: npm test
+
+      - name: Build frontend
+        working-directory: ui
+        run: npm run build
 
       - name: Check Rust formatting
         if: steps.rust.outputs.enabled == 'true'
