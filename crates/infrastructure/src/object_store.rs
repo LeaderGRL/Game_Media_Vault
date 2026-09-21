@@ -32,11 +32,11 @@ impl ContentAddressedStore {
 
 impl ObjectStorePort for ContentAddressedStore {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
+        let mut input = File::open(source).map_err(io_error)?;
         let staging_dir = self.root.join("staging");
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
 
         let (staging_path, mut output) = create_staging_file(&staging_dir)?;
-        let mut input = File::open(source).map_err(io_error)?;
         let mut hasher = blake3::Hasher::new();
         let mut byte_len = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];

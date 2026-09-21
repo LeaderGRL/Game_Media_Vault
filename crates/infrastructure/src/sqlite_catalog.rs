@@ -4,7 +4,7 @@ use game_media_vault_application::{CatalogPort, PortError};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 pub struct SqliteCatalog {
     path: PathBuf,
@@ -76,6 +76,9 @@ impl CatalogPort for SqliteCatalog {
         let byte_len = i64::try_from(record.byte_len)
             .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
 
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
         let lookup = ExistingImportLookup {
             normalized_title: &normalized_title,
             normalized_platform: &normalized_platform,
@@ -85,11 +88,11 @@ impl CatalogPort for SqliteCatalog {
             source_kind,
             byte_len,
         };
-        if let Some(existing) = find_existing_import(&connection, &record, &lookup)? {
-            return Ok(existing);
+        if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
+            normalize_existing_provenance(&transaction, &record, source_kind, &existing)?;
+            transaction.commit().map_err(sql_error)?;
+            return Ok(existing.imported);
         }
-
-        let transaction = connection.transaction().map_err(sql_error)?;
 
         let game_id = resolve_game_id(&transaction, &record, &normalized_title)?;
 
@@ -249,6 +252,11 @@ struct ExistingImportLookup<'a> {
     byte_len: i64,
 }
 
+struct ExistingImportMatch {
+    imported: ImportedAsset,
+    matched_source_location: String,
+}
+
 fn resolve_game_id(
     transaction: &Transaction<'_>,
     record: &PersistAsset,
@@ -283,19 +291,19 @@ fn resolve_game_id(
 }
 
 fn find_existing_import(
-    connection: &Connection,
+    transaction: &Transaction<'_>,
     record: &PersistAsset,
     lookup: &ExistingImportLookup<'_>,
-) -> Result<Option<ImportedAsset>, PortError> {
-    connection
+) -> Result<Option<ExistingImportMatch>, PortError> {
+    transaction
         .query_row(
-            "SELECT g.id, r.id, a.id
+            "SELECT g.id, r.id, a.id, p.source_location
              FROM asset_provenance p
              JOIN assets a ON a.id = p.asset_id
              JOIN release_editions r ON r.id = a.release_edition_id
              JOIN games g ON g.id = r.game_id
              WHERE p.source_kind = ?1
-               AND p.source_location = ?2
+               AND (p.source_location = ?2 OR (?11 IS NOT NULL AND p.source_location = ?11))
                AND a.asset_type = ?3
                AND a.object_hash = ?4
                AND a.byte_len = ?5
@@ -316,19 +324,60 @@ fn find_existing_import(
                 lookup.normalized_region,
                 lookup.normalized_edition,
                 record.existing_game_id,
+                record.source_location_alias,
             ],
             |row| {
-                Ok(ImportedAsset {
-                    game_id: row.get(0)?,
-                    release_edition_id: row.get(1)?,
-                    asset_id: row.get(2)?,
-                    object_hash: record.object_hash.clone(),
-                    byte_len: record.byte_len,
+                Ok(ExistingImportMatch {
+                    imported: ImportedAsset {
+                        game_id: row.get(0)?,
+                        release_edition_id: row.get(1)?,
+                        asset_id: row.get(2)?,
+                        object_hash: record.object_hash.clone(),
+                        byte_len: record.byte_len,
+                    },
+                    matched_source_location: row.get(3)?,
                 })
             },
         )
         .optional()
         .map_err(sql_error)
+}
+
+fn normalize_existing_provenance(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+    source_kind: &str,
+    existing: &ExistingImportMatch,
+) -> Result<(), PortError> {
+    if existing.matched_source_location == record.source_location {
+        return Ok(());
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
+            params![
+                existing.imported.asset_id,
+                source_kind,
+                record.source_location,
+            ],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "DELETE FROM asset_provenance
+             WHERE asset_id = ?1 AND source_kind = ?2 AND source_location = ?3",
+            params![
+                existing.imported.asset_id,
+                source_kind,
+                existing.matched_source_location,
+            ],
+        )
+        .map_err(sql_error)?;
+
+    Ok(())
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), PortError> {

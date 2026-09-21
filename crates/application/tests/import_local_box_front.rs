@@ -76,6 +76,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
             original_filename: "cover-front.png".to_owned(),
             source_kind: SourceKind::LocalImport,
             source_location: expected_source_location,
+            source_location_alias: Some("fixtures/cover-front.png".to_owned()),
         }]
     );
 }
