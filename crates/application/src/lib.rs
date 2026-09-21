@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 use game_media_vault_domain::{
     AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
@@ -49,13 +49,7 @@ pub fn import_local_box_front(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or(ApplicationError::MissingSourceFileName)?;
-    let unresolved_source_location = request.source_path.to_string_lossy().into_owned();
-    let source_location = std::path::absolute(&request.source_path)
-        .map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))?
-        .to_string_lossy()
-        .into_owned();
-    let source_location_alias =
-        (unresolved_source_location != source_location).then_some(unresolved_source_location);
+    let source_location = source_location(&request.source_path)?;
     let stored = object_store.store_original(&request.source_path)?;
 
     Ok(catalog.persist_asset(PersistAsset {
@@ -70,8 +64,25 @@ pub fn import_local_box_front(
         original_filename,
         source_kind: SourceKind::LocalImport,
         source_location,
-        source_location_alias,
     })?)
+}
+
+fn source_location(path: &Path) -> Result<String, ApplicationError> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))?;
+    let location = canonical.to_string_lossy();
+
+    #[cfg(windows)]
+    {
+        if let Some(network_path) = location.strip_prefix(r"\\?\UNC\") {
+            return Ok(format!(r"\\{network_path}"));
+        }
+        if let Some(local_path) = location.strip_prefix(r"\\?\") {
+            return Ok(local_path.to_owned());
+        }
+    }
+
+    Ok(location.into_owned())
 }
 
 pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, ApplicationError> {

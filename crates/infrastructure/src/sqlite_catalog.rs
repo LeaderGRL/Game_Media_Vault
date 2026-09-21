@@ -1,13 +1,25 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use game_media_vault_application::{CatalogPort, PortError};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 pub struct SqliteCatalog {
     path: PathBuf,
+    mode: CatalogOpenMode,
+}
+
+#[derive(Clone, Copy)]
+enum CatalogOpenMode {
+    CreateOrOpen,
+    ExistingOnly,
 }
 
 impl SqliteCatalog {
@@ -19,7 +31,10 @@ impl SqliteCatalog {
         {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
-        let catalog = Self { path };
+        let catalog = Self {
+            path,
+            mode: CatalogOpenMode::CreateOrOpen,
+        };
         let connection = catalog.connect()?;
         initialize_schema(&connection)?;
         Ok(catalog)
@@ -34,7 +49,10 @@ impl SqliteCatalog {
             )));
         }
 
-        let catalog = Self { path };
+        let catalog = Self {
+            path,
+            mode: CatalogOpenMode::ExistingOnly,
+        };
         let connection = catalog.connect()?;
         let table_count: i64 = connection
             .query_row(
@@ -56,7 +74,13 @@ impl SqliteCatalog {
     }
 
     fn connect(&self) -> Result<Connection, PortError> {
-        let connection = Connection::open(&self.path).map_err(sql_error)?;
+        let flags = match self.mode {
+            CatalogOpenMode::CreateOrOpen => {
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
+            }
+            CatalogOpenMode::ExistingOnly => OpenFlags::SQLITE_OPEN_READ_WRITE,
+        };
+        let connection = Connection::open_with_flags(&self.path, flags).map_err(sql_error)?;
         connection
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(sql_error)?;
@@ -272,20 +296,17 @@ fn resolve_game_id(
         return Ok(transaction.last_insert_rowid());
     };
 
-    let existing_title: Option<String> = transaction
+    let exists: Option<i64> = transaction
         .query_row(
-            "SELECT normalized_title FROM games WHERE id = ?1",
+            "SELECT id FROM games WHERE id = ?1",
             params![game_id],
             |row| row.get(0),
         )
         .optional()
         .map_err(sql_error)?;
 
-    match existing_title {
+    match exists {
         None => Err(PortError(format!("game #{game_id} does not exist"))),
-        Some(title) if title != normalized_title => Err(PortError(format!(
-            "game #{game_id} title does not match import title"
-        ))),
         Some(_) => Ok(game_id),
     }
 }
@@ -295,52 +316,71 @@ fn find_existing_import(
     record: &PersistAsset,
     lookup: &ExistingImportLookup<'_>,
 ) -> Result<Option<ExistingImportMatch>, PortError> {
-    transaction
-        .query_row(
+    let mut statement = transaction
+        .prepare(
             "SELECT g.id, r.id, a.id, p.source_location
              FROM asset_provenance p
              JOIN assets a ON a.id = p.asset_id
              JOIN release_editions r ON r.id = a.release_edition_id
              JOIN games g ON g.id = r.game_id
              WHERE p.source_kind = ?1
-               AND (p.source_location = ?2 OR (?11 IS NOT NULL AND p.source_location = ?11))
-               AND a.asset_type = ?3
-               AND a.object_hash = ?4
-               AND a.byte_len = ?5
-               AND g.normalized_title = ?6
-               AND r.normalized_platform = ?7
-               AND r.normalized_region = ?8
-               AND r.normalized_edition_name = ?9
-               AND (?10 IS NULL OR g.id = ?10)
-             LIMIT 1",
-            params![
-                lookup.source_kind,
-                record.source_location,
-                lookup.asset_type,
-                record.object_hash,
-                lookup.byte_len,
-                lookup.normalized_title,
-                lookup.normalized_platform,
-                lookup.normalized_region,
-                lookup.normalized_edition,
-                record.existing_game_id,
-                record.source_location_alias,
-            ],
-            |row| {
-                Ok(ExistingImportMatch {
-                    imported: ImportedAsset {
-                        game_id: row.get(0)?,
-                        release_edition_id: row.get(1)?,
-                        asset_id: row.get(2)?,
-                        object_hash: record.object_hash.clone(),
-                        byte_len: record.byte_len,
-                    },
-                    matched_source_location: row.get(3)?,
-                })
-            },
+               AND a.asset_type = ?2
+               AND a.object_hash = ?3
+               AND a.byte_len = ?4
+               AND g.normalized_title = ?5
+               AND r.normalized_platform = ?6
+               AND r.normalized_region = ?7
+               AND r.normalized_edition_name = ?8
+               AND (?9 IS NULL OR g.id = ?9)",
         )
-        .optional()
-        .map_err(sql_error)
+        .map_err(sql_error)?;
+    let mut rows = statement
+        .query(params![
+            lookup.source_kind,
+            lookup.asset_type,
+            record.object_hash,
+            lookup.byte_len,
+            lookup.normalized_title,
+            lookup.normalized_platform,
+            lookup.normalized_region,
+            lookup.normalized_edition,
+            record.existing_game_id,
+        ])
+        .map_err(sql_error)?;
+
+    while let Some(row) = rows.next().map_err(sql_error)? {
+        let matched_source_location: String = row.get(3).map_err(sql_error)?;
+        if !equivalent_source_location(&matched_source_location, &record.source_location) {
+            continue;
+        }
+
+        return Ok(Some(ExistingImportMatch {
+            imported: ImportedAsset {
+                game_id: row.get(0).map_err(sql_error)?,
+                release_edition_id: row.get(1).map_err(sql_error)?,
+                asset_id: row.get(2).map_err(sql_error)?,
+                object_hash: record.object_hash.clone(),
+                byte_len: record.byte_len,
+            },
+            matched_source_location,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn equivalent_source_location(stored: &str, current: &str) -> bool {
+    if stored == current {
+        return true;
+    }
+
+    canonicalize_location(stored)
+        .zip(canonicalize_location(current))
+        .is_some_and(|(stored, current)| stored == current)
+}
+
+fn canonicalize_location(location: &str) -> Option<PathBuf> {
+    fs::canonicalize(Path::new(location)).ok()
 }
 
 fn normalize_existing_provenance(
@@ -365,18 +405,6 @@ fn normalize_existing_provenance(
             ],
         )
         .map_err(sql_error)?;
-    transaction
-        .execute(
-            "DELETE FROM asset_provenance
-             WHERE asset_id = ?1 AND source_kind = ?2 AND source_location = ?3",
-            params![
-                existing.imported.asset_id,
-                source_kind,
-                existing.matched_source_location,
-            ],
-        )
-        .map_err(sql_error)?;
-
     Ok(())
 }
 

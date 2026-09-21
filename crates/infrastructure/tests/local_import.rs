@@ -25,6 +25,18 @@ fn opening_a_missing_catalog_for_reading_does_not_create_a_vault() {
 }
 
 #[test]
+fn an_existing_catalog_is_not_recreated_if_it_disappears_after_opening() {
+    let temp = tempdir().unwrap();
+    let catalog_path = temp.path().join("catalog.sqlite3");
+    SqliteCatalog::open(&catalog_path).unwrap();
+    let catalog = SqliteCatalog::open_existing(&catalog_path).unwrap();
+    fs::remove_file(&catalog_path).unwrap();
+
+    assert!(list_library(&catalog).is_err());
+    assert!(!catalog_path.exists());
+}
+
+#[test]
 fn stores_identical_original_bytes_only_once() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("cover.png");
@@ -216,7 +228,7 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
         &store,
         ImportLocalBoxFrontRequest {
             existing_game_id: Some(first.game_id),
-            game_title: "Same Game".to_owned(),
+            game_title: "Localized Same Game".to_owned(),
             platform: "Windows".to_owned(),
             region: "Worldwide".to_owned(),
             edition_name: "Standard".to_owned(),
@@ -285,7 +297,7 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
             platform: "Windows".to_owned(),
             region: "Worldwide".to_owned(),
             edition_name: "Standard".to_owned(),
-            source_path: relative_source,
+            source_path: source.clone(),
         },
     )
     .unwrap();
@@ -293,11 +305,35 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
     assert_eq!(imported.asset_id, 1);
     let library = list_library(&catalog).unwrap();
     assert_eq!(library.len(), 1);
-    assert_eq!(library[0].provenance.len(), 1);
-    assert_eq!(
-        library[0].provenance[0].source_location,
-        source.to_string_lossy()
+    assert_eq!(library[0].provenance.len(), 2);
+    assert!(
+        library[0]
+            .provenance
+            .iter()
+            .any(|provenance| { provenance.source_location == relative_source.to_string_lossy() })
     );
+    assert!(
+        library[0]
+            .provenance
+            .iter()
+            .any(|provenance| { provenance.source_location == source.to_string_lossy() })
+    );
+
+    let repeated = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
+            existing_game_id: None,
+            game_title: "Legacy Game".to_owned(),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            source_path: source,
+        },
+    )
+    .unwrap();
+    assert_eq!(repeated.asset_id, 1);
+    assert_eq!(list_library(&catalog).unwrap()[0].provenance.len(), 2);
 }
 
 #[test]

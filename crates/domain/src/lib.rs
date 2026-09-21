@@ -31,7 +31,6 @@ pub struct PersistAsset {
     pub original_filename: String,
     pub source_kind: SourceKind,
     pub source_location: String,
-    pub source_location_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
