@@ -35,14 +35,8 @@ impl ObjectStorePort for ContentAddressedStore {
         let staging_dir = self.root.join("staging");
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
 
-        let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let staging_path = staging_dir.join(format!("{}-{sequence}.tmp", std::process::id()));
+        let (staging_path, mut output) = create_staging_file(&staging_dir)?;
         let mut input = File::open(source).map_err(io_error)?;
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&staging_path)
-            .map_err(io_error)?;
         let mut hasher = blake3::Hasher::new();
         let mut byte_len = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
@@ -77,6 +71,25 @@ impl ObjectStorePort for ContentAddressedStore {
         }
 
         Ok(StoredObject { hash, byte_len })
+    }
+}
+
+fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError> {
+    loop {
+        let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let staging_path = staging_dir.join(format!("{}-{sequence}.tmp", std::process::id()));
+
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&staging_path)
+        {
+            Ok(file) => return Ok((staging_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&staging_path);
+            }
+            Err(error) => return Err(io_error(error)),
+        }
     }
 }
 
