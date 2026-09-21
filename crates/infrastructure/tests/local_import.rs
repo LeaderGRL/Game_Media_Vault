@@ -9,7 +9,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::{Connection, params};
-use tempfile::tempdir;
+use tempfile::{tempdir, tempdir_in};
 
 #[test]
 fn opening_a_missing_catalog_for_reading_does_not_create_a_vault() {
@@ -236,12 +236,13 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
 
 #[test]
 fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
-    let temp = tempdir().unwrap();
+    let current_dir = std::env::current_dir().unwrap();
+    let temp = tempdir_in(&current_dir).unwrap();
     let source_dir = temp.path().join("previous-session");
     fs::create_dir_all(&source_dir).unwrap();
     let source = source_dir.join("legacy-front.png");
     fs::write(&source, b"legacy cover bytes").unwrap();
-    let relative_source = std::path::PathBuf::from("previous-session/legacy-front.png");
+    let relative_source = source.strip_prefix(&current_dir).unwrap().to_path_buf();
     let vault = temp.path().join("vault");
     let catalog_path = vault.join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
@@ -330,7 +331,7 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
 }
 
 #[test]
-fn legacy_relative_provenance_does_not_merge_same_named_distinct_games() {
+fn unresolved_legacy_relative_provenance_does_not_merge_same_named_distinct_games() {
     let temp = tempdir().unwrap();
     let source_dir = temp.path().join("second-copy");
     fs::create_dir_all(&source_dir).unwrap();
@@ -399,8 +400,10 @@ fn legacy_relative_provenance_does_not_merge_same_named_distinct_games() {
     )
     .unwrap();
 
-    assert_eq!(imported.game_id, 2);
-    assert_eq!(imported.asset_id, 2);
+    assert_ne!(imported.game_id, 1);
+    assert_ne!(imported.game_id, 2);
+    assert_ne!(imported.asset_id, 1);
+    assert_ne!(imported.asset_id, 2);
 }
 
 #[test]

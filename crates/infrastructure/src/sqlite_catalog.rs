@@ -362,9 +362,7 @@ fn find_existing_import(
 
     while let Some(row) = rows.next().map_err(sql_error)? {
         let matched_source_location: String = row.get(3).map_err(sql_error)?;
-        if !equivalent_source_location(&matched_source_location, &record.source_location)
-            && !legacy_relative_source_location(&matched_source_location, &record.source_location)
-        {
+        if !equivalent_source_location(&matched_source_location, &record.source_location) {
             continue;
         }
 
@@ -395,59 +393,6 @@ fn equivalent_source_location(stored: &str, current: &str) -> bool {
 
 fn canonicalize_location(location: &str) -> Option<PathBuf> {
     fs::canonicalize(Path::new(location)).ok()
-}
-
-fn legacy_relative_source_location(stored: &str, current: &str) -> bool {
-    if is_absolute_location(stored) {
-        return false;
-    }
-
-    let Some(stored_components) = normalized_path_components(stored, true) else {
-        return false;
-    };
-    let Some(current_components) = normalized_path_components(current, false) else {
-        return false;
-    };
-
-    !stored_components.is_empty() && current_components.ends_with(&stored_components)
-}
-
-fn is_absolute_location(location: &str) -> bool {
-    let bytes = location.as_bytes();
-    Path::new(location).is_absolute()
-        || location.starts_with("\\\\")
-        || matches!(bytes.get(1), Some(b':'))
-}
-
-fn normalized_path_components(location: &str, reject_parent_escape: bool) -> Option<Vec<String>> {
-    let normalized = location.replace('\\', "/");
-    let mut components = Vec::new();
-
-    for component in normalized.split('/') {
-        match component {
-            "" | "." => {}
-            ".." => {
-                if components.pop().is_none() && reject_parent_escape {
-                    return None;
-                }
-            }
-            other => components.push(normalize_path_component(other)),
-        }
-    }
-
-    Some(components)
-}
-
-fn normalize_path_component(component: &str) -> String {
-    #[cfg(windows)]
-    {
-        component.to_lowercase()
-    }
-
-    #[cfg(not(windows))]
-    {
-        component.to_owned()
-    }
 }
 
 fn normalize_existing_provenance(
