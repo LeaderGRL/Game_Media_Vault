@@ -35,4 +35,3 @@ describe("LibraryView", () => {
     expect(screen.getByText("C:/covers/mgs-front.png")).toBeInTheDocument();
   });
 });
-

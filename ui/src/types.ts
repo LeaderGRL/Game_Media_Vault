@@ -20,4 +20,3 @@ export interface LibraryEntry {
   original_filename: string;
   provenance: AssetProvenance[];
 }
-
