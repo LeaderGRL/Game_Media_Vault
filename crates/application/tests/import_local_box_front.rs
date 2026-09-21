@@ -51,6 +51,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
         .to_string_lossy()
         .into_owned();
     let request = ImportLocalBoxFrontRequest {
+        existing_game_id: None,
         game_title: "Metal Gear Solid".to_owned(),
         platform: "PlayStation".to_owned(),
         region: "France".to_owned(),
@@ -64,6 +65,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
     assert_eq!(
         catalog.persisted.into_inner(),
         vec![PersistAsset {
+            existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),
             region: "France".to_owned(),

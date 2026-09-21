@@ -21,6 +21,7 @@ pub trait CatalogPort {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportLocalBoxFrontRequest {
+    pub existing_game_id: Option<i64>,
     pub game_title: String,
     pub platform: String,
     pub region: String,
@@ -55,6 +56,7 @@ pub fn import_local_box_front(
     let stored = object_store.store_original(&request.source_path)?;
 
     Ok(catalog.persist_asset(PersistAsset {
+        existing_game_id: request.existing_game_id,
         game_title: request.game_title,
         platform: request.platform,
         region: request.region,

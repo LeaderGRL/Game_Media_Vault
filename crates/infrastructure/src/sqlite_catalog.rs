@@ -4,7 +4,7 @@ use game_media_vault_application::{CatalogPort, PortError};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 pub struct SqliteCatalog {
     path: PathBuf,
@@ -91,20 +91,15 @@ impl CatalogPort for SqliteCatalog {
 
         let transaction = connection.transaction().map_err(sql_error)?;
 
-        transaction
-            .execute(
-                "INSERT INTO games (title, normalized_title) VALUES (?1, ?2)",
-                params![record.game_title, normalized_title],
-            )
-            .map_err(sql_error)?;
-        let game_id = transaction.last_insert_rowid();
+        let game_id = resolve_game_id(&transaction, &record, &normalized_title)?;
 
         transaction
             .execute(
                 "INSERT INTO release_editions (
                     game_id, platform, normalized_platform, region, normalized_region,
                     edition_name, normalized_edition_name
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
                 params![
                     game_id,
                     record.platform,
@@ -116,13 +111,29 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
-        let release_edition_id = transaction.last_insert_rowid();
+        let release_edition_id: i64 = transaction
+            .query_row(
+                "SELECT id FROM release_editions
+                 WHERE game_id = ?1
+                   AND normalized_platform = ?2
+                   AND normalized_region = ?3
+                   AND normalized_edition_name = ?4",
+                params![
+                    game_id,
+                    normalized_platform,
+                    normalized_region,
+                    normalized_edition
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
 
         transaction
             .execute(
                 "INSERT INTO assets (
                     release_edition_id, asset_type, object_hash, byte_len, original_filename
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(release_edition_id, asset_type, object_hash) DO NOTHING",
                 params![
                     release_edition_id,
                     asset_type,
@@ -132,7 +143,16 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
-        let asset_id = transaction.last_insert_rowid();
+        let asset_id: i64 = transaction
+            .query_row(
+                "SELECT id FROM assets
+                 WHERE release_edition_id = ?1
+                   AND asset_type = ?2
+                   AND object_hash = ?3",
+                params![release_edition_id, asset_type, record.object_hash],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
 
         transaction
             .execute(
@@ -229,6 +249,39 @@ struct ExistingImportLookup<'a> {
     byte_len: i64,
 }
 
+fn resolve_game_id(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+    normalized_title: &str,
+) -> Result<i64, PortError> {
+    let Some(game_id) = record.existing_game_id else {
+        transaction
+            .execute(
+                "INSERT INTO games (title, normalized_title) VALUES (?1, ?2)",
+                params![record.game_title, normalized_title],
+            )
+            .map_err(sql_error)?;
+        return Ok(transaction.last_insert_rowid());
+    };
+
+    let existing_title: Option<String> = transaction
+        .query_row(
+            "SELECT normalized_title FROM games WHERE id = ?1",
+            params![game_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+
+    match existing_title {
+        None => Err(PortError(format!("game #{game_id} does not exist"))),
+        Some(title) if title != normalized_title => Err(PortError(format!(
+            "game #{game_id} title does not match import title"
+        ))),
+        Some(_) => Ok(game_id),
+    }
+}
+
 fn find_existing_import(
     connection: &Connection,
     record: &PersistAsset,
@@ -250,6 +303,7 @@ fn find_existing_import(
                AND r.normalized_platform = ?7
                AND r.normalized_region = ?8
                AND r.normalized_edition_name = ?9
+               AND (?10 IS NULL OR g.id = ?10)
              LIMIT 1",
             params![
                 lookup.source_kind,
@@ -261,6 +315,7 @@ fn find_existing_import(
                 lookup.normalized_platform,
                 lookup.normalized_region,
                 lookup.normalized_edition,
+                record.existing_game_id,
             ],
             |row| {
                 Ok(ImportedAsset {

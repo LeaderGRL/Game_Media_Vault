@@ -33,6 +33,8 @@ struct Cli {
 enum Command {
     ImportBoxFront {
         #[arg(long)]
+        game_id: Option<i64>,
+        #[arg(long)]
         game: String,
         #[arg(long)]
         platform: String,
@@ -55,6 +57,7 @@ where
 
     match cli.command {
         Command::ImportBoxFront {
+            game_id,
             game,
             platform,
             region,
@@ -67,6 +70,7 @@ where
                 &catalog,
                 &object_store,
                 ImportLocalBoxFrontRequest {
+                    existing_game_id: game_id,
                     game_title: game,
                     platform,
                     region,

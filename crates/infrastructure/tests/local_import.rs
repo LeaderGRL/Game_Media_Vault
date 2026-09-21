@@ -61,6 +61,7 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     let store = ContentAddressedStore::new(temp.path().join("vault"));
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
     let request = || ImportLocalBoxFrontRequest {
+        existing_game_id: None,
         game_title: "Metal Gear Solid".to_owned(),
         platform: "PlayStation".to_owned(),
         region: "France".to_owned(),
@@ -102,6 +103,7 @@ fn same_title_imports_do_not_merge_distinct_games_without_matching_evidence() {
             &catalog,
             &store,
             ImportLocalBoxFrontRequest {
+                existing_game_id: None,
                 game_title: "Same Name".to_owned(),
                 platform: "Windows".to_owned(),
                 region: "Worldwide".to_owned(),
@@ -116,6 +118,50 @@ fn same_title_imports_do_not_merge_distinct_games_without_matching_evidence() {
     let second = import(second_source);
 
     assert_ne!(first.game_id, second.game_id);
+}
+
+#[test]
+fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let first_source = temp.path().join("first-front.png");
+    let second_source = temp.path().join("alternate-front.png");
+    fs::write(&first_source, b"first cover").unwrap();
+    fs::write(&second_source, b"alternate cover").unwrap();
+
+    let first = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
+            existing_game_id: None,
+            game_title: "Same Game".to_owned(),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            source_path: first_source,
+        },
+    )
+    .unwrap();
+
+    let second = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
+            existing_game_id: Some(first.game_id),
+            game_title: "Same Game".to_owned(),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            source_path: second_source,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(second.game_id, first.game_id);
+    assert_eq!(second.release_edition_id, first.release_edition_id);
+    assert_ne!(second.asset_id, first.asset_id);
 }
 
 #[test]
@@ -163,6 +209,7 @@ fn opening_a_legacy_catalog_removes_title_only_game_identity() {
         &catalog,
         &store,
         ImportLocalBoxFrontRequest {
+            existing_game_id: None,
             game_title: "Same Name".to_owned(),
             platform: "Windows".to_owned(),
             region: "Worldwide".to_owned(),
