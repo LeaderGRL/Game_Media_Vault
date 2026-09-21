@@ -10,5 +10,8 @@ game-media-vault-application.workspace = true
 game-media-vault-domain.workspace = true
 rusqlite.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile.workspace = true

@@ -1105,6 +1105,7 @@ dependencies = [
  "game-media-vault-domain",
  "rusqlite",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -67,7 +67,7 @@ impl ObjectStorePort for ContentAddressedStore {
                 return Err(error);
             }
             fs::remove_file(&staging_path).map_err(io_error)?;
-        } else if let Err(error) = fs::rename(&staging_path, &target) {
+        } else if let Err(error) = publish_staged_object(&staging_path, &target, parent) {
             if target.exists() {
                 if let Err(error) = verify_existing_object(&target, &hash, byte_len) {
                     let _ = fs::remove_file(&staging_path);
@@ -139,6 +139,33 @@ fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError>
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
         }
+    }
+}
+
+#[cfg(unix)]
+fn publish_staged_object(staging: &Path, target: &Path, parent: &Path) -> std::io::Result<()> {
+    fs::rename(staging, target)?;
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+fn publish_staged_object(staging: &Path, target: &Path, _parent: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+
+    let staging_wide: Vec<u16> = staging.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let moved = unsafe {
+        MoveFileExW(
+            staging_wide.as_ptr(),
+            target_wide.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
