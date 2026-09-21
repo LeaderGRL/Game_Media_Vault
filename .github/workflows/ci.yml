@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tracked files for whitespace errors
+        shell: bash
+        run: |
+          empty_tree="$(git hash-object -t tree /dev/null)"
+          git diff --check "$empty_tree" HEAD
+
+      - name: Check required project documentation
+        shell: bash
+        run: |
+          test -f AGENTS.md
+          test -f CONTEXT.md
+          test -f docs/SPEC.md
+          test -f docs/specs/0001-game-media-vault.md
+
+      - name: Detect Rust workspace
+        id: rust
+        shell: bash
+        run: |
+          if test -f Cargo.toml; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.rust.outputs.enabled == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        if: steps.rust.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Rust formatting
+        if: steps.rust.outputs.enabled == 'true'
+        run: cargo fmt --all --check
+
+      - name: Lint Rust workspace
+        if: steps.rust.outputs.enabled == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test Rust workspace
+        if: steps.rust.outputs.enabled == 'true'
+        run: cargo test --workspace --all-features
+
+      - name: Build Rust workspace
+        if: steps.rust.outputs.enabled == 'true'
+        run: cargo build --workspace --all-targets --all-features
+
