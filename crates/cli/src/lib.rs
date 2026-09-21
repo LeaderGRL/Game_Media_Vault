@@ -52,8 +52,6 @@ where
     T: Into<OsString> + Clone,
 {
     let cli = Cli::try_parse_from(args)?;
-    let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-    let object_store = ContentAddressedStore::new(&cli.vault);
 
     match cli.command {
         Command::ImportBoxFront {
@@ -63,6 +61,8 @@ where
             edition,
             file,
         } => {
+            let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+            let object_store = ContentAddressedStore::new(&cli.vault);
             let imported = import_local_box_front(
                 &catalog,
                 &object_store,
@@ -79,6 +79,9 @@ where
                 imported.asset_id, imported.object_hash, imported.byte_len
             ))
         }
-        Command::Library => Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?),
+        Command::Library => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?)
+        }
     }
 }

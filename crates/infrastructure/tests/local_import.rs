@@ -7,6 +7,18 @@ use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
 #[test]
+fn opening_a_missing_catalog_for_reading_does_not_create_a_vault() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("missing-vault");
+    let catalog_path = vault.join("catalog.sqlite3");
+
+    let result = SqliteCatalog::open_existing(&catalog_path);
+
+    assert!(result.is_err());
+    assert!(!vault.exists());
+}
+
+#[test]
 fn stores_identical_original_bytes_only_once() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("cover.png");

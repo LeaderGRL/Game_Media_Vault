@@ -5,7 +5,7 @@ use game_media_vault_domain::LibraryEntry;
 use game_media_vault_infrastructure::SqliteCatalog;
 
 pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryEntry>, String> {
-    let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
         .map_err(|error| error.to_string())?;
     list_library_use_case(&catalog).map_err(|error| error.to_string())
 }

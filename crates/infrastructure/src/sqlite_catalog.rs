@@ -25,6 +25,36 @@ impl SqliteCatalog {
         Ok(catalog)
     }
 
+    pub fn open_existing(path: impl Into<PathBuf>) -> Result<Self, PortError> {
+        let path = path.into();
+        if !path.is_file() {
+            return Err(PortError(format!(
+                "catalog does not exist: {}",
+                path.display()
+            )));
+        }
+
+        let catalog = Self { path };
+        let connection = catalog.connect()?;
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN ('games', 'release_editions', 'assets', 'asset_provenance')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if table_count != 4 {
+            return Err(PortError(format!(
+                "catalog schema is missing or incomplete: {}",
+                catalog.path.display()
+            )));
+        }
+
+        Ok(catalog)
+    }
+
     fn connect(&self) -> Result<Connection, PortError> {
         let connection = Connection::open(&self.path).map_err(sql_error)?;
         connection
