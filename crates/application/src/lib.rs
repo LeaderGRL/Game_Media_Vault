@@ -32,6 +32,8 @@ pub struct ImportLocalBoxFrontRequest {
 pub enum ApplicationError {
     #[error("source path does not contain a file name")]
     MissingSourceFileName,
+    #[error("failed to resolve source path: {0}")]
+    ResolveSourcePath(String),
     #[error("{0}")]
     Port(#[from] PortError),
 }
@@ -46,7 +48,10 @@ pub fn import_local_box_front(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or(ApplicationError::MissingSourceFileName)?;
-    let source_location = request.source_path.to_string_lossy().into_owned();
+    let source_location = std::path::absolute(&request.source_path)
+        .map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))?
+        .to_string_lossy()
+        .into_owned();
     let stored = object_store.store_original(&request.source_path)?;
 
     Ok(catalog.persist_asset(PersistAsset {

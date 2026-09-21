@@ -44,6 +44,12 @@ impl CatalogPort for RecordingCatalog {
 #[test]
 fn imports_a_local_box_front_through_the_application_seam() {
     let catalog = RecordingCatalog::default();
+    let expected_source_location = std::env::current_dir()
+        .unwrap()
+        .join("fixtures")
+        .join("cover-front.png")
+        .to_string_lossy()
+        .into_owned();
     let request = ImportLocalBoxFrontRequest {
         game_title: "Metal Gear Solid".to_owned(),
         platform: "PlayStation".to_owned(),
@@ -67,7 +73,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
             byte_len: 4096,
             original_filename: "cover-front.png".to_owned(),
             source_kind: SourceKind::LocalImport,
-            source_location: "fixtures/cover-front.png".to_owned(),
+            source_location: expected_source_location,
         }]
     );
 }
