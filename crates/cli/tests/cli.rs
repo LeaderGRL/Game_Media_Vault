@@ -1,6 +1,16 @@
-use std::fs;
+use std::{fs, process::Command};
 
 use tempfile::tempdir;
+
+#[test]
+fn help_exits_successfully() {
+    let status = Command::new(env!("CARGO_BIN_EXE_game-media-vault"))
+        .arg("--help")
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+}
 
 #[test]
 fn imports_then_lists_a_local_box_front() {
