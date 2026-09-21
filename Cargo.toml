@@ -2,6 +2,7 @@
 members = [
     "crates/domain",
     "crates/application",
+    "crates/infrastructure",
 ]
 resolver = "2"
 
@@ -12,6 +13,10 @@ license = "MIT"
 
 [workspace.dependencies]
 game-media-vault-domain = { path = "crates/domain" }
+game-media-vault-application = { path = "crates/application" }
+blake3 = "1.8"
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+tempfile = "3"
 thiserror = "2"
 

@@ -42,6 +42,12 @@ pub struct ImportedAsset {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetProvenance {
+    pub source_kind: SourceKind,
+    pub source_location: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryEntry {
     pub game_id: i64,
     pub game_title: String,
@@ -54,6 +60,5 @@ pub struct LibraryEntry {
     pub object_hash: String,
     pub byte_len: u64,
     pub original_filename: String,
-    pub source_kind: SourceKind,
-    pub source_location: String,
+    pub provenance: Vec<AssetProvenance>,
 }
