@@ -14,6 +14,7 @@ export function App() {
     event?.preventDefault();
     setLoading(true);
     setError(null);
+    setEntries([]);
     try {
       const library = await invoke<LibraryEntry[]>("list_library", {
         vault_root: vaultRoot,
