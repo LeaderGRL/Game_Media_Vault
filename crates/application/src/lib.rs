@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryEntry, PersistLocalBoxFront, SourceKind, StoredObject,
+    AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
 };
 use thiserror::Error;
 
@@ -14,10 +14,7 @@ pub trait ObjectStorePort {
 }
 
 pub trait CatalogPort {
-    fn persist_local_box_front(
-        &self,
-        record: PersistLocalBoxFront,
-    ) -> Result<ImportedAsset, PortError>;
+    fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError>;
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
@@ -52,7 +49,7 @@ pub fn import_local_box_front(
     let source_location = request.source_path.to_string_lossy().into_owned();
     let stored = object_store.store_original(&request.source_path)?;
 
-    Ok(catalog.persist_local_box_front(PersistLocalBoxFront {
+    Ok(catalog.persist_asset(PersistAsset {
         game_title: request.game_title,
         platform: request.platform,
         region: request.region,

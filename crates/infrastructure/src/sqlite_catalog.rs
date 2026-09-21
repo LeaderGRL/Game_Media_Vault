@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use game_media_vault_application::{CatalogPort, PortError};
 use game_media_vault_domain::{
-    AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistLocalBoxFront, SourceKind,
+    AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
 use rusqlite::{Connection, params};
 
@@ -65,10 +65,7 @@ impl SqliteCatalog {
 }
 
 impl CatalogPort for SqliteCatalog {
-    fn persist_local_box_front(
-        &self,
-        record: PersistLocalBoxFront,
-    ) -> Result<ImportedAsset, PortError> {
+    fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction().map_err(sql_error)?;
         let normalized_title = normalize(&record.game_title);

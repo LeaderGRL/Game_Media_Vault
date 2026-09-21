@@ -19,7 +19,7 @@ pub struct StoredObject {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PersistLocalBoxFront {
+pub struct PersistAsset {
     pub game_title: String,
     pub platform: String,
     pub region: String,

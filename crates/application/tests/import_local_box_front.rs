@@ -4,7 +4,7 @@ use game_media_vault_application::{
     CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, import_local_box_front,
 };
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryEntry, PersistLocalBoxFront, SourceKind, StoredObject,
+    AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
 };
 
 struct FakeObjectStore;
@@ -21,14 +21,11 @@ impl ObjectStorePort for FakeObjectStore {
 
 #[derive(Default)]
 struct RecordingCatalog {
-    persisted: RefCell<Vec<PersistLocalBoxFront>>,
+    persisted: RefCell<Vec<PersistAsset>>,
 }
 
 impl CatalogPort for RecordingCatalog {
-    fn persist_local_box_front(
-        &self,
-        record: PersistLocalBoxFront,
-    ) -> Result<ImportedAsset, PortError> {
+    fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError> {
         self.persisted.borrow_mut().push(record);
         Ok(ImportedAsset {
             game_id: 1,
@@ -60,7 +57,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
     assert_eq!(imported.asset_id, 3);
     assert_eq!(
         catalog.persisted.into_inner(),
-        vec![PersistLocalBoxFront {
+        vec![PersistAsset {
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),
             region: "France".to_owned(),
