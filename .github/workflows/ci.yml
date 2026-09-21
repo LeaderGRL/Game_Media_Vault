@@ -75,4 +75,3 @@ jobs:
       - name: Build Rust workspace
         if: steps.rust.outputs.enabled == 'true'
         run: cargo build --workspace --all-targets --all-features
-

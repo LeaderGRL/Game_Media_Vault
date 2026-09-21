@@ -9,4 +9,3 @@ Create a commit for every coherent modification or feature after its relevant ch
 Run the applicable local equivalents of the GitHub CI checks before committing. Treat formatting, linting, tests, and build failures as blockers.
 
 Write all code comments in English.
-

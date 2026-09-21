@@ -55,4 +55,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: gh release create "$TAG" dist/* --verify-tag --generate-notes
-

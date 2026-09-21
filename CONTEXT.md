@@ -81,4 +81,3 @@ _Avoid_: Completeness when referring to the rule rather than its result
 **Coverage Status**:
 The evaluated completeness of a Release Edition against a Coverage Profile, such as Partial, Packaging Complete, Physical Complete, or Archival Complete.
 _Avoid_: Download status
-
