@@ -1,11 +1,16 @@
-use std::fs;
+use std::{
+    fs,
+    sync::{Arc, Barrier},
+    thread,
+    time::Duration,
+};
 
 use game_media_vault_application::{
     ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
-use rusqlite::Connection;
-use tempfile::tempdir;
+use rusqlite::{Connection, params};
+use tempfile::{tempdir, tempdir_in};
 
 #[test]
 fn opening_a_missing_catalog_for_reading_does_not_create_a_vault() {
@@ -87,6 +92,68 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     assert_eq!(library[0].object_hash, first.object_hash);
 }
 
+
+#[test]
+fn concurrent_reimports_persist_one_logical_asset() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog_path = vault.join("catalog.sqlite3");
+    SqliteCatalog::open(&catalog_path).unwrap();
+    let source = temp.path().join("shared-front.png");
+    fs::write(&source, b"shared cover bytes").unwrap();
+    let workers = 2;
+    let barrier = Arc::new(Barrier::new(workers + 1));
+    let blocker = Connection::open(&catalog_path).unwrap();
+    blocker
+        .execute_batch("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;")
+        .unwrap();
+
+    let handles: Vec<_> = (0..workers)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let vault = vault.clone();
+            let catalog_path = catalog_path.clone();
+            let source = source.clone();
+            thread::spawn(move || {
+                let catalog = SqliteCatalog::open_existing(catalog_path).unwrap();
+                let store = ContentAddressedStore::new(vault);
+                barrier.wait();
+                import_local_box_front(
+                    &catalog,
+                    &store,
+                    ImportLocalBoxFrontRequest {
+                        existing_game_id: None,
+                        game_title: "Concurrent Game".to_owned(),
+                        platform: "Windows".to_owned(),
+                        region: "Worldwide".to_owned(),
+                        edition_name: "Standard".to_owned(),
+                        source_path: source,
+                    },
+                )
+                .unwrap()
+            })
+        })
+        .collect();
+
+    barrier.wait();
+    thread::sleep(Duration::from_millis(150));
+    blocker.execute_batch("COMMIT;").unwrap();
+
+    let imported: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    let first_asset_id = imported[0].asset_id;
+    assert!(
+        imported
+            .iter()
+            .all(|asset| asset.asset_id == first_asset_id)
+    );
+
+    let catalog = SqliteCatalog::open_existing(catalog_path).unwrap();
+    assert_eq!(list_library(&catalog).unwrap().len(), 1);
+}
+
 #[test]
 fn same_title_imports_do_not_merge_distinct_games_without_matching_evidence() {
     let temp = tempdir().unwrap();
@@ -162,6 +229,77 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
     assert_eq!(second.game_id, first.game_id);
     assert_eq!(second.release_edition_id, first.release_edition_id);
     assert_ne!(second.asset_id, first.asset_id);
+}
+
+
+#[test]
+fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
+    let current_dir = std::env::current_dir().unwrap();
+    let temp = tempdir_in(&current_dir).unwrap();
+    let source = temp.path().join("legacy-front.png");
+    fs::write(&source, b"legacy cover bytes").unwrap();
+    let relative_source = source.strip_prefix(&current_dir).unwrap().to_path_buf();
+    let vault = temp.path().join("vault");
+    let catalog_path = vault.join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let stored = store.store_original(&source).unwrap();
+
+    let connection = Connection::open(&catalog_path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO games (id, title, normalized_title) VALUES (1, 'Legacy Game', 'legacy game')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO release_editions (
+                id, game_id, platform, normalized_platform, region, normalized_region,
+                edition_name, normalized_edition_name
+             ) VALUES (1, 1, 'Windows', 'windows', 'Worldwide', 'worldwide', 'Standard', 'standard')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO assets (
+                id, release_edition_id, asset_type, object_hash, byte_len, original_filename
+             ) VALUES (1, 1, 'box_front', ?1, ?2, 'legacy-front.png')",
+            params![stored.hash, i64::try_from(stored.byte_len).unwrap()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO asset_provenance (id, asset_id, source_kind, source_location)
+             VALUES (1, 1, 'local_import', ?1)",
+            params![relative_source.to_string_lossy()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let imported = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
+            existing_game_id: None,
+            game_title: "Legacy Game".to_owned(),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            source_path: relative_source,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(imported.asset_id, 1);
+    let library = list_library(&catalog).unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].provenance.len(), 1);
+    assert_eq!(
+        library[0].provenance[0].source_location,
+        source.to_string_lossy()
+    );
 }
 
 #[test]
