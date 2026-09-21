@@ -4,6 +4,7 @@ use game_media_vault_application::{
     ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 #[test]
@@ -83,4 +84,100 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
         source.to_string_lossy()
     );
     assert_eq!(library[0].object_hash, first.object_hash);
+}
+
+#[test]
+fn same_title_imports_do_not_merge_distinct_games_without_matching_evidence() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let first_source = temp.path().join("first-front.png");
+    let second_source = temp.path().join("second-front.png");
+    fs::write(&first_source, b"first game cover").unwrap();
+    fs::write(&second_source, b"second game cover").unwrap();
+
+    let import = |source| {
+        import_local_box_front(
+            &catalog,
+            &store,
+            ImportLocalBoxFrontRequest {
+                game_title: "Same Name".to_owned(),
+                platform: "Windows".to_owned(),
+                region: "Worldwide".to_owned(),
+                edition_name: "Standard".to_owned(),
+                source_path: source,
+            },
+        )
+        .unwrap()
+    };
+
+    let first = import(first_source);
+    let second = import(second_source);
+
+    assert_ne!(first.game_id, second.game_id);
+}
+
+#[test]
+fn opening_a_legacy_catalog_removes_title_only_game_identity() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    let catalog_path = vault.join("catalog.sqlite3");
+    let connection = Connection::open(&catalog_path).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE games (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 normalized_title TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE release_editions (
+                 id INTEGER PRIMARY KEY,
+                 game_id INTEGER NOT NULL REFERENCES games(id),
+                 platform TEXT NOT NULL,
+                 normalized_platform TEXT NOT NULL,
+                 region TEXT NOT NULL,
+                 normalized_region TEXT NOT NULL,
+                 edition_name TEXT NOT NULL,
+                 normalized_edition_name TEXT NOT NULL,
+                 UNIQUE(game_id, normalized_platform, normalized_region, normalized_edition_name)
+             );
+             INSERT INTO games (id, title, normalized_title)
+             VALUES (1, 'Same Name', 'same name');
+             INSERT INTO release_editions (
+                 id, game_id, platform, normalized_platform, region, normalized_region,
+                 edition_name, normalized_edition_name
+             ) VALUES (1, 1, 'Windows', 'windows', 'Worldwide', 'worldwide', 'Standard', 'standard');",
+        )
+        .unwrap();
+    drop(connection);
+
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let source = temp.path().join("new-front.png");
+    fs::write(&source, b"different same-title game").unwrap();
+
+    let imported = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
+            game_title: "Same Name".to_owned(),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            source_path: source,
+        },
+    )
+    .unwrap();
+
+    assert_ne!(imported.game_id, 1);
+    let migrated = Connection::open(&catalog_path).unwrap();
+    let foreign_key_errors: i64 = migrated
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(foreign_key_errors, 0);
 }

@@ -4,7 +4,7 @@ use game_media_vault_application::{CatalogPort, PortError};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct SqliteCatalog {
     path: PathBuf,
@@ -67,33 +67,45 @@ impl SqliteCatalog {
 impl CatalogPort for SqliteCatalog {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError> {
         let mut connection = self.connect()?;
-        let transaction = connection.transaction().map_err(sql_error)?;
         let normalized_title = normalize(&record.game_title);
         let normalized_platform = normalize(&record.platform);
         let normalized_region = normalize(&record.region);
         let normalized_edition = normalize(&record.edition_name);
+        let asset_type = asset_type_to_str(record.asset_type);
+        let source_kind = source_kind_to_str(record.source_kind);
+        let byte_len = i64::try_from(record.byte_len)
+            .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
+
+        if let Some(existing) = find_existing_import(
+            &connection,
+            &record,
+            &normalized_title,
+            &normalized_platform,
+            &normalized_region,
+            &normalized_edition,
+            asset_type,
+            source_kind,
+            byte_len,
+        )? {
+            return Ok(existing);
+        }
+
+        let transaction = connection.transaction().map_err(sql_error)?;
 
         transaction
             .execute(
-                "INSERT INTO games (title, normalized_title) VALUES (?1, ?2) ON CONFLICT(normalized_title) DO NOTHING",
+                "INSERT INTO games (title, normalized_title) VALUES (?1, ?2)",
                 params![record.game_title, normalized_title],
             )
             .map_err(sql_error)?;
-        let game_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM games WHERE normalized_title = ?1",
-                params![normalized_title],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
+        let game_id = transaction.last_insert_rowid();
 
         transaction
             .execute(
                 "INSERT INTO release_editions (
                     game_id, platform, normalized_platform, region, normalized_region,
                     edition_name, normalized_edition_name
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     game_id,
                     record.platform,
@@ -105,30 +117,13 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
-        let release_edition_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM release_editions
-                 WHERE game_id = ?1 AND normalized_platform = ?2
-                   AND normalized_region = ?3 AND normalized_edition_name = ?4",
-                params![
-                    game_id,
-                    normalized_platform,
-                    normalized_region,
-                    normalized_edition
-                ],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
+        let release_edition_id = transaction.last_insert_rowid();
 
-        let asset_type = asset_type_to_str(record.asset_type);
-        let byte_len = i64::try_from(record.byte_len)
-            .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
         transaction
             .execute(
                 "INSERT INTO assets (
                     release_edition_id, asset_type, object_hash, byte_len, original_filename
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(release_edition_id, asset_type, object_hash) DO NOTHING",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     release_edition_id,
                     asset_type,
@@ -138,25 +133,14 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
-        let asset_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM assets
-                 WHERE release_edition_id = ?1 AND asset_type = ?2 AND object_hash = ?3",
-                params![release_edition_id, asset_type, record.object_hash],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
+        let asset_id = transaction.last_insert_rowid();
 
         transaction
             .execute(
                 "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
-                params![
-                    asset_id,
-                    source_kind_to_str(record.source_kind),
-                    record.source_location,
-                ],
+                params![asset_id, source_kind, record.source_location,],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
@@ -236,13 +220,68 @@ impl CatalogPort for SqliteCatalog {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn find_existing_import(
+    connection: &Connection,
+    record: &PersistAsset,
+    normalized_title: &str,
+    normalized_platform: &str,
+    normalized_region: &str,
+    normalized_edition: &str,
+    asset_type: &str,
+    source_kind: &str,
+    byte_len: i64,
+) -> Result<Option<ImportedAsset>, PortError> {
+    connection
+        .query_row(
+            "SELECT g.id, r.id, a.id
+             FROM asset_provenance p
+             JOIN assets a ON a.id = p.asset_id
+             JOIN release_editions r ON r.id = a.release_edition_id
+             JOIN games g ON g.id = r.game_id
+             WHERE p.source_kind = ?1
+               AND p.source_location = ?2
+               AND a.asset_type = ?3
+               AND a.object_hash = ?4
+               AND a.byte_len = ?5
+               AND g.normalized_title = ?6
+               AND r.normalized_platform = ?7
+               AND r.normalized_region = ?8
+               AND r.normalized_edition_name = ?9
+             LIMIT 1",
+            params![
+                source_kind,
+                record.source_location,
+                asset_type,
+                record.object_hash,
+                byte_len,
+                normalized_title,
+                normalized_platform,
+                normalized_region,
+                normalized_edition,
+            ],
+            |row| {
+                Ok(ImportedAsset {
+                    game_id: row.get(0)?,
+                    release_edition_id: row.get(1)?,
+                    asset_id: row.get(2)?,
+                    object_hash: record.object_hash.clone(),
+                    byte_len: record.byte_len,
+                })
+            },
+        )
+        .optional()
+        .map_err(sql_error)
+}
+
 fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
+    migrate_legacy_game_identity(connection)?;
     connection
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
-                normalized_title TEXT NOT NULL UNIQUE
+                normalized_title TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS release_editions (
                 id INTEGER PRIMARY KEY,
@@ -272,10 +311,58 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 UNIQUE(asset_id, source_kind, source_location)
             );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
+            CREATE INDEX IF NOT EXISTS idx_game_normalized_title ON games(normalized_title);
             CREATE INDEX IF NOT EXISTS idx_asset_release ON assets(release_edition_id);
             CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);",
         )
         .map_err(sql_error)
+}
+
+fn migrate_legacy_game_identity(connection: &Connection) -> Result<(), PortError> {
+    let games_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'games'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let Some(games_sql) = games_sql else {
+        return Ok(());
+    };
+    let normalized_sql = games_sql
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if !normalized_sql.contains("normalized_title text not null unique") {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;")
+        .map_err(sql_error)?;
+    let migration = connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         ALTER TABLE games RENAME TO games_legacy;
+         CREATE TABLE games (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             normalized_title TEXT NOT NULL
+         );
+         INSERT INTO games (id, title, normalized_title)
+         SELECT id, title, normalized_title FROM games_legacy;
+         DROP TABLE games_legacy;
+         COMMIT;",
+    );
+    if migration.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    let restore =
+        connection.execute_batch("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
+
+    migration.map_err(sql_error)?;
+    restore.map_err(sql_error)
 }
 
 fn normalize(value: &str) -> String {
