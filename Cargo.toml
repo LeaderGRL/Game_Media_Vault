@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/domain",
+    "crates/application",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+game-media-vault-domain = { path = "crates/domain" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
