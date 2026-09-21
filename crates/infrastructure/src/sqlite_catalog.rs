@@ -76,17 +76,16 @@ impl CatalogPort for SqliteCatalog {
         let byte_len = i64::try_from(record.byte_len)
             .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
 
-        if let Some(existing) = find_existing_import(
-            &connection,
-            &record,
-            &normalized_title,
-            &normalized_platform,
-            &normalized_region,
-            &normalized_edition,
+        let lookup = ExistingImportLookup {
+            normalized_title: &normalized_title,
+            normalized_platform: &normalized_platform,
+            normalized_region: &normalized_region,
+            normalized_edition: &normalized_edition,
             asset_type,
             source_kind,
             byte_len,
-        )? {
+        };
+        if let Some(existing) = find_existing_import(&connection, &record, &lookup)? {
             return Ok(existing);
         }
 
@@ -220,17 +219,20 @@ impl CatalogPort for SqliteCatalog {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ExistingImportLookup<'a> {
+    normalized_title: &'a str,
+    normalized_platform: &'a str,
+    normalized_region: &'a str,
+    normalized_edition: &'a str,
+    asset_type: &'a str,
+    source_kind: &'a str,
+    byte_len: i64,
+}
+
 fn find_existing_import(
     connection: &Connection,
     record: &PersistAsset,
-    normalized_title: &str,
-    normalized_platform: &str,
-    normalized_region: &str,
-    normalized_edition: &str,
-    asset_type: &str,
-    source_kind: &str,
-    byte_len: i64,
+    lookup: &ExistingImportLookup<'_>,
 ) -> Result<Option<ImportedAsset>, PortError> {
     connection
         .query_row(
@@ -250,15 +252,15 @@ fn find_existing_import(
                AND r.normalized_edition_name = ?9
              LIMIT 1",
             params![
-                source_kind,
+                lookup.source_kind,
                 record.source_location,
-                asset_type,
+                lookup.asset_type,
                 record.object_hash,
-                byte_len,
-                normalized_title,
-                normalized_platform,
-                normalized_region,
-                normalized_edition,
+                lookup.byte_len,
+                lookup.normalized_title,
+                lookup.normalized_platform,
+                lookup.normalized_region,
+                lookup.normalized_edition,
             ],
             |row| {
                 Ok(ImportedAsset {
