@@ -92,7 +92,6 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     assert_eq!(library[0].object_hash, first.object_hash);
 }
 
-
 #[test]
 fn concurrent_reimports_persist_one_logical_asset() {
     let temp = tempdir().unwrap();
@@ -230,7 +229,6 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
     assert_eq!(second.release_edition_id, first.release_edition_id);
     assert_ne!(second.asset_id, first.asset_id);
 }
-
 
 #[test]
 fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
