@@ -331,7 +331,8 @@ fn find_existing_import(
                AND r.normalized_platform = ?6
                AND r.normalized_region = ?7
                AND r.normalized_edition_name = ?8
-               AND (?9 IS NULL OR g.id = ?9)",
+               AND a.original_filename = ?9
+               AND (?10 IS NULL OR g.id = ?10)",
         )
         .map_err(sql_error)?;
     let mut rows = statement
@@ -344,13 +345,16 @@ fn find_existing_import(
             lookup.normalized_platform,
             lookup.normalized_region,
             lookup.normalized_edition,
+            record.original_filename,
             record.existing_game_id,
         ])
         .map_err(sql_error)?;
 
     while let Some(row) = rows.next().map_err(sql_error)? {
         let matched_source_location: String = row.get(3).map_err(sql_error)?;
-        if !equivalent_source_location(&matched_source_location, &record.source_location) {
+        if !equivalent_source_location(&matched_source_location, &record.source_location)
+            && !legacy_relative_source_location(&matched_source_location, &record.original_filename)
+        {
             continue;
         }
 
@@ -381,6 +385,14 @@ fn equivalent_source_location(stored: &str, current: &str) -> bool {
 
 fn canonicalize_location(location: &str) -> Option<PathBuf> {
     fs::canonicalize(Path::new(location)).ok()
+}
+
+fn legacy_relative_source_location(location: &str, original_filename: &str) -> bool {
+    let path = Path::new(location);
+    path.is_relative()
+        && path
+            .file_name()
+            .is_some_and(|filename| filename == original_filename)
 }
 
 fn normalize_existing_provenance(

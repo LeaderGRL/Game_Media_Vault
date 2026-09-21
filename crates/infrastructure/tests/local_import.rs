@@ -10,7 +10,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::{Connection, params};
-use tempfile::{tempdir, tempdir_in};
+use tempfile::tempdir;
 
 #[test]
 fn opening_a_missing_catalog_for_reading_does_not_create_a_vault() {
@@ -244,11 +244,10 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
 
 #[test]
 fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
-    let current_dir = std::env::current_dir().unwrap();
-    let temp = tempdir_in(&current_dir).unwrap();
+    let temp = tempdir().unwrap();
     let source = temp.path().join("legacy-front.png");
     fs::write(&source, b"legacy cover bytes").unwrap();
-    let relative_source = source.strip_prefix(&current_dir).unwrap().to_path_buf();
+    let relative_source = std::path::PathBuf::from("previous-session/legacy-front.png");
     let vault = temp.path().join("vault");
     let catalog_path = vault.join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
