@@ -280,3 +280,55 @@ fn acquire_preserves_asset_type_family_selection() {
         serde_json::json!(["packaging", "documentation"])
     );
 }
+
+#[test]
+fn acquire_preserves_platform_bound_game_targeting() {
+    let output = game_media_vault_cli::run([
+        "game-media-vault",
+        "acquire",
+        "--source",
+        "screenscraper",
+        "--platform-game",
+        "PlayStation 2=Metal Gear Solid 3",
+        "--asset-type",
+        "box-front",
+    ])
+    .unwrap();
+
+    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(request["platforms"], serde_json::json!([]));
+    assert_eq!(request["games"]["mode"], "platform_bound");
+    assert_eq!(
+        request["games"]["values"],
+        serde_json::json!([{
+            "game": "Metal Gear Solid 3",
+            "platform": "PlayStation 2"
+        }])
+    );
+}
+
+#[test]
+fn acquire_preserves_query_result_game_targeting() {
+    let output = game_media_vault_cli::run([
+        "game-media-vault",
+        "acquire",
+        "--source",
+        "screenscraper",
+        "--query-result",
+        "PlayStation 2=Metal Gear Solid 3",
+        "--asset-type",
+        "manual",
+    ])
+    .unwrap();
+
+    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(request["platforms"], serde_json::json!([]));
+    assert_eq!(request["games"]["mode"], "query_result");
+    assert_eq!(
+        request["games"]["values"],
+        serde_json::json!([{
+            "game": "Metal Gear Solid 3",
+            "platform": "PlayStation 2"
+        }])
+    );
+}

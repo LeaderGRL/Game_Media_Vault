@@ -7,8 +7,8 @@ use game_media_vault_application::{
     list_library,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AssetTypeSelector, GameSelection, QualityRequirements, RetentionPolicy,
-    SourceSelection,
+    AcquisitionLimits, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
+    QualityRequirements, RetentionPolicy, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use thiserror::Error;
@@ -46,8 +46,22 @@ enum Command {
         auto_source: bool,
         #[arg(long = "platform")]
         platforms: Vec<String>,
-        #[arg(long = "game")]
+        #[arg(long = "game", conflicts_with_all = ["platform_games", "query_results"])]
         games: Vec<String>,
+        #[arg(
+            long = "platform-game",
+            value_name = "PLATFORM=GAME",
+            value_parser = parse_platform_bound_game,
+            conflicts_with_all = ["games", "query_results"]
+        )]
+        platform_games: Vec<PlatformBoundGameSelector>,
+        #[arg(
+            long = "query-result",
+            value_name = "PLATFORM=GAME",
+            value_parser = parse_platform_bound_game,
+            conflicts_with_all = ["games", "platform_games"]
+        )]
+        query_results: Vec<PlatformBoundGameSelector>,
         #[arg(long = "region")]
         regions: Vec<String>,
         #[arg(long = "language")]
@@ -55,7 +69,7 @@ enum Command {
         #[arg(long = "asset-type", value_parser = parse_asset_type)]
         asset_types: Vec<AssetTypeSelector>,
         #[command(flatten)]
-        quality: QualityArgs,
+        quality: Box<QualityArgs>,
         #[arg(long, default_value = "keep-everything", value_parser = parse_retention_policy)]
         retention: RetentionPolicy,
         #[command(flatten)]
@@ -170,6 +184,8 @@ where
             auto_source,
             platforms,
             games,
+            platform_games,
+            query_results,
             regions,
             languages,
             asset_types,
@@ -184,15 +200,19 @@ where
                     SourceSelection::Explicit(sources)
                 },
                 platforms,
-                games: if games.is_empty() {
-                    GameSelection::All
-                } else {
+                games: if !platform_games.is_empty() {
+                    GameSelection::PlatformBound(platform_games)
+                } else if !query_results.is_empty() {
+                    GameSelection::QueryResult(query_results)
+                } else if !games.is_empty() {
                     GameSelection::Explicit(games)
+                } else {
+                    GameSelection::All
                 },
                 regions,
                 languages,
                 asset_types,
-                quality: quality.into_domain(),
+                quality: (*quality).into_domain(),
                 retention,
                 limits: limits.into(),
             })?;
@@ -238,6 +258,17 @@ fn parse_asset_type(value: &str) -> Result<AssetTypeSelector, String> {
 
 fn parse_retention_policy(value: &str) -> Result<RetentionPolicy, String> {
     parse_domain_enum(value).map_err(|_| format!("unsupported retention policy: {value}"))
+}
+
+fn parse_platform_bound_game(value: &str) -> Result<PlatformBoundGameSelector, String> {
+    let (platform, game) = value
+        .split_once('=')
+        .ok_or_else(|| "expected PLATFORM=GAME".to_owned())?;
+
+    Ok(PlatformBoundGameSelector {
+        game: game.to_owned(),
+        platform: platform.to_owned(),
+    })
 }
 
 fn parse_domain_enum<T>(value: &str) -> Result<T, serde_json::Error>
