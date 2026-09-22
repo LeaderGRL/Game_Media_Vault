@@ -29,6 +29,8 @@ pub trait CatalogPort {
 
 pub trait RunRepositoryPort {
     fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError>;
+
+    fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +57,14 @@ pub fn start_acquisition_run(
     Ok(runs.create_run(request)?)
 }
 
+pub fn load_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<AcquisitionRun, ApplicationError> {
+    runs.get_run(run_id)?
+        .ok_or(ApplicationError::RunNotFound(run_id))
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApplicationError {
     #[error("source path does not contain a file name")]
@@ -65,6 +75,8 @@ pub enum ApplicationError {
     Port(#[from] PortError),
     #[error("{0}")]
     Validation(#[from] AcquisitionRequestValidationError),
+    #[error("acquisition run #{0} does not exist")]
+    RunNotFound(i64),
 }
 
 pub fn import_local_box_front(

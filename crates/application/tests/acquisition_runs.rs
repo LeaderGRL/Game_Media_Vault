@@ -35,6 +35,10 @@ impl RunRepositoryPort for RecordingRunRepository {
             completed_work: 0,
         })
     }
+
+    fn get_run(&self, _run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
+        Ok(None)
+    }
 }
 
 #[test]

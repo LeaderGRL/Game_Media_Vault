@@ -3,8 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use game_media_vault_application::{CatalogPort, PortError};
+use game_media_vault_application::{CatalogPort, PortError, RunRepositoryPort};
 use game_media_vault_domain::{
+    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
 use rusqlite::{
@@ -60,16 +61,20 @@ impl SqliteCatalog {
             busy_handler: None,
         };
         let connection = catalog.connect()?;
+        initialize_schema(&connection)?;
         let table_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table'
-                   AND name IN ('games', 'release_editions', 'assets', 'asset_provenance')",
+                   AND name IN (
+                       'games', 'release_editions', 'assets', 'asset_provenance',
+                       'acquisition_runs'
+                   )",
                 [],
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        if table_count != 4 {
+        if table_count != 5 {
             return Err(PortError(format!(
                 "catalog schema is missing or incomplete: {}",
                 catalog.path.display()
@@ -95,6 +100,73 @@ impl SqliteCatalog {
             connection.busy_handler(Some(handler)).map_err(sql_error)?;
         }
         Ok(connection)
+    }
+}
+
+impl RunRepositoryPort for SqliteCatalog {
+    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+        let connection = self.connect()?;
+        let request_json = serde_json::to_string(&request).map_err(|error| {
+            PortError(format!("failed to serialize acquisition request: {error}"))
+        })?;
+        connection
+            .execute(
+                "INSERT INTO acquisition_runs (
+                    request_json, status, queued_work, completed_work
+                 ) VALUES (?1, 'running', 0, 0)",
+                params![request_json],
+            )
+            .map_err(sql_error)?;
+
+        Ok(AcquisitionRun {
+            id: connection.last_insert_rowid(),
+            request,
+            status: AcquisitionRunStatus::Running,
+            queued_work: 0,
+            completed_work: 0,
+        })
+    }
+
+    fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
+        let connection = self.connect()?;
+        let row = connection
+            .query_row(
+                "SELECT request_json, status, queued_work, completed_work
+                 FROM acquisition_runs WHERE id = ?1",
+                params![run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sql_error)?;
+
+        let Some((request_json, status, queued_work, completed_work)) = row else {
+            return Ok(None);
+        };
+        let draft: AcquisitionRequestDraft =
+            serde_json::from_str(&request_json).map_err(|error| {
+                PortError(format!("invalid persisted acquisition request: {error}"))
+            })?;
+        let request = AcquisitionRequest::try_from_draft(draft).map_err(|error| {
+            PortError(format!("invalid persisted acquisition request: {error}"))
+        })?;
+
+        Ok(Some(AcquisitionRun {
+            id: run_id,
+            request,
+            status: parse_run_status(&status)?,
+            queued_work: u64::try_from(queued_work)
+                .map_err(|_| PortError("catalog contains a negative queued work count".into()))?,
+            completed_work: u64::try_from(completed_work).map_err(|_| {
+                PortError("catalog contains a negative completed work count".into())
+            })?,
+        }))
     }
 }
 
@@ -458,12 +530,31 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 source_location TEXT NOT NULL,
                 UNIQUE(asset_id, source_kind, source_location)
             );
+            CREATE TABLE IF NOT EXISTS acquisition_runs (
+                id INTEGER PRIMARY KEY,
+                request_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                queued_work INTEGER NOT NULL CHECK(queued_work >= 0),
+                completed_work INTEGER NOT NULL CHECK(completed_work >= 0)
+            );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
             CREATE INDEX IF NOT EXISTS idx_game_normalized_title ON games(normalized_title);
             CREATE INDEX IF NOT EXISTS idx_asset_release ON assets(release_edition_id);
             CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);",
         )
         .map_err(sql_error)
+}
+
+fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
+    match value {
+        "running" => Ok(AcquisitionRunStatus::Running),
+        "paused" => Ok(AcquisitionRunStatus::Paused),
+        "cancelled" => Ok(AcquisitionRunStatus::Cancelled),
+        "completed" => Ok(AcquisitionRunStatus::Completed),
+        other => Err(PortError(format!(
+            "unknown acquisition run status: {other}"
+        ))),
+    }
 }
 
 fn migrate_legacy_game_identity(connection: &Connection) -> Result<(), PortError> {
