@@ -1,12 +1,13 @@
 use std::{
     fs,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
 };
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    AssetType, ConnectorCapabilities, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
-    StoredObject,
+    AssetType, ConnectorCapabilities, ImportedAsset, LibraryEntry, PersistAsset, RetentionPolicy,
+    SourceKind, StoredObject,
 };
 use thiserror::Error;
 
@@ -21,10 +22,11 @@ pub struct PortError(pub String);
 pub trait ObjectStorePort {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError>;
 
-    fn store_original_bytes(&self, _bytes: &[u8]) -> Result<StoredObject, PortError> {
-        Err(PortError(
-            "object store does not support in-memory originals".to_owned(),
-        ))
+    fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError>;
+
+    fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
+        let mut reader = Cursor::new(bytes);
+        self.store_original_reader(&mut reader)
     }
 }
 
@@ -62,7 +64,7 @@ pub trait ConnectorPort {
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 
-    fn download(&self, candidate: &AssetCandidate) -> Result<Vec<u8>, PortError>;
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +247,8 @@ pub enum ApplicationError {
     ConnectorCannotDownload { source_id: String },
     #[error("acquisition run cannot execute connector work while {status:?}")]
     RunNotExecutable { status: AcquisitionRunStatus },
+    #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
+    UnsupportedConnectorPlan { source_id: String, reason: String },
 }
 
 pub fn acquire_run_with_connector(
@@ -273,6 +277,7 @@ pub fn acquire_run_with_connector(
             source_id: connector.source_id().to_owned(),
         });
     }
+    validate_connector_plan(&run.request, connector.source_id(), &capabilities)?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
     for candidate in connector.discover(&run.request)? {
@@ -292,8 +297,8 @@ pub fn acquire_run_with_connector(
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
             break;
         };
-        let bytes = connector.download(candidate)?;
-        let stored = object_store.store_original_bytes(&bytes)?;
+        let mut stream = connector.download(candidate)?;
+        let stored = object_store.store_original_reader(stream.as_mut())?;
         let imported = catalog.persist_asset(PersistAsset {
             existing_game_id: None,
             game_title: candidate.game_title.clone(),
@@ -319,7 +324,70 @@ pub fn acquire_run_with_connector(
 }
 
 fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
-    format!("connector:{source_id}:{}", candidate.source_url)
+    let mut key = "connector".to_owned();
+    for part in [
+        source_id,
+        candidate.platform.as_str(),
+        candidate.game_title.as_str(),
+        candidate.region.as_str(),
+        candidate.edition_name.as_str(),
+        asset_type_work_key(candidate.asset_type),
+        candidate.source_url.as_str(),
+    ] {
+        push_work_key_part(&mut key, part);
+    }
+    key
+}
+
+fn push_work_key_part(key: &mut String, value: &str) {
+    key.push(':');
+    key.push_str(&value.len().to_string());
+    key.push(':');
+    key.push_str(value);
+}
+
+fn asset_type_work_key(asset_type: AssetType) -> &'static str {
+    match asset_type {
+        AssetType::BoxFront => "box_front",
+    }
+}
+
+fn validate_connector_plan(
+    request: &AcquisitionRequest,
+    source_id: &str,
+    capabilities: &ConnectorCapabilities,
+) -> Result<(), ApplicationError> {
+    let unsupported = |reason: &str| ApplicationError::UnsupportedConnectorPlan {
+        source_id: source_id.to_owned(),
+        reason: reason.to_owned(),
+    };
+
+    if !request.selects_only_source(source_id) {
+        return Err(unsupported(
+            "this execution path requires one explicitly selected source",
+        ));
+    }
+    if !request.requested_asset_types_supported_by(&capabilities.asset_types) {
+        return Err(unsupported(
+            "one or more requested asset types are not supported by this connector",
+        ));
+    }
+    if request.quality().is_some() {
+        return Err(unsupported(
+            "quality requirements are not supported by this execution path",
+        ));
+    }
+    if request.retention() != RetentionPolicy::KeepEverything {
+        return Err(unsupported(
+            "Keep Best Per Type is not supported by this execution path",
+        ));
+    }
+    if request.limits() != &game_media_vault_domain::AcquisitionLimits::default() {
+        return Err(unsupported(
+            "acquisition limits are not supported by this execution path",
+        ));
+    }
+    Ok(())
 }
 
 pub fn import_local_box_front(

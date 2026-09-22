@@ -1,3 +1,5 @@
+use std::io::{Cursor, Read};
+
 use game_media_vault_application::{
     AcquisitionRequestInput, ConnectorPort, PortError,
     load_acquisition_run as load_acquisition_run_use_case,
@@ -51,8 +53,8 @@ impl ConnectorPort for FixtureConnector {
         }])
     }
 
-    fn download(&self, _candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
-        Ok(b"tauri connector fixture".to_vec())
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(b"tauri connector fixture".to_vec())))
     }
 }
 
@@ -104,7 +106,7 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
         sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
         platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
         games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
-        regions: vec!["World".to_owned()],
+        regions: Vec::new(),
         languages: Vec::new(),
         asset_types: vec![AssetTypeSelector::BoxFront],
         quality: None,

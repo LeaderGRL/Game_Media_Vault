@@ -255,6 +255,30 @@ impl AcquisitionRequest {
         &self.regions
     }
 
+    pub fn languages(&self) -> &[String] {
+        &self.languages
+    }
+
+    pub fn quality(&self) -> Option<&QualityRequirements> {
+        self.quality.as_ref()
+    }
+
+    pub fn retention(&self) -> RetentionPolicy {
+        self.retention
+    }
+
+    pub fn limits(&self) -> &AcquisitionLimits {
+        &self.limits
+    }
+
+    pub fn selects_only_source(&self, source_id: &str) -> bool {
+        matches!(
+            &self.sources,
+            SourceSelection::Explicit(values)
+                if values.len() == 1 && values[0] == source_id
+        )
+    }
+
     pub fn selects_source(&self, source_id: &str) -> bool {
         match &self.sources {
             SourceSelection::Auto => true,
@@ -269,6 +293,13 @@ impl AcquisitionRequest {
                 (AssetTypeSelector::Packaging, AssetType::BoxFront)
                     | (AssetTypeSelector::BoxFront, AssetType::BoxFront)
             )
+        })
+    }
+
+    pub fn requested_asset_types_supported_by(&self, supported: &[AssetType]) -> bool {
+        self.asset_types.iter().all(|selector| match selector {
+            AssetTypeSelector::BoxFront => supported.contains(&AssetType::BoxFront),
+            _ => false,
         })
     }
 

@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    io::{Cursor, Read},
+    sync::{Arc, Mutex},
+};
 
 use game_media_vault_application::{CatalogPort, RunRepositoryPort, acquire_run_with_connector};
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
@@ -23,12 +26,15 @@ struct FixtureTransport {
 }
 
 impl HttpTransport for FixtureTransport {
-    fn get(&self, url: &str) -> Result<Vec<u8>, game_media_vault_application::PortError> {
+    fn get_stream(
+        &self,
+        url: &str,
+    ) -> Result<Box<dyn Read + Send>, game_media_vault_application::PortError> {
         self.requested_urls.lock().unwrap().push(url.to_owned());
         if url.ends_with("/.gitmodules") {
-            Ok(GITMODULES_FIXTURE.to_vec())
+            Ok(Box::new(Cursor::new(GITMODULES_FIXTURE.to_vec())))
         } else {
-            Ok(BOX_FRONT_BYTES.to_vec())
+            Ok(Box::new(Cursor::new(BOX_FRONT_BYTES.to_vec())))
         }
     }
 }
@@ -38,7 +44,7 @@ fn request() -> AcquisitionRequest {
         sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
         platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
         games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
-        regions: vec!["World".to_owned()],
+        regions: Vec::new(),
         languages: Vec::new(),
         asset_types: vec![AssetTypeSelector::BoxFront],
         quality: None,

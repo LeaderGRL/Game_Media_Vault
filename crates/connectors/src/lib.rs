@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use game_media_vault_application::{ConnectorPort, PortError};
 use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceKind,
@@ -10,7 +12,16 @@ const LIBRETRO_GITMODULES_URL: &str =
     "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
 pub trait HttpTransport {
-    fn get(&self, url: &str) -> Result<Vec<u8>, PortError>;
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError>;
+
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
+        let mut stream = self.get_stream(url)?;
+        let mut bytes = Vec::new();
+        stream
+            .read_to_end(&mut bytes)
+            .map_err(|error| PortError(format!("failed to read HTTP response body: {error}")))?;
+        Ok(bytes)
+    }
 }
 
 pub struct ReqwestHttpTransport {
@@ -29,7 +40,7 @@ impl Default for ReqwestHttpTransport {
 }
 
 impl HttpTransport for ReqwestHttpTransport {
-    fn get(&self, url: &str) -> Result<Vec<u8>, PortError> {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
         let response = self
             .client
             .get(url)
@@ -41,10 +52,7 @@ impl HttpTransport for ReqwestHttpTransport {
                 response.status()
             )));
         }
-        response
-            .bytes()
-            .map(|bytes| bytes.to_vec())
-            .map_err(|error| PortError(format!("failed to read Libretro response body: {error}")))
+        Ok(Box::new(response))
     }
 }
 
@@ -96,12 +104,19 @@ where
         if !request.requests_asset_type(AssetType::BoxFront) {
             return Ok(Vec::new());
         }
+        if !request.regions().is_empty() {
+            return Err(PortError(
+                "Libretro Thumbnails cannot satisfy region filters because the source provides no region evidence"
+                    .to_owned(),
+            ));
+        }
+        if !request.languages().is_empty() {
+            return Err(PortError(
+                "Libretro Thumbnails cannot satisfy language filters because the source provides no language evidence"
+                    .to_owned(),
+            ));
+        }
 
-        let region = if request.regions().len() == 1 {
-            request.regions()[0].clone()
-        } else {
-            "Unknown".to_owned()
-        };
         let repositories = self.repository_catalog()?;
         let targets = acquisition_targets(request)?;
         targets
@@ -120,7 +135,7 @@ where
                 Ok(AssetCandidate {
                     game_title,
                     platform,
-                    region: region.clone(),
+                    region: "Unknown".to_owned(),
                     edition_name: "Unspecified".to_owned(),
                     asset_type: AssetType::BoxFront,
                     source_kind: SourceKind::LibretroThumbnails,
@@ -131,8 +146,8 @@ where
             .collect()
     }
 
-    fn download(&self, candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
-        self.transport.get(&candidate.source_url)
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.transport.get_stream(&candidate.source_url)
     }
 }
 
@@ -141,7 +156,7 @@ where
     T: HttpTransport,
 {
     fn repository_catalog(&self) -> Result<Vec<LibretroRepository>, PortError> {
-        let bytes = self.transport.get(LIBRETRO_GITMODULES_URL)?;
+        let bytes = self.transport.get_bytes(LIBRETRO_GITMODULES_URL)?;
         let manifest = std::str::from_utf8(&bytes)
             .map_err(|error| PortError(format!("invalid Libretro repository metadata: {error}")))?;
         parse_repository_catalog(manifest)

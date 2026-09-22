@@ -20,6 +20,13 @@ impl ObjectStorePort for FakeObjectStore {
             byte_len: 4096,
         })
     }
+
+    fn store_original_reader(
+        &self,
+        _reader: &mut dyn std::io::Read,
+    ) -> Result<StoredObject, PortError> {
+        unreachable!()
+    }
 }
 
 #[derive(Default)]

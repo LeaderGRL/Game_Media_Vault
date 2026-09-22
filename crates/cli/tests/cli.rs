@@ -1,4 +1,10 @@
-use std::{ffi::OsString, fs, path::Path, process::Command};
+use std::{
+    ffi::OsString,
+    fs,
+    io::{Cursor, Read},
+    path::Path,
+    process::Command,
+};
 
 use game_media_vault_application::{AcquisitionRequestValidationError, ConnectorPort, PortError};
 use game_media_vault_cli::CliError;
@@ -34,8 +40,8 @@ impl ConnectorPort for FixtureConnector {
         }])
     }
 
-    fn download(&self, _candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
-        Ok(b"cli connector fixture".to_vec())
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(b"cli connector fixture".to_vec())))
     }
 }
 
@@ -73,8 +79,6 @@ fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
             "Nintendo - Nintendo Entertainment System",
             "--game",
             "Super Mario Bros. (World)",
-            "--region",
-            "World",
             "--asset-type",
             "box-front",
         ],

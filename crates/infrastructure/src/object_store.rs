@@ -85,6 +85,10 @@ impl ObjectStorePort for ContentAddressedStore {
         self.store_reader(input)
     }
 
+    fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
+        self.store_reader(reader)
+    }
+
     fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
         self.store_reader(Cursor::new(bytes))
     }

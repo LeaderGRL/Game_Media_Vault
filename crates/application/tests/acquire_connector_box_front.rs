@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    io::{Cursor, Read},
+};
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, RunRepositoryPort,
@@ -8,7 +12,7 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, PersistAsset,
-    RetentionPolicy, SourceKind, SourceSelection, StoredObject,
+    QualityRequirements, RetentionPolicy, SourceKind, SourceSelection, StoredObject,
 };
 
 fn request() -> AcquisitionRequest {
@@ -106,6 +110,7 @@ impl RunRepositoryPort for FakeRuns {
 
 struct FakeConnector {
     downloads: RefCell<Vec<String>>,
+    candidates: Vec<AssetCandidate>,
 }
 
 impl ConnectorPort for FakeConnector {
@@ -121,6 +126,9 @@ impl ConnectorPort for FakeConnector {
     }
 
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        if !self.candidates.is_empty() {
+            return Ok(self.candidates.clone());
+        }
         Ok(vec![AssetCandidate {
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
@@ -134,11 +142,11 @@ impl ConnectorPort for FakeConnector {
         }])
     }
 
-    fn download(&self, candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         self.downloads
             .borrow_mut()
             .push(candidate.source_url.clone());
-        Ok(b"fixture box front".to_vec())
+        Ok(Box::new(Cursor::new(b"fixture box front".to_vec())))
     }
 }
 
@@ -152,8 +160,12 @@ impl ObjectStorePort for FakeStore {
         unreachable!()
     }
 
-    fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
-        self.bytes.borrow_mut().push(bytes.to_vec());
+    fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| PortError(error.to_string()))?;
+        self.bytes.borrow_mut().push(bytes.clone());
         Ok(StoredObject {
             hash: "fixture-hash".to_owned(),
             byte_len: bytes.len() as u64,
@@ -195,6 +207,7 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     let runs = FakeRuns::new(run);
     let connector = FakeConnector {
         downloads: RefCell::new(Vec::new()),
+        candidates: Vec::new(),
     };
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
@@ -221,4 +234,204 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     assert_eq!(final_run.status, AcquisitionRunStatus::Completed);
     assert_eq!(final_run.queued_work, 0);
     assert_eq!(final_run.completed_work, 1);
+}
+
+fn run_with_request(request: AcquisitionRequest) -> AcquisitionRun {
+    AcquisitionRun {
+        id: 7,
+        request,
+        status: AcquisitionRunStatus::Running,
+        queued_work: 0,
+        completed_work: 0,
+    }
+}
+
+fn execute_error(request: AcquisitionRequest) -> game_media_vault_application::ApplicationError {
+    let runs = FakeRuns::new(run_with_request(request));
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: Vec::new(),
+    };
+    acquire_run_with_connector(
+        &runs,
+        &FakeCatalog::default(),
+        &FakeStore::default(),
+        &connector,
+        7,
+    )
+    .unwrap_err()
+}
+
+#[test]
+fn rejects_multi_source_execution_until_a_multi_source_plan_exists() {
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec![
+            "libretro-thumbnails".to_owned(),
+            "screenscraper".to_owned(),
+        ]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let error = execute_error(request);
+
+    assert!(matches!(
+        error,
+        game_media_vault_application::ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+}
+
+#[test]
+fn rejects_quality_and_retention_behavior_reserved_for_the_quality_slice() {
+    let quality_request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: Some(QualityRequirements {
+            accepted_mime_types: vec!["image/jpeg".to_owned()],
+            ..QualityRequirements::default()
+        }),
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+    let retention_request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepBestPerType,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    assert!(matches!(
+        execute_error(quality_request),
+        game_media_vault_application::ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+    assert!(matches!(
+        execute_error(retention_request),
+        game_media_vault_application::ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+}
+
+#[test]
+fn rejects_acquisition_limits_until_the_scheduler_slice_can_enforce_them() {
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits {
+            max_downloads: Some(1),
+            ..AcquisitionLimits::default()
+        },
+    })
+    .unwrap();
+
+    assert!(matches!(
+        execute_error(request),
+        game_media_vault_application::ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+}
+
+#[test]
+fn rejects_asset_types_not_declared_by_the_connector() {
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::Screenshot],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    assert!(matches!(
+        execute_error(request),
+        game_media_vault_application::ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+}
+
+#[test]
+fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
+    let first = AssetCandidate {
+        game_title: "A:B".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_kind: SourceKind::LibretroThumbnails,
+        source_url: "https://example.invalid/Named_Boxarts/A_B.png".to_owned(),
+        original_filename: "A_B.png".to_owned(),
+    };
+    let second = AssetCandidate {
+        game_title: "A?B".to_owned(),
+        ..first.clone()
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first, second],
+    };
+    let catalog = FakeCatalog::default();
+
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7).unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(catalog.records.borrow().len(), 2);
+    assert_eq!(runs.run.borrow().completed_work, 2);
+}
+
+#[test]
+fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
+    let first = AssetCandidate {
+        game_title: "C".to_owned(),
+        platform: "A:B".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_kind: SourceKind::LibretroThumbnails,
+        source_url: "https://example.invalid/shared.png".to_owned(),
+        original_filename: "shared.png".to_owned(),
+    };
+    let second = AssetCandidate {
+        game_title: "B:C".to_owned(),
+        platform: "A".to_owned(),
+        ..first.clone()
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first, second],
+    };
+    let catalog = FakeCatalog::default();
+
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7).unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(catalog.records.borrow().len(), 2);
+    assert_eq!(runs.run.borrow().completed_work, 2);
 }

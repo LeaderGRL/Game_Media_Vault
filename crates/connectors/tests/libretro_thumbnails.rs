@@ -1,4 +1,7 @@
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    io::{Cursor, Read},
+};
 
 use game_media_vault_application::{ConnectorPort, PortError};
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
@@ -28,13 +31,18 @@ struct FixtureTransport {
 }
 
 impl HttpTransport for FixtureTransport {
-    fn get(&self, url: &str) -> Result<Vec<u8>, PortError> {
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
         self.requests.borrow_mut().push(url.to_owned());
         if url.ends_with("/.gitmodules") {
             Ok(GITMODULES_FIXTURE.as_bytes().to_vec())
         } else {
             Ok(b"libretro png fixture".to_vec())
         }
+    }
+
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        self.requests.borrow_mut().push(url.to_owned());
+        Ok(Box::new(Cursor::new(b"libretro png fixture".to_vec())))
     }
 }
 
@@ -74,7 +82,9 @@ fn declares_box_front_capability_and_downloads_the_discovered_fixture() {
         "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
     );
 
-    let bytes = connector.download(candidate).unwrap();
+    let mut stream = connector.download(candidate).unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"libretro png fixture");
 }
 
@@ -135,4 +145,46 @@ fn resolves_the_branch_declared_by_libretro_metadata() {
         candidate.source_url,
         "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Naomi/main/Named_Boxarts/Crazy%20Taxi.png"
     );
+}
+
+#[test]
+fn rejects_region_filters_without_source_region_evidence() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: vec!["World".to_owned()],
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let error = connector.discover(&request).unwrap_err();
+
+    assert!(error.0.contains("region"));
+}
+
+#[test]
+fn rejects_language_filters_without_source_language_evidence() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: vec!["fr".to_owned()],
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let error = connector.discover(&request).unwrap_err();
+
+    assert!(error.0.contains("language"));
 }
