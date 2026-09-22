@@ -65,7 +65,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
     let imported = import_local_box_front(
         &catalog,
         &FakeObjectStore {
-            expected_source: request_source.clone(),
+            expected_source: fs::canonicalize(&source).unwrap(),
         },
         request,
     )

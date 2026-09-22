@@ -5,8 +5,9 @@ use std::{
 };
 
 use game_media_vault_application::{
-    ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
+    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
 };
+use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::{Connection, params};
 use tempfile::{tempdir, tempdir_in};
@@ -107,6 +108,43 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
         fs::canonicalize(&canonical_source).unwrap()
     );
     assert_eq!(library[0].object_hash, first.object_hash);
+}
+
+#[test]
+fn canonical_provenance_identity_ignores_caller_filename_alias() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("actual-front.png");
+    fs::write(&source, b"shared cover bytes").unwrap();
+    let source_location = fs::canonicalize(&source)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_record = PersistAsset {
+        existing_game_id: None,
+        game_title: "Alias Game".to_owned(),
+        platform: "Windows".to_owned(),
+        region: "Worldwide".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        object_hash: "shared-object-hash".to_owned(),
+        byte_len: 18,
+        original_filename: "alias-front.png".to_owned(),
+        source_kind: SourceKind::LocalImport,
+        source_location: source_location.clone(),
+    };
+
+    let first = catalog.persist_asset(first_record.clone()).unwrap();
+    let second = catalog
+        .persist_asset(PersistAsset {
+            original_filename: "actual-front.png".to_owned(),
+            ..first_record
+        })
+        .unwrap();
+
+    assert_eq!(second.asset_id, first.asset_id);
+    assert_eq!(second.game_id, first.game_id);
+    assert_eq!(list_library(&catalog).unwrap().len(), 1);
 }
 
 #[test]
