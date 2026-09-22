@@ -180,3 +180,33 @@ impl Drop for StagingCleanup {
 fn io_error(error: std::io::Error) -> PortError {
     PortError(error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn post_move_sync_failure_is_not_treated_as_a_publish_race() {
+        let temp = tempdir().unwrap();
+        let staging = temp.path().join("staging.tmp");
+        let target = temp.path().join("object");
+        fs::write(&staging, b"original bytes").unwrap();
+
+        let error = publish_staged_object_with(
+            &staging,
+            &target,
+            temp.path(),
+            fs::rename,
+            |_| Err(io::Error::other("forced parent sync failure")),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, PublishError::Durability(_)));
+        assert!(!staging.exists());
+        assert_eq!(fs::read(target).unwrap(), b"original bytes");
+    }
+}
