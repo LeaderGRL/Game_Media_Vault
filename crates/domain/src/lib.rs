@@ -19,6 +19,55 @@ pub enum GameSelection {
 #[serde(rename_all = "snake_case")]
 pub enum AssetTypeSelector {
     BoxFront,
+    BoxBack,
+    Spine,
+    InnerCover,
+    BoxTexture,
+    Box3dRender,
+    Box3dModel,
+    SlipcoverSleeve,
+    Insert,
+    Cartridge,
+    CartridgeFront,
+    CartridgeBack,
+    CartridgeLabel,
+    Disc,
+    DiscFront,
+    DiscBack,
+    DiscLabel,
+    Pcb,
+    CassetteTape,
+    FloppyDisk,
+    Manual,
+    ManualPage,
+    StrategyGuide,
+    Map,
+    ReferenceCard,
+    RegistrationCard,
+    WarrantySafetyInsert,
+    Screenshot,
+    TitleScreen,
+    GameplayVideo,
+    Trailer,
+    Logo,
+    Icon,
+    WallpaperArtwork,
+    Flyer,
+    Advertisement,
+    Poster,
+    PromotionalArtwork,
+    PressMaterial,
+    MagazineScan,
+    ArcadeCabinet,
+    ControlPanel,
+    Marquee,
+    Bezel,
+    Controller,
+    Accessory,
+    Soundtrack,
+    Texture,
+    Model3d,
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,10 +78,24 @@ pub enum RetentionPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct QualityRequirements {}
+pub struct QualityRequirements {
+    pub min_width: Option<u32>,
+    pub min_height: Option<u32>,
+    pub min_longest_edge: Option<u32>,
+    pub min_pixel_count: Option<u64>,
+    pub original_only: bool,
+    pub accepted_mime_types: Vec<String>,
+    pub min_bitrate_kbps: Option<u32>,
+    pub best_available: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AcquisitionLimits {}
+pub struct AcquisitionLimits {
+    pub max_games: Option<u32>,
+    pub max_downloads: Option<u32>,
+    pub max_concurrent_downloads: Option<u16>,
+    pub max_bytes: Option<u64>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcquisitionRequest {
