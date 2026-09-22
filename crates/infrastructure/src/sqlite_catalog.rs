@@ -6,7 +6,8 @@ use std::{
 use game_media_vault_application::{CatalogPort, PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
+    AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset,
+    SourceKind,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -68,13 +69,13 @@ impl SqliteCatalog {
                  WHERE type = 'table'
                    AND name IN (
                        'games', 'release_editions', 'assets', 'asset_provenance',
-                       'acquisition_runs'
+                       'acquisition_runs', 'acquisition_run_work'
                    )",
                 [],
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        if table_count != 5 {
+        if table_count != 6 {
             return Err(PortError(format!(
                 "catalog schema is missing or incomplete: {}",
                 catalog.path.display()
@@ -167,6 +168,69 @@ impl RunRepositoryPort for SqliteCatalog {
                 PortError("catalog contains a negative completed work count".into())
             })?,
         }))
+    }
+
+    fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let inserted = transaction
+            .execute(
+                "INSERT OR IGNORE INTO acquisition_run_work (run_id, work_key, completed)
+                 VALUES (?1, ?2, 0)",
+                params![run_id, work_key],
+            )
+            .map_err(sql_error)?;
+        if inserted == 1 {
+            transaction
+                .execute(
+                    "UPDATE acquisition_runs SET queued_work = queued_work + 1 WHERE id = ?1",
+                    params![run_id],
+                )
+                .map_err(sql_error)?;
+        }
+        transaction.commit().map_err(sql_error)
+    }
+
+    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT work_key FROM acquisition_run_work
+                 WHERE run_id = ?1 AND completed = 0
+                 ORDER BY id LIMIT 1",
+                params![run_id],
+                |row| Ok(AcquisitionWorkItem { key: row.get(0)? }),
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
+    fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let completed = transaction
+            .execute(
+                "UPDATE acquisition_run_work SET completed = 1
+                 WHERE run_id = ?1 AND work_key = ?2 AND completed = 0",
+                params![run_id, work_key],
+            )
+            .map_err(sql_error)?;
+        if completed == 1 {
+            transaction
+                .execute(
+                    "UPDATE acquisition_runs
+                     SET queued_work = queued_work - 1,
+                         completed_work = completed_work + 1
+                     WHERE id = ?1",
+                    params![run_id],
+                )
+                .map_err(sql_error)?;
+        }
+        transaction.commit().map_err(sql_error)
     }
 }
 
@@ -537,10 +601,19 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 queued_work INTEGER NOT NULL CHECK(queued_work >= 0),
                 completed_work INTEGER NOT NULL CHECK(completed_work >= 0)
             );
+            CREATE TABLE IF NOT EXISTS acquisition_run_work (
+                id INTEGER PRIMARY KEY,
+                run_id INTEGER NOT NULL REFERENCES acquisition_runs(id),
+                work_key TEXT NOT NULL,
+                completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0, 1)),
+                UNIQUE(run_id, work_key)
+            );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
             CREATE INDEX IF NOT EXISTS idx_game_normalized_title ON games(normalized_title);
             CREATE INDEX IF NOT EXISTS idx_asset_release ON assets(release_edition_id);
-            CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);",
+            CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);
+            CREATE INDEX IF NOT EXISTS idx_run_work_pending
+                ON acquisition_run_work(run_id, completed, id);",
         )
         .map_err(sql_error)
 }

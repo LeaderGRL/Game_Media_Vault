@@ -4,8 +4,8 @@ use game_media_vault_application::{
     AcquisitionRequestInput, PortError, RunRepositoryPort, start_acquisition_run,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AssetTypeSelector,
-    GameSelection, RetentionPolicy, SourceSelection,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
+    AcquisitionWorkItem, AssetTypeSelector, GameSelection, RetentionPolicy, SourceSelection,
 };
 use serde_json::json;
 
@@ -38,6 +38,18 @@ impl RunRepositoryPort for RecordingRunRepository {
 
     fn get_run(&self, _run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
         Ok(None)
+    }
+
+    fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        Ok(None)
+    }
+
+    fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
     }
 }
 

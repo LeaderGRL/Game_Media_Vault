@@ -189,6 +189,11 @@ pub struct AcquisitionRun {
     pub completed_work: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionWorkItem {
+    pub key: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcquisitionRequestValidationError {

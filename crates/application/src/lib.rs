@@ -4,8 +4,8 @@ use std::{
 };
 
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRun, AssetType, ImportedAsset, LibraryEntry, PersistAsset,
-    SourceKind, StoredObject,
+    AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetType,
+    ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
 };
 use thiserror::Error;
 
@@ -31,6 +31,12 @@ pub trait RunRepositoryPort {
     fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError>;
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError>;
+
+    fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError>;
+
+    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
+
+    fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +71,38 @@ pub fn load_acquisition_run(
         .ok_or(ApplicationError::RunNotFound(run_id))
 }
 
+pub fn queue_acquisition_work(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+    work_key: String,
+) -> Result<(), ApplicationError> {
+    load_acquisition_run(runs, run_id)?;
+    if work_key.trim().is_empty() {
+        return Err(ApplicationError::InvalidWorkKey);
+    }
+    Ok(runs.queue_work(run_id, work_key)?)
+}
+
+pub fn next_acquisition_work(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<Option<AcquisitionWorkItem>, ApplicationError> {
+    let run = load_acquisition_run(runs, run_id)?;
+    if run.status != AcquisitionRunStatus::Running {
+        return Ok(None);
+    }
+    Ok(runs.next_queued_work(run_id)?)
+}
+
+pub fn complete_acquisition_work(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+    work_key: &str,
+) -> Result<(), ApplicationError> {
+    load_acquisition_run(runs, run_id)?;
+    Ok(runs.complete_work(run_id, work_key)?)
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApplicationError {
     #[error("source path does not contain a file name")]
@@ -77,6 +115,8 @@ pub enum ApplicationError {
     Validation(#[from] AcquisitionRequestValidationError),
     #[error("acquisition run #{0} does not exist")]
     RunNotFound(i64),
+    #[error("acquisition work key must not be blank")]
+    InvalidWorkKey,
 }
 
 pub fn import_local_box_front(
