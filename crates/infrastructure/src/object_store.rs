@@ -204,6 +204,16 @@ fn io_error(error: std::io::Error) -> PortError {
     PortError(error.to_string())
 }
 
+#[cfg(unix)]
+fn sync_object_parent(parent: &Path) -> std::io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_object_parent(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;
@@ -232,14 +242,4 @@ mod tests {
         assert!(!staging.exists());
         assert_eq!(fs::read(target).unwrap(), b"original bytes");
     }
-}
-
-#[cfg(unix)]
-fn sync_object_parent(parent: &Path) -> std::io::Result<()> {
-    File::open(parent)?.sync_all()
-}
-
-#[cfg(windows)]
-fn sync_object_parent(_parent: &Path) -> std::io::Result<()> {
-    Ok(())
 }
