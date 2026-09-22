@@ -51,6 +51,14 @@ impl RunRepositoryPort for RecordingRunRepository {
     fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
         Ok(())
     }
+
+    fn update_run_status(
+        &self,
+        _run_id: i64,
+        _status: AcquisitionRunStatus,
+    ) -> Result<AcquisitionRun, PortError> {
+        Err(PortError("not implemented by this test double".to_owned()))
+    }
 }
 
 #[test]

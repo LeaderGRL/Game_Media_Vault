@@ -232,6 +232,27 @@ impl RunRepositoryPort for SqliteCatalog {
         }
         transaction.commit().map_err(sql_error)
     }
+
+    fn update_run_status(
+        &self,
+        run_id: i64,
+        status: AcquisitionRunStatus,
+    ) -> Result<AcquisitionRun, PortError> {
+        let connection = self.connect()?;
+        let updated = connection
+            .execute(
+                "UPDATE acquisition_runs SET status = ?1 WHERE id = ?2",
+                params![run_status_to_str(status), run_id],
+            )
+            .map_err(sql_error)?;
+        if updated == 0 {
+            return Err(PortError(format!(
+                "acquisition run #{run_id} does not exist"
+            )));
+        }
+        self.get_run(run_id)?
+            .ok_or_else(|| PortError(format!("acquisition run #{run_id} does not exist")))
+    }
 }
 
 impl CatalogPort for SqliteCatalog {
@@ -627,6 +648,15 @@ fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
         other => Err(PortError(format!(
             "unknown acquisition run status: {other}"
         ))),
+    }
+}
+
+fn run_status_to_str(status: AcquisitionRunStatus) -> &'static str {
+    match status {
+        AcquisitionRunStatus::Running => "running",
+        AcquisitionRunStatus::Paused => "paused",
+        AcquisitionRunStatus::Cancelled => "cancelled",
+        AcquisitionRunStatus::Completed => "completed",
     }
 }
 

@@ -37,6 +37,12 @@ pub trait RunRepositoryPort {
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
+
+    fn update_run_status(
+        &self,
+        run_id: i64,
+        status: AcquisitionRunStatus,
+    ) -> Result<AcquisitionRun, PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +109,50 @@ pub fn complete_acquisition_work(
     Ok(runs.complete_work(run_id, work_key)?)
 }
 
+pub fn pause_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<AcquisitionRun, ApplicationError> {
+    transition_acquisition_run(runs, run_id, AcquisitionRunStatus::Paused)
+}
+
+pub fn resume_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<AcquisitionRun, ApplicationError> {
+    transition_acquisition_run(runs, run_id, AcquisitionRunStatus::Running)
+}
+
+pub fn cancel_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<AcquisitionRun, ApplicationError> {
+    transition_acquisition_run(runs, run_id, AcquisitionRunStatus::Cancelled)
+}
+
+fn transition_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+    target: AcquisitionRunStatus,
+) -> Result<AcquisitionRun, ApplicationError> {
+    let current = load_acquisition_run(runs, run_id)?;
+    let allowed = match (current.status, target) {
+        (AcquisitionRunStatus::Running, AcquisitionRunStatus::Paused)
+        | (AcquisitionRunStatus::Paused, AcquisitionRunStatus::Running)
+        | (AcquisitionRunStatus::Running, AcquisitionRunStatus::Cancelled)
+        | (AcquisitionRunStatus::Paused, AcquisitionRunStatus::Cancelled) => true,
+        (status, requested) if status == requested => true,
+        _ => false,
+    };
+    if !allowed {
+        return Err(ApplicationError::InvalidRunTransition {
+            from: current.status,
+            to: target,
+        });
+    }
+    Ok(runs.update_run_status(run_id, target)?)
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApplicationError {
     #[error("source path does not contain a file name")]
@@ -117,6 +167,11 @@ pub enum ApplicationError {
     RunNotFound(i64),
     #[error("acquisition work key must not be blank")]
     InvalidWorkKey,
+    #[error("cannot transition acquisition run from {from:?} to {to:?}")]
+    InvalidRunTransition {
+        from: AcquisitionRunStatus,
+        to: AcquisitionRunStatus,
+    },
 }
 
 pub fn import_local_box_front(
