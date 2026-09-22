@@ -122,6 +122,7 @@ pub enum RetentionPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct QualityRequirements {
     pub min_width: Option<u32>,
     pub min_height: Option<u32>,

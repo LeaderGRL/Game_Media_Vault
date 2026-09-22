@@ -25,3 +25,32 @@ fn tauri_uses_the_same_acquisition_request_validation_as_the_application() {
     assert_eq!(expected, AcquisitionRequestValidationError::MissingSources);
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn tauri_accepts_partial_quality_requirements() {
+    let input: AcquisitionRequestInput = serde_json::from_value(serde_json::json!({
+        "sources": { "mode": "auto" },
+        "platforms": ["Windows"],
+        "games": { "mode": "all" },
+        "regions": [],
+        "languages": [],
+        "asset_types": ["box_front"],
+        "quality": {
+            "min_width": 1600
+        },
+        "retention": "keep_everything",
+        "limits": {}
+    }))
+    .unwrap();
+
+    let request = game_media_vault_tauri::validate_acquisition_request(input).unwrap();
+    let serialized = serde_json::to_value(request).unwrap();
+
+    assert_eq!(serialized["quality"]["min_width"], 1600);
+    assert_eq!(serialized["quality"]["original_only"], false);
+    assert_eq!(
+        serialized["quality"]["accepted_mime_types"],
+        serde_json::json!([])
+    );
+    assert_eq!(serialized["quality"]["best_available"], false);
+}
