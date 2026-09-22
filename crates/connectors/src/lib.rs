@@ -6,6 +6,8 @@ use reqwest::blocking::Client;
 use url::Url;
 
 pub const LIBRETRO_THUMBNAILS_SOURCE_ID: &str = "libretro-thumbnails";
+const LIBRETRO_GITMODULES_URL: &str =
+    "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
 pub trait HttpTransport {
     fn get(&self, url: &str) -> Result<Vec<u8>, PortError>;
@@ -48,6 +50,13 @@ impl HttpTransport for ReqwestHttpTransport {
 
 pub struct LibretroThumbnailsConnector<T = ReqwestHttpTransport> {
     transport: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LibretroRepository {
+    platform: String,
+    repository: String,
+    branch: String,
 }
 
 impl LibretroThumbnailsConnector<ReqwestHttpTransport> {
@@ -93,12 +102,21 @@ where
         } else {
             "Unknown".to_owned()
         };
+        let repositories = self.repository_catalog()?;
         let targets = acquisition_targets(request)?;
         targets
             .into_iter()
             .map(|(platform, game_title)| {
                 let original_filename = thumbnail_filename(&game_title);
-                let source_url = box_front_url(&platform, &original_filename)?;
+                let repository = repositories
+                    .iter()
+                    .find(|repository| repository.platform == platform)
+                    .ok_or_else(|| {
+                        PortError(format!(
+                            "Libretro Thumbnails does not declare a repository for platform {platform}"
+                        ))
+                    })?;
+                let source_url = box_front_url(repository, &original_filename)?;
                 Ok(AssetCandidate {
                     game_title,
                     platform,
@@ -115,6 +133,18 @@ where
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
         self.transport.get(&candidate.source_url)
+    }
+}
+
+impl<T> LibretroThumbnailsConnector<T>
+where
+    T: HttpTransport,
+{
+    fn repository_catalog(&self) -> Result<Vec<LibretroRepository>, PortError> {
+        let bytes = self.transport.get(LIBRETRO_GITMODULES_URL)?;
+        let manifest = std::str::from_utf8(&bytes)
+            .map_err(|error| PortError(format!("invalid Libretro repository metadata: {error}")))?;
+        parse_repository_catalog(manifest)
     }
 }
 
@@ -157,18 +187,90 @@ fn thumbnail_filename(game_title: &str) -> String {
     format!("{sanitized}.png")
 }
 
-fn box_front_url(platform: &str, filename: &str) -> Result<String, PortError> {
-    let repository = platform.replace(' ', "_");
+fn box_front_url(repository: &LibretroRepository, filename: &str) -> Result<String, PortError> {
     let mut url = Url::parse("https://raw.githubusercontent.com/")
         .map_err(|error| PortError(format!("invalid Libretro base URL: {error}")))?;
     url.path_segments_mut()
         .map_err(|_| PortError("Libretro base URL cannot contain path segments".to_owned()))?
         .extend([
             "libretro-thumbnails",
-            repository.as_str(),
-            "master",
+            repository.repository.as_str(),
+            repository.branch.as_str(),
             "Named_Boxarts",
             filename,
         ]);
     Ok(url.into())
+}
+
+fn parse_repository_catalog(manifest: &str) -> Result<Vec<LibretroRepository>, PortError> {
+    let mut repositories = Vec::new();
+    let mut platform = None;
+    let mut repository = None;
+    let mut branch = None;
+
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with("[submodule ") {
+            push_repository(
+                &mut repositories,
+                &mut platform,
+                &mut repository,
+                &mut branch,
+            )?;
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("path = ") {
+            platform = Some(value.to_owned());
+        } else if let Some(value) = line.strip_prefix("url = ") {
+            repository = Some(repository_name(value)?);
+        } else if let Some(value) = line.strip_prefix("branch = ") {
+            branch = Some(value.to_owned());
+        }
+    }
+
+    push_repository(
+        &mut repositories,
+        &mut platform,
+        &mut repository,
+        &mut branch,
+    )?;
+    if repositories.is_empty() {
+        return Err(PortError(
+            "Libretro repository metadata did not contain any usable repositories".to_owned(),
+        ));
+    }
+    Ok(repositories)
+}
+
+fn push_repository(
+    repositories: &mut Vec<LibretroRepository>,
+    platform: &mut Option<String>,
+    repository: &mut Option<String>,
+    branch: &mut Option<String>,
+) -> Result<(), PortError> {
+    let Some(platform_value) = platform.take() else {
+        repository.take();
+        branch.take();
+        return Ok(());
+    };
+    let repository_value = repository.take().ok_or_else(|| {
+        PortError(format!(
+            "Libretro repository metadata is missing a URL for platform {platform_value}"
+        ))
+    })?;
+    repositories.push(LibretroRepository {
+        platform: platform_value,
+        repository: repository_value,
+        branch: branch.take().unwrap_or_else(|| "master".to_owned()),
+    });
+    Ok(())
+}
+
+fn repository_name(url: &str) -> Result<String, PortError> {
+    let repository = url
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| PortError(format!("invalid Libretro repository URL: {url}")))?;
+    Ok(repository.to_owned())
 }

@@ -10,6 +10,12 @@ use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
 const BOX_FRONT_BYTES: &[u8] = b"libretro end-to-end box front fixture";
+const GITMODULES_FIXTURE: &[u8] = br#"
+[submodule "Nintendo - Nintendo Entertainment System"]
+    path = Nintendo - Nintendo Entertainment System
+    url = https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System.git
+    branch = master
+"#;
 
 #[derive(Clone)]
 struct FixtureTransport {
@@ -19,7 +25,11 @@ struct FixtureTransport {
 impl HttpTransport for FixtureTransport {
     fn get(&self, url: &str) -> Result<Vec<u8>, game_media_vault_application::PortError> {
         self.requested_urls.lock().unwrap().push(url.to_owned());
-        Ok(BOX_FRONT_BYTES.to_vec())
+        if url.ends_with("/.gitmodules") {
+            Ok(GITMODULES_FIXTURE.to_vec())
+        } else {
+            Ok(BOX_FRONT_BYTES.to_vec())
+        }
     }
 }
 
@@ -81,7 +91,10 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     );
     assert_eq!(
         requested_urls.lock().unwrap().as_slice(),
-        &[asset.provenance[0].source_location.clone()]
+        &[
+            "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules".to_owned(),
+            asset.provenance[0].source_location.clone(),
+        ]
     );
 
     drop(catalog);
