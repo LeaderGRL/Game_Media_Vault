@@ -90,6 +90,29 @@ fn pause_and_resume_preserve_queued_work_across_restart() {
 }
 
 #[test]
+fn repository_does_not_return_work_for_a_non_running_run() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+
+    let paused_run = start_acquisition_run(&catalog, request()).unwrap();
+    queue_acquisition_work(&catalog, paused_run.id, "download:paused".to_owned()).unwrap();
+    pause_acquisition_run(&catalog, paused_run.id).unwrap();
+
+    let cancelled_run = start_acquisition_run(&catalog, request()).unwrap();
+    queue_acquisition_work(&catalog, cancelled_run.id, "download:cancelled".to_owned()).unwrap();
+    cancel_acquisition_run(&catalog, cancelled_run.id).unwrap();
+
+    assert!(catalog.next_queued_work(paused_run.id).unwrap().is_none());
+    assert!(
+        catalog
+            .next_queued_work(cancelled_run.id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn cancellation_preserves_assets_accepted_before_the_run_was_cancelled() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
