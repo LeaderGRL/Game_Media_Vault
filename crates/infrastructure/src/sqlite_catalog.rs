@@ -341,8 +341,7 @@ fn find_existing_import(
                AND r.normalized_platform = ?6
                AND r.normalized_region = ?7
                AND r.normalized_edition_name = ?8
-               AND a.original_filename = ?9
-               AND (?10 IS NULL OR g.id = ?10)",
+               AND (?9 IS NULL OR g.id = ?9)",
         )
         .map_err(sql_error)?;
     let mut rows = statement
@@ -355,7 +354,6 @@ fn find_existing_import(
             lookup.normalized_platform,
             lookup.normalized_region,
             lookup.normalized_edition,
-            record.original_filename,
             record.existing_game_id,
         ])
         .map_err(sql_error)?;
