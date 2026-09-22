@@ -279,7 +279,7 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
 }
 
 #[test]
-fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
+fn legacy_relative_provenance_is_not_rebased_to_the_current_working_directory() {
     let current_dir = std::env::current_dir().unwrap();
     let temp = tempdir_in(&current_dir).unwrap();
     let source_dir = temp.path().join("previous-session");
@@ -340,20 +340,8 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
     )
     .unwrap();
 
-    assert_eq!(imported.asset_id, 1);
-    let library = list_library(&catalog).unwrap();
-    assert_eq!(library.len(), 1);
-    assert_eq!(library[0].provenance.len(), 2);
-    assert!(
-        library[0]
-            .provenance
-            .iter()
-            .any(|provenance| { provenance.source_location == relative_source.to_string_lossy() })
-    );
-    assert!(library[0].provenance.iter().any(|provenance| {
-        let location = std::path::Path::new(&provenance.source_location);
-        location.is_absolute() && fs::canonicalize(location).ok() == fs::canonicalize(&source).ok()
-    }));
+    assert_ne!(imported.game_id, 1);
+    assert_ne!(imported.asset_id, 1);
 
     let repeated = import_local_box_front(
         &catalog,
@@ -364,12 +352,31 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
             platform: "Windows".to_owned(),
             region: "Worldwide".to_owned(),
             edition_name: "Standard".to_owned(),
-            source_path: source,
+            source_path: source.clone(),
         },
     )
     .unwrap();
-    assert_eq!(repeated.asset_id, 1);
-    assert_eq!(list_library(&catalog).unwrap()[0].provenance.len(), 2);
+    assert_eq!(repeated.asset_id, imported.asset_id);
+
+    let library = list_library(&catalog).unwrap();
+    assert_eq!(library.len(), 2);
+    let legacy = library.iter().find(|entry| entry.asset_id == 1).unwrap();
+    assert_eq!(legacy.provenance.len(), 1);
+    assert_eq!(
+        legacy.provenance[0].source_location,
+        relative_source.to_string_lossy()
+    );
+    let current = library
+        .iter()
+        .find(|entry| entry.asset_id == imported.asset_id)
+        .unwrap();
+    assert_eq!(current.provenance.len(), 1);
+    let current_location = std::path::Path::new(&current.provenance[0].source_location);
+    assert!(current_location.is_absolute());
+    assert_eq!(
+        fs::canonicalize(current_location).unwrap(),
+        fs::canonicalize(&source).unwrap()
+    );
 }
 
 #[test]

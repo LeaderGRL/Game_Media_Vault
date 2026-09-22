@@ -390,7 +390,11 @@ fn equivalent_source_location(stored: &str, current: &str) -> bool {
 }
 
 fn canonicalize_location(location: &str) -> Option<PathBuf> {
-    fs::canonicalize(Path::new(location)).ok()
+    let path = Path::new(location);
+    if !path.is_absolute() {
+        return None;
+    }
+    fs::canonicalize(path).ok()
 }
 
 fn normalize_existing_provenance(
