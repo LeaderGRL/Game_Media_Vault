@@ -171,6 +171,29 @@ pub struct AcquisitionRequestDraft {
     pub limits: AcquisitionLimits,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionRunStatus {
+    Running,
+    Paused,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcquisitionRun {
+    pub id: i64,
+    pub request: AcquisitionRequest,
+    pub status: AcquisitionRunStatus,
+    pub queued_work: u64,
+    pub completed_work: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionWorkItem {
+    pub key: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcquisitionRequestValidationError {

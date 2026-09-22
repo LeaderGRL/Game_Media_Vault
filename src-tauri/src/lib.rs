@@ -3,9 +3,14 @@ use std::path::Path;
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError,
     build_acquisition_request as build_acquisition_request_use_case,
-    list_library as list_library_use_case,
+    cancel_acquisition_run as cancel_acquisition_run_use_case,
+    list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
+    load_acquisition_run as load_acquisition_run_use_case,
+    pause_acquisition_run as pause_acquisition_run_use_case,
+    resume_acquisition_run as resume_acquisition_run_use_case,
+    start_acquisition_run as start_acquisition_run_use_case,
 };
-use game_media_vault_domain::{AcquisitionRequest, LibraryEntry};
+use game_media_vault_domain::{AcquisitionRequest, AcquisitionRun, LibraryEntry};
 use game_media_vault_infrastructure::SqliteCatalog;
 
 pub fn validate_acquisition_request(
@@ -32,11 +37,101 @@ fn list_library(vault_root: String) -> Result<Vec<LibraryEntry>, String> {
     load_library(Path::new(&vault_root))
 }
 
+pub fn start_acquisition_run_in_vault(
+    vault_root: &Path,
+    request: AcquisitionRequestInput,
+) -> Result<AcquisitionRun, String> {
+    let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    start_acquisition_run_use_case(&catalog, request).map_err(|error| error.to_string())
+}
+
+pub fn load_acquisition_run_from_vault(
+    vault_root: &Path,
+    run_id: i64,
+) -> Result<AcquisitionRun, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    load_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+}
+
+pub fn list_acquisition_runs_from_vault(vault_root: &Path) -> Result<Vec<AcquisitionRun>, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    list_acquisition_runs_use_case(&catalog).map_err(|error| error.to_string())
+}
+
+pub fn pause_acquisition_run_in_vault(
+    vault_root: &Path,
+    run_id: i64,
+) -> Result<AcquisitionRun, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    pause_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+}
+
+pub fn resume_acquisition_run_in_vault(
+    vault_root: &Path,
+    run_id: i64,
+) -> Result<AcquisitionRun, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    resume_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+}
+
+pub fn cancel_acquisition_run_in_vault(
+    vault_root: &Path,
+    run_id: i64,
+) -> Result<AcquisitionRun, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    cancel_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn start_acquisition_run(
+    vault_root: String,
+    request: AcquisitionRequestInput,
+) -> Result<AcquisitionRun, String> {
+    start_acquisition_run_in_vault(Path::new(&vault_root), request)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn get_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+    load_acquisition_run_from_vault(Path::new(&vault_root), run_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn list_acquisition_runs(vault_root: String) -> Result<Vec<AcquisitionRun>, String> {
+    list_acquisition_runs_from_vault(Path::new(&vault_root))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn pause_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+    pause_acquisition_run_in_vault(Path::new(&vault_root), run_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn resume_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+    resume_acquisition_run_in_vault(Path::new(&vault_root), run_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn cancel_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+    cancel_acquisition_run_in_vault(Path::new(&vault_root), run_id)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             list_library,
-            build_acquisition_request
+            build_acquisition_request,
+            start_acquisition_run,
+            get_acquisition_run,
+            list_acquisition_runs,
+            pause_acquisition_run,
+            resume_acquisition_run,
+            cancel_acquisition_run
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Game Media Vault");

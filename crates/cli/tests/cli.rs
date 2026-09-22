@@ -1,8 +1,18 @@
-use std::{fs, process::Command};
+use std::{ffi::OsString, fs, path::Path, process::Command};
 
 use game_media_vault_application::AcquisitionRequestValidationError;
 use game_media_vault_cli::CliError;
 use tempfile::tempdir;
+
+fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
+    let mut command = vec![
+        OsString::from("game-media-vault"),
+        OsString::from("--vault"),
+        vault.as_os_str().to_owned(),
+    ];
+    command.extend(args.iter().map(OsString::from));
+    game_media_vault_cli::run(command)
+}
 
 #[test]
 fn help_exits_successfully() {
@@ -130,14 +140,18 @@ fn game_id_links_a_second_import_to_an_existing_game() {
 
 #[test]
 fn acquire_uses_the_shared_source_validation() {
-    let error = game_media_vault_cli::run([
-        "game-media-vault",
-        "acquire",
-        "--platform",
-        "Windows",
-        "--asset-type",
-        "box-front",
-    ])
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let error = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--platform",
+            "Windows",
+            "--asset-type",
+            "box-front",
+        ],
+    )
     .unwrap_err();
 
     assert!(matches!(
@@ -148,63 +162,69 @@ fn acquire_uses_the_shared_source_validation() {
 
 #[test]
 fn acquire_builds_the_full_request_from_cli_filters() {
-    let output = game_media_vault_cli::run([
-        "game-media-vault",
-        "acquire",
-        "--source",
-        "screenscraper",
-        "--source",
-        "game-tdb",
-        "--platform",
-        "PlayStation 2",
-        "--game",
-        "Metal Gear Solid 3",
-        "--region",
-        "France",
-        "--language",
-        "fr",
-        "--asset-type",
-        "box-front",
-        "--asset-type",
-        "manual",
-        "--asset-type",
-        "screenshot",
-        "--min-width",
-        "1600",
-        "--min-height",
-        "1200",
-        "--min-longest-edge",
-        "2000",
-        "--min-pixel-count",
-        "2000000",
-        "--original-only",
-        "--mime-type",
-        "image/png",
-        "--max-compression-ratio",
-        "12",
-        "--min-bitrate-kbps",
-        "320",
-        "--preferred-scan-type",
-        "raw_scan",
-        "--preferred-source-priority",
-        "screenscraper",
-        "--preferred-source-priority",
-        "game-tdb",
-        "--best-available",
-        "--retention",
-        "keep-best-per-type",
-        "--max-games",
-        "25",
-        "--max-downloads",
-        "100",
-        "--max-concurrent-downloads",
-        "4",
-        "--max-bytes",
-        "5000000000",
-    ])
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let output = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "screenscraper",
+            "--source",
+            "game-tdb",
+            "--platform",
+            "PlayStation 2",
+            "--game",
+            "Metal Gear Solid 3",
+            "--region",
+            "France",
+            "--language",
+            "fr",
+            "--asset-type",
+            "box-front",
+            "--asset-type",
+            "manual",
+            "--asset-type",
+            "screenshot",
+            "--min-width",
+            "1600",
+            "--min-height",
+            "1200",
+            "--min-longest-edge",
+            "2000",
+            "--min-pixel-count",
+            "2000000",
+            "--original-only",
+            "--mime-type",
+            "image/png",
+            "--max-compression-ratio",
+            "12",
+            "--min-bitrate-kbps",
+            "320",
+            "--preferred-scan-type",
+            "raw_scan",
+            "--preferred-source-priority",
+            "screenscraper",
+            "--preferred-source-priority",
+            "game-tdb",
+            "--best-available",
+            "--retention",
+            "keep-best-per-type",
+            "--max-games",
+            "25",
+            "--max-downloads",
+            "100",
+            "--max-concurrent-downloads",
+            "4",
+            "--max-bytes",
+            "5000000000",
+        ],
+    )
     .unwrap();
 
-    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(run["status"], "running");
+    let request = &run["request"];
     assert_eq!(
         request["sources"]["values"],
         serde_json::json!(["screenscraper", "game-tdb"])
@@ -235,23 +255,28 @@ fn acquire_builds_the_full_request_from_cli_filters() {
 
 #[test]
 fn acquire_accepts_canonical_3d_asset_type_names() {
-    let output = game_media_vault_cli::run([
-        "game-media-vault",
-        "acquire",
-        "--source",
-        "screenscraper",
-        "--platform",
-        "PlayStation 2",
-        "--asset-type",
-        "box-3d-render",
-        "--asset-type",
-        "box-3d-model",
-        "--asset-type",
-        "3d-model",
-    ])
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let output = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "screenscraper",
+            "--platform",
+            "PlayStation 2",
+            "--asset-type",
+            "box-3d-render",
+            "--asset-type",
+            "box-3d-model",
+            "--asset-type",
+            "3d-model",
+        ],
+    )
     .unwrap();
 
-    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let request = &run["request"];
     assert_eq!(
         request["asset_types"],
         serde_json::json!(["box_3d_render", "box_3d_model", "3d_model"])
@@ -260,21 +285,26 @@ fn acquire_accepts_canonical_3d_asset_type_names() {
 
 #[test]
 fn acquire_preserves_asset_type_family_selection() {
-    let output = game_media_vault_cli::run([
-        "game-media-vault",
-        "acquire",
-        "--source",
-        "screenscraper",
-        "--platform",
-        "PlayStation 2",
-        "--asset-type",
-        "packaging",
-        "--asset-type",
-        "documentation",
-    ])
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let output = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "screenscraper",
+            "--platform",
+            "PlayStation 2",
+            "--asset-type",
+            "packaging",
+            "--asset-type",
+            "documentation",
+        ],
+    )
     .unwrap();
 
-    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let request = &run["request"];
     assert_eq!(
         request["asset_types"],
         serde_json::json!(["packaging", "documentation"])
@@ -283,19 +313,24 @@ fn acquire_preserves_asset_type_family_selection() {
 
 #[test]
 fn acquire_preserves_platform_bound_game_targeting() {
-    let output = game_media_vault_cli::run([
-        "game-media-vault",
-        "acquire",
-        "--source",
-        "screenscraper",
-        "--platform-game",
-        "PlayStation 2=Metal Gear Solid 3",
-        "--asset-type",
-        "box-front",
-    ])
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let output = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "screenscraper",
+            "--platform-game",
+            "PlayStation 2=Metal Gear Solid 3",
+            "--asset-type",
+            "box-front",
+        ],
+    )
     .unwrap();
 
-    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let request = &run["request"];
     assert_eq!(request["platforms"], serde_json::json!([]));
     assert_eq!(request["games"]["mode"], "platform_bound");
     assert_eq!(
@@ -309,19 +344,24 @@ fn acquire_preserves_platform_bound_game_targeting() {
 
 #[test]
 fn acquire_preserves_query_result_game_targeting() {
-    let output = game_media_vault_cli::run([
-        "game-media-vault",
-        "acquire",
-        "--source",
-        "screenscraper",
-        "--query-result",
-        "PlayStation 2=Metal Gear Solid 3",
-        "--asset-type",
-        "manual",
-    ])
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let output = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "screenscraper",
+            "--query-result",
+            "PlayStation 2=Metal Gear Solid 3",
+            "--asset-type",
+            "manual",
+        ],
+    )
     .unwrap();
 
-    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let request = &run["request"];
     assert_eq!(request["platforms"], serde_json::json!([]));
     assert_eq!(request["games"]["mode"], "query_result");
     assert_eq!(
@@ -331,4 +371,49 @@ fn acquire_preserves_query_result_game_targeting() {
             "platform": "PlayStation 2"
         }])
     );
+}
+
+#[test]
+fn acquire_persists_a_run_that_can_be_controlled_and_listed() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let started = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "screenscraper",
+            "--platform",
+            "Windows",
+            "--asset-type",
+            "box-front",
+        ],
+    )
+    .unwrap();
+    let started: serde_json::Value = serde_json::from_str(&started).unwrap();
+    let run_id = started["id"].as_i64().unwrap();
+    let run_id_arg = run_id.to_string();
+    assert_eq!(started["status"], "running");
+
+    let paused = run_in_vault(&vault, &["run", "pause", &run_id_arg]).unwrap();
+    let paused: serde_json::Value = serde_json::from_str(&paused).unwrap();
+    assert_eq!(paused["status"], "paused");
+
+    let resumed = run_in_vault(&vault, &["run", "resume", &run_id_arg]).unwrap();
+    let resumed: serde_json::Value = serde_json::from_str(&resumed).unwrap();
+    assert_eq!(resumed["status"], "running");
+
+    let listed = run_in_vault(&vault, &["run", "list"]).unwrap();
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed[0]["id"], run_id);
+    assert_eq!(listed[0]["status"], "running");
+
+    let shown = run_in_vault(&vault, &["run", "show", &run_id_arg]).unwrap();
+    let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    assert_eq!(shown, listed[0]);
+
+    let cancelled = run_in_vault(&vault, &["run", "cancel", &run_id_arg]).unwrap();
+    let cancelled: serde_json::Value = serde_json::from_str(&cancelled).unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
 }

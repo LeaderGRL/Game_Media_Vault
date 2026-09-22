@@ -1107,6 +1107,7 @@ dependencies = [
  "game-media-vault-application",
  "game-media-vault-domain",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
 ]
