@@ -4,8 +4,8 @@ use std::{
 };
 
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
-    StoredObject,
+    AcquisitionRequest, AcquisitionRun, AssetType, ImportedAsset, LibraryEntry, PersistAsset,
+    SourceKind, StoredObject,
 };
 use thiserror::Error;
 
@@ -27,6 +27,10 @@ pub trait CatalogPort {
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
 
+pub trait RunRepositoryPort {
+    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportLocalBoxFrontRequest {
     pub existing_game_id: Option<i64>,
@@ -43,6 +47,14 @@ pub fn build_acquisition_request(
     AcquisitionRequest::try_from_draft(input)
 }
 
+pub fn start_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    input: AcquisitionRequestInput,
+) -> Result<AcquisitionRun, ApplicationError> {
+    let request = build_acquisition_request(input)?;
+    Ok(runs.create_run(request)?)
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApplicationError {
     #[error("source path does not contain a file name")]
@@ -51,6 +63,8 @@ pub enum ApplicationError {
     ResolveSourcePath(String),
     #[error("{0}")]
     Port(#[from] PortError),
+    #[error("{0}")]
+    Validation(#[from] AcquisitionRequestValidationError),
 }
 
 pub fn import_local_box_front(
