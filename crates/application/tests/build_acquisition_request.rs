@@ -149,6 +149,45 @@ fn rejects_all_games_targeting_without_a_platform() {
 }
 
 #[test]
+fn rejects_blank_platform_filters() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["".to_owned(), "   ".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(error, AcquisitionRequestValidationError::MissingPlatforms);
+}
+
+#[test]
+fn removes_blank_platform_filters_when_a_valid_platform_remains() {
+    let request = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["".to_owned(), "Windows".to_owned(), "   ".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["platforms"],
+        json!(["Windows"])
+    );
+}
+
+#[test]
 fn accepts_platform_bound_games_without_a_platform_filter() {
     let request = build_acquisition_request(AcquisitionRequestInput {
         sources: SourceSelection::Auto,

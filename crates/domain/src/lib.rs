@@ -193,13 +193,18 @@ impl AcquisitionRequest {
         if draft.asset_types.is_empty() {
             return Err(AcquisitionRequestValidationError::MissingAssetTypes);
         }
-        if draft.platforms.is_empty() && !draft.games.fixes_platforms_explicitly() {
+        let platforms: Vec<_> = draft
+            .platforms
+            .into_iter()
+            .filter(|value| !value.trim().is_empty())
+            .collect();
+        if platforms.is_empty() && !draft.games.fixes_platforms_explicitly() {
             return Err(AcquisitionRequestValidationError::MissingPlatforms);
         }
 
         Ok(Self {
             sources,
-            platforms: draft.platforms,
+            platforms,
             games: draft.games,
             regions: draft.regions,
             languages: draft.languages,
