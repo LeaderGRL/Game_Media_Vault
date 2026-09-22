@@ -145,3 +145,76 @@ fn acquire_uses_the_shared_source_validation() {
         CliError::Validation(AcquisitionRequestValidationError::MissingSources)
     ));
 }
+
+#[test]
+fn acquire_builds_the_full_request_from_cli_filters() {
+    let output = game_media_vault_cli::run([
+        "game-media-vault",
+        "acquire",
+        "--source",
+        "screenscraper",
+        "--source",
+        "game-tdb",
+        "--platform",
+        "PlayStation 2",
+        "--game",
+        "Metal Gear Solid 3",
+        "--region",
+        "France",
+        "--language",
+        "fr",
+        "--asset-type",
+        "box-front",
+        "--asset-type",
+        "manual",
+        "--asset-type",
+        "screenshot",
+        "--min-width",
+        "1600",
+        "--min-height",
+        "1200",
+        "--min-longest-edge",
+        "2000",
+        "--min-pixel-count",
+        "2000000",
+        "--original-only",
+        "--mime-type",
+        "image/png",
+        "--min-bitrate-kbps",
+        "320",
+        "--best-available",
+        "--retention",
+        "keep-best-per-type",
+        "--max-games",
+        "25",
+        "--max-downloads",
+        "100",
+        "--max-concurrent-downloads",
+        "4",
+        "--max-bytes",
+        "5000000000",
+    ])
+    .unwrap();
+
+    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(
+        request["sources"]["values"],
+        serde_json::json!(["screenscraper", "game-tdb"])
+    );
+    assert_eq!(request["platforms"], serde_json::json!(["PlayStation 2"]));
+    assert_eq!(
+        request["games"]["values"],
+        serde_json::json!(["Metal Gear Solid 3"])
+    );
+    assert_eq!(request["regions"], serde_json::json!(["France"]));
+    assert_eq!(request["languages"], serde_json::json!(["fr"]));
+    assert_eq!(
+        request["asset_types"],
+        serde_json::json!(["box_front", "manual", "screenshot"])
+    );
+    assert_eq!(request["quality"]["min_width"], 1600);
+    assert_eq!(request["quality"]["best_available"], true);
+    assert_eq!(request["retention"], "keep_best_per_type");
+    assert_eq!(request["limits"]["max_games"], 25);
+    assert_eq!(request["limits"]["max_concurrent_downloads"], 4);
+}

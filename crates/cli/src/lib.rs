@@ -1,13 +1,14 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError,
     ImportLocalBoxFrontRequest, PortError, build_acquisition_request, import_local_box_front,
     list_library,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AssetTypeSelector, GameSelection, RetentionPolicy, SourceSelection,
+    AcquisitionLimits, AssetTypeSelector, GameSelection, QualityRequirements, RetentionPolicy,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use thiserror::Error;
@@ -47,8 +48,18 @@ enum Command {
         platforms: Vec<String>,
         #[arg(long = "game")]
         games: Vec<String>,
+        #[arg(long = "region")]
+        regions: Vec<String>,
+        #[arg(long = "language")]
+        languages: Vec<String>,
         #[arg(long = "asset-type", value_parser = parse_asset_type)]
         asset_types: Vec<AssetTypeSelector>,
+        #[command(flatten)]
+        quality: QualityArgs,
+        #[arg(long, default_value = "keep-everything", value_parser = parse_retention_policy)]
+        retention: RetentionPolicy,
+        #[command(flatten)]
+        limits: LimitArgs,
     },
     ImportBoxFront {
         #[arg(long)]
@@ -67,6 +78,73 @@ enum Command {
     Library,
 }
 
+#[derive(Debug, Args)]
+struct QualityArgs {
+    #[arg(long)]
+    min_width: Option<u32>,
+    #[arg(long)]
+    min_height: Option<u32>,
+    #[arg(long)]
+    min_longest_edge: Option<u32>,
+    #[arg(long)]
+    min_pixel_count: Option<u64>,
+    #[arg(long)]
+    original_only: bool,
+    #[arg(long = "mime-type")]
+    accepted_mime_types: Vec<String>,
+    #[arg(long)]
+    min_bitrate_kbps: Option<u32>,
+    #[arg(long)]
+    best_available: bool,
+}
+
+impl QualityArgs {
+    fn into_domain(self) -> Option<QualityRequirements> {
+        let has_requirements = self.min_width.is_some()
+            || self.min_height.is_some()
+            || self.min_longest_edge.is_some()
+            || self.min_pixel_count.is_some()
+            || self.original_only
+            || !self.accepted_mime_types.is_empty()
+            || self.min_bitrate_kbps.is_some()
+            || self.best_available;
+
+        has_requirements.then_some(QualityRequirements {
+            min_width: self.min_width,
+            min_height: self.min_height,
+            min_longest_edge: self.min_longest_edge,
+            min_pixel_count: self.min_pixel_count,
+            original_only: self.original_only,
+            accepted_mime_types: self.accepted_mime_types,
+            min_bitrate_kbps: self.min_bitrate_kbps,
+            best_available: self.best_available,
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+struct LimitArgs {
+    #[arg(long)]
+    max_games: Option<u32>,
+    #[arg(long)]
+    max_downloads: Option<u32>,
+    #[arg(long)]
+    max_concurrent_downloads: Option<u16>,
+    #[arg(long)]
+    max_bytes: Option<u64>,
+}
+
+impl From<LimitArgs> for AcquisitionLimits {
+    fn from(value: LimitArgs) -> Self {
+        Self {
+            max_games: value.max_games,
+            max_downloads: value.max_downloads,
+            max_concurrent_downloads: value.max_concurrent_downloads,
+            max_bytes: value.max_bytes,
+        }
+    }
+}
+
 pub fn run<I, T>(args: I) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
@@ -80,7 +158,12 @@ where
             auto_source,
             platforms,
             games,
+            regions,
+            languages,
             asset_types,
+            quality,
+            retention,
+            limits,
         } => {
             let request = build_acquisition_request(AcquisitionRequestInput {
                 sources: if auto_source {
@@ -94,12 +177,12 @@ where
                 } else {
                     GameSelection::Explicit(games)
                 },
-                regions: Vec::new(),
-                languages: Vec::new(),
+                regions,
+                languages,
                 asset_types,
-                quality: None,
-                retention: RetentionPolicy::KeepEverything,
-                limits: AcquisitionLimits::default(),
+                quality: quality.into_domain(),
+                retention,
+                limits: limits.into(),
             })?;
             Ok(serde_json::to_string_pretty(&request)?)
         }
@@ -138,8 +221,16 @@ where
 }
 
 fn parse_asset_type(value: &str) -> Result<AssetTypeSelector, String> {
-    match value {
-        "box-front" | "box_front" => Ok(AssetTypeSelector::BoxFront),
-        other => Err(format!("unsupported asset type: {other}")),
-    }
+    parse_domain_enum(value).map_err(|_| format!("unsupported asset type: {value}"))
+}
+
+fn parse_retention_policy(value: &str) -> Result<RetentionPolicy, String> {
+    parse_domain_enum(value).map_err(|_| format!("unsupported retention policy: {value}"))
+}
+
+fn parse_domain_enum<T>(value: &str) -> Result<T, serde_json::Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(serde_json::Value::String(value.replace('-', "_")))
 }

@@ -13,6 +13,7 @@ clap.workspace = true
 game-media-vault-application.workspace = true
 game-media-vault-domain.workspace = true
 game-media-vault-infrastructure.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

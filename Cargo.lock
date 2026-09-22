@@ -1086,6 +1086,7 @@ dependencies = [
  "game-media-vault-application",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
