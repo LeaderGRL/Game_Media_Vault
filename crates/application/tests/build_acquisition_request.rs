@@ -123,3 +123,21 @@ fn rejects_all_games_targeting_without_a_platform() {
 
     assert_eq!(error, AcquisitionRequestValidationError::MissingPlatforms);
 }
+
+#[test]
+fn rejects_explicit_game_names_without_a_platform() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: Vec::new(),
+        games: GameSelection::Explicit(vec!["Metal Gear Solid 3".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(error, AcquisitionRequestValidationError::MissingPlatforms);
+}

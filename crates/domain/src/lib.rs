@@ -140,9 +140,9 @@ impl fmt::Display for AcquisitionRequestValidationError {
             Self::MissingAssetTypes => {
                 formatter.write_str("acquisition request must include at least one asset type")
             }
-            Self::MissingPlatforms => formatter.write_str(
-                "acquisition request targeting all games must include at least one platform",
-            ),
+            Self::MissingPlatforms => {
+                formatter.write_str("acquisition request must include at least one platform")
+            }
         }
     }
 }
@@ -159,7 +159,7 @@ impl AcquisitionRequest {
         if draft.asset_types.is_empty() {
             return Err(AcquisitionRequestValidationError::MissingAssetTypes);
         }
-        if draft.platforms.is_empty() && matches!(draft.games, GameSelection::All) {
+        if draft.platforms.is_empty() {
             return Err(AcquisitionRequestValidationError::MissingPlatforms);
         }
 
