@@ -116,7 +116,10 @@ impl QualityArgs {
             min_pixel_count: self.min_pixel_count,
             original_only: self.original_only,
             accepted_mime_types: self.accepted_mime_types,
+            max_compression_ratio: None,
             min_bitrate_kbps: self.min_bitrate_kbps,
+            preferred_scan_type: None,
+            preferred_source_priority: Vec::new(),
             best_available: self.best_available,
         })
     }

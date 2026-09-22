@@ -88,7 +88,10 @@ pub struct QualityRequirements {
     pub min_pixel_count: Option<u64>,
     pub original_only: bool,
     pub accepted_mime_types: Vec<String>,
+    pub max_compression_ratio: Option<u32>,
     pub min_bitrate_kbps: Option<u32>,
+    pub preferred_scan_type: Option<String>,
+    pub preferred_source_priority: Vec<String>,
     pub best_available: bool,
 }
 
