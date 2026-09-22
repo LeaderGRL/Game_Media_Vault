@@ -290,6 +290,81 @@ fn opening_or_creating_an_unrelated_sqlite_database_does_not_turn_it_into_a_vaul
 }
 
 #[test]
+fn opening_tables_that_only_look_like_a_vault_does_not_mutate_them() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("lookalike.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE games (id INTEGER PRIMARY KEY, payload TEXT);
+             CREATE TABLE release_editions (id INTEGER PRIMARY KEY, payload TEXT);
+             CREATE TABLE assets (id INTEGER PRIMARY KEY, payload TEXT);
+             CREATE TABLE asset_provenance (id INTEGER PRIMARY KEY, payload TEXT);",
+        )
+        .unwrap();
+    drop(connection);
+
+    let opened = SqliteCatalog::open_existing(&path);
+
+    assert!(opened.is_err());
+    let connection = Connection::open(&path).unwrap();
+    let acquisition_tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name IN ('acquisition_runs', 'acquisition_run_work')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(acquisition_tables, 0);
+}
+
+#[test]
+fn opening_a_malformed_legacy_catalog_does_not_fill_in_missing_tables() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("malformed-legacy.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE games (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 normalized_title TEXT NOT NULL,
+                 unrelated TEXT
+             );
+             CREATE TABLE release_editions (
+                 id INTEGER PRIMARY KEY,
+                 game_id INTEGER NOT NULL REFERENCES games(id),
+                 platform TEXT NOT NULL,
+                 normalized_platform TEXT NOT NULL,
+                 region TEXT NOT NULL,
+                 normalized_region TEXT NOT NULL,
+                 edition_name TEXT NOT NULL,
+                 normalized_edition_name TEXT NOT NULL,
+                 UNIQUE(game_id, normalized_platform, normalized_region, normalized_edition_name)
+             );",
+        )
+        .unwrap();
+    drop(connection);
+
+    let opened = SqliteCatalog::open_existing(&path);
+
+    assert!(opened.is_err());
+    let connection = Connection::open(&path).unwrap();
+    let added_tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('assets', 'asset_provenance', 'acquisition_runs', 'acquisition_run_work')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(added_tables, 0);
+}
+
+#[test]
 fn opening_a_pre_acquisition_run_catalog_migrates_it_in_place() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");

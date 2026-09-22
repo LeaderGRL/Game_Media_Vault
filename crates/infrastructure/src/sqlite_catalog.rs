@@ -643,8 +643,12 @@ fn normalize_existing_provenance(
 fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
     migrate_legacy_game_identity(connection)?;
     connection
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS games (
+        .execute_batch("BEGIN IMMEDIATE;")
+        .map_err(sql_error)?;
+    let migration = (|| -> Result<(), PortError> {
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
                 normalized_title TEXT NOT NULL
@@ -698,32 +702,36 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);
             CREATE INDEX IF NOT EXISTS idx_run_work_pending
                 ON acquisition_run_work(run_id, completed, id);",
-        )
-        .map_err(sql_error)?;
-    migrate_acquisition_request_schema(connection)
-}
-
-fn migrate_acquisition_request_schema(connection: &Connection) -> Result<(), PortError> {
-    let version_column_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('acquisition_runs')
-             WHERE name = 'request_schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)?;
-
-    if version_column_count == 0 {
-        connection
-            .execute_batch(
-                "ALTER TABLE acquisition_runs
-                 ADD COLUMN request_schema_version INTEGER NOT NULL DEFAULT 1
-                 CHECK(request_schema_version > 0);",
             )
             .map_err(sql_error)?;
-    }
 
-    Ok(())
+        let version_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('acquisition_runs')
+                 WHERE name = 'request_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if version_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE acquisition_runs
+                 ADD COLUMN request_schema_version INTEGER NOT NULL DEFAULT 1
+                 CHECK(request_schema_version > 0);",
+                )
+                .map_err(sql_error)?;
+        }
+        Ok(())
+    })();
+
+    match migration {
+        Ok(()) => connection.execute_batch("COMMIT;").map_err(sql_error),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }
 
 fn required_tables_exist(connection: &Connection, table_names: &[&str]) -> Result<bool, PortError> {
@@ -745,32 +753,248 @@ fn required_tables_exist(connection: &Connection, table_names: &[&str]) -> Resul
 }
 
 fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortError> {
-    let full_legacy_catalog_tables = ["games", "release_editions", "assets", "asset_provenance"];
-    if required_tables_exist(connection, &full_legacy_catalog_tables)? {
-        return Ok(true);
+    if !table_matches_columns(
+        connection,
+        "games",
+        &[
+            ("id", "INTEGER", false, true),
+            ("title", "TEXT", true, false),
+            ("normalized_title", "TEXT", true, false),
+        ],
+    )? || !table_matches_columns(
+        connection,
+        "release_editions",
+        &[
+            ("id", "INTEGER", false, true),
+            ("game_id", "INTEGER", true, false),
+            ("platform", "TEXT", true, false),
+            ("normalized_platform", "TEXT", true, false),
+            ("region", "TEXT", true, false),
+            ("normalized_region", "TEXT", true, false),
+            ("edition_name", "TEXT", true, false),
+            ("normalized_edition_name", "TEXT", true, false),
+        ],
+    )? || !has_foreign_key(connection, "release_editions", "game_id", "games", "id")?
+        || !has_unique_index(
+            connection,
+            "release_editions",
+            &[
+                "game_id",
+                "normalized_platform",
+                "normalized_region",
+                "normalized_edition_name",
+            ],
+        )?
+    {
+        return Ok(false);
     }
 
-    let game_columns: i64 = connection
+    let has_assets = table_exists(connection, "assets")?;
+    let has_provenance = table_exists(connection, "asset_provenance")?;
+    if has_assets != has_provenance {
+        return Ok(false);
+    }
+    if has_assets
+        && (!table_matches_columns(
+            connection,
+            "assets",
+            &[
+                ("id", "INTEGER", false, true),
+                ("release_edition_id", "INTEGER", true, false),
+                ("asset_type", "TEXT", true, false),
+                ("object_hash", "TEXT", true, false),
+                ("byte_len", "INTEGER", true, false),
+                ("original_filename", "TEXT", true, false),
+            ],
+        )? || !has_foreign_key(
+            connection,
+            "assets",
+            "release_edition_id",
+            "release_editions",
+            "id",
+        )? || !has_unique_index(
+            connection,
+            "assets",
+            &["release_edition_id", "asset_type", "object_hash"],
+        )? || !table_matches_columns(
+            connection,
+            "asset_provenance",
+            &[
+                ("id", "INTEGER", false, true),
+                ("asset_id", "INTEGER", true, false),
+                ("source_kind", "TEXT", true, false),
+                ("source_location", "TEXT", true, false),
+            ],
+        )? || !has_foreign_key(connection, "asset_provenance", "asset_id", "assets", "id")?
+            || !has_unique_index(
+                connection,
+                "asset_provenance",
+                &["asset_id", "source_kind", "source_location"],
+            )?)
+    {
+        return Ok(false);
+    }
+
+    let has_runs = table_exists(connection, "acquisition_runs")?;
+    let has_run_work = table_exists(connection, "acquisition_run_work")?;
+    if has_runs != has_run_work {
+        return Ok(false);
+    }
+    if has_runs {
+        let versioned = table_matches_columns(
+            connection,
+            "acquisition_runs",
+            &[
+                ("id", "INTEGER", false, true),
+                ("request_json", "TEXT", true, false),
+                ("request_schema_version", "INTEGER", true, false),
+                ("status", "TEXT", true, false),
+                ("queued_work", "INTEGER", true, false),
+                ("completed_work", "INTEGER", true, false),
+            ],
+        )?;
+        let unversioned = table_matches_columns(
+            connection,
+            "acquisition_runs",
+            &[
+                ("id", "INTEGER", false, true),
+                ("request_json", "TEXT", true, false),
+                ("status", "TEXT", true, false),
+                ("queued_work", "INTEGER", true, false),
+                ("completed_work", "INTEGER", true, false),
+            ],
+        )?;
+        if (!versioned && !unversioned)
+            || !table_matches_columns(
+                connection,
+                "acquisition_run_work",
+                &[
+                    ("id", "INTEGER", false, true),
+                    ("run_id", "INTEGER", true, false),
+                    ("work_key", "TEXT", true, false),
+                    ("completed", "INTEGER", true, false),
+                ],
+            )?
+            || !has_foreign_key(
+                connection,
+                "acquisition_run_work",
+                "run_id",
+                "acquisition_runs",
+                "id",
+            )?
+            || !has_unique_index(connection, "acquisition_run_work", &["run_id", "work_key"])?
+        {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn table_exists(connection: &Connection, table_name: &str) -> Result<bool, PortError> {
+    connection
         .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('games')
-             WHERE name IN ('id', 'title', 'normalized_title')",
-            [],
-            |row| row.get(0),
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            params![table_name],
+            |row| row.get::<_, i64>(0),
         )
-        .map_err(sql_error)?;
-    let release_columns: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('release_editions')
-             WHERE name IN (
-                 'id', 'game_id', 'platform', 'normalized_platform',
-                 'region', 'normalized_region', 'edition_name', 'normalized_edition_name'
-             )",
-            [],
-            |row| row.get(0),
-        )
+        .map(|exists| exists == 1)
+        .map_err(sql_error)
+}
+
+fn table_matches_columns(
+    connection: &Connection,
+    table_name: &str,
+    expected: &[(&str, &str, bool, bool)],
+) -> Result<bool, PortError> {
+    let sql = format!(
+        "SELECT name, type, \"notnull\", pk FROM pragma_table_info('{}') ORDER BY cid",
+        table_name.replace('\'', "''")
+    );
+    let mut statement = connection.prepare(&sql).map_err(sql_error)?;
+    let actual = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        })
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(sql_error)?;
 
-    Ok(game_columns == 3 && release_columns == 8)
+    Ok(actual.len() == expected.len()
+        && actual.iter().zip(expected).all(
+            |((actual_name, actual_type, actual_not_null, actual_primary_key), expected)| {
+                actual_name == expected.0
+                    && actual_type.eq_ignore_ascii_case(expected.1)
+                    && *actual_not_null == expected.2
+                    && *actual_primary_key == expected.3
+            },
+        ))
+}
+
+fn has_foreign_key(
+    connection: &Connection,
+    table_name: &str,
+    from_column: &str,
+    referenced_table: &str,
+    referenced_column: &str,
+) -> Result<bool, PortError> {
+    let sql = format!(
+        "SELECT COUNT(*) FROM pragma_foreign_key_list('{}')
+         WHERE \"from\" = ?1 AND \"table\" = ?2 AND \"to\" = ?3",
+        table_name.replace('\'', "''")
+    );
+    connection
+        .query_row(
+            &sql,
+            params![from_column, referenced_table, referenced_column],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count == 1)
+        .map_err(sql_error)
+}
+
+fn has_unique_index(
+    connection: &Connection,
+    table_name: &str,
+    expected_columns: &[&str],
+) -> Result<bool, PortError> {
+    let sql = format!(
+        "SELECT name FROM pragma_index_list('{}') WHERE \"unique\" = 1",
+        table_name.replace('\'', "''")
+    );
+    let mut statement = connection.prepare(&sql).map_err(sql_error)?;
+    let indexes = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+
+    for index_name in indexes {
+        let index_sql = format!(
+            "SELECT name FROM pragma_index_info('{}') ORDER BY seqno",
+            index_name.replace('\'', "''")
+        );
+        let mut index_statement = connection.prepare(&index_sql).map_err(sql_error)?;
+        let columns = index_statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        if columns
+            .iter()
+            .map(String::as_str)
+            .eq(expected_columns.iter().copied())
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
