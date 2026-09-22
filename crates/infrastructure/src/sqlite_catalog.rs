@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
 };
 
@@ -24,13 +24,15 @@ pub struct SqliteCatalog {
 
 #[derive(Clone, Copy)]
 enum CatalogOpenMode {
-    CreateOrOpen,
     ExistingOnly,
 }
 
 impl SqliteCatalog {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PortError> {
         let path = path.into();
+        if path.exists() {
+            return Self::open_existing(path);
+        }
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -38,12 +40,22 @@ impl SqliteCatalog {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
         let catalog = Self {
-            path,
-            mode: CatalogOpenMode::CreateOrOpen,
+            path: path.clone(),
+            mode: CatalogOpenMode::ExistingOnly,
             #[cfg(test)]
             busy_handler: None,
         };
-        let connection = catalog.connect()?;
+        let reservation = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(io_error)?;
+        drop(reservation);
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(sql_error)?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+            .map_err(sql_error)?;
         initialize_schema(&connection)?;
         Ok(catalog)
     }
@@ -64,8 +76,7 @@ impl SqliteCatalog {
             busy_handler: None,
         };
         let connection = catalog.connect()?;
-        let legacy_catalog_tables = ["games", "release_editions", "assets", "asset_provenance"];
-        if !required_tables_exist(&connection, &legacy_catalog_tables)? {
+        if !is_recognized_catalog_schema(&connection)? {
             return Err(PortError(format!(
                 "catalog schema is missing or incomplete: {}",
                 catalog.path.display()
@@ -92,9 +103,6 @@ impl SqliteCatalog {
 
     fn connect(&self) -> Result<Connection, PortError> {
         let flags = match self.mode {
-            CatalogOpenMode::CreateOrOpen => {
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
-            }
             CatalogOpenMode::ExistingOnly => OpenFlags::SQLITE_OPEN_READ_WRITE,
         };
         let connection = Connection::open_with_flags(&self.path, flags).map_err(sql_error)?;
@@ -715,6 +723,35 @@ fn required_tables_exist(connection: &Connection, table_names: &[&str]) -> Resul
         }
     }
     Ok(true)
+}
+
+fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortError> {
+    let full_legacy_catalog_tables = ["games", "release_editions", "assets", "asset_provenance"];
+    if required_tables_exist(connection, &full_legacy_catalog_tables)? {
+        return Ok(true);
+    }
+
+    let game_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('games')
+             WHERE name IN ('id', 'title', 'normalized_title')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    let release_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('release_editions')
+             WHERE name IN (
+                 'id', 'game_id', 'platform', 'normalized_platform',
+                 'region', 'normalized_region', 'edition_name', 'normalized_edition_name'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+
+    Ok(game_columns == 3 && release_columns == 8)
 }
 
 fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {

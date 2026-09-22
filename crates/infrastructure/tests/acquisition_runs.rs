@@ -222,6 +222,30 @@ fn opening_an_unrelated_sqlite_database_does_not_turn_it_into_a_vault() {
 }
 
 #[test]
+fn opening_or_creating_an_unrelated_sqlite_database_does_not_turn_it_into_a_vault() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("unrelated-create.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    drop(connection);
+
+    let opened = SqliteCatalog::open(&path);
+
+    assert!(opened.is_err());
+    let connection = Connection::open(&path).unwrap();
+    let run_table_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'acquisition_runs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(run_table_count, 0);
+}
+
+#[test]
 fn opening_a_pre_acquisition_run_catalog_migrates_it_in_place() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
