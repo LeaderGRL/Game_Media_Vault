@@ -50,29 +50,39 @@ fn imports_a_local_box_front_through_the_application_seam() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("cover-front.png");
     fs::write(&source, b"cover bytes").unwrap();
-    let expected_source_location = source.to_string_lossy().into_owned();
+    let alias_dir = temp.path().join("alias");
+    fs::create_dir(&alias_dir).unwrap();
+    let request_source = alias_dir.join("..").join("cover-front.png");
     let request = ImportLocalBoxFrontRequest {
         existing_game_id: None,
         game_title: "Metal Gear Solid".to_owned(),
         platform: "PlayStation".to_owned(),
         region: "France".to_owned(),
         edition_name: "Original".to_owned(),
-        source_path: source.clone(),
+        source_path: request_source.clone(),
     };
 
     let imported = import_local_box_front(
         &catalog,
         &FakeObjectStore {
-            expected_source: source,
+            expected_source: request_source.clone(),
         },
         request,
     )
     .unwrap();
 
     assert_eq!(imported.asset_id, 3);
+    let persisted = catalog.persisted.into_inner();
+    assert_eq!(persisted.len(), 1);
+    let record = &persisted[0];
     assert_eq!(
-        catalog.persisted.into_inner(),
-        vec![PersistAsset {
+        fs::canonicalize(Path::new(&record.source_location)).unwrap(),
+        fs::canonicalize(&source).unwrap()
+    );
+    assert_ne!(record.source_location, request_source.to_string_lossy());
+    assert_eq!(
+        record,
+        &PersistAsset {
             existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),
@@ -83,7 +93,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
             byte_len: 4096,
             original_filename: "cover-front.png".to_owned(),
             source_kind: SourceKind::LocalImport,
-            source_location: expected_source_location,
-        }]
+            source_location: record.source_location.clone(),
+        }
     );
 }
