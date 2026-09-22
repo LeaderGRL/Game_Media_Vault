@@ -438,10 +438,20 @@ impl CatalogPort for SqliteCatalog {
 
         transaction
             .execute(
-                "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
-                params![asset_id, source_id, record.source_location,],
+                "INSERT INTO asset_provenance (
+                    asset_id, source_kind, source_asset_label, source_location
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                    source_asset_label = COALESCE(
+                        excluded.source_asset_label,
+                        asset_provenance.source_asset_label
+                    )",
+                params![
+                    asset_id,
+                    source_id,
+                    record.source_asset_label,
+                    record.source_location,
+                ],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
@@ -463,7 +473,7 @@ impl CatalogPort for SqliteCatalog {
                     g.id, g.title,
                     r.id, r.platform, r.region, r.edition_name,
                     a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
-                    p.source_kind, p.source_location
+                    p.source_kind, p.source_asset_label, p.source_location
                  FROM assets a
                  JOIN release_editions r ON r.id = a.release_edition_id
                  JOIN games g ON g.id = r.game_id
@@ -477,7 +487,8 @@ impl CatalogPort for SqliteCatalog {
         while let Some(row) = rows.next().map_err(sql_error)? {
             let asset_id: i64 = row.get(6).map_err(sql_error)?;
             let source_id: Option<String> = row.get(11).map_err(sql_error)?;
-            let source_location: Option<String> = row.get(12).map_err(sql_error)?;
+            let source_asset_label: Option<String> = row.get(12).map_err(sql_error)?;
+            let source_location: Option<String> = row.get(13).map_err(sql_error)?;
 
             if let Some(existing) = entries
                 .last_mut()
@@ -486,6 +497,7 @@ impl CatalogPort for SqliteCatalog {
                 if let (Some(id), Some(location)) = (source_id, source_location) {
                     existing.provenance.push(AssetProvenance {
                         source_id: SourceId::from(id),
+                        source_asset_label,
                         source_location: location,
                     });
                 }
@@ -497,6 +509,7 @@ impl CatalogPort for SqliteCatalog {
             if let (Some(id), Some(location)) = (source_id, source_location) {
                 provenance.push(AssetProvenance {
                     source_id: SourceId::from(id),
+                    source_asset_label,
                     source_location: location,
                 });
             }
@@ -533,7 +546,6 @@ struct ExistingImportLookup<'a> {
 
 struct ExistingImportMatch {
     imported: ImportedAsset,
-    matched_source_location: String,
 }
 
 fn resolve_game_id(
@@ -617,7 +629,6 @@ fn find_existing_import(
                 object_hash: record.object_hash.clone(),
                 byte_len: record.byte_len,
             },
-            matched_source_location,
         }));
     }
 
@@ -648,18 +659,20 @@ fn normalize_existing_provenance(
     source_id: &str,
     existing: &ExistingImportMatch,
 ) -> Result<(), PortError> {
-    if existing.matched_source_location == record.source_location {
-        return Ok(());
-    }
-
     transaction
         .execute(
-            "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
+            "INSERT INTO asset_provenance (
+                asset_id, source_kind, source_asset_label, source_location
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                source_asset_label = COALESCE(
+                    excluded.source_asset_label,
+                    asset_provenance.source_asset_label
+                )",
             params![
                 existing.imported.asset_id,
                 source_id,
+                record.source_asset_label,
                 record.source_location,
             ],
         )
@@ -705,6 +718,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 asset_id INTEGER NOT NULL REFERENCES assets(id),
                 source_kind TEXT NOT NULL,
                 source_location TEXT NOT NULL,
+                source_asset_label TEXT,
                 UNIQUE(asset_id, source_kind, source_location)
             );
             CREATE TABLE IF NOT EXISTS acquisition_runs (
@@ -746,6 +760,22 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                     "ALTER TABLE acquisition_runs
                  ADD COLUMN request_schema_version INTEGER NOT NULL DEFAULT 1
                  CHECK(request_schema_version > 0);",
+                )
+                .map_err(sql_error)?;
+        }
+        let source_asset_label_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('asset_provenance')
+                 WHERE name = 'source_asset_label'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if source_asset_label_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE asset_provenance
+                     ADD COLUMN source_asset_label TEXT;",
                 )
                 .map_err(sql_error)?;
         }
@@ -821,6 +851,29 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
     if has_assets != has_provenance {
         return Ok(false);
     }
+    let legacy_provenance = has_provenance
+        && table_matches_columns(
+            connection,
+            "asset_provenance",
+            &[
+                ("id", "INTEGER", false, true),
+                ("asset_id", "INTEGER", true, false),
+                ("source_kind", "TEXT", true, false),
+                ("source_location", "TEXT", true, false),
+            ],
+        )?;
+    let labeled_provenance = has_provenance
+        && table_matches_columns(
+            connection,
+            "asset_provenance",
+            &[
+                ("id", "INTEGER", false, true),
+                ("asset_id", "INTEGER", true, false),
+                ("source_kind", "TEXT", true, false),
+                ("source_location", "TEXT", true, false),
+                ("source_asset_label", "TEXT", false, false),
+            ],
+        )?;
     if has_assets
         && (!table_matches_columns(
             connection,
@@ -843,16 +896,8 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
             connection,
             "assets",
             &["release_edition_id", "asset_type", "object_hash"],
-        )? || !table_matches_columns(
-            connection,
-            "asset_provenance",
-            &[
-                ("id", "INTEGER", false, true),
-                ("asset_id", "INTEGER", true, false),
-                ("source_kind", "TEXT", true, false),
-                ("source_location", "TEXT", true, false),
-            ],
-        )? || !has_foreign_key(connection, "asset_provenance", "asset_id", "assets", "id")?
+        )? || (!legacy_provenance && !labeled_provenance)
+            || !has_foreign_key(connection, "asset_provenance", "asset_id", "assets", "id")?
             || !has_unique_index(
                 connection,
                 "asset_provenance",
@@ -1203,6 +1248,7 @@ mod tests {
                             byte_len: 42,
                             original_filename: "front.png".to_owned(),
                             source_id: SourceId::from("local_import"),
+                            source_asset_label: None,
                             source_location: "C:/collection/front.png".to_owned(),
                         })
                         .unwrap()

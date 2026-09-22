@@ -48,6 +48,7 @@ impl ConnectorPort for FixtureConnector {
             edition_name: "Unspecified".to_owned(),
             asset_type: AssetType::BoxFront,
             source_id: SourceId::from("libretro-thumbnails"),
+            source_asset_label: Some("Named_Boxarts".to_owned()),
             source_url: "https://example.invalid/smb-box-front.png".to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
         }])

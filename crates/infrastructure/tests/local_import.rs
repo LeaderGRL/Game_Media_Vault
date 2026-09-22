@@ -131,6 +131,7 @@ fn canonical_provenance_identity_ignores_caller_filename_alias() {
         byte_len: 18,
         original_filename: "alias-front.png".to_owned(),
         source_id: SourceId::from("local_import"),
+        source_asset_label: None,
         source_location: source_location.clone(),
     };
 

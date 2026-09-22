@@ -139,6 +139,7 @@ where
                     edition_name: "Unspecified".to_owned(),
                     asset_type: AssetType::BoxFront,
                     source_id: SourceId::from(LIBRETRO_THUMBNAILS_SOURCE_ID),
+                    source_asset_label: Some("Named_Boxarts".to_owned()),
                     source_url,
                     original_filename,
                 })

@@ -390,6 +390,7 @@ pub struct AssetCandidate {
     pub edition_name: String,
     pub asset_type: AssetType,
     pub source_id: SourceId,
+    pub source_asset_label: Option<String>,
     pub source_url: String,
     pub original_filename: String,
 }
@@ -412,6 +413,7 @@ pub struct PersistAsset {
     pub byte_len: u64,
     pub original_filename: String,
     pub source_id: SourceId,
+    pub source_asset_label: Option<String>,
     pub source_location: String,
 }
 
@@ -427,6 +429,7 @@ pub struct ImportedAsset {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetProvenance {
     pub source_id: SourceId,
+    pub source_asset_label: Option<String>,
     pub source_location: String,
 }
 

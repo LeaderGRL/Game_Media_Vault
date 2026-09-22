@@ -24,6 +24,7 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
             byte_len: stored.byte_len,
             original_filename: "Super Mario Bros. (World).png".to_owned(),
             source_id: SourceId::from("provider-added-without-domain-change"),
+            source_asset_label: Some("Named_Boxarts".to_owned()),
             source_location: "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png".to_owned(),
         })
         .unwrap();
@@ -42,6 +43,10 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     assert_eq!(
         entry.provenance[0].source_id,
         SourceId::from("provider-added-without-domain-change")
+    );
+    assert_eq!(
+        entry.provenance[0].source_asset_label.as_deref(),
+        Some("Named_Boxarts")
     );
     assert_eq!(
         entry.provenance[0].source_location,

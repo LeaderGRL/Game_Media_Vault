@@ -310,6 +310,7 @@ pub fn acquire_run_with_connector(
             byte_len: stored.byte_len,
             original_filename: candidate.original_filename.clone(),
             source_id: candidate.source_id.clone(),
+            source_asset_label: candidate.source_asset_label.clone(),
             source_location: candidate.source_url.clone(),
         })?;
         complete_acquisition_work(runs, run_id, &work.key)?;
@@ -415,6 +416,7 @@ pub fn import_local_box_front(
         byte_len: stored.byte_len,
         original_filename,
         source_id: SourceId::from("local_import"),
+        source_asset_label: None,
         source_location,
     })?)
 }

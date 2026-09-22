@@ -136,6 +136,7 @@ impl ConnectorPort for FakeConnector {
             edition_name: "Unspecified".to_owned(),
             asset_type: AssetType::BoxFront,
             source_id: SourceId::from("libretro-thumbnails"),
+            source_asset_label: Some("Named_Boxarts".to_owned()),
             source_url: "https://example.invalid/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
                 .to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
@@ -382,6 +383,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
         edition_name: "Unspecified".to_owned(),
         asset_type: AssetType::BoxFront,
         source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
         source_url: "https://example.invalid/Named_Boxarts/A_B.png".to_owned(),
         original_filename: "A_B.png".to_owned(),
     };
@@ -413,6 +415,7 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
         edition_name: "Unspecified".to_owned(),
         asset_type: AssetType::BoxFront,
         source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
         source_url: "https://example.invalid/shared.png".to_owned(),
         original_filename: "shared.png".to_owned(),
     };

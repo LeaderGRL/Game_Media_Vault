@@ -87,6 +87,10 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
         SourceId::from("libretro-thumbnails")
     );
     assert_eq!(
+        asset.provenance[0].source_asset_label.as_deref(),
+        Some("Named_Boxarts")
+    );
+    assert_eq!(
         asset.provenance[0].source_location,
         "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
     );

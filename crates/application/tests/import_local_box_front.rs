@@ -100,6 +100,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
             byte_len: 4096,
             original_filename: "cover-front.png".to_owned(),
             source_id: SourceId::from("local_import"),
+            source_asset_label: None,
             source_location: record.source_location.clone(),
         }
     );
