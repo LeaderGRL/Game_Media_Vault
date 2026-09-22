@@ -246,7 +246,10 @@ impl AcquisitionRequest {
 
         let regions = non_blank_values(draft.regions);
         let languages = non_blank_values(draft.languages);
-        let quality = draft.quality.map(QualityRequirements::normalized);
+        let quality = draft
+            .quality
+            .map(QualityRequirements::normalized)
+            .filter(|quality| quality != &QualityRequirements::default());
 
         Ok(Self {
             sources,

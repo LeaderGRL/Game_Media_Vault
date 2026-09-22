@@ -187,6 +187,30 @@ fn removes_blank_optional_quality_selectors() {
 }
 
 #[test]
+fn collapses_empty_quality_requirements_to_none() {
+    let request = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: Some(QualityRequirements {
+            accepted_mime_types: vec!["   ".to_owned()],
+            preferred_scan_type: Some("".to_owned()),
+            preferred_source_priority: vec![" ".to_owned()],
+            ..QualityRequirements::default()
+        }),
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let serialized = serde_json::to_value(request).unwrap();
+    assert_eq!(serialized["quality"], json!(null));
+}
+
+#[test]
 fn preserves_asset_type_family_selection() {
     let family_selectors: Vec<AssetTypeSelector> = serde_json::from_value(json!([
         "packaging",
