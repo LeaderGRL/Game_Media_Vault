@@ -2,8 +2,8 @@ use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, build_acquisition_request,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AssetTypeSelector, GameSelection, QualityRequirements, RetentionPolicy,
-    SourceSelection,
+    AcquisitionLimits, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
+    QualityRequirements, RetentionPolicy, SourceSelection,
 };
 use serde_json::json;
 
@@ -146,6 +146,36 @@ fn rejects_all_games_targeting_without_a_platform() {
     .unwrap_err();
 
     assert_eq!(error, AcquisitionRequestValidationError::MissingPlatforms);
+}
+
+#[test]
+fn accepts_platform_bound_games_without_a_platform_filter() {
+    let request = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: Vec::new(),
+        games: GameSelection::PlatformBound(vec![PlatformBoundGameSelector {
+            game: "Metal Gear Solid 3".to_owned(),
+            platform: "PlayStation 2".to_owned(),
+        }]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["games"],
+        json!({
+            "mode": "platform_bound",
+            "values": [{
+                "game": "Metal Gear Solid 3",
+                "platform": "PlayStation 2"
+            }]
+        })
+    );
 }
 
 #[test]

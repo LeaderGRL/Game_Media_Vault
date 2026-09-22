@@ -13,6 +13,24 @@ pub enum SourceSelection {
 pub enum GameSelection {
     All,
     Explicit(Vec<String>),
+    PlatformBound(Vec<PlatformBoundGameSelector>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformBoundGameSelector {
+    pub game: String,
+    pub platform: String,
+}
+
+impl GameSelection {
+    fn fixes_platforms_explicitly(&self) -> bool {
+        matches!(
+            self,
+            Self::PlatformBound(values)
+                if !values.is_empty()
+                    && values.iter().all(|value| !value.platform.trim().is_empty())
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +193,7 @@ impl AcquisitionRequest {
         if draft.asset_types.is_empty() {
             return Err(AcquisitionRequestValidationError::MissingAssetTypes);
         }
-        if draft.platforms.is_empty() {
+        if draft.platforms.is_empty() && !draft.games.fixes_platforms_explicitly() {
             return Err(AcquisitionRequestValidationError::MissingPlatforms);
         }
 
