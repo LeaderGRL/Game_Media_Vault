@@ -149,12 +149,6 @@ pub fn complete_acquisition_run(
     runs: &dyn RunRepositoryPort,
     run_id: i64,
 ) -> Result<AcquisitionRun, ApplicationError> {
-    let run = load_acquisition_run(runs, run_id)?;
-    if run.queued_work != 0 {
-        return Err(ApplicationError::RunHasQueuedWork {
-            queued_work: run.queued_work,
-        });
-    }
     transition_acquisition_run(runs, run_id, AcquisitionRunStatus::Completed)
 }
 
@@ -167,6 +161,11 @@ fn transition_acquisition_run(
     loop {
         if current.status == target {
             return Ok(current);
+        }
+        if target == AcquisitionRunStatus::Completed && current.queued_work != 0 {
+            return Err(ApplicationError::RunHasQueuedWork {
+                queued_work: current.queued_work,
+            });
         }
 
         let allowed = matches!(

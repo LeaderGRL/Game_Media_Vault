@@ -218,6 +218,24 @@ impl RunRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        let status: Option<String> = transaction
+            .query_row(
+                "SELECT status FROM acquisition_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some(status) = status else {
+            return Err(PortError(format!(
+                "acquisition run #{run_id} does not exist"
+            )));
+        };
+        if !matches!(status.as_str(), "running" | "paused") {
+            return Err(PortError(format!(
+                "acquisition run #{run_id} cannot accept work while {status}"
+            )));
+        }
         let inserted = transaction
             .execute(
                 "INSERT OR IGNORE INTO acquisition_run_work (run_id, work_key, completed)
@@ -283,14 +301,15 @@ impl RunRepositoryPort for SqliteCatalog {
         target: AcquisitionRunStatus,
     ) -> Result<bool, PortError> {
         let connection = self.connect()?;
+        let target_status = run_status_to_str(target);
         let updated = connection
             .execute(
-                "UPDATE acquisition_runs SET status = ?1 WHERE id = ?2 AND status = ?3",
-                params![
-                    run_status_to_str(target),
-                    run_id,
-                    run_status_to_str(expected)
-                ],
+                "UPDATE acquisition_runs
+                 SET status = ?1
+                 WHERE id = ?2
+                   AND status = ?3
+                   AND (?1 != 'completed' OR queued_work = 0)",
+                params![target_status, run_id, run_status_to_str(expected)],
             )
             .map_err(sql_error)?;
         Ok(updated == 1)
