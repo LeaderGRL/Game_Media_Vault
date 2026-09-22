@@ -243,6 +243,18 @@ impl QualityRequirements {
 }
 
 impl AcquisitionRequest {
+    pub fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+
+    pub fn games(&self) -> &GameSelection {
+        &self.games
+    }
+
+    pub fn regions(&self) -> &[String] {
+        &self.regions
+    }
+
     pub fn selects_source(&self, source_id: &str) -> bool {
         match &self.sources {
             SourceSelection::Auto => true,
