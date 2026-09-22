@@ -156,9 +156,19 @@ impl AcquisitionRequest {
     pub fn try_from_draft(
         draft: AcquisitionRequestDraft,
     ) -> Result<Self, AcquisitionRequestValidationError> {
-        if matches!(&draft.sources, SourceSelection::Explicit(values) if values.is_empty()) {
-            return Err(AcquisitionRequestValidationError::MissingSources);
-        }
+        let sources = match draft.sources {
+            SourceSelection::Auto => SourceSelection::Auto,
+            SourceSelection::Explicit(values) => {
+                let values: Vec<_> = values
+                    .into_iter()
+                    .filter(|value| !value.trim().is_empty())
+                    .collect();
+                if values.is_empty() {
+                    return Err(AcquisitionRequestValidationError::MissingSources);
+                }
+                SourceSelection::Explicit(values)
+            }
+        };
         if draft.asset_types.is_empty() {
             return Err(AcquisitionRequestValidationError::MissingAssetTypes);
         }
@@ -167,7 +177,7 @@ impl AcquisitionRequest {
         }
 
         Ok(Self {
-            sources: draft.sources,
+            sources,
             platforms: draft.platforms,
             games: draft.games,
             regions: draft.regions,
