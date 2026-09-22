@@ -72,8 +72,11 @@ fn reimport_rejects_a_corrupted_existing_object() {
 #[test]
 fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     let temp = tempdir().unwrap();
-    let source = temp.path().join("mgs-front.png");
-    fs::write(&source, b"metal gear solid front cover").unwrap();
+    let canonical_source = temp.path().join("mgs-front.png");
+    fs::write(&canonical_source, b"metal gear solid front cover").unwrap();
+    let alias_dir = temp.path().join("alias");
+    fs::create_dir(&alias_dir).unwrap();
+    let source = alias_dir.join("..").join("mgs-front.png");
     let store = ContentAddressedStore::new(temp.path().join("vault"));
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
     let request = || ImportLocalBoxFrontRequest {
@@ -97,8 +100,11 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     assert_eq!(library[0].original_filename, "mgs-front.png");
     assert_eq!(library[0].provenance.len(), 1);
     assert_eq!(
-        library[0].provenance[0].source_location,
-        source.to_string_lossy()
+        fs::canonicalize(std::path::Path::new(
+            &library[0].provenance[0].source_location
+        ))
+        .unwrap(),
+        fs::canonicalize(&canonical_source).unwrap()
     );
     assert_eq!(library[0].object_hash, first.object_hash);
 }
@@ -306,12 +312,10 @@ fn legacy_relative_provenance_reimports_idempotently_and_normalizes_path() {
             .iter()
             .any(|provenance| { provenance.source_location == relative_source.to_string_lossy() })
     );
-    assert!(
-        library[0]
-            .provenance
-            .iter()
-            .any(|provenance| { provenance.source_location == source.to_string_lossy() })
-    );
+    assert!(library[0].provenance.iter().any(|provenance| {
+        let location = std::path::Path::new(&provenance.source_location);
+        location.is_absolute() && fs::canonicalize(location).ok() == fs::canonicalize(&source).ok()
+    }));
 
     let repeated = import_local_box_front(
         &catalog,
