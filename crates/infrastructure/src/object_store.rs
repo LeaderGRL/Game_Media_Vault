@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -28,11 +28,8 @@ impl ContentAddressedStore {
             .join(second)
             .join(hash)
     }
-}
 
-impl ObjectStorePort for ContentAddressedStore {
-    fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
-        let mut input = File::open(source).map_err(io_error)?;
+    fn store_reader(&self, mut input: impl Read) -> Result<StoredObject, PortError> {
         let staging_dir = self.root.join("staging");
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
 
@@ -79,6 +76,17 @@ impl ObjectStorePort for ContentAddressedStore {
         }
 
         Ok(StoredObject { hash, byte_len })
+    }
+}
+
+impl ObjectStorePort for ContentAddressedStore {
+    fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
+        let input = File::open(source).map_err(io_error)?;
+        self.store_reader(input)
+    }
+
+    fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
+        self.store_reader(Cursor::new(bytes))
     }
 }
 

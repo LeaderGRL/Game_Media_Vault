@@ -1124,12 +1124,14 @@ fn parse_asset_type(value: &str) -> Result<AssetType, PortError> {
 fn source_kind_to_str(source_kind: SourceKind) -> &'static str {
     match source_kind {
         SourceKind::LocalImport => "local_import",
+        SourceKind::LibretroThumbnails => "libretro_thumbnails",
     }
 }
 
 fn parse_source_kind(value: &str) -> Result<SourceKind, PortError> {
     match value {
         "local_import" => Ok(SourceKind::LocalImport),
+        "libretro_thumbnails" => Ok(SourceKind::LibretroThumbnails),
         other => Err(PortError(format!(
             "unknown source kind in catalog: {other}"
         ))),
