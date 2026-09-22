@@ -62,20 +62,19 @@ impl ObjectStorePort for ContentAddressedStore {
         fs::create_dir_all(parent).map_err(io_error)?;
 
         if target.exists() {
-            if let Err(error) = verify_existing_object(&target, &hash, byte_len) {
-                let _ = fs::remove_file(&staging_path);
-                return Err(error);
-            }
-            fs::remove_file(&staging_path).map_err(io_error)?;
-        } else if let Err(error) = publish_staged_object(&staging_path, &target, parent) {
-            if target.exists() {
-                if let Err(error) = verify_existing_object(&target, &hash, byte_len) {
-                    let _ = fs::remove_file(&staging_path);
-                    return Err(error);
+            verify_existing_object(&target, &hash, byte_len)?;
+            sync_object_parent(parent).map_err(io_error)?;
+        } else {
+            match publish_staged_object(&staging_path, &target, parent) {
+                Ok(()) => {}
+                Err(PublishError::NotPublished(error)) => {
+                    if !target.exists() {
+                        return Err(io_error(error));
+                    }
+                    verify_existing_object(&target, &hash, byte_len)?;
+                    sync_object_parent(parent).map_err(io_error)?;
                 }
-                fs::remove_file(&staging_path).map_err(io_error)?;
-            } else {
-                return Err(io_error(error));
+                Err(PublishError::Durability(error)) => return Err(io_error(error)),
             }
         }
 
@@ -142,14 +141,38 @@ fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError>
     }
 }
 
+#[derive(Debug)]
+enum PublishError {
+    NotPublished(std::io::Error),
+    Durability(std::io::Error),
+}
+
+fn publish_staged_object(staging: &Path, target: &Path, parent: &Path) -> Result<(), PublishError> {
+    publish_staged_object_with(staging, target, parent, move_object, sync_object_parent)
+}
+
+fn publish_staged_object_with<M, S>(
+    staging: &Path,
+    target: &Path,
+    parent: &Path,
+    move_file: M,
+    sync_parent: S,
+) -> Result<(), PublishError>
+where
+    M: FnOnce(&Path, &Path) -> std::io::Result<()>,
+    S: FnOnce(&Path) -> std::io::Result<()>,
+{
+    move_file(staging, target).map_err(PublishError::NotPublished)?;
+    sync_parent(parent).map_err(PublishError::Durability)
+}
+
 #[cfg(unix)]
-fn publish_staged_object(staging: &Path, target: &Path, parent: &Path) -> std::io::Result<()> {
-    fs::rename(staging, target)?;
-    File::open(parent)?.sync_all()
+fn move_object(staging: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(staging, target)
 }
 
 #[cfg(windows)]
-fn publish_staged_object(staging: &Path, target: &Path, _parent: &Path) -> std::io::Result<()> {
+fn move_object(staging: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
 
@@ -200,7 +223,7 @@ mod tests {
             &staging,
             &target,
             temp.path(),
-            fs::rename,
+            |from, to| fs::rename(from, to),
             |_| Err(io::Error::other("forced parent sync failure")),
         )
         .unwrap_err();
@@ -209,4 +232,14 @@ mod tests {
         assert!(!staging.exists());
         assert_eq!(fs::read(target).unwrap(), b"original bytes");
     }
+}
+
+#[cfg(unix)]
+fn sync_object_parent(parent: &Path) -> std::io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_object_parent(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
 }
