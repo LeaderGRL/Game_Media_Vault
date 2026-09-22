@@ -1,9 +1,10 @@
 use std::fs;
 
 use game_media_vault_application::{
-    CatalogPort, ImportLocalBoxFrontRequest, cancel_acquisition_run, complete_acquisition_work,
-    import_local_box_front, load_acquisition_run, next_acquisition_work, pause_acquisition_run,
-    queue_acquisition_work, resume_acquisition_run, start_acquisition_run,
+    ApplicationError, CatalogPort, ImportLocalBoxFrontRequest, cancel_acquisition_run,
+    complete_acquisition_run, complete_acquisition_work, import_local_box_front,
+    load_acquisition_run, next_acquisition_work, pause_acquisition_run, queue_acquisition_work,
+    resume_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AssetTypeSelector, GameSelection, RetentionPolicy,
@@ -144,6 +145,56 @@ fn duplicate_work_keys_are_queued_only_once() {
 
     assert_eq!(loaded.queued_work, 1);
     assert_eq!(next.key, "download:cover");
+}
+
+#[test]
+fn a_run_can_complete_only_after_its_persisted_queue_is_empty() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    queue_acquisition_work(&catalog, run.id, "download:cover".to_owned()).unwrap();
+
+    let error = complete_acquisition_run(&catalog, run.id).unwrap_err();
+    assert_eq!(error, ApplicationError::RunHasQueuedWork { queued_work: 1 });
+
+    complete_acquisition_work(&catalog, run.id, "download:cover").unwrap();
+    let completed = complete_acquisition_run(&catalog, run.id).unwrap();
+
+    assert_eq!(completed.status, AcquisitionRunStatus::Completed);
+    assert_eq!(completed.queued_work, 0);
+    assert_eq!(completed.completed_work, 1);
+}
+
+#[test]
+fn terminal_runs_reject_new_work() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+
+    let cancelled_run = start_acquisition_run(&catalog, request()).unwrap();
+    cancel_acquisition_run(&catalog, cancelled_run.id).unwrap();
+    let cancelled_error =
+        queue_acquisition_work(&catalog, cancelled_run.id, "late:cancelled".to_owned())
+            .unwrap_err();
+    assert_eq!(
+        cancelled_error,
+        ApplicationError::RunNotAcceptingWork {
+            status: AcquisitionRunStatus::Cancelled,
+        }
+    );
+
+    let completed_run = start_acquisition_run(&catalog, request()).unwrap();
+    complete_acquisition_run(&catalog, completed_run.id).unwrap();
+    let completed_error =
+        queue_acquisition_work(&catalog, completed_run.id, "late:completed".to_owned())
+            .unwrap_err();
+    assert_eq!(
+        completed_error,
+        ApplicationError::RunNotAcceptingWork {
+            status: AcquisitionRunStatus::Completed,
+        }
+    );
 }
 
 #[test]

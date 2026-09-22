@@ -91,7 +91,13 @@ pub fn queue_acquisition_work(
     run_id: i64,
     work_key: String,
 ) -> Result<(), ApplicationError> {
-    load_acquisition_run(runs, run_id)?;
+    let run = load_acquisition_run(runs, run_id)?;
+    if matches!(
+        run.status,
+        AcquisitionRunStatus::Cancelled | AcquisitionRunStatus::Completed
+    ) {
+        return Err(ApplicationError::RunNotAcceptingWork { status: run.status });
+    }
     if work_key.trim().is_empty() {
         return Err(ApplicationError::InvalidWorkKey);
     }
@@ -139,6 +145,19 @@ pub fn cancel_acquisition_run(
     transition_acquisition_run(runs, run_id, AcquisitionRunStatus::Cancelled)
 }
 
+pub fn complete_acquisition_run(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<AcquisitionRun, ApplicationError> {
+    let run = load_acquisition_run(runs, run_id)?;
+    if run.queued_work != 0 {
+        return Err(ApplicationError::RunHasQueuedWork {
+            queued_work: run.queued_work,
+        });
+    }
+    transition_acquisition_run(runs, run_id, AcquisitionRunStatus::Completed)
+}
+
 fn transition_acquisition_run(
     runs: &dyn RunRepositoryPort,
     run_id: i64,
@@ -161,6 +180,10 @@ fn transition_acquisition_run(
                 | (
                     AcquisitionRunStatus::Paused,
                     AcquisitionRunStatus::Cancelled
+                )
+                | (
+                    AcquisitionRunStatus::Running,
+                    AcquisitionRunStatus::Completed
                 )
         );
         if !allowed {
@@ -191,6 +214,10 @@ pub enum ApplicationError {
     RunNotFound(i64),
     #[error("acquisition work key must not be blank")]
     InvalidWorkKey,
+    #[error("acquisition run cannot accept new work while {status:?}")]
+    RunNotAcceptingWork { status: AcquisitionRunStatus },
+    #[error("acquisition run still has {queued_work} queued work item(s)")]
+    RunHasQueuedWork { queued_work: u64 },
     #[error("cannot transition acquisition run from {from:?} to {to:?}")]
     InvalidRunTransition {
         from: AcquisitionRunStatus,
