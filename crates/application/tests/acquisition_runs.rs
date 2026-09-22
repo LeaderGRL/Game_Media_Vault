@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, AcquisitionRequestValidationError, PortError, RunRepositoryPort,
-    start_acquisition_run,
+    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, PortError,
+    RunRepositoryPort, pause_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
@@ -57,11 +57,12 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(())
     }
 
-    fn update_run_status(
+    fn compare_and_set_run_status(
         &self,
         _run_id: i64,
-        _status: AcquisitionRunStatus,
-    ) -> Result<AcquisitionRun, PortError> {
+        _expected: AcquisitionRunStatus,
+        _target: AcquisitionRunStatus,
+    ) -> Result<bool, PortError> {
         Err(PortError("not implemented by this test double".to_owned()))
     }
 }
@@ -138,4 +139,97 @@ fn invalid_acquisition_request_is_rejected_before_persistence() {
         )
     );
     assert!(runs.persisted_requests.borrow().is_empty());
+}
+
+struct RacingRunRepository {
+    status: RefCell<AcquisitionRunStatus>,
+    request: AcquisitionRequest,
+}
+
+impl RacingRunRepository {
+    fn new(request: AcquisitionRequest) -> Self {
+        Self {
+            status: RefCell::new(AcquisitionRunStatus::Running),
+            request,
+        }
+    }
+
+    fn run(&self) -> AcquisitionRun {
+        AcquisitionRun {
+            id: 11,
+            request: self.request.clone(),
+            status: *self.status.borrow(),
+            queued_work: 0,
+            completed_work: 0,
+        }
+    }
+}
+
+impl RunRepositoryPort for RacingRunRepository {
+    fn create_run(&self, _request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+        Ok(self.run())
+    }
+
+    fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
+        Ok((run_id == 11).then(|| self.run()))
+    }
+
+    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
+        Ok(vec![self.run()])
+    }
+
+    fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        Ok(None)
+    }
+
+    fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn compare_and_set_run_status(
+        &self,
+        _run_id: i64,
+        expected: AcquisitionRunStatus,
+        target: AcquisitionRunStatus,
+    ) -> Result<bool, PortError> {
+        // Simulate a concurrent cancellation after the application validated Running.
+        *self.status.borrow_mut() = AcquisitionRunStatus::Cancelled;
+        if *self.status.borrow() != expected {
+            return Ok(false);
+        }
+        *self.status.borrow_mut() = target;
+        Ok(true)
+    }
+}
+
+#[test]
+fn a_stale_pause_cannot_overwrite_a_concurrent_cancellation() {
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+    let runs = RacingRunRepository::new(request);
+
+    let error = pause_acquisition_run(&runs, 11).unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::InvalidRunTransition {
+            from: AcquisitionRunStatus::Cancelled,
+            to: AcquisitionRunStatus::Paused,
+        }
+    );
+    assert_eq!(*runs.status.borrow(), AcquisitionRunStatus::Cancelled);
 }

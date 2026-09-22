@@ -40,11 +40,12 @@ pub trait RunRepositoryPort {
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 
-    fn update_run_status(
+    fn compare_and_set_run_status(
         &self,
         run_id: i64,
-        status: AcquisitionRunStatus,
-    ) -> Result<AcquisitionRun, PortError>;
+        expected: AcquisitionRunStatus,
+        target: AcquisitionRunStatus,
+    ) -> Result<bool, PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,22 +144,37 @@ fn transition_acquisition_run(
     run_id: i64,
     target: AcquisitionRunStatus,
 ) -> Result<AcquisitionRun, ApplicationError> {
-    let current = load_acquisition_run(runs, run_id)?;
-    let allowed = match (current.status, target) {
-        (AcquisitionRunStatus::Running, AcquisitionRunStatus::Paused)
-        | (AcquisitionRunStatus::Paused, AcquisitionRunStatus::Running)
-        | (AcquisitionRunStatus::Running, AcquisitionRunStatus::Cancelled)
-        | (AcquisitionRunStatus::Paused, AcquisitionRunStatus::Cancelled) => true,
-        (status, requested) if status == requested => true,
-        _ => false,
-    };
-    if !allowed {
-        return Err(ApplicationError::InvalidRunTransition {
-            from: current.status,
-            to: target,
-        });
+    let mut current = load_acquisition_run(runs, run_id)?;
+    loop {
+        if current.status == target {
+            return Ok(current);
+        }
+
+        let allowed = matches!(
+            (current.status, target),
+            (AcquisitionRunStatus::Running, AcquisitionRunStatus::Paused)
+                | (AcquisitionRunStatus::Paused, AcquisitionRunStatus::Running)
+                | (
+                    AcquisitionRunStatus::Running,
+                    AcquisitionRunStatus::Cancelled
+                )
+                | (
+                    AcquisitionRunStatus::Paused,
+                    AcquisitionRunStatus::Cancelled
+                )
+        );
+        if !allowed {
+            return Err(ApplicationError::InvalidRunTransition {
+                from: current.status,
+                to: target,
+            });
+        }
+
+        if runs.compare_and_set_run_status(run_id, current.status, target)? {
+            return load_acquisition_run(runs, run_id);
+        }
+        current = load_acquisition_run(runs, run_id)?;
     }
-    Ok(runs.update_run_status(run_id, target)?)
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
