@@ -14,6 +14,7 @@ pub enum GameSelection {
     All,
     Explicit(Vec<String>),
     PlatformBound(Vec<PlatformBoundGameSelector>),
+    QueryResult(Vec<PlatformBoundGameSelector>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,7 +27,7 @@ impl GameSelection {
     fn fixes_platforms_explicitly(&self) -> bool {
         matches!(
             self,
-            Self::PlatformBound(values)
+            Self::PlatformBound(values) | Self::QueryResult(values)
                 if !values.is_empty()
                     && values.iter().all(|value| !value.platform.trim().is_empty())
         )

@@ -218,6 +218,36 @@ fn accepts_platform_bound_games_without_a_platform_filter() {
 }
 
 #[test]
+fn preserves_query_result_game_targeting() {
+    let request = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: Vec::new(),
+        games: GameSelection::QueryResult(vec![PlatformBoundGameSelector {
+            game: "Metal Gear Solid 3".to_owned(),
+            platform: "PlayStation 2".to_owned(),
+        }]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["games"],
+        json!({
+            "mode": "query_result",
+            "values": [{
+                "game": "Metal Gear Solid 3",
+                "platform": "PlayStation 2"
+            }]
+        })
+    );
+}
+
+#[test]
 fn rejects_explicit_game_names_without_a_platform() {
     let error = build_acquisition_request(AcquisitionRequestInput {
         sources: SourceSelection::Auto,
