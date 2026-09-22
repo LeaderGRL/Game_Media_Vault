@@ -1147,6 +1147,20 @@ mod tests {
     }
 
     #[test]
+    fn failed_new_catalog_initialization_removes_the_reserved_file() {
+        let temp = tempdir().unwrap();
+        let catalog_path = temp.path().join("catalog.sqlite3");
+
+        let error = initialize_new_catalog(&catalog_path, |_| {
+            Err(PortError("forced initialization failure".to_owned()))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "forced initialization failure");
+        assert!(!catalog_path.exists());
+    }
+
+    #[test]
     fn duplicate_lookup_is_serialized_with_concurrent_writes() {
         let temp = tempdir().unwrap();
         let catalog_path = temp.path().join("catalog.sqlite3");
