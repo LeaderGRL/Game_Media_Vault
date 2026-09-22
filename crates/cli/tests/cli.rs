@@ -1,5 +1,7 @@
 use std::{fs, process::Command};
 
+use game_media_vault_application::AcquisitionRequestValidationError;
+use game_media_vault_cli::CliError;
 use tempfile::tempdir;
 
 #[test]
@@ -124,4 +126,22 @@ fn game_id_links_a_second_import_to_an_existing_game() {
             .iter()
             .all(|entry| entry["game_id"].as_i64() == Some(game_id))
     );
+}
+
+#[test]
+fn acquire_uses_the_shared_source_validation() {
+    let error = game_media_vault_cli::run([
+        "game-media-vault",
+        "acquire",
+        "--platform",
+        "Windows",
+        "--asset-type",
+        "box-front",
+    ])
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CliError::Validation(AcquisitionRequestValidationError::MissingSources)
+    ));
 }
