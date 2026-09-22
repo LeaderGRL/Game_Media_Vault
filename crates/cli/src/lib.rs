@@ -93,7 +93,13 @@ struct QualityArgs {
     #[arg(long = "mime-type")]
     accepted_mime_types: Vec<String>,
     #[arg(long)]
+    max_compression_ratio: Option<u32>,
+    #[arg(long)]
     min_bitrate_kbps: Option<u32>,
+    #[arg(long)]
+    preferred_scan_type: Option<String>,
+    #[arg(long = "preferred-source-priority")]
+    preferred_source_priority: Vec<String>,
     #[arg(long)]
     best_available: bool,
 }
@@ -106,7 +112,10 @@ impl QualityArgs {
             || self.min_pixel_count.is_some()
             || self.original_only
             || !self.accepted_mime_types.is_empty()
+            || self.max_compression_ratio.is_some()
             || self.min_bitrate_kbps.is_some()
+            || self.preferred_scan_type.is_some()
+            || !self.preferred_source_priority.is_empty()
             || self.best_available;
 
         has_requirements.then_some(QualityRequirements {
@@ -116,10 +125,10 @@ impl QualityArgs {
             min_pixel_count: self.min_pixel_count,
             original_only: self.original_only,
             accepted_mime_types: self.accepted_mime_types,
-            max_compression_ratio: None,
+            max_compression_ratio: self.max_compression_ratio,
             min_bitrate_kbps: self.min_bitrate_kbps,
-            preferred_scan_type: None,
-            preferred_source_priority: Vec::new(),
+            preferred_scan_type: self.preferred_scan_type,
+            preferred_source_priority: self.preferred_source_priority,
             best_available: self.best_available,
         })
     }

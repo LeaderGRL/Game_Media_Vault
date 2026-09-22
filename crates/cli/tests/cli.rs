@@ -180,8 +180,16 @@ fn acquire_builds_the_full_request_from_cli_filters() {
         "--original-only",
         "--mime-type",
         "image/png",
+        "--max-compression-ratio",
+        "12",
         "--min-bitrate-kbps",
         "320",
+        "--preferred-scan-type",
+        "raw_scan",
+        "--preferred-source-priority",
+        "screenscraper",
+        "--preferred-source-priority",
+        "game-tdb",
         "--best-available",
         "--retention",
         "keep-best-per-type",
@@ -213,6 +221,12 @@ fn acquire_builds_the_full_request_from_cli_filters() {
         serde_json::json!(["box_front", "manual", "screenshot"])
     );
     assert_eq!(request["quality"]["min_width"], 1600);
+    assert_eq!(request["quality"]["max_compression_ratio"], 12);
+    assert_eq!(request["quality"]["preferred_scan_type"], "raw_scan");
+    assert_eq!(
+        request["quality"]["preferred_source_priority"],
+        serde_json::json!(["screenscraper", "game-tdb"])
+    );
     assert_eq!(request["quality"]["best_available"], true);
     assert_eq!(request["retention"], "keep_best_per_type");
     assert_eq!(request["limits"]["max_games"], 25);
