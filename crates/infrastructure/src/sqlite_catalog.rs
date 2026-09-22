@@ -258,9 +258,13 @@ impl RunRepositoryPort for SqliteCatalog {
         let connection = self.connect()?;
         connection
             .query_row(
-                "SELECT work_key FROM acquisition_run_work
-                 WHERE run_id = ?1 AND completed = 0
-                 ORDER BY id LIMIT 1",
+                "SELECT work.work_key
+                 FROM acquisition_run_work AS work
+                 INNER JOIN acquisition_runs AS run ON run.id = work.run_id
+                 WHERE work.run_id = ?1
+                   AND work.completed = 0
+                   AND run.status = 'running'
+                 ORDER BY work.id LIMIT 1",
                 params![run_id],
                 |row| Ok(AcquisitionWorkItem { key: row.get(0)? }),
             )
