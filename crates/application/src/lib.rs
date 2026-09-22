@@ -4,8 +4,9 @@ use std::{
 };
 
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetType,
-    ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
+    AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
+    AssetType, ConnectorCapabilities, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
+    StoredObject,
 };
 use thiserror::Error;
 
@@ -19,6 +20,12 @@ pub struct PortError(pub String);
 
 pub trait ObjectStorePort {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError>;
+
+    fn store_original_bytes(&self, _bytes: &[u8]) -> Result<StoredObject, PortError> {
+        Err(PortError(
+            "object store does not support in-memory originals".to_owned(),
+        ))
+    }
 }
 
 pub trait CatalogPort {
@@ -46,6 +53,16 @@ pub trait RunRepositoryPort {
         expected: AcquisitionRunStatus,
         target: AcquisitionRunStatus,
     ) -> Result<bool, PortError>;
+}
+
+pub trait ConnectorPort {
+    fn source_id(&self) -> &'static str;
+
+    fn capabilities(&self) -> ConnectorCapabilities;
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Vec<u8>, PortError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +239,87 @@ pub enum ApplicationError {
         from: AcquisitionRunStatus,
         to: AcquisitionRunStatus,
     },
+    #[error("connector {source_id} is not selected by this acquisition request")]
+    ConnectorNotSelected { source_id: String },
+    #[error("connector {source_id} does not support direct media downloads")]
+    ConnectorCannotDownload { source_id: String },
+    #[error("acquisition run cannot execute connector work while {status:?}")]
+    RunNotExecutable { status: AcquisitionRunStatus },
+}
+
+pub fn acquire_run_with_connector(
+    runs: &dyn RunRepositoryPort,
+    catalog: &dyn CatalogPort,
+    object_store: &dyn ObjectStorePort,
+    connector: &dyn ConnectorPort,
+    run_id: i64,
+) -> Result<Vec<ImportedAsset>, ApplicationError> {
+    let run = load_acquisition_run(runs, run_id)?;
+    if run.status == AcquisitionRunStatus::Completed {
+        return Ok(Vec::new());
+    }
+    if run.status != AcquisitionRunStatus::Running {
+        return Err(ApplicationError::RunNotExecutable { status: run.status });
+    }
+    if !run.request.selects_source(connector.source_id()) {
+        return Err(ApplicationError::ConnectorNotSelected {
+            source_id: connector.source_id().to_owned(),
+        });
+    }
+
+    let capabilities = connector.capabilities();
+    if !capabilities.direct_media_download {
+        return Err(ApplicationError::ConnectorCannotDownload {
+            source_id: connector.source_id().to_owned(),
+        });
+    }
+
+    let mut candidates_by_work_key = std::collections::HashMap::new();
+    for candidate in connector.discover(&run.request)? {
+        if !run.request.requests_asset_type(candidate.asset_type)
+            || !capabilities.asset_types.contains(&candidate.asset_type)
+        {
+            continue;
+        }
+
+        let work_key = connector_work_key(connector.source_id(), &candidate);
+        queue_acquisition_work(runs, run_id, work_key.clone())?;
+        candidates_by_work_key.insert(work_key, candidate);
+    }
+
+    let mut imported_assets = Vec::new();
+    while let Some(work) = next_acquisition_work(runs, run_id)? {
+        let Some(candidate) = candidates_by_work_key.get(&work.key) else {
+            break;
+        };
+        let bytes = connector.download(candidate)?;
+        let stored = object_store.store_original_bytes(&bytes)?;
+        let imported = catalog.persist_asset(PersistAsset {
+            existing_game_id: None,
+            game_title: candidate.game_title.clone(),
+            platform: candidate.platform.clone(),
+            region: candidate.region.clone(),
+            edition_name: candidate.edition_name.clone(),
+            asset_type: candidate.asset_type,
+            object_hash: stored.hash,
+            byte_len: stored.byte_len,
+            original_filename: candidate.original_filename.clone(),
+            source_kind: candidate.source_kind,
+            source_location: candidate.source_url.clone(),
+        })?;
+        complete_acquisition_work(runs, run_id, &work.key)?;
+        imported_assets.push(imported);
+    }
+
+    if load_acquisition_run(runs, run_id)?.queued_work == 0 {
+        complete_acquisition_run(runs, run_id)?;
+    }
+
+    Ok(imported_assets)
+}
+
+fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
+    format!("connector:{source_id}:{}", candidate.source_url)
 }
 
 pub fn import_local_box_front(

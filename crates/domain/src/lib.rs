@@ -243,6 +243,23 @@ impl QualityRequirements {
 }
 
 impl AcquisitionRequest {
+    pub fn selects_source(&self, source_id: &str) -> bool {
+        match &self.sources {
+            SourceSelection::Auto => true,
+            SourceSelection::Explicit(values) => values.iter().any(|value| value == source_id),
+        }
+    }
+
+    pub fn requests_asset_type(&self, asset_type: AssetType) -> bool {
+        self.asset_types.iter().any(|selector| {
+            matches!(
+                (selector, asset_type),
+                (AssetTypeSelector::Packaging, AssetType::BoxFront)
+                    | (AssetTypeSelector::BoxFront, AssetType::BoxFront)
+            )
+        })
+    }
+
     pub fn try_from_draft(
         draft: AcquisitionRequestDraft,
     ) -> Result<Self, AcquisitionRequestValidationError> {
@@ -298,6 +315,25 @@ pub enum AssetType {
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     LocalImport,
+    LibretroThumbnails,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectorCapabilities {
+    pub asset_types: Vec<AssetType>,
+    pub direct_media_download: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetCandidate {
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub edition_name: String,
+    pub asset_type: AssetType,
+    pub source_kind: SourceKind,
+    pub source_url: String,
+    pub original_filename: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
