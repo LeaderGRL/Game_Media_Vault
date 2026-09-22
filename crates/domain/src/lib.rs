@@ -1,4 +1,103 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "values", rename_all = "snake_case")]
+pub enum SourceSelection {
+    Auto,
+    Explicit(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "values", rename_all = "snake_case")]
+pub enum GameSelection {
+    All,
+    Explicit(Vec<String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetTypeSelector {
+    BoxFront,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionPolicy {
+    KeepEverything,
+    KeepBestPerType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QualityRequirements {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AcquisitionLimits {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcquisitionRequest {
+    sources: SourceSelection,
+    platforms: Vec<String>,
+    games: GameSelection,
+    regions: Vec<String>,
+    languages: Vec<String>,
+    asset_types: Vec<AssetTypeSelector>,
+    quality: Option<QualityRequirements>,
+    retention: RetentionPolicy,
+    limits: AcquisitionLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionRequestDraft {
+    pub sources: SourceSelection,
+    pub platforms: Vec<String>,
+    pub games: GameSelection,
+    pub regions: Vec<String>,
+    pub languages: Vec<String>,
+    pub asset_types: Vec<AssetTypeSelector>,
+    pub quality: Option<QualityRequirements>,
+    pub retention: RetentionPolicy,
+    pub limits: AcquisitionLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcquisitionRequestValidationError {
+    MissingSources,
+}
+
+impl fmt::Display for AcquisitionRequestValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSources => {
+                formatter.write_str("acquisition request must include at least one source")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AcquisitionRequestValidationError {}
+
+impl AcquisitionRequest {
+    pub fn try_from_draft(
+        draft: AcquisitionRequestDraft,
+    ) -> Result<Self, AcquisitionRequestValidationError> {
+        if matches!(&draft.sources, SourceSelection::Explicit(values) if values.is_empty()) {
+            return Err(AcquisitionRequestValidationError::MissingSources);
+        }
+
+        Ok(Self {
+            sources: draft.sources,
+            platforms: draft.platforms,
+            games: draft.games,
+            regions: draft.regions,
+            languages: draft.languages,
+            asset_types: draft.asset_types,
+            quality: draft.quality,
+            retention: draft.retention,
+            limits: draft.limits,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -4,9 +4,14 @@ use std::{
 };
 
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
+    AcquisitionRequest, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
+    StoredObject,
 };
 use thiserror::Error;
+
+pub use game_media_vault_domain::{
+    AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
+};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{0}")]
@@ -30,6 +35,12 @@ pub struct ImportLocalBoxFrontRequest {
     pub region: String,
     pub edition_name: String,
     pub source_path: std::path::PathBuf,
+}
+
+pub fn build_acquisition_request(
+    input: AcquisitionRequestInput,
+) -> Result<AcquisitionRequest, AcquisitionRequestValidationError> {
+    AcquisitionRequest::try_from_draft(input)
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
