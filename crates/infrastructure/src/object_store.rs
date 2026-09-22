@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Cursor, Read, Write},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -87,10 +87,6 @@ impl ObjectStorePort for ContentAddressedStore {
 
     fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         self.store_reader(reader)
-    }
-
-    fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
-        self.store_reader(Cursor::new(bytes))
     }
 }
 
