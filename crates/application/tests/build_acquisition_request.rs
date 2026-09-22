@@ -248,6 +248,54 @@ fn preserves_query_result_game_targeting() {
 }
 
 #[test]
+fn rejects_platform_bound_games_with_blank_game_names() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["PlayStation 2".to_owned()],
+        games: GameSelection::PlatformBound(vec![PlatformBoundGameSelector {
+            game: "   ".to_owned(),
+            platform: "PlayStation 2".to_owned(),
+        }]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        AcquisitionRequestValidationError::InvalidGameSelection
+    );
+}
+
+#[test]
+fn rejects_platform_bound_games_with_blank_platforms() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["PlayStation 2".to_owned()],
+        games: GameSelection::PlatformBound(vec![PlatformBoundGameSelector {
+            game: "Metal Gear Solid 3".to_owned(),
+            platform: "   ".to_owned(),
+        }]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        AcquisitionRequestValidationError::InvalidGameSelection
+    );
+}
+
+#[test]
 fn rejects_explicit_game_names_without_a_platform() {
     let error = build_acquisition_request(AcquisitionRequestInput {
         sources: SourceSelection::Auto,

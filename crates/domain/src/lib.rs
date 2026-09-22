@@ -24,6 +24,18 @@ pub struct PlatformBoundGameSelector {
 }
 
 impl GameSelection {
+    fn is_valid(&self) -> bool {
+        match self {
+            Self::All | Self::Explicit(_) => true,
+            Self::PlatformBound(values) | Self::QueryResult(values) => {
+                !values.is_empty()
+                    && values.iter().all(|value| {
+                        !value.game.trim().is_empty() && !value.platform.trim().is_empty()
+                    })
+            }
+        }
+    }
+
     fn fixes_platforms_explicitly(&self) -> bool {
         matches!(
             self,
@@ -154,6 +166,7 @@ pub enum AcquisitionRequestValidationError {
     MissingSources,
     MissingAssetTypes,
     MissingPlatforms,
+    InvalidGameSelection,
 }
 
 impl fmt::Display for AcquisitionRequestValidationError {
@@ -167,6 +180,9 @@ impl fmt::Display for AcquisitionRequestValidationError {
             }
             Self::MissingPlatforms => {
                 formatter.write_str("acquisition request must include at least one platform")
+            }
+            Self::InvalidGameSelection => {
+                formatter.write_str("acquisition request contains an invalid game selection")
             }
         }
     }
@@ -193,6 +209,9 @@ impl AcquisitionRequest {
         };
         if draft.asset_types.is_empty() {
             return Err(AcquisitionRequestValidationError::MissingAssetTypes);
+        }
+        if !draft.games.is_valid() {
+            return Err(AcquisitionRequestValidationError::InvalidGameSelection);
         }
         let platforms: Vec<_> = draft
             .platforms
