@@ -23,7 +23,9 @@ pub enum AssetTypeSelector {
     Spine,
     InnerCover,
     BoxTexture,
+    #[serde(rename = "box_3d_render")]
     Box3dRender,
+    #[serde(rename = "box_3d_model")]
     Box3dModel,
     SlipcoverSleeve,
     Insert,
@@ -66,6 +68,7 @@ pub enum AssetTypeSelector {
     Accessory,
     Soundtrack,
     Texture,
+    #[serde(rename = "3d_model")]
     Model3d,
     Other,
 }
