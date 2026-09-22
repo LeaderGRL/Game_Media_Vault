@@ -1,10 +1,10 @@
 use game_media_vault_application::{CatalogPort, ObjectStorePort};
-use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
+use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
 #[test]
-fn stores_connector_bytes_and_persists_libretro_provenance() {
+fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
     let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
@@ -23,7 +23,7 @@ fn stores_connector_bytes_and_persists_libretro_provenance() {
             object_hash: stored.hash.clone(),
             byte_len: stored.byte_len,
             original_filename: "Super Mario Bros. (World).png".to_owned(),
-            source_kind: SourceKind::LibretroThumbnails,
+            source_id: SourceId::from("provider-added-without-domain-change"),
             source_location: "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png".to_owned(),
         })
         .unwrap();
@@ -40,8 +40,8 @@ fn stores_connector_bytes_and_persists_libretro_provenance() {
         .unwrap();
     assert_eq!(entry.provenance.len(), 1);
     assert_eq!(
-        entry.provenance[0].source_kind,
-        SourceKind::LibretroThumbnails
+        entry.provenance[0].source_id,
+        SourceId::from("provider-added-without-domain-change")
     );
     assert_eq!(
         entry.provenance[0].source_location,

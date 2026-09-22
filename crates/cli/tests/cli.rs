@@ -9,7 +9,7 @@ use std::{
 use game_media_vault_application::{AcquisitionRequestValidationError, ConnectorPort, PortError};
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, SourceKind,
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, SourceId,
 };
 use tempfile::tempdir;
 
@@ -34,7 +34,7 @@ impl ConnectorPort for FixtureConnector {
             region: "World".to_owned(),
             edition_name: "Unspecified".to_owned(),
             asset_type: AssetType::BoxFront,
-            source_kind: SourceKind::LibretroThumbnails,
+            source_id: SourceId::from("libretro-thumbnails"),
             source_url: "https://example.invalid/smb-box-front.png".to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
         }])

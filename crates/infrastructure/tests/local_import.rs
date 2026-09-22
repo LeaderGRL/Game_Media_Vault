@@ -7,7 +7,7 @@ use std::{
 use game_media_vault_application::{
     CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
 };
-use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
+use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::{Connection, params};
 use tempfile::{tempdir, tempdir_in};
@@ -130,7 +130,7 @@ fn canonical_provenance_identity_ignores_caller_filename_alias() {
         object_hash: "shared-object-hash".to_owned(),
         byte_len: 18,
         original_filename: "alias-front.png".to_owned(),
-        source_kind: SourceKind::LocalImport,
+        source_id: SourceId::from("local_import"),
         source_location: source_location.clone(),
     };
 

@@ -7,7 +7,7 @@ use game_media_vault_application::{CatalogPort, RunRepositoryPort, acquire_run_w
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
-    AssetType, AssetTypeSelector, GameSelection, RetentionPolicy, SourceKind, SourceSelection,
+    AssetType, AssetTypeSelector, GameSelection, RetentionPolicy, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -83,8 +83,8 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     assert_eq!(asset.original_filename, "Super Mario Bros. (World).png");
     assert_eq!(asset.provenance.len(), 1);
     assert_eq!(
-        asset.provenance[0].source_kind,
-        SourceKind::LibretroThumbnails
+        asset.provenance[0].source_id,
+        SourceId::from("libretro-thumbnails")
     );
     assert_eq!(
         asset.provenance[0].source_location,

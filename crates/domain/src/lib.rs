@@ -354,11 +354,26 @@ pub enum AssetType {
     BoxFront,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceKind {
-    LocalImport,
-    LibretroThumbnails,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SourceId(String);
+
+impl SourceId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for SourceId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for SourceId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,7 +389,7 @@ pub struct AssetCandidate {
     pub region: String,
     pub edition_name: String,
     pub asset_type: AssetType,
-    pub source_kind: SourceKind,
+    pub source_id: SourceId,
     pub source_url: String,
     pub original_filename: String,
 }
@@ -396,7 +411,7 @@ pub struct PersistAsset {
     pub object_hash: String,
     pub byte_len: u64,
     pub original_filename: String,
-    pub source_kind: SourceKind,
+    pub source_id: SourceId,
     pub source_location: String,
 }
 
@@ -411,7 +426,7 @@ pub struct ImportedAsset {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetProvenance {
-    pub source_kind: SourceKind,
+    pub source_id: SourceId,
     pub source_location: String,
 }
 

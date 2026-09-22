@@ -6,7 +6,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, GameSelection, RetentionPolicy, SourceKind,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, RetentionPolicy, SourceId,
     SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
@@ -47,7 +47,7 @@ impl ConnectorPort for FixtureConnector {
             region: "World".to_owned(),
             edition_name: "Unspecified".to_owned(),
             asset_type: AssetType::BoxFront,
-            source_kind: SourceKind::LibretroThumbnails,
+            source_id: SourceId::from("libretro-thumbnails"),
             source_url: "https://example.invalid/smb-box-front.png".to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
         }])

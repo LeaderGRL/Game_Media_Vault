@@ -7,7 +7,7 @@ use game_media_vault_application::{CatalogPort, PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset,
-    SourceKind,
+    SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -351,7 +351,7 @@ impl CatalogPort for SqliteCatalog {
         let normalized_region = normalize(&record.region);
         let normalized_edition = normalize(&record.edition_name);
         let asset_type = asset_type_to_str(record.asset_type);
-        let source_kind = source_kind_to_str(record.source_kind);
+        let source_id = record.source_id.as_str();
         let byte_len = i64::try_from(record.byte_len)
             .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
 
@@ -364,11 +364,11 @@ impl CatalogPort for SqliteCatalog {
             normalized_region: &normalized_region,
             normalized_edition: &normalized_edition,
             asset_type,
-            source_kind,
+            source_id,
             byte_len,
         };
         if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
-            normalize_existing_provenance(&transaction, &record, source_kind, &existing)?;
+            normalize_existing_provenance(&transaction, &record, source_id, &existing)?;
             transaction.commit().map_err(sql_error)?;
             return Ok(existing.imported);
         }
@@ -441,7 +441,7 @@ impl CatalogPort for SqliteCatalog {
                 "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
-                params![asset_id, source_kind, record.source_location,],
+                params![asset_id, source_id, record.source_location,],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
@@ -476,16 +476,16 @@ impl CatalogPort for SqliteCatalog {
 
         while let Some(row) = rows.next().map_err(sql_error)? {
             let asset_id: i64 = row.get(6).map_err(sql_error)?;
-            let source_kind: Option<String> = row.get(11).map_err(sql_error)?;
+            let source_id: Option<String> = row.get(11).map_err(sql_error)?;
             let source_location: Option<String> = row.get(12).map_err(sql_error)?;
 
             if let Some(existing) = entries
                 .last_mut()
                 .filter(|entry| entry.asset_id == asset_id)
             {
-                if let (Some(kind), Some(location)) = (source_kind, source_location) {
+                if let (Some(id), Some(location)) = (source_id, source_location) {
                     existing.provenance.push(AssetProvenance {
-                        source_kind: parse_source_kind(&kind)?,
+                        source_id: SourceId::from(id),
                         source_location: location,
                     });
                 }
@@ -494,9 +494,9 @@ impl CatalogPort for SqliteCatalog {
 
             let byte_len: i64 = row.get(9).map_err(sql_error)?;
             let mut provenance = Vec::new();
-            if let (Some(kind), Some(location)) = (source_kind, source_location) {
+            if let (Some(id), Some(location)) = (source_id, source_location) {
                 provenance.push(AssetProvenance {
-                    source_kind: parse_source_kind(&kind)?,
+                    source_id: SourceId::from(id),
                     source_location: location,
                 });
             }
@@ -527,7 +527,7 @@ struct ExistingImportLookup<'a> {
     normalized_region: &'a str,
     normalized_edition: &'a str,
     asset_type: &'a str,
-    source_kind: &'a str,
+    source_id: &'a str,
     byte_len: i64,
 }
 
@@ -591,7 +591,7 @@ fn find_existing_import(
         .map_err(sql_error)?;
     let mut rows = statement
         .query(params![
-            lookup.source_kind,
+            lookup.source_id,
             lookup.asset_type,
             record.object_hash,
             lookup.byte_len,
@@ -645,7 +645,7 @@ fn canonicalize_location(location: &str) -> Option<PathBuf> {
 fn normalize_existing_provenance(
     transaction: &Transaction<'_>,
     record: &PersistAsset,
-    source_kind: &str,
+    source_id: &str,
     existing: &ExistingImportMatch,
 ) -> Result<(), PortError> {
     if existing.matched_source_location == record.source_location {
@@ -659,7 +659,7 @@ fn normalize_existing_provenance(
              ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
             params![
                 existing.imported.asset_id,
-                source_kind,
+                source_id,
                 record.source_location,
             ],
         )
@@ -1121,23 +1121,6 @@ fn parse_asset_type(value: &str) -> Result<AssetType, PortError> {
     }
 }
 
-fn source_kind_to_str(source_kind: SourceKind) -> &'static str {
-    match source_kind {
-        SourceKind::LocalImport => "local_import",
-        SourceKind::LibretroThumbnails => "libretro_thumbnails",
-    }
-}
-
-fn parse_source_kind(value: &str) -> Result<SourceKind, PortError> {
-    match value {
-        "local_import" => Ok(SourceKind::LocalImport),
-        "libretro_thumbnails" => Ok(SourceKind::LibretroThumbnails),
-        other => Err(PortError(format!(
-            "unknown source kind in catalog: {other}"
-        ))),
-    }
-}
-
 fn io_error(error: std::io::Error) -> PortError {
     PortError(error.to_string())
 }
@@ -1156,7 +1139,7 @@ mod tests {
     };
 
     use game_media_vault_application::CatalogPort;
-    use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
+    use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
     use tempfile::tempdir;
 
     use super::*;
@@ -1219,7 +1202,7 @@ mod tests {
                             object_hash: "shared-object-hash".to_owned(),
                             byte_len: 42,
                             original_filename: "front.png".to_owned(),
-                            source_kind: SourceKind::LocalImport,
+                            source_id: SourceId::from("local_import"),
                             source_location: "C:/collection/front.png".to_owned(),
                         })
                         .unwrap()

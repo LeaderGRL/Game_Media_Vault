@@ -12,7 +12,7 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, PersistAsset,
-    QualityRequirements, RetentionPolicy, SourceKind, SourceSelection, StoredObject,
+    QualityRequirements, RetentionPolicy, SourceId, SourceSelection, StoredObject,
 };
 
 fn request() -> AcquisitionRequest {
@@ -135,7 +135,7 @@ impl ConnectorPort for FakeConnector {
             region: "Unknown".to_owned(),
             edition_name: "Unspecified".to_owned(),
             asset_type: AssetType::BoxFront,
-            source_kind: SourceKind::LibretroThumbnails,
+            source_id: SourceId::from("libretro-thumbnails"),
             source_url: "https://example.invalid/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
                 .to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
@@ -224,7 +224,7 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     let records = catalog.records.borrow();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].asset_type, AssetType::BoxFront);
-    assert_eq!(records[0].source_kind, SourceKind::LibretroThumbnails);
+    assert_eq!(records[0].source_id, SourceId::from("libretro-thumbnails"));
     assert_eq!(
         records[0].source_location,
         "https://example.invalid/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
@@ -381,7 +381,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
         region: "Unknown".to_owned(),
         edition_name: "Unspecified".to_owned(),
         asset_type: AssetType::BoxFront,
-        source_kind: SourceKind::LibretroThumbnails,
+        source_id: SourceId::from("libretro-thumbnails"),
         source_url: "https://example.invalid/Named_Boxarts/A_B.png".to_owned(),
         original_filename: "A_B.png".to_owned(),
     };
@@ -412,7 +412,7 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
         region: "Unknown".to_owned(),
         edition_name: "Unspecified".to_owned(),
         asset_type: AssetType::BoxFront,
-        source_kind: SourceKind::LibretroThumbnails,
+        source_id: SourceId::from("libretro-thumbnails"),
         source_url: "https://example.invalid/shared.png".to_owned(),
         original_filename: "shared.png".to_owned(),
     };

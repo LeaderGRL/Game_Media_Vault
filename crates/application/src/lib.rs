@@ -7,7 +7,7 @@ use std::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     AssetType, ConnectorCapabilities, ImportedAsset, LibraryEntry, PersistAsset, RetentionPolicy,
-    SourceKind, StoredObject,
+    SourceId, StoredObject,
 };
 use thiserror::Error;
 
@@ -309,7 +309,7 @@ pub fn acquire_run_with_connector(
             object_hash: stored.hash,
             byte_len: stored.byte_len,
             original_filename: candidate.original_filename.clone(),
-            source_kind: candidate.source_kind,
+            source_id: candidate.source_id.clone(),
             source_location: candidate.source_url.clone(),
         })?;
         complete_acquisition_work(runs, run_id, &work.key)?;
@@ -414,7 +414,7 @@ pub fn import_local_box_front(
         object_hash: stored.hash,
         byte_len: stored.byte_len,
         original_filename,
-        source_kind: SourceKind::LocalImport,
+        source_id: SourceId::from("local_import"),
         source_location,
     })?)
 }

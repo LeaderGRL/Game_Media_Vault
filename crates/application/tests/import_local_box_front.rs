@@ -4,7 +4,7 @@ use game_media_vault_application::{
     CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, import_local_box_front,
 };
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind, StoredObject,
+    AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceId, StoredObject,
 };
 use tempfile::tempdir;
 
@@ -99,7 +99,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
             object_hash: "abc123".to_owned(),
             byte_len: 4096,
             original_filename: "cover-front.png".to_owned(),
-            source_kind: SourceKind::LocalImport,
+            source_id: SourceId::from("local_import"),
             source_location: record.source_location.clone(),
         }
     );

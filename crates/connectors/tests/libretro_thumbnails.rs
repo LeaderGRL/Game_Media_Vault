@@ -7,7 +7,7 @@ use game_media_vault_application::{ConnectorPort, PortError};
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetType, AssetTypeSelector,
-    GameSelection, RetentionPolicy, SourceKind, SourceSelection,
+    GameSelection, RetentionPolicy, SourceId, SourceSelection,
 };
 
 const GITMODULES_FIXTURE: &str = r#"
@@ -75,7 +75,7 @@ fn declares_box_front_capability_and_downloads_the_discovered_fixture() {
     assert_eq!(candidates.len(), 1);
     let candidate = &candidates[0];
     assert_eq!(candidate.asset_type, AssetType::BoxFront);
-    assert_eq!(candidate.source_kind, SourceKind::LibretroThumbnails);
+    assert_eq!(candidate.source_id, SourceId::from("libretro-thumbnails"));
     assert_eq!(candidate.original_filename, "Super Mario Bros. (World).png");
     assert_eq!(
         candidate.source_url,

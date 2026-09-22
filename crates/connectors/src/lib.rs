@@ -2,7 +2,7 @@ use std::io::Read;
 
 use game_media_vault_application::{ConnectorPort, PortError};
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceKind,
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
 };
 use reqwest::blocking::Client;
 use url::Url;
@@ -138,7 +138,7 @@ where
                     region: "Unknown".to_owned(),
                     edition_name: "Unspecified".to_owned(),
                     asset_type: AssetType::BoxFront,
-                    source_kind: SourceKind::LibretroThumbnails,
+                    source_id: SourceId::from(LIBRETRO_THUMBNAILS_SOURCE_ID),
                     source_url,
                     original_filename,
                 })
