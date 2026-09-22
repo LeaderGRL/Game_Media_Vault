@@ -3,8 +3,9 @@ use std::{ffi::OsString, path::PathBuf};
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError,
-    ImportLocalBoxFrontRequest, PortError, build_acquisition_request, import_local_box_front,
-    list_library,
+    ImportLocalBoxFrontRequest, PortError, cancel_acquisition_run, import_local_box_front,
+    list_acquisition_runs, list_library, load_acquisition_run, pause_acquisition_run,
+    resume_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
@@ -75,6 +76,10 @@ enum Command {
         #[command(flatten)]
         limits: LimitArgs,
     },
+    Run {
+        #[command(subcommand)]
+        command: RunCommand,
+    },
     ImportBoxFront {
         #[arg(long)]
         game_id: Option<i64>,
@@ -90,6 +95,15 @@ enum Command {
         file: PathBuf,
     },
     Library,
+}
+
+#[derive(Debug, Subcommand)]
+enum RunCommand {
+    List,
+    Show { id: i64 },
+    Pause { id: i64 },
+    Resume { id: i64 },
+    Cancel { id: i64 },
 }
 
 #[derive(Debug, Args)]
@@ -193,7 +207,7 @@ where
             retention,
             limits,
         } => {
-            let request = build_acquisition_request(AcquisitionRequestInput {
+            let input = AcquisitionRequestInput {
                 sources: if auto_source {
                     SourceSelection::Auto
                 } else {
@@ -215,8 +229,30 @@ where
                 quality: (*quality).into_domain(),
                 retention,
                 limits: limits.into(),
-            })?;
-            Ok(serde_json::to_string_pretty(&request)?)
+            };
+            let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+            let run = start_acquisition_run(&catalog, input).map_err(map_start_run_error)?;
+            Ok(serde_json::to_string_pretty(&run)?)
+        }
+        Command::Run { command } => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            match command {
+                RunCommand::List => Ok(serde_json::to_string_pretty(&list_acquisition_runs(
+                    &catalog,
+                )?)?),
+                RunCommand::Show { id } => Ok(serde_json::to_string_pretty(
+                    &load_acquisition_run(&catalog, id)?,
+                )?),
+                RunCommand::Pause { id } => Ok(serde_json::to_string_pretty(
+                    &pause_acquisition_run(&catalog, id)?,
+                )?),
+                RunCommand::Resume { id } => Ok(serde_json::to_string_pretty(
+                    &resume_acquisition_run(&catalog, id)?,
+                )?),
+                RunCommand::Cancel { id } => Ok(serde_json::to_string_pretty(
+                    &cancel_acquisition_run(&catalog, id)?,
+                )?),
+            }
         }
         Command::ImportBoxFront {
             game_id,
@@ -249,6 +285,13 @@ where
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?)
         }
+    }
+}
+
+fn map_start_run_error(error: ApplicationError) -> CliError {
+    match error {
+        ApplicationError::Validation(error) => CliError::Validation(error),
+        other => CliError::Application(other),
     }
 }
 

@@ -32,6 +32,8 @@ pub trait RunRepositoryPort {
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError>;
 
+    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError>;
+
     fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError>;
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
@@ -75,6 +77,12 @@ pub fn load_acquisition_run(
 ) -> Result<AcquisitionRun, ApplicationError> {
     runs.get_run(run_id)?
         .ok_or(ApplicationError::RunNotFound(run_id))
+}
+
+pub fn list_acquisition_runs(
+    runs: &dyn RunRepositoryPort,
+) -> Result<Vec<AcquisitionRun>, ApplicationError> {
+    Ok(runs.list_runs()?)
 }
 
 pub fn queue_acquisition_work(

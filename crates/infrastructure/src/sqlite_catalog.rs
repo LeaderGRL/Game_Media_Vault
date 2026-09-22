@@ -170,6 +170,29 @@ impl RunRepositoryPort for SqliteCatalog {
         }))
     }
 
+    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare("SELECT id FROM acquisition_runs ORDER BY id")
+            .map_err(sql_error)?;
+        let run_ids = statement
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+
+        run_ids
+            .into_iter()
+            .map(|run_id| {
+                self.get_run(run_id)?.ok_or_else(|| {
+                    PortError(format!(
+                        "acquisition run #{run_id} disappeared while listing"
+                    ))
+                })
+            })
+            .collect()
+    }
+
     fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError> {
         let mut connection = self.connect()?;
         let transaction = connection

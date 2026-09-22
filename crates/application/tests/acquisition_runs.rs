@@ -40,6 +40,10 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(None)
     }
 
+    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
+        Ok(Vec::new())
+    }
+
     fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
         Ok(())
     }
