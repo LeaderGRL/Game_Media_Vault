@@ -105,3 +105,21 @@ fn preserves_optional_filters_and_independent_asset_type_selection() {
         })
     );
 }
+
+#[test]
+fn rejects_all_games_targeting_without_a_platform() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: Vec::new(),
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(error, AcquisitionRequestValidationError::MissingPlatforms);
+}
