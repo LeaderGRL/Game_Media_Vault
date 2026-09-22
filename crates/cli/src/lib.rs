@@ -1,8 +1,14 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
-    ApplicationError, ImportLocalBoxFrontRequest, PortError, import_local_box_front, list_library,
+    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError,
+    ImportLocalBoxFrontRequest, PortError, build_acquisition_request, import_local_box_front,
+    list_library,
+};
+use game_media_vault_domain::{
+    AcquisitionLimits, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
+    QualityRequirements, RetentionPolicy, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use thiserror::Error;
@@ -17,6 +23,8 @@ pub enum CliError {
     Port(#[from] PortError),
     #[error("{0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("{0}")]
+    Validation(#[from] AcquisitionRequestValidationError),
 }
 
 #[derive(Debug, Parser)]
@@ -31,6 +39,42 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Acquire {
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        #[arg(long, conflicts_with = "sources")]
+        auto_source: bool,
+        #[arg(long = "platform")]
+        platforms: Vec<String>,
+        #[arg(long = "game", conflicts_with_all = ["platform_games", "query_results"])]
+        games: Vec<String>,
+        #[arg(
+            long = "platform-game",
+            value_name = "PLATFORM=GAME",
+            value_parser = parse_platform_bound_game,
+            conflicts_with_all = ["games", "query_results"]
+        )]
+        platform_games: Vec<PlatformBoundGameSelector>,
+        #[arg(
+            long = "query-result",
+            value_name = "PLATFORM=GAME",
+            value_parser = parse_platform_bound_game,
+            conflicts_with_all = ["games", "platform_games"]
+        )]
+        query_results: Vec<PlatformBoundGameSelector>,
+        #[arg(long = "region")]
+        regions: Vec<String>,
+        #[arg(long = "language")]
+        languages: Vec<String>,
+        #[arg(long = "asset-type", value_parser = parse_asset_type)]
+        asset_types: Vec<AssetTypeSelector>,
+        #[command(flatten)]
+        quality: Box<QualityArgs>,
+        #[arg(long, default_value = "keep-everything", value_parser = parse_retention_policy)]
+        retention: RetentionPolicy,
+        #[command(flatten)]
+        limits: LimitArgs,
+    },
     ImportBoxFront {
         #[arg(long)]
         game_id: Option<i64>,
@@ -48,6 +92,85 @@ enum Command {
     Library,
 }
 
+#[derive(Debug, Args)]
+struct QualityArgs {
+    #[arg(long)]
+    min_width: Option<u32>,
+    #[arg(long)]
+    min_height: Option<u32>,
+    #[arg(long)]
+    min_longest_edge: Option<u32>,
+    #[arg(long)]
+    min_pixel_count: Option<u64>,
+    #[arg(long)]
+    original_only: bool,
+    #[arg(long = "mime-type")]
+    accepted_mime_types: Vec<String>,
+    #[arg(long)]
+    max_compression_ratio: Option<u32>,
+    #[arg(long)]
+    min_bitrate_kbps: Option<u32>,
+    #[arg(long)]
+    preferred_scan_type: Option<String>,
+    #[arg(long = "preferred-source-priority")]
+    preferred_source_priority: Vec<String>,
+    #[arg(long)]
+    best_available: bool,
+}
+
+impl QualityArgs {
+    fn into_domain(self) -> Option<QualityRequirements> {
+        let has_requirements = self.min_width.is_some()
+            || self.min_height.is_some()
+            || self.min_longest_edge.is_some()
+            || self.min_pixel_count.is_some()
+            || self.original_only
+            || !self.accepted_mime_types.is_empty()
+            || self.max_compression_ratio.is_some()
+            || self.min_bitrate_kbps.is_some()
+            || self.preferred_scan_type.is_some()
+            || !self.preferred_source_priority.is_empty()
+            || self.best_available;
+
+        has_requirements.then_some(QualityRequirements {
+            min_width: self.min_width,
+            min_height: self.min_height,
+            min_longest_edge: self.min_longest_edge,
+            min_pixel_count: self.min_pixel_count,
+            original_only: self.original_only,
+            accepted_mime_types: self.accepted_mime_types,
+            max_compression_ratio: self.max_compression_ratio,
+            min_bitrate_kbps: self.min_bitrate_kbps,
+            preferred_scan_type: self.preferred_scan_type,
+            preferred_source_priority: self.preferred_source_priority,
+            best_available: self.best_available,
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+struct LimitArgs {
+    #[arg(long)]
+    max_games: Option<u32>,
+    #[arg(long)]
+    max_downloads: Option<u32>,
+    #[arg(long)]
+    max_concurrent_downloads: Option<u16>,
+    #[arg(long)]
+    max_bytes: Option<u64>,
+}
+
+impl From<LimitArgs> for AcquisitionLimits {
+    fn from(value: LimitArgs) -> Self {
+        Self {
+            max_games: value.max_games,
+            max_downloads: value.max_downloads,
+            max_concurrent_downloads: value.max_concurrent_downloads,
+            max_bytes: value.max_bytes,
+        }
+    }
+}
+
 pub fn run<I, T>(args: I) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
@@ -56,6 +179,45 @@ where
     let cli = Cli::try_parse_from(args)?;
 
     match cli.command {
+        Command::Acquire {
+            sources,
+            auto_source,
+            platforms,
+            games,
+            platform_games,
+            query_results,
+            regions,
+            languages,
+            asset_types,
+            quality,
+            retention,
+            limits,
+        } => {
+            let request = build_acquisition_request(AcquisitionRequestInput {
+                sources: if auto_source {
+                    SourceSelection::Auto
+                } else {
+                    SourceSelection::Explicit(sources)
+                },
+                platforms,
+                games: if !platform_games.is_empty() {
+                    GameSelection::PlatformBound(platform_games)
+                } else if !query_results.is_empty() {
+                    GameSelection::QueryResult(query_results)
+                } else if !games.is_empty() {
+                    GameSelection::Explicit(games)
+                } else {
+                    GameSelection::All
+                },
+                regions,
+                languages,
+                asset_types,
+                quality: (*quality).into_domain(),
+                retention,
+                limits: limits.into(),
+            })?;
+            Ok(serde_json::to_string_pretty(&request)?)
+        }
         Command::ImportBoxFront {
             game_id,
             game,
@@ -88,4 +250,30 @@ where
             Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?)
         }
     }
+}
+
+fn parse_asset_type(value: &str) -> Result<AssetTypeSelector, String> {
+    parse_domain_enum(value).map_err(|_| format!("unsupported asset type: {value}"))
+}
+
+fn parse_retention_policy(value: &str) -> Result<RetentionPolicy, String> {
+    parse_domain_enum(value).map_err(|_| format!("unsupported retention policy: {value}"))
+}
+
+fn parse_platform_bound_game(value: &str) -> Result<PlatformBoundGameSelector, String> {
+    let (platform, game) = value
+        .split_once('=')
+        .ok_or_else(|| "expected PLATFORM=GAME".to_owned())?;
+
+    Ok(PlatformBoundGameSelector {
+        game: game.to_owned(),
+        platform: platform.to_owned(),
+    })
+}
+
+fn parse_domain_enum<T>(value: &str) -> Result<T, serde_json::Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(serde_json::Value::String(value.replace('-', "_")))
 }

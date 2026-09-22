@@ -1,4 +1,269 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "values", rename_all = "snake_case")]
+pub enum SourceSelection {
+    Auto,
+    Explicit(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "values", rename_all = "snake_case")]
+pub enum GameSelection {
+    All,
+    Explicit(Vec<String>),
+    PlatformBound(Vec<PlatformBoundGameSelector>),
+    QueryResult(Vec<PlatformBoundGameSelector>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformBoundGameSelector {
+    pub game: String,
+    pub platform: String,
+}
+
+impl GameSelection {
+    fn is_valid(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Explicit(values) => {
+                !values.is_empty() && values.iter().all(|value| !value.trim().is_empty())
+            }
+            Self::PlatformBound(values) | Self::QueryResult(values) => {
+                !values.is_empty()
+                    && values.iter().all(|value| {
+                        !value.game.trim().is_empty() && !value.platform.trim().is_empty()
+                    })
+            }
+        }
+    }
+
+    fn fixes_platforms_explicitly(&self) -> bool {
+        matches!(
+            self,
+            Self::PlatformBound(values) | Self::QueryResult(values)
+                if !values.is_empty()
+                    && values.iter().all(|value| !value.platform.trim().is_empty())
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetTypeSelector {
+    Packaging,
+    PhysicalMedia,
+    Documentation,
+    DigitalMedia,
+    PromotionalAndHistorical,
+    HardwareArcade,
+    OtherFamily,
+    BoxFront,
+    BoxBack,
+    Spine,
+    InnerCover,
+    BoxTexture,
+    #[serde(rename = "box_3d_render")]
+    Box3dRender,
+    #[serde(rename = "box_3d_model")]
+    Box3dModel,
+    SlipcoverSleeve,
+    Insert,
+    Cartridge,
+    CartridgeFront,
+    CartridgeBack,
+    CartridgeLabel,
+    Disc,
+    DiscFront,
+    DiscBack,
+    DiscLabel,
+    Pcb,
+    CassetteTape,
+    FloppyDisk,
+    Manual,
+    ManualPage,
+    StrategyGuide,
+    Map,
+    ReferenceCard,
+    RegistrationCard,
+    WarrantySafetyInsert,
+    Screenshot,
+    TitleScreen,
+    GameplayVideo,
+    Trailer,
+    Logo,
+    Icon,
+    WallpaperArtwork,
+    Flyer,
+    Advertisement,
+    Poster,
+    PromotionalArtwork,
+    PressMaterial,
+    MagazineScan,
+    ArcadeCabinet,
+    ControlPanel,
+    Marquee,
+    Bezel,
+    Controller,
+    Accessory,
+    Soundtrack,
+    Texture,
+    #[serde(rename = "3d_model")]
+    Model3d,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionPolicy {
+    KeepEverything,
+    KeepBestPerType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QualityRequirements {
+    pub min_width: Option<u32>,
+    pub min_height: Option<u32>,
+    pub min_longest_edge: Option<u32>,
+    pub min_pixel_count: Option<u64>,
+    pub original_only: bool,
+    pub accepted_mime_types: Vec<String>,
+    pub max_compression_ratio: Option<u32>,
+    pub min_bitrate_kbps: Option<u32>,
+    pub preferred_scan_type: Option<String>,
+    pub preferred_source_priority: Vec<String>,
+    pub best_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AcquisitionLimits {
+    pub max_games: Option<u32>,
+    pub max_downloads: Option<u32>,
+    pub max_concurrent_downloads: Option<u16>,
+    pub max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcquisitionRequest {
+    sources: SourceSelection,
+    platforms: Vec<String>,
+    games: GameSelection,
+    regions: Vec<String>,
+    languages: Vec<String>,
+    asset_types: Vec<AssetTypeSelector>,
+    quality: Option<QualityRequirements>,
+    retention: RetentionPolicy,
+    limits: AcquisitionLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionRequestDraft {
+    pub sources: SourceSelection,
+    pub platforms: Vec<String>,
+    pub games: GameSelection,
+    pub regions: Vec<String>,
+    pub languages: Vec<String>,
+    pub asset_types: Vec<AssetTypeSelector>,
+    pub quality: Option<QualityRequirements>,
+    pub retention: RetentionPolicy,
+    pub limits: AcquisitionLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionRequestValidationError {
+    MissingSources,
+    MissingAssetTypes,
+    MissingPlatforms,
+    InvalidGameSelection,
+}
+
+impl fmt::Display for AcquisitionRequestValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSources => {
+                formatter.write_str("acquisition request must include at least one source")
+            }
+            Self::MissingAssetTypes => {
+                formatter.write_str("acquisition request must include at least one asset type")
+            }
+            Self::MissingPlatforms => {
+                formatter.write_str("acquisition request must include at least one platform")
+            }
+            Self::InvalidGameSelection => {
+                formatter.write_str("acquisition request contains an invalid game selection")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AcquisitionRequestValidationError {}
+
+fn non_blank_values(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
+impl QualityRequirements {
+    fn normalized(mut self) -> Self {
+        self.accepted_mime_types = non_blank_values(self.accepted_mime_types);
+        self.preferred_scan_type = self
+            .preferred_scan_type
+            .filter(|value| !value.trim().is_empty());
+        self.preferred_source_priority = non_blank_values(self.preferred_source_priority);
+        self
+    }
+}
+
+impl AcquisitionRequest {
+    pub fn try_from_draft(
+        draft: AcquisitionRequestDraft,
+    ) -> Result<Self, AcquisitionRequestValidationError> {
+        let sources = match draft.sources {
+            SourceSelection::Auto => SourceSelection::Auto,
+            SourceSelection::Explicit(values) => {
+                let values = non_blank_values(values);
+                if values.is_empty() {
+                    return Err(AcquisitionRequestValidationError::MissingSources);
+                }
+                SourceSelection::Explicit(values)
+            }
+        };
+        if draft.asset_types.is_empty() {
+            return Err(AcquisitionRequestValidationError::MissingAssetTypes);
+        }
+        if !draft.games.is_valid() {
+            return Err(AcquisitionRequestValidationError::InvalidGameSelection);
+        }
+        let platforms = non_blank_values(draft.platforms);
+        if platforms.is_empty() && !draft.games.fixes_platforms_explicitly() {
+            return Err(AcquisitionRequestValidationError::MissingPlatforms);
+        }
+
+        let regions = non_blank_values(draft.regions);
+        let languages = non_blank_values(draft.languages);
+        let quality = draft
+            .quality
+            .map(QualityRequirements::normalized)
+            .filter(|quality| quality != &QualityRequirements::default());
+
+        Ok(Self {
+            sources,
+            platforms,
+            games: draft.games,
+            regions,
+            languages,
+            asset_types: draft.asset_types,
+            quality,
+            retention: draft.retention,
+            limits: draft.limits,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -18,4 +18,5 @@ game-media-vault-infrastructure.workspace = true
 tauri = { version = "2", features = [] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
