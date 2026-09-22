@@ -151,6 +151,46 @@ fn removes_blank_optional_region_and_language_filters() {
 }
 
 #[test]
+fn preserves_asset_type_family_selection() {
+    let family_selectors: Vec<AssetTypeSelector> = serde_json::from_value(json!([
+        "packaging",
+        "physical_media",
+        "documentation",
+        "digital_media",
+        "promotional_and_historical",
+        "hardware_arcade",
+        "other_family"
+    ]))
+    .unwrap();
+
+    let request = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: family_selectors,
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["asset_types"],
+        json!([
+            "packaging",
+            "physical_media",
+            "documentation",
+            "digital_media",
+            "promotional_and_historical",
+            "hardware_arcade",
+            "other_family"
+        ])
+    );
+}
+
+#[test]
 fn rejects_all_games_targeting_without_a_platform() {
     let error = build_acquisition_request(AcquisitionRequestInput {
         sources: SourceSelection::Auto,

@@ -257,3 +257,26 @@ fn acquire_accepts_canonical_3d_asset_type_names() {
         serde_json::json!(["box_3d_render", "box_3d_model", "3d_model"])
     );
 }
+
+#[test]
+fn acquire_preserves_asset_type_family_selection() {
+    let output = game_media_vault_cli::run([
+        "game-media-vault",
+        "acquire",
+        "--source",
+        "screenscraper",
+        "--platform",
+        "PlayStation 2",
+        "--asset-type",
+        "packaging",
+        "--asset-type",
+        "documentation",
+    ])
+    .unwrap();
+
+    let request: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(
+        request["asset_types"],
+        serde_json::json!(["packaging", "documentation"])
+    );
+}
