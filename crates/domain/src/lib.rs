@@ -26,7 +26,10 @@ pub struct PlatformBoundGameSelector {
 impl GameSelection {
     fn is_valid(&self) -> bool {
         match self {
-            Self::All | Self::Explicit(_) => true,
+            Self::All => true,
+            Self::Explicit(values) => {
+                !values.is_empty() && values.iter().all(|value| !value.trim().is_empty())
+            }
             Self::PlatformBound(values) | Self::QueryResult(values) => {
                 !values.is_empty()
                     && values.iter().all(|value| {

@@ -312,3 +312,45 @@ fn rejects_explicit_game_names_without_a_platform() {
 
     assert_eq!(error, AcquisitionRequestValidationError::MissingPlatforms);
 }
+
+#[test]
+fn rejects_an_empty_explicit_game_selection() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::Explicit(Vec::new()),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        AcquisitionRequestValidationError::InvalidGameSelection
+    );
+}
+
+#[test]
+fn rejects_explicit_game_selection_with_only_blank_names() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::Explicit(vec!["".to_owned(), "   ".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        AcquisitionRequestValidationError::InvalidGameSelection
+    );
+}
