@@ -1073,6 +1073,7 @@ name = "game-media-vault-application"
 version = "0.1.0"
 dependencies = [
  "game-media-vault-domain",
+ "tempfile",
  "thiserror 2.0.20",
 ]
 
@@ -1104,6 +1105,7 @@ dependencies = [
  "game-media-vault-domain",
  "rusqlite",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

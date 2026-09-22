@@ -1,6 +1,16 @@
-use std::fs;
+use std::{fs, process::Command};
 
 use tempfile::tempdir;
+
+#[test]
+fn help_exits_successfully() {
+    let status = Command::new(env!("CARGO_BIN_EXE_game-media-vault"))
+        .arg("--help")
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+}
 
 #[test]
 fn imports_then_lists_a_local_box_front() {
@@ -39,4 +49,79 @@ fn imports_then_lists_a_local_box_front() {
     assert!(library.contains("Metal Gear Solid"));
     assert!(library.contains("PlayStation"));
     assert!(library.contains("cover-front.png"));
+}
+
+#[test]
+fn game_id_links_a_second_import_to_an_existing_game() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let first_source = temp.path().join("first-front.png");
+    let second_source = temp.path().join("localized-front.png");
+    fs::write(&first_source, b"first cli cover").unwrap();
+    fs::write(&second_source, b"second cli cover").unwrap();
+
+    game_media_vault_cli::run([
+        "game-media-vault".into(),
+        "--vault".into(),
+        vault.as_os_str().to_owned(),
+        "import-box-front".into(),
+        "--game".into(),
+        "Original Title".into(),
+        "--platform".into(),
+        "Windows".into(),
+        "--region".into(),
+        "Worldwide".into(),
+        "--edition".into(),
+        "Standard".into(),
+        "--file".into(),
+        first_source.as_os_str().to_owned(),
+    ])
+    .unwrap();
+
+    let first_library = game_media_vault_cli::run([
+        "game-media-vault".into(),
+        "--vault".into(),
+        vault.as_os_str().to_owned(),
+        "library".into(),
+    ])
+    .unwrap();
+    let first_entries: serde_json::Value = serde_json::from_str(&first_library).unwrap();
+    let game_id = first_entries[0]["game_id"].as_i64().unwrap();
+
+    game_media_vault_cli::run([
+        "game-media-vault".into(),
+        "--vault".into(),
+        vault.as_os_str().to_owned(),
+        "import-box-front".into(),
+        "--game-id".into(),
+        game_id.to_string().into(),
+        "--game".into(),
+        "Localized Title".into(),
+        "--platform".into(),
+        "Windows".into(),
+        "--region".into(),
+        "Worldwide".into(),
+        "--edition".into(),
+        "Standard".into(),
+        "--file".into(),
+        second_source.as_os_str().to_owned(),
+    ])
+    .unwrap();
+
+    let library = game_media_vault_cli::run([
+        "game-media-vault".into(),
+        "--vault".into(),
+        vault.as_os_str().to_owned(),
+        "library".into(),
+    ])
+    .unwrap();
+    let entries: serde_json::Value = serde_json::from_str(&library).unwrap();
+    let entries = entries.as_array().unwrap();
+
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["game_id"].as_i64() == Some(game_id))
+    );
 }

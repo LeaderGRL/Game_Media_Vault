@@ -1,13 +1,27 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use game_media_vault_application::{CatalogPort, PortError};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceKind,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 pub struct SqliteCatalog {
     path: PathBuf,
+    mode: CatalogOpenMode,
+    #[cfg(test)]
+    busy_handler: Option<fn(i32) -> bool>,
+}
+
+#[derive(Clone, Copy)]
+enum CatalogOpenMode {
+    CreateOrOpen,
+    ExistingOnly,
 }
 
 impl SqliteCatalog {
@@ -19,7 +33,12 @@ impl SqliteCatalog {
         {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
-        let catalog = Self { path };
+        let catalog = Self {
+            path,
+            mode: CatalogOpenMode::CreateOrOpen,
+            #[cfg(test)]
+            busy_handler: None,
+        };
         let connection = catalog.connect()?;
         initialize_schema(&connection)?;
         Ok(catalog)
@@ -34,7 +53,12 @@ impl SqliteCatalog {
             )));
         }
 
-        let catalog = Self { path };
+        let catalog = Self {
+            path,
+            mode: CatalogOpenMode::ExistingOnly,
+            #[cfg(test)]
+            busy_handler: None,
+        };
         let connection = catalog.connect()?;
         let table_count: i64 = connection
             .query_row(
@@ -56,10 +80,20 @@ impl SqliteCatalog {
     }
 
     fn connect(&self) -> Result<Connection, PortError> {
-        let connection = Connection::open(&self.path).map_err(sql_error)?;
+        let flags = match self.mode {
+            CatalogOpenMode::CreateOrOpen => {
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
+            }
+            CatalogOpenMode::ExistingOnly => OpenFlags::SQLITE_OPEN_READ_WRITE,
+        };
+        let connection = Connection::open_with_flags(&self.path, flags).map_err(sql_error)?;
         connection
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(sql_error)?;
+        #[cfg(test)]
+        if let Some(handler) = self.busy_handler {
+            connection.busy_handler(Some(handler)).map_err(sql_error)?;
+        }
         Ok(connection)
     }
 }
@@ -67,25 +101,34 @@ impl SqliteCatalog {
 impl CatalogPort for SqliteCatalog {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError> {
         let mut connection = self.connect()?;
-        let transaction = connection.transaction().map_err(sql_error)?;
         let normalized_title = normalize(&record.game_title);
         let normalized_platform = normalize(&record.platform);
         let normalized_region = normalize(&record.region);
         let normalized_edition = normalize(&record.edition_name);
+        let asset_type = asset_type_to_str(record.asset_type);
+        let source_kind = source_kind_to_str(record.source_kind);
+        let byte_len = i64::try_from(record.byte_len)
+            .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
 
-        transaction
-            .execute(
-                "INSERT INTO games (title, normalized_title) VALUES (?1, ?2) ON CONFLICT(normalized_title) DO NOTHING",
-                params![record.game_title, normalized_title],
-            )
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let game_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM games WHERE normalized_title = ?1",
-                params![normalized_title],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
+        let lookup = ExistingImportLookup {
+            normalized_title: &normalized_title,
+            normalized_platform: &normalized_platform,
+            normalized_region: &normalized_region,
+            normalized_edition: &normalized_edition,
+            asset_type,
+            source_kind,
+            byte_len,
+        };
+        if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
+            normalize_existing_provenance(&transaction, &record, source_kind, &existing)?;
+            transaction.commit().map_err(sql_error)?;
+            return Ok(existing.imported);
+        }
+
+        let game_id = resolve_game_id(&transaction, &record, &normalized_title)?;
 
         transaction
             .execute(
@@ -108,8 +151,10 @@ impl CatalogPort for SqliteCatalog {
         let release_edition_id: i64 = transaction
             .query_row(
                 "SELECT id FROM release_editions
-                 WHERE game_id = ?1 AND normalized_platform = ?2
-                   AND normalized_region = ?3 AND normalized_edition_name = ?4",
+                 WHERE game_id = ?1
+                   AND normalized_platform = ?2
+                   AND normalized_region = ?3
+                   AND normalized_edition_name = ?4",
                 params![
                     game_id,
                     normalized_platform,
@@ -120,9 +165,6 @@ impl CatalogPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
 
-        let asset_type = asset_type_to_str(record.asset_type);
-        let byte_len = i64::try_from(record.byte_len)
-            .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
         transaction
             .execute(
                 "INSERT INTO assets (
@@ -141,7 +183,9 @@ impl CatalogPort for SqliteCatalog {
         let asset_id: i64 = transaction
             .query_row(
                 "SELECT id FROM assets
-                 WHERE release_edition_id = ?1 AND asset_type = ?2 AND object_hash = ?3",
+                 WHERE release_edition_id = ?1
+                   AND asset_type = ?2
+                   AND object_hash = ?3",
                 params![release_edition_id, asset_type, record.object_hash],
                 |row| row.get(0),
             )
@@ -152,11 +196,7 @@ impl CatalogPort for SqliteCatalog {
                 "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
-                params![
-                    asset_id,
-                    source_kind_to_str(record.source_kind),
-                    record.source_location,
-                ],
+                params![asset_id, source_kind, record.source_location,],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
@@ -236,13 +276,160 @@ impl CatalogPort for SqliteCatalog {
     }
 }
 
+struct ExistingImportLookup<'a> {
+    normalized_title: &'a str,
+    normalized_platform: &'a str,
+    normalized_region: &'a str,
+    normalized_edition: &'a str,
+    asset_type: &'a str,
+    source_kind: &'a str,
+    byte_len: i64,
+}
+
+struct ExistingImportMatch {
+    imported: ImportedAsset,
+    matched_source_location: String,
+}
+
+fn resolve_game_id(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+    normalized_title: &str,
+) -> Result<i64, PortError> {
+    let Some(game_id) = record.existing_game_id else {
+        transaction
+            .execute(
+                "INSERT INTO games (title, normalized_title) VALUES (?1, ?2)",
+                params![record.game_title, normalized_title],
+            )
+            .map_err(sql_error)?;
+        return Ok(transaction.last_insert_rowid());
+    };
+
+    let exists: Option<i64> = transaction
+        .query_row(
+            "SELECT id FROM games WHERE id = ?1",
+            params![game_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+
+    match exists {
+        None => Err(PortError(format!("game #{game_id} does not exist"))),
+        Some(_) => Ok(game_id),
+    }
+}
+
+fn find_existing_import(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+    lookup: &ExistingImportLookup<'_>,
+) -> Result<Option<ExistingImportMatch>, PortError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT g.id, r.id, a.id, p.source_location
+             FROM asset_provenance p
+             JOIN assets a ON a.id = p.asset_id
+             JOIN release_editions r ON r.id = a.release_edition_id
+             JOIN games g ON g.id = r.game_id
+             WHERE p.source_kind = ?1
+               AND a.asset_type = ?2
+               AND a.object_hash = ?3
+               AND a.byte_len = ?4
+               AND g.normalized_title = ?5
+               AND r.normalized_platform = ?6
+               AND r.normalized_region = ?7
+               AND r.normalized_edition_name = ?8
+               AND (?9 IS NULL OR g.id = ?9)",
+        )
+        .map_err(sql_error)?;
+    let mut rows = statement
+        .query(params![
+            lookup.source_kind,
+            lookup.asset_type,
+            record.object_hash,
+            lookup.byte_len,
+            lookup.normalized_title,
+            lookup.normalized_platform,
+            lookup.normalized_region,
+            lookup.normalized_edition,
+            record.existing_game_id,
+        ])
+        .map_err(sql_error)?;
+
+    while let Some(row) = rows.next().map_err(sql_error)? {
+        let matched_source_location: String = row.get(3).map_err(sql_error)?;
+        if !equivalent_source_location(&matched_source_location, &record.source_location) {
+            continue;
+        }
+
+        return Ok(Some(ExistingImportMatch {
+            imported: ImportedAsset {
+                game_id: row.get(0).map_err(sql_error)?,
+                release_edition_id: row.get(1).map_err(sql_error)?,
+                asset_id: row.get(2).map_err(sql_error)?,
+                object_hash: record.object_hash.clone(),
+                byte_len: record.byte_len,
+            },
+            matched_source_location,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn equivalent_source_location(stored: &str, current: &str) -> bool {
+    if stored == current {
+        return true;
+    }
+
+    canonicalize_location(stored)
+        .zip(canonicalize_location(current))
+        .is_some_and(|(stored, current)| stored == current)
+}
+
+fn canonicalize_location(location: &str) -> Option<PathBuf> {
+    let path = Path::new(location);
+    if !path.is_absolute() {
+        return None;
+    }
+    fs::canonicalize(path).ok()
+}
+
+fn normalize_existing_provenance(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+    source_kind: &str,
+    existing: &ExistingImportMatch,
+) -> Result<(), PortError> {
+    if existing.matched_source_location == record.source_location {
+        return Ok(());
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
+            params![
+                existing.imported.asset_id,
+                source_kind,
+                record.source_location,
+            ],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
 fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
+    migrate_legacy_game_identity(connection)?;
     connection
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
-                normalized_title TEXT NOT NULL UNIQUE
+                normalized_title TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS release_editions (
                 id INTEGER PRIMARY KEY,
@@ -272,10 +459,58 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 UNIQUE(asset_id, source_kind, source_location)
             );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
+            CREATE INDEX IF NOT EXISTS idx_game_normalized_title ON games(normalized_title);
             CREATE INDEX IF NOT EXISTS idx_asset_release ON assets(release_edition_id);
             CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);",
         )
         .map_err(sql_error)
+}
+
+fn migrate_legacy_game_identity(connection: &Connection) -> Result<(), PortError> {
+    let games_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'games'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let Some(games_sql) = games_sql else {
+        return Ok(());
+    };
+    let normalized_sql = games_sql
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if !normalized_sql.contains("normalized_title text not null unique") {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;")
+        .map_err(sql_error)?;
+    let migration = connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         ALTER TABLE games RENAME TO games_legacy;
+         CREATE TABLE games (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             normalized_title TEXT NOT NULL
+         );
+         INSERT INTO games (id, title, normalized_title)
+         SELECT id, title, normalized_title FROM games_legacy;
+         DROP TABLE games_legacy;
+         COMMIT;",
+    );
+    if migration.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    let restore =
+        connection.execute_batch("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
+
+    migration.map_err(sql_error)?;
+    restore.map_err(sql_error)
 }
 
 fn normalize(value: &str) -> String {
@@ -316,4 +551,97 @@ fn io_error(error: std::io::Error) -> PortError {
 
 fn sql_error(error: rusqlite::Error) -> PortError {
     PortError(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet,
+        sync::{Condvar, Mutex, OnceLock},
+        thread,
+        time::Duration,
+    };
+
+    use game_media_vault_application::CatalogPort;
+    use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    static BUSY_THREADS: OnceLock<(Mutex<HashSet<thread::ThreadId>>, Condvar)> = OnceLock::new();
+
+    fn record_busy_thread(_: i32) -> bool {
+        let (threads, ready) =
+            BUSY_THREADS.get_or_init(|| (Mutex::new(HashSet::new()), Condvar::new()));
+        threads.lock().unwrap().insert(thread::current().id());
+        ready.notify_all();
+        true
+    }
+
+    #[test]
+    fn duplicate_lookup_is_serialized_with_concurrent_writes() {
+        let temp = tempdir().unwrap();
+        let catalog_path = temp.path().join("catalog.sqlite3");
+        SqliteCatalog::open(&catalog_path).unwrap();
+        let blocker = Connection::open(&catalog_path).unwrap();
+        blocker
+            .execute_batch("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;")
+            .unwrap();
+
+        let (busy_threads, ready) =
+            BUSY_THREADS.get_or_init(|| (Mutex::new(HashSet::new()), Condvar::new()));
+        busy_threads.lock().unwrap().clear();
+
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let catalog_path = catalog_path.clone();
+                thread::spawn(move || {
+                    let catalog = SqliteCatalog {
+                        path: catalog_path,
+                        mode: CatalogOpenMode::ExistingOnly,
+                        busy_handler: Some(record_busy_thread),
+                    };
+                    catalog
+                        .persist_asset(PersistAsset {
+                            existing_game_id: None,
+                            game_title: "Concurrent Game".to_owned(),
+                            platform: "Windows".to_owned(),
+                            region: "Worldwide".to_owned(),
+                            edition_name: "Standard".to_owned(),
+                            asset_type: AssetType::BoxFront,
+                            object_hash: "shared-object-hash".to_owned(),
+                            byte_len: 42,
+                            original_filename: "front.png".to_owned(),
+                            source_kind: SourceKind::LocalImport,
+                            source_location: "C:/collection/front.png".to_owned(),
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+
+        let observed = busy_threads.lock().unwrap();
+        let (observed, timeout) = ready
+            .wait_timeout_while(observed, Duration::from_secs(5), |threads| {
+                threads.len() < 2
+            })
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "both workers should contend on the SQLite write lock"
+        );
+        assert_eq!(observed.len(), 2);
+        drop(observed);
+
+        blocker.execute_batch("COMMIT;").unwrap();
+
+        let imported: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(imported[0].asset_id, imported[1].asset_id);
+
+        let catalog = SqliteCatalog::open_existing(&catalog_path).unwrap();
+        assert_eq!(catalog.list_library().unwrap().len(), 1);
+    }
 }

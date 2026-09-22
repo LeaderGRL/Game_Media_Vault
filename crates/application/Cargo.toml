@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 game-media-vault-domain.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

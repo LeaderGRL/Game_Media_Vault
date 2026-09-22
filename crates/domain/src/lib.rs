@@ -20,6 +20,7 @@ pub struct StoredObject {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistAsset {
+    pub existing_game_id: Option<i64>,
     pub game_title: String,
     pub platform: String,
     pub region: String,

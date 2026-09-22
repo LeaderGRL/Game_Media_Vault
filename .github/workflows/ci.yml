@@ -105,3 +105,38 @@ jobs:
       - name: Build Rust workspace
         if: steps.rust.outputs.enabled == 'true'
         run: cargo build --workspace --all-targets --all-features
+
+  validate-windows:
+    name: Validate Windows paths
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ui
+        run: npm run build
+
+      - name: Test Rust workspace
+        run: cargo test --workspace --all-features
+
+      - name: Build Rust workspace
+        run: cargo build --workspace --all-targets --all-features

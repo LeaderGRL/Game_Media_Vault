@@ -17,6 +17,7 @@ fn loads_an_asset_imported_into_the_selected_vault() {
         &catalog,
         &store,
         ImportLocalBoxFrontRequest {
+            existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),
             region: "France".to_owned(),
