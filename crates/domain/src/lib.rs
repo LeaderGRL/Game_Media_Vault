@@ -200,6 +200,24 @@ impl fmt::Display for AcquisitionRequestValidationError {
 
 impl std::error::Error for AcquisitionRequestValidationError {}
 
+fn non_blank_values(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
+impl QualityRequirements {
+    fn normalized(mut self) -> Self {
+        self.accepted_mime_types = non_blank_values(self.accepted_mime_types);
+        self.preferred_scan_type = self
+            .preferred_scan_type
+            .filter(|value| !value.trim().is_empty());
+        self.preferred_source_priority = non_blank_values(self.preferred_source_priority);
+        self
+    }
+}
+
 impl AcquisitionRequest {
     pub fn try_from_draft(
         draft: AcquisitionRequestDraft,
@@ -207,10 +225,7 @@ impl AcquisitionRequest {
         let sources = match draft.sources {
             SourceSelection::Auto => SourceSelection::Auto,
             SourceSelection::Explicit(values) => {
-                let values: Vec<_> = values
-                    .into_iter()
-                    .filter(|value| !value.trim().is_empty())
-                    .collect();
+                let values = non_blank_values(values);
                 if values.is_empty() {
                     return Err(AcquisitionRequestValidationError::MissingSources);
                 }
@@ -223,25 +238,14 @@ impl AcquisitionRequest {
         if !draft.games.is_valid() {
             return Err(AcquisitionRequestValidationError::InvalidGameSelection);
         }
-        let platforms: Vec<_> = draft
-            .platforms
-            .into_iter()
-            .filter(|value| !value.trim().is_empty())
-            .collect();
+        let platforms = non_blank_values(draft.platforms);
         if platforms.is_empty() && !draft.games.fixes_platforms_explicitly() {
             return Err(AcquisitionRequestValidationError::MissingPlatforms);
         }
 
-        let regions = draft
-            .regions
-            .into_iter()
-            .filter(|value| !value.trim().is_empty())
-            .collect();
-        let languages = draft
-            .languages
-            .into_iter()
-            .filter(|value| !value.trim().is_empty())
-            .collect();
+        let regions = non_blank_values(draft.regions);
+        let languages = non_blank_values(draft.languages);
+        let quality = draft.quality.map(QualityRequirements::normalized);
 
         Ok(Self {
             sources,
@@ -250,7 +254,7 @@ impl AcquisitionRequest {
             regions,
             languages,
             asset_types: draft.asset_types,
-            quality: draft.quality,
+            quality,
             retention: draft.retention,
             limits: draft.limits,
         })
