@@ -1,8 +1,8 @@
-export type SourceKind = "local_import";
 export type AssetType = "box_front";
 
 export interface AssetProvenance {
-  source_kind: SourceKind;
+  source_id: string;
+  source_asset_label: string | null;
   source_location: string;
 }
 

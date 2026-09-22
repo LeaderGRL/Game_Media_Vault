@@ -178,6 +178,13 @@ fn acquisition_targets(request: &AcquisitionRequest) -> Result<Vec<(String, Stri
             .collect()),
         GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => Ok(games
             .iter()
+            .filter(|game| {
+                request.platforms().is_empty()
+                    || request
+                        .platforms()
+                        .iter()
+                        .any(|platform| platform == &game.platform)
+            })
             .map(|game| (game.platform.clone(), game.game.clone()))
             .collect()),
         GameSelection::All => Err(PortError(

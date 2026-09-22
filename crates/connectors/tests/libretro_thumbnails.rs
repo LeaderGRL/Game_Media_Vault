@@ -7,7 +7,7 @@ use game_media_vault_application::{ConnectorPort, PortError};
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetType, AssetTypeSelector,
-    GameSelection, RetentionPolicy, SourceId, SourceSelection,
+    GameSelection, PlatformBoundGameSelector, RetentionPolicy, SourceId, SourceSelection,
 };
 
 const GITMODULES_FIXTURE: &str = r#"
@@ -145,6 +145,41 @@ fn resolves_the_branch_declared_by_libretro_metadata() {
         candidate.source_url,
         "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Naomi/main/Named_Boxarts/Crazy%20Taxi.png"
     );
+}
+
+#[test]
+fn platform_bound_targets_respect_explicit_platform_filters() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::PlatformBound(vec![
+            PlatformBoundGameSelector {
+                platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+                game: "Super Mario Bros. (World)".to_owned(),
+            },
+            PlatformBoundGameSelector {
+                platform: "Sega - Naomi".to_owned(),
+                game: "Crazy Taxi".to_owned(),
+            },
+        ]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let candidates = connector.discover(&request).unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].platform,
+        "Nintendo - Nintendo Entertainment System"
+    );
+    assert_eq!(candidates[0].game_title, "Super Mario Bros. (World)");
 }
 
 #[test]
