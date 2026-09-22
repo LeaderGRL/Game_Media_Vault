@@ -39,25 +39,13 @@ impl SqliteCatalog {
         {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
-        let catalog = Self {
-            path: path.clone(),
+        initialize_new_catalog(&path, initialize_schema)?;
+        Ok(Self {
+            path,
             mode: CatalogOpenMode::ExistingOnly,
             #[cfg(test)]
             busy_handler: None,
-        };
-        let reservation = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(io_error)?;
-        drop(reservation);
-        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-            .map_err(sql_error)?;
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
-            .map_err(sql_error)?;
-        initialize_schema(&connection)?;
-        Ok(catalog)
+        })
     }
 
     pub fn open_existing(path: impl Into<PathBuf>) -> Result<Self, PortError> {
@@ -114,6 +102,41 @@ impl SqliteCatalog {
             connection.busy_handler(Some(handler)).map_err(sql_error)?;
         }
         Ok(connection)
+    }
+}
+
+fn initialize_new_catalog(
+    path: &Path,
+    initialize: impl FnOnce(&Connection) -> Result<(), PortError>,
+) -> Result<(), PortError> {
+    let reservation = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(io_error)?;
+    drop(reservation);
+
+    let initialization = (|| -> Result<(), PortError> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(sql_error)?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+            .map_err(sql_error)?;
+        initialize(&connection)
+    })();
+
+    match initialization {
+        Ok(()) => Ok(()),
+        Err(error) => match fs::remove_file(path) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error)
+            }
+            Err(cleanup_error) => Err(PortError(format!(
+                "{error}; failed to remove incomplete catalog {}: {cleanup_error}",
+                path.display()
+            ))),
+        },
     }
 }
 
