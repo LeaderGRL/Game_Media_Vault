@@ -63,6 +63,7 @@ pub struct AcquisitionRequestDraft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcquisitionRequestValidationError {
     MissingSources,
+    MissingAssetTypes,
 }
 
 impl fmt::Display for AcquisitionRequestValidationError {
@@ -70,6 +71,9 @@ impl fmt::Display for AcquisitionRequestValidationError {
         match self {
             Self::MissingSources => {
                 formatter.write_str("acquisition request must include at least one source")
+            }
+            Self::MissingAssetTypes => {
+                formatter.write_str("acquisition request must include at least one asset type")
             }
         }
     }
@@ -83,6 +87,9 @@ impl AcquisitionRequest {
     ) -> Result<Self, AcquisitionRequestValidationError> {
         if matches!(&draft.sources, SourceSelection::Explicit(values) if values.is_empty()) {
             return Err(AcquisitionRequestValidationError::MissingSources);
+        }
+        if draft.asset_types.is_empty() {
+            return Err(AcquisitionRequestValidationError::MissingAssetTypes);
         }
 
         Ok(Self {
