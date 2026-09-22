@@ -853,6 +853,18 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
                 ("completed_work", "INTEGER", true, false),
             ],
         )?;
+        let versioned_after_alter = table_matches_columns(
+            connection,
+            "acquisition_runs",
+            &[
+                ("id", "INTEGER", false, true),
+                ("request_json", "TEXT", true, false),
+                ("status", "TEXT", true, false),
+                ("queued_work", "INTEGER", true, false),
+                ("completed_work", "INTEGER", true, false),
+                ("request_schema_version", "INTEGER", true, false),
+            ],
+        )?;
         let unversioned = table_matches_columns(
             connection,
             "acquisition_runs",
@@ -864,7 +876,7 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
                 ("completed_work", "INTEGER", true, false),
             ],
         )?;
-        if (!versioned && !unversioned)
+        if (!versioned && !versioned_after_alter && !unversioned)
             || !table_matches_columns(
                 connection,
                 "acquisition_run_work",

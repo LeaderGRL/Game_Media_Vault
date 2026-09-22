@@ -427,6 +427,13 @@ fn opening_an_unversioned_acquisition_run_catalog_adds_the_request_schema_versio
         .unwrap();
 
     assert_eq!(schema_version, 1);
+    drop(connection);
+    drop(reopened);
+
+    let reopened_again = SqliteCatalog::open_existing(&path).unwrap();
+    let loaded = load_acquisition_run(&reopened_again, run.id).unwrap();
+    assert_eq!(loaded.id, run.id);
+    assert_eq!(loaded.status, AcquisitionRunStatus::Running);
 }
 
 #[test]
