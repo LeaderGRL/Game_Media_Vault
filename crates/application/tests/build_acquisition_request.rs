@@ -131,6 +131,26 @@ fn preserves_optional_filters_and_independent_asset_type_selection() {
 }
 
 #[test]
+fn removes_blank_optional_region_and_language_filters() {
+    let request = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::All,
+        regions: vec!["".to_owned(), "Europe".to_owned(), "   ".to_owned()],
+        languages: vec![" ".to_owned(), "fr".to_owned(), "".to_owned()],
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let serialized = serde_json::to_value(request).unwrap();
+    assert_eq!(serialized["regions"], json!(["Europe"]));
+    assert_eq!(serialized["languages"], json!(["fr"]));
+}
+
+#[test]
 fn rejects_all_games_targeting_without_a_platform() {
     let error = build_acquisition_request(AcquisitionRequestInput {
         sources: SourceSelection::Auto,

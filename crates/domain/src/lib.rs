@@ -225,12 +225,23 @@ impl AcquisitionRequest {
             return Err(AcquisitionRequestValidationError::MissingPlatforms);
         }
 
+        let regions = draft
+            .regions
+            .into_iter()
+            .filter(|value| !value.trim().is_empty())
+            .collect();
+        let languages = draft
+            .languages
+            .into_iter()
+            .filter(|value| !value.trim().is_empty())
+            .collect();
+
         Ok(Self {
             sources,
             platforms,
             games: draft.games,
-            regions: draft.regions,
-            languages: draft.languages,
+            regions,
+            languages,
             asset_types: draft.asset_types,
             quality: draft.quality,
             retention: draft.retention,
