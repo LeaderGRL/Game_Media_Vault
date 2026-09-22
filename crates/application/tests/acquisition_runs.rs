@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, PortError, RunRepositoryPort, start_acquisition_run,
+    AcquisitionRequestInput, AcquisitionRequestValidationError, PortError, RunRepositoryPort,
+    start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
@@ -108,4 +109,33 @@ fn starting_an_acquisition_run_persists_the_validated_request() {
             }
         })]
     );
+}
+
+#[test]
+fn invalid_acquisition_request_is_rejected_before_persistence() {
+    let runs = RecordingRunRepository::new();
+
+    let error = start_acquisition_run(
+        &runs,
+        AcquisitionRequestInput {
+            sources: SourceSelection::Explicit(Vec::new()),
+            platforms: vec!["Windows".to_owned()],
+            games: GameSelection::All,
+            regions: Vec::new(),
+            languages: Vec::new(),
+            asset_types: vec![AssetTypeSelector::BoxFront],
+            quality: None,
+            retention: RetentionPolicy::KeepEverything,
+            limits: AcquisitionLimits::default(),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        game_media_vault_application::ApplicationError::Validation(
+            AcquisitionRequestValidationError::MissingSources
+        )
+    );
+    assert!(runs.persisted_requests.borrow().is_empty());
 }

@@ -13,6 +13,8 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
+const ACQUISITION_REQUEST_SCHEMA_VERSION: i64 = 1;
+
 pub struct SqliteCatalog {
     path: PathBuf,
     mode: CatalogOpenMode,
@@ -62,20 +64,23 @@ impl SqliteCatalog {
             busy_handler: None,
         };
         let connection = catalog.connect()?;
+        let legacy_catalog_tables = ["games", "release_editions", "assets", "asset_provenance"];
+        if !required_tables_exist(&connection, &legacy_catalog_tables)? {
+            return Err(PortError(format!(
+                "catalog schema is missing or incomplete: {}",
+                catalog.path.display()
+            )));
+        }
         initialize_schema(&connection)?;
-        let table_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table'
-                   AND name IN (
-                       'games', 'release_editions', 'assets', 'asset_provenance',
-                       'acquisition_runs', 'acquisition_run_work'
-                   )",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
-        if table_count != 6 {
+        let current_catalog_tables = [
+            "games",
+            "release_editions",
+            "assets",
+            "asset_provenance",
+            "acquisition_runs",
+            "acquisition_run_work",
+        ];
+        if !required_tables_exist(&connection, &current_catalog_tables)? {
             return Err(PortError(format!(
                 "catalog schema is missing or incomplete: {}",
                 catalog.path.display()
@@ -113,9 +118,9 @@ impl RunRepositoryPort for SqliteCatalog {
         connection
             .execute(
                 "INSERT INTO acquisition_runs (
-                    request_json, status, queued_work, completed_work
-                 ) VALUES (?1, 'running', 0, 0)",
-                params![request_json],
+                    request_json, request_schema_version, status, queued_work, completed_work
+                 ) VALUES (?1, ?2, 'running', 0, 0)",
+                params![request_json, ACQUISITION_REQUEST_SCHEMA_VERSION],
             )
             .map_err(sql_error)?;
 
@@ -132,24 +137,31 @@ impl RunRepositoryPort for SqliteCatalog {
         let connection = self.connect()?;
         let row = connection
             .query_row(
-                "SELECT request_json, status, queued_work, completed_work
+                "SELECT request_json, request_schema_version, status, queued_work, completed_work
                  FROM acquisition_runs WHERE id = ?1",
                 params![run_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
                     ))
                 },
             )
             .optional()
             .map_err(sql_error)?;
 
-        let Some((request_json, status, queued_work, completed_work)) = row else {
+        let Some((request_json, request_schema_version, status, queued_work, completed_work)) = row
+        else {
             return Ok(None);
         };
+        if request_schema_version != ACQUISITION_REQUEST_SCHEMA_VERSION {
+            return Err(PortError(format!(
+                "unsupported acquisition request schema version: {request_schema_version}"
+            )));
+        }
         let draft: AcquisitionRequestDraft =
             serde_json::from_str(&request_json).map_err(|error| {
                 PortError(format!("invalid persisted acquisition request: {error}"))
@@ -641,6 +653,8 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             CREATE TABLE IF NOT EXISTS acquisition_runs (
                 id INTEGER PRIMARY KEY,
                 request_json TEXT NOT NULL,
+                request_schema_version INTEGER NOT NULL DEFAULT 1
+                    CHECK(request_schema_version > 0),
                 status TEXT NOT NULL,
                 queued_work INTEGER NOT NULL CHECK(queued_work >= 0),
                 completed_work INTEGER NOT NULL CHECK(completed_work >= 0)
@@ -659,7 +673,49 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             CREATE INDEX IF NOT EXISTS idx_run_work_pending
                 ON acquisition_run_work(run_id, completed, id);",
         )
-        .map_err(sql_error)
+        .map_err(sql_error)?;
+    migrate_acquisition_request_schema(connection)
+}
+
+fn migrate_acquisition_request_schema(connection: &Connection) -> Result<(), PortError> {
+    let version_column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('acquisition_runs')
+             WHERE name = 'request_schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+
+    if version_column_count == 0 {
+        connection
+            .execute_batch(
+                "ALTER TABLE acquisition_runs
+                 ADD COLUMN request_schema_version INTEGER NOT NULL DEFAULT 1
+                 CHECK(request_schema_version > 0);",
+            )
+            .map_err(sql_error)?;
+    }
+
+    Ok(())
+}
+
+fn required_tables_exist(connection: &Connection, table_names: &[&str]) -> Result<bool, PortError> {
+    for table_name in table_names {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                 )",
+                params![table_name],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if exists != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {

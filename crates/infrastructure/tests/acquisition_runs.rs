@@ -1,13 +1,16 @@
+use std::fs;
+
 use game_media_vault_application::{
-    CatalogPort, cancel_acquisition_run, complete_acquisition_work, load_acquisition_run,
-    next_acquisition_work, pause_acquisition_run, queue_acquisition_work, resume_acquisition_run,
-    start_acquisition_run,
+    CatalogPort, ImportLocalBoxFrontRequest, cancel_acquisition_run, complete_acquisition_work,
+    import_local_box_front, load_acquisition_run, next_acquisition_work, pause_acquisition_run,
+    queue_acquisition_work, resume_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRunStatus, AssetType, AssetTypeSelector, GameSelection,
-    PersistAsset, RetentionPolicy, SourceKind, SourceSelection,
+    AcquisitionLimits, AcquisitionRunStatus, AssetTypeSelector, GameSelection, RetentionPolicy,
+    SourceSelection,
 };
-use game_media_vault_infrastructure::SqliteCatalog;
+use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 fn request() -> game_media_vault_application::AcquisitionRequestInput {
@@ -88,30 +91,189 @@ fn pause_and_resume_preserve_queued_work_across_restart() {
 #[test]
 fn cancellation_preserves_assets_accepted_before_the_run_was_cancelled() {
     let temp = tempdir().unwrap();
-    let path = temp.path().join("catalog.sqlite3");
+    let vault = temp.path().join("vault");
+    let path = vault.join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&path).unwrap();
+    let store = ContentAddressedStore::new(&vault);
     let run = start_acquisition_run(&catalog, request()).unwrap();
-    let accepted = catalog
-        .persist_asset(PersistAsset {
+    let source = temp.path().join("front.png");
+    let source_bytes = b"accepted acquisition asset";
+    fs::write(&source, source_bytes).unwrap();
+    let accepted = import_local_box_front(
+        &catalog,
+        &store,
+        ImportLocalBoxFrontRequest {
             existing_game_id: None,
             game_title: "Accepted Game".to_owned(),
             platform: "Windows".to_owned(),
             region: "Worldwide".to_owned(),
             edition_name: "Standard".to_owned(),
-            asset_type: AssetType::BoxFront,
-            object_hash: "accepted-object".to_owned(),
-            byte_len: 42,
-            original_filename: "front.png".to_owned(),
-            source_kind: SourceKind::LocalImport,
-            source_location: "accepted/front.png".to_owned(),
-        })
-        .unwrap();
+            source_path: source,
+        },
+    )
+    .unwrap();
 
     let cancelled = cancel_acquisition_run(&catalog, run.id).unwrap();
-    let library = catalog.list_library().unwrap();
+    drop(catalog);
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let library = reopened.list_library().unwrap();
 
     assert_eq!(cancelled.status, AcquisitionRunStatus::Cancelled);
-    assert!(next_acquisition_work(&catalog, run.id).unwrap().is_none());
+    assert!(next_acquisition_work(&reopened, run.id).unwrap().is_none());
     assert_eq!(library.len(), 1);
     assert_eq!(library[0].asset_id, accepted.asset_id);
+    assert_eq!(library[0].object_hash, accepted.object_hash);
+    assert_eq!(
+        fs::read(store.object_path(&accepted.object_hash)).unwrap(),
+        source_bytes
+    );
+}
+
+#[test]
+fn duplicate_work_keys_are_queued_only_once() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+
+    queue_acquisition_work(&catalog, run.id, "download:cover".to_owned()).unwrap();
+    queue_acquisition_work(&catalog, run.id, "download:cover".to_owned()).unwrap();
+
+    let loaded = load_acquisition_run(&catalog, run.id).unwrap();
+    let next = next_acquisition_work(&catalog, run.id).unwrap().unwrap();
+
+    assert_eq!(loaded.queued_work, 1);
+    assert_eq!(next.key, "download:cover");
+}
+
+#[test]
+fn opening_an_unrelated_sqlite_database_does_not_turn_it_into_a_vault() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("unrelated.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    drop(connection);
+
+    let opened = SqliteCatalog::open_existing(&path);
+
+    assert!(opened.is_err());
+    let connection = Connection::open(&path).unwrap();
+    let run_table_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'acquisition_runs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(run_table_count, 0);
+}
+
+#[test]
+fn opening_a_pre_acquisition_run_catalog_migrates_it_in_place() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    drop(catalog);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE acquisition_run_work;
+             DROP TABLE acquisition_runs;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let run = start_acquisition_run(&reopened, request()).unwrap();
+
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn opening_an_unversioned_acquisition_run_catalog_adds_the_request_schema_version() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE acquisition_run_work;
+             DROP TABLE acquisition_runs;
+             CREATE TABLE acquisition_runs (
+                 id INTEGER PRIMARY KEY,
+                 request_json TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 queued_work INTEGER NOT NULL CHECK(queued_work >= 0),
+                 completed_work INTEGER NOT NULL CHECK(completed_work >= 0)
+             );
+             CREATE TABLE acquisition_run_work (
+                 id INTEGER PRIMARY KEY,
+                 run_id INTEGER NOT NULL REFERENCES acquisition_runs(id),
+                 work_key TEXT NOT NULL,
+                 completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0, 1)),
+                 UNIQUE(run_id, work_key)
+             );",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let run = start_acquisition_run(&reopened, request()).unwrap();
+    let connection = Connection::open(&path).unwrap();
+    let schema_version: i64 = connection
+        .query_row(
+            "SELECT request_schema_version FROM acquisition_runs WHERE id = ?1",
+            [run.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(schema_version, 1);
+}
+
+#[test]
+fn persisted_acquisition_requests_have_an_explicit_schema_version() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+
+    let connection = Connection::open(&path).unwrap();
+    let schema_version: i64 = connection
+        .query_row(
+            "SELECT request_schema_version FROM acquisition_runs WHERE id = ?1",
+            [run.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(schema_version, 1);
+}
+
+#[test]
+fn unsupported_persisted_request_schema_versions_are_rejected() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE acquisition_runs SET request_schema_version = 2 WHERE id = ?1",
+            [run.id],
+        )
+        .unwrap();
+    drop(connection);
+
+    let error = load_acquisition_run(&catalog, run.id).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported acquisition request schema version: 2")
+    );
 }
