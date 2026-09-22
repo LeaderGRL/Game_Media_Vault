@@ -1,8 +1,43 @@
 use std::{ffi::OsString, fs, path::Path, process::Command};
 
-use game_media_vault_application::AcquisitionRequestValidationError;
+use game_media_vault_application::{AcquisitionRequestValidationError, ConnectorPort, PortError};
 use game_media_vault_cli::CliError;
+use game_media_vault_domain::{
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, SourceKind,
+};
 use tempfile::tempdir;
+
+struct FixtureConnector;
+
+impl ConnectorPort for FixtureConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(vec![AssetCandidate {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            edition_name: "Unspecified".to_owned(),
+            asset_type: AssetType::BoxFront,
+            source_kind: SourceKind::LibretroThumbnails,
+            source_url: "https://example.invalid/smb-box-front.png".to_owned(),
+            original_filename: "Super Mario Bros. (World).png".to_owned(),
+        }])
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
+        Ok(b"cli connector fixture".to_vec())
+    }
+}
 
 fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
     let mut command = vec![
@@ -22,6 +57,46 @@ fn help_exits_successfully() {
         .unwrap();
 
     assert!(status.success());
+}
+
+#[test]
+fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let started = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "libretro-thumbnails",
+            "--platform",
+            "Nintendo - Nintendo Entertainment System",
+            "--game",
+            "Super Mario Bros. (World)",
+            "--region",
+            "World",
+            "--asset-type",
+            "box-front",
+        ],
+    )
+    .unwrap();
+    let started: serde_json::Value = serde_json::from_str(&started).unwrap();
+    let run_id = started["id"].as_i64().unwrap();
+
+    let completed = game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+        &vault,
+        run_id,
+        &FixtureConnector,
+    )
+    .unwrap();
+
+    assert_eq!(
+        completed.status,
+        game_media_vault_domain::AcquisitionRunStatus::Completed
+    );
+    let library = run_in_vault(&vault, &["library"]).unwrap();
+    assert!(library.contains("Super Mario Bros. (World)"));
+    assert!(library.contains("https://example.invalid/smb-box-front.png"));
 }
 
 #[test]

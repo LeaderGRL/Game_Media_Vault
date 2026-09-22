@@ -1,8 +1,10 @@
 use game_media_vault_application::{
-    AcquisitionRequestInput, load_acquisition_run as load_acquisition_run_use_case,
+    AcquisitionRequestInput, ConnectorPort, PortError,
+    load_acquisition_run as load_acquisition_run_use_case,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRunStatus, AssetTypeSelector, GameSelection, RetentionPolicy,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRunStatus, AssetCandidate, AssetType,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, RetentionPolicy, SourceKind,
     SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
@@ -19,6 +21,38 @@ fn request_input() -> AcquisitionRequestInput {
         quality: None,
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
+    }
+}
+
+struct FixtureConnector;
+
+impl ConnectorPort for FixtureConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(vec![AssetCandidate {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            edition_name: "Unspecified".to_owned(),
+            asset_type: AssetType::BoxFront,
+            source_kind: SourceKind::LibretroThumbnails,
+            source_url: "https://example.invalid/smb-box-front.png".to_owned(),
+            original_filename: "Super Mario Bros. (World).png".to_owned(),
+        }])
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Vec<u8>, PortError> {
+        Ok(b"tauri connector fixture".to_vec())
     }
 }
 
@@ -60,4 +94,37 @@ fn tauri_exposes_the_shared_persisted_acquisition_run_state() {
     let reloaded =
         game_media_vault_tauri::load_acquisition_run_from_vault(&vault, started.id).unwrap();
     assert_eq!(reloaded, cancelled);
+}
+
+#[test]
+fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let request = AcquisitionRequestInput {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: vec!["World".to_owned()],
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    };
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+
+    let completed = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
+        &vault,
+        started.id,
+        &FixtureConnector,
+    )
+    .unwrap();
+
+    assert_eq!(completed.status, AcquisitionRunStatus::Completed);
+    let library = game_media_vault_tauri::load_library(&vault).unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(
+        library[0].provenance[0].source_location,
+        "https://example.invalid/smb-box-front.png"
+    );
 }

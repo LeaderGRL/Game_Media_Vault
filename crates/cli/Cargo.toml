@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 game-media-vault-application.workspace = true
+game-media-vault-connectors.workspace = true
 game-media-vault-domain.workspace = true
 game-media-vault-infrastructure.workspace = true
 serde.workspace = true

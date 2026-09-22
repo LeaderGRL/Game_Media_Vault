@@ -1102,6 +1102,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "game-media-vault-application",
+ "game-media-vault-connectors",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
  "serde",
@@ -1147,6 +1148,7 @@ name = "game-media-vault-tauri"
 version = "0.1.0"
 dependencies = [
  "game-media-vault-application",
+ "game-media-vault-connectors",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
  "serde_json",
