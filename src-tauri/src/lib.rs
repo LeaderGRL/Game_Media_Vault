@@ -6,13 +6,17 @@ use game_media_vault_application::{
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
+    list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
     pause_acquisition_run as pause_acquisition_run_use_case,
+    resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
     start_acquisition_run as start_acquisition_run_use_case,
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
-use game_media_vault_domain::{AcquisitionRequest, AcquisitionRun, LibraryEntry, MatchingPolicy};
+use game_media_vault_domain::{
+    AcquisitionRequest, AcquisitionRun, LibraryEntry, MatchingPolicy, ReviewDecision, ReviewItem,
+};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 
 pub fn validate_acquisition_request(
@@ -34,9 +38,40 @@ pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryEntry>, String> {
     list_library_use_case(&catalog).map_err(|error| error.to_string())
 }
 
+pub fn load_review_items(vault_root: &Path) -> Result<Vec<ReviewItem>, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    list_review_items_use_case(&catalog).map_err(|error| error.to_string())
+}
+
+pub fn resolve_review_item_in_vault(
+    vault_root: &Path,
+    review_item_id: i64,
+    decision: ReviewDecision,
+) -> Result<ReviewItem, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    resolve_review_item_use_case(&catalog, review_item_id, decision)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn list_library(vault_root: String) -> Result<Vec<LibraryEntry>, String> {
     load_library(Path::new(&vault_root))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn list_review_items(vault_root: String) -> Result<Vec<ReviewItem>, String> {
+    load_review_items(Path::new(&vault_root))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn resolve_review_item(
+    vault_root: String,
+    review_item_id: i64,
+    decision: ReviewDecision,
+) -> Result<ReviewItem, String> {
+    resolve_review_item_in_vault(Path::new(&vault_root), review_item_id, decision)
 }
 
 pub fn start_acquisition_run_in_vault(
@@ -181,6 +216,8 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             list_library,
+            list_review_items,
+            resolve_review_item,
             build_acquisition_request,
             start_acquisition_run,
             execute_acquisition_run,

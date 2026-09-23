@@ -8,13 +8,15 @@ use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
     ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, PortError,
     acquire_run_with_connector, cancel_acquisition_run, import_local_box_front,
-    import_reference_catalog, list_acquisition_runs, list_library, load_acquisition_run,
-    pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
+    import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
+    load_acquisition_run, pause_acquisition_run, resolve_review_item, resume_acquisition_run,
+    start_acquisition_run,
 };
 use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRun, AssetTypeSelector, GameSelection, MatchingPolicy,
-    PlatformBoundGameSelector, QualityRequirements, RetentionPolicy, SourceSelection,
+    PlatformBoundGameSelector, QualityRequirements, RetentionPolicy, ReviewDecision,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use thiserror::Error;
@@ -85,6 +87,10 @@ enum Command {
         #[command(subcommand)]
         command: RunCommand,
     },
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
     ImportBoxFront {
         #[arg(long)]
         game_id: Option<i64>,
@@ -128,6 +134,22 @@ enum RunCommand {
         id: i64,
     },
     Cancel {
+        id: i64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewCommand {
+    List,
+    Accept {
+        id: i64,
+        #[arg(long)]
+        release_edition_id: i64,
+    },
+    Reject {
+        id: i64,
+    },
+    Defer {
         id: i64,
     },
 }
@@ -301,6 +323,28 @@ where
                 }
             }
         },
+        Command::Review { command } => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            match command {
+                ReviewCommand::List => {
+                    Ok(serde_json::to_string_pretty(&list_review_items(&catalog)?)?)
+                }
+                ReviewCommand::Accept {
+                    id,
+                    release_edition_id,
+                } => Ok(serde_json::to_string_pretty(&resolve_review_item(
+                    &catalog,
+                    id,
+                    ReviewDecision::Accept { release_edition_id },
+                )?)?),
+                ReviewCommand::Reject { id } => Ok(serde_json::to_string_pretty(
+                    &resolve_review_item(&catalog, id, ReviewDecision::Reject)?,
+                )?),
+                ReviewCommand::Defer { id } => Ok(serde_json::to_string_pretty(
+                    &resolve_review_item(&catalog, id, ReviewDecision::Defer)?,
+                )?),
+            }
+        }
         Command::ImportBoxFront {
             game_id,
             game,

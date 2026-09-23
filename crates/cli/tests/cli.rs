@@ -7,13 +7,14 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestValidationError, ApplicationError, ConnectorPort, PortError,
+    AcquisitionRequestValidationError, ApplicationError, CatalogPort, ConnectorPort, PortError,
     ReferenceCatalogRepositoryPort,
 };
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, MatchingPolicy,
-    MatchingPolicyValidationError, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, MatchEvidence,
+    MatchSignal, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
+    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewMatchCandidate,
     SourceId,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
@@ -60,6 +61,92 @@ fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
     ];
     command.extend(args.iter().map(OsString::from));
     game_media_vault_cli::run(command)
+}
+
+fn seed_review_item(vault: &Path) -> i64 {
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:cli-review".to_owned(),
+            candidate: AssetCandidate {
+                game_title: "Review Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_url: "fixture://review/front".to_owned(),
+                original_filename: "front.png".to_owned(),
+            },
+            competing_matches: vec![ReviewMatchCandidate {
+                game_id: 301,
+                release_edition_id: 201,
+                game_title: "Review Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Standard".to_owned(),
+                score: 90,
+                evidence: vec![MatchEvidence {
+                    signal: MatchSignal::Title,
+                    candidate_value: "Review Game".to_owned(),
+                    release_value: "Review Game".to_owned(),
+                    score_delta: 50,
+                }],
+            }],
+        })
+        .unwrap();
+    catalog.list_review_items().unwrap()[0].id
+}
+
+#[test]
+fn review_commands_show_evidence_and_persist_accept_reject_and_defer() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let review_item_id = seed_review_item(&vault);
+    let id = review_item_id.to_string();
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["review", "list"]).unwrap()).unwrap();
+    assert_eq!(
+        listed[0]["candidate"]["source_url"],
+        "fixture://review/front"
+    );
+    assert_eq!(listed[0]["competing_matches"][0]["score"], 90);
+    assert_eq!(
+        listed[0]["competing_matches"][0]["evidence"][0]["signal"],
+        "title"
+    );
+
+    let accepted: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &vault,
+            &["review", "accept", &id, "--release-edition-id", "201"],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(accepted["decision"]["decision"], "accept");
+    assert_eq!(accepted["decision"]["release_edition_id"], 201);
+
+    let rejected: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["review", "reject", &id]).unwrap()).unwrap();
+    assert_eq!(rejected["decision"]["decision"], "reject");
+
+    let deferred: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["review", "defer", &id]).unwrap()).unwrap();
+    assert_eq!(deferred["decision"]["decision"], "defer");
+
+    let reopened = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
+    assert_eq!(
+        reopened
+            .get_review_item(review_item_id)
+            .unwrap()
+            .unwrap()
+            .decision,
+        Some(game_media_vault_domain::ReviewDecision::Defer)
+    );
 }
 
 #[test]
