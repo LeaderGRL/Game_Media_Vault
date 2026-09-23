@@ -199,3 +199,57 @@ fn opening_a_pre_reference_catalog_adds_assertions_without_losing_assets() {
     assert_eq!(assertions_table, 1);
     assert_eq!(assertion_indexes, 3);
 }
+
+#[test]
+fn opening_catalog_rejects_release_assertions_without_the_required_unique_constraint() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("invalid-reference-assertions.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE games (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 normalized_title TEXT NOT NULL
+             );
+             CREATE TABLE release_editions (
+                 id INTEGER PRIMARY KEY,
+                 game_id INTEGER NOT NULL REFERENCES games(id),
+                 platform TEXT NOT NULL,
+                 normalized_platform TEXT NOT NULL,
+                 region TEXT NOT NULL,
+                 normalized_region TEXT NOT NULL,
+                 edition_name TEXT NOT NULL,
+                 normalized_edition_name TEXT NOT NULL,
+                 UNIQUE(game_id, normalized_platform, normalized_region, normalized_edition_name)
+             );
+             CREATE TABLE release_assertions (
+                 id INTEGER PRIMARY KEY,
+                 release_edition_id INTEGER NOT NULL REFERENCES release_editions(id),
+                 source_id TEXT NOT NULL,
+                 source_location TEXT NOT NULL,
+                 field TEXT NOT NULL,
+                 qualifier TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 normalized_value TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+    drop(connection);
+
+    let opened = SqliteCatalog::open_existing(&path);
+
+    assert!(opened.is_err());
+    let connection = Connection::open(&path).unwrap();
+    let added_tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('assets', 'asset_provenance', 'acquisition_runs', 'acquisition_run_work')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(added_tables, 0);
+}
