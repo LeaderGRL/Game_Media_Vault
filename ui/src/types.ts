@@ -6,6 +6,25 @@ export interface AssetProvenance {
   source_location: string;
 }
 
+export type ReleaseAssertionField = "title" | "region" | "revision" | "identifier";
+
+export interface ReleaseAssertion {
+  source_id: string;
+  source_location: string;
+  field: ReleaseAssertionField;
+  qualifier: string | null;
+  value: string;
+}
+
+export interface LibraryAsset {
+  asset_id: number;
+  asset_type: AssetType;
+  object_hash: string;
+  byte_len: number;
+  original_filename: string;
+  provenance: AssetProvenance[];
+}
+
 export interface LibraryEntry {
   game_id: number;
   game_title: string;
@@ -13,10 +32,6 @@ export interface LibraryEntry {
   platform: string;
   region: string;
   edition_name: string;
-  asset_id: number;
-  asset_type: AssetType;
-  object_hash: string;
-  byte_len: number;
-  original_filename: string;
-  provenance: AssetProvenance[];
+  assertions: ReleaseAssertion[];
+  assets: LibraryAsset[];
 }
