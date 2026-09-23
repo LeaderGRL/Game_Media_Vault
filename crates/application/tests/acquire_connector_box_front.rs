@@ -278,7 +278,9 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy()).unwrap();
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
@@ -329,7 +331,9 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy()).unwrap();
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
 
     assert!(imported.is_empty());
     assert!(connector.downloads.borrow().is_empty());
@@ -361,7 +365,9 @@ fn packaging_selector_acquires_the_supported_box_front() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy()).unwrap();
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
@@ -593,8 +599,15 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
         candidates: vec![first, second],
     };
 
-    let imported =
-        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7, matching_policy()).unwrap();
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
 
     assert_eq!(imported.len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);
@@ -632,8 +645,15 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
         candidates: vec![first, second],
     };
 
-    let imported =
-        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7, matching_policy()).unwrap();
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
 
     assert_eq!(imported.len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);

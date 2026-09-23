@@ -12,8 +12,9 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, GameSelection, MatchingPolicy, ReferenceReleaseRecord,
-    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, MatchingPolicy,
+    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;

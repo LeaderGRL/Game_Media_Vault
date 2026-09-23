@@ -11,8 +11,7 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
     ImportedReleaseEdition, LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord,
-    ReleaseAssertion,
-    ReleaseAssertionField, SourceId,
+    ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -620,11 +619,13 @@ impl CatalogPort for SqliteCatalog {
                     .get::<_, Option<String>>(14)
                     .map_err(sql_error)?
                     .map(|decision_json| {
-                        serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(|error| {
-                            PortError(format!(
-                                "catalog contains invalid asset match decision: {error}"
-                            ))
-                        })
+                        serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(
+                            |error| {
+                                PortError(format!(
+                                    "catalog contains invalid asset match decision: {error}"
+                                ))
+                            },
+                        )
                     })
                     .transpose()?;
                 entry.assets.push(LibraryAsset {

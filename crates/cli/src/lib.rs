@@ -111,7 +111,9 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum RunCommand {
     List,
-    Show { id: i64 },
+    Show {
+        id: i64,
+    },
     Execute {
         id: i64,
         #[arg(long, default_value_t = 80)]
@@ -119,9 +121,15 @@ enum RunCommand {
         #[arg(long, default_value_t = 50)]
         match_medium_threshold: u8,
     },
-    Pause { id: i64 },
-    Resume { id: i64 },
-    Cancel { id: i64 },
+    Pause {
+        id: i64,
+    },
+    Resume {
+        id: i64,
+    },
+    Cancel {
+        id: i64,
+    },
 }
 
 #[derive(Debug, Args)]

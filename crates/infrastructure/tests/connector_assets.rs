@@ -115,6 +115,7 @@ fn explicit_release_target_is_validated_before_duplicate_lookup() {
     let existing_record = PersistAsset {
         existing_game_id: None,
         existing_release_edition_id: None,
+        match_decision: None,
         game_title: "Target Game".to_owned(),
         platform: "Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -152,6 +153,7 @@ fn explicit_release_target_scopes_duplicate_lookup_to_that_release() {
     let existing_record = PersistAsset {
         existing_game_id: None,
         existing_release_edition_id: None,
+        match_decision: None,
         game_title: "Target Game".to_owned(),
         platform: "Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -254,4 +256,3 @@ fn matched_asset_round_trips_its_decision_evidence() {
         Some(&match_decision)
     );
 }
-
