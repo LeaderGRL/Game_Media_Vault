@@ -34,6 +34,7 @@ struct FakeRuns {
     run: RefCell<AcquisitionRun>,
     work: RefCell<HashMap<String, bool>>,
     status_after_complete: Option<AcquisitionRunStatus>,
+    status_before_complete_cas: Option<AcquisitionRunStatus>,
 }
 
 impl FakeRuns {
@@ -42,11 +43,17 @@ impl FakeRuns {
             run: RefCell::new(run),
             work: RefCell::new(HashMap::new()),
             status_after_complete: None,
+            status_before_complete_cas: None,
         }
     }
 
     fn with_status_after_complete(mut self, status: AcquisitionRunStatus) -> Self {
         self.status_after_complete = Some(status);
+        self
+    }
+
+    fn with_status_before_complete_cas(mut self, status: AcquisitionRunStatus) -> Self {
+        self.status_before_complete_cas = Some(status);
         self
     }
 }
@@ -108,6 +115,11 @@ impl RunRepositoryPort for FakeRuns {
     ) -> Result<bool, PortError> {
         assert_eq!(run_id, self.run.borrow().id);
         let mut run = self.run.borrow_mut();
+        if target == AcquisitionRunStatus::Completed
+            && let Some(status) = self.status_before_complete_cas
+        {
+            run.status = status;
+        }
         if run.status != expected
             || (target == AcquisitionRunStatus::Completed && run.queued_work != 0)
         {
@@ -283,6 +295,34 @@ fn pause_or_cancel_during_the_last_download_preserves_the_requested_run_status()
         AcquisitionRunStatus::Cancelled,
     ] {
         let runs = FakeRuns::new(run_with_request(request())).with_status_after_complete(status);
+        let connector = FakeConnector {
+            downloads: RefCell::new(Vec::new()),
+            candidates: Vec::new(),
+        };
+
+        let imported = acquire_run_with_connector(
+            &runs,
+            &FakeCatalog::default(),
+            &FakeStore::default(),
+            &connector,
+            7,
+        )
+        .unwrap();
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(runs.run.borrow().status, status);
+        assert_eq!(runs.run.borrow().queued_work, 0);
+    }
+}
+
+#[test]
+fn pause_or_cancel_winning_the_final_completion_race_does_not_fail_execution() {
+    for status in [
+        AcquisitionRunStatus::Paused,
+        AcquisitionRunStatus::Cancelled,
+    ] {
+        let runs =
+            FakeRuns::new(run_with_request(request())).with_status_before_complete_cas(status);
         let connector = FakeConnector {
             downloads: RefCell::new(Vec::new()),
             candidates: Vec::new(),

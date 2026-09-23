@@ -317,10 +317,11 @@ pub fn acquire_run_with_connector(
         imported_assets.push(imported);
     }
 
-    let final_run = load_acquisition_run(runs, run_id)?;
-    if final_run.status == AcquisitionRunStatus::Running && final_run.queued_work == 0 {
-        complete_acquisition_run(runs, run_id)?;
-    }
+    runs.compare_and_set_run_status(
+        run_id,
+        AcquisitionRunStatus::Running,
+        AcquisitionRunStatus::Completed,
+    )?;
 
     Ok(imported_assets)
 }
