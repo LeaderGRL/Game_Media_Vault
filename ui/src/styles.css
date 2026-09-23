@@ -212,6 +212,15 @@ input:focus {
   padding-top: 18px;
 }
 
+.review-preview {
+  width: min(100%, 240px);
+  max-height: 320px;
+  border: 1px solid #303744;
+  border-radius: 8px;
+  object-fit: contain;
+  background: #0d1015;
+}
+
 .review-source code,
 .evidence-row span {
   overflow-wrap: anywhere;

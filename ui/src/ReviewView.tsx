@@ -34,6 +34,12 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
             </div>
 
             <div className="review-source">
+              <img
+                className="review-preview"
+                src={item.candidate.source_url}
+                alt={`${item.candidate.game_title} box front candidate`}
+                loading="lazy"
+              />
               <span className="detail-label">Source evidence</span>
               <strong>
                 {item.candidate.source_id}

@@ -63,6 +63,10 @@ describe("ReviewView", () => {
     expect(screen.getByRole("heading", { name: "Review Game" })).toBeInTheDocument();
     expect(screen.getByText("fixture-provider · front")).toBeInTheDocument();
     expect(screen.getByText("fixture://review/front")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Review Game box front candidate" })).toHaveAttribute(
+      "src",
+      "fixture://review/front",
+    );
     expect(screen.getByText("Standard")).toBeInTheDocument();
     expect(screen.getByText("Score 90")).toBeInTheDocument();
     expect(screen.getByText("Title: +50")).toBeInTheDocument();
