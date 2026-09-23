@@ -596,6 +596,7 @@ pub struct StoredObject {
 pub struct PersistAsset {
     pub existing_game_id: Option<i64>,
     pub existing_release_edition_id: Option<i64>,
+    pub match_decision: Option<AssetCandidateMatch>,
     pub game_title: String,
     pub platform: String,
     pub region: String,
@@ -633,6 +634,7 @@ pub struct LibraryAsset {
     pub byte_len: u64,
     pub original_filename: String,
     pub provenance: Vec<AssetProvenance>,
+    pub match_decision: Option<AssetCandidateMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

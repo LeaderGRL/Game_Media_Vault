@@ -92,6 +92,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
         &PersistAsset {
             existing_game_id: None,
             existing_release_edition_id: None,
+            match_decision: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),
             region: "France".to_owned(),

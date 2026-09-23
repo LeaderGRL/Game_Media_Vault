@@ -19,6 +19,7 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
         .persist_asset(PersistAsset {
             existing_game_id: None,
             existing_release_edition_id: None,
+            match_decision: None,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "Unknown".to_owned(),
@@ -68,6 +69,7 @@ fn explicit_release_target_attaches_asset_to_that_release() {
         .persist_asset(PersistAsset {
             existing_game_id: None,
             existing_release_edition_id: None,
+            match_decision: None,
             game_title: "Target Game".to_owned(),
             platform: "Nintendo Entertainment System".to_owned(),
             region: "USA".to_owned(),
@@ -86,6 +88,7 @@ fn explicit_release_target_attaches_asset_to_that_release() {
         .persist_asset(PersistAsset {
             existing_game_id: Some(existing.game_id),
             existing_release_edition_id: Some(existing.release_edition_id),
+            match_decision: None,
             game_title: "Target Game".to_owned(),
             platform: "Nintendo Entertainment System".to_owned(),
             region: "Europe".to_owned(),
@@ -130,6 +133,7 @@ fn explicit_release_target_is_validated_before_duplicate_lookup() {
         .persist_asset(PersistAsset {
             existing_game_id: Some(existing.game_id),
             existing_release_edition_id: Some(999_999),
+            match_decision: None,
             ..existing_record
         })
         .unwrap_err();
@@ -177,6 +181,7 @@ fn explicit_release_target_scopes_duplicate_lookup_to_that_release() {
         .persist_asset(PersistAsset {
             existing_game_id: Some(existing.game_id),
             existing_release_edition_id: Some(target.release_edition_id),
+            match_decision: None,
             ..existing_record
         })
         .unwrap();

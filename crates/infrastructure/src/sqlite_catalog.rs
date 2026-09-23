@@ -9,8 +9,9 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, ImportedReleaseEdition,
-    LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord, ReleaseAssertion,
+    AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
+    ImportedReleaseEdition, LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord,
+    ReleaseAssertion,
     ReleaseAssertionField, SourceId,
 };
 use rusqlite::{
@@ -81,6 +82,7 @@ impl SqliteCatalog {
             "release_assertions",
             "assets",
             "asset_provenance",
+            "asset_match_decisions",
             "acquisition_runs",
             "acquisition_run_work",
         ];
@@ -407,6 +409,12 @@ impl CatalogPort for SqliteCatalog {
         };
         if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
             normalize_existing_provenance(&transaction, &record, source_id, &existing)?;
+            persist_asset_match_decision(
+                &transaction,
+                existing.imported.asset_id,
+                existing.imported.release_edition_id,
+                record.match_decision.as_ref(),
+            )?;
             transaction.commit().map_err(sql_error)?;
             return Ok(existing.imported);
         }
@@ -499,6 +507,12 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
+        persist_asset_match_decision(
+            &transaction,
+            asset_id,
+            release_edition_id,
+            record.match_decision.as_ref(),
+        )?;
         transaction.commit().map_err(sql_error)?;
 
         Ok(ImportedAsset {
@@ -521,11 +535,13 @@ impl CatalogPort for SqliteCatalog {
                         g.id, g.title,
                         r.id, r.platform, r.region, r.edition_name,
                         a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
-                        p.source_kind, p.source_asset_label, p.source_location
+                        p.source_kind, p.source_asset_label, p.source_location,
+                        m.decision_json
                      FROM release_editions r
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
                      LEFT JOIN asset_provenance p ON p.asset_id = a.id
+                     LEFT JOIN asset_match_decisions m ON m.asset_id = a.id
                      ORDER BY g.title, r.id, a.id, p.id",
                 )
                 .map_err(sql_error)?;
@@ -600,6 +616,17 @@ impl CatalogPort for SqliteCatalog {
                         source_location: location,
                     });
                 }
+                let match_decision = row
+                    .get::<_, Option<String>>(14)
+                    .map_err(sql_error)?
+                    .map(|decision_json| {
+                        serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(|error| {
+                            PortError(format!(
+                                "catalog contains invalid asset match decision: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()?;
                 entry.assets.push(LibraryAsset {
                     asset_id,
                     asset_type: parse_asset_type(&asset_type)?,
@@ -608,6 +635,7 @@ impl CatalogPort for SqliteCatalog {
                         .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
                     original_filename,
                     provenance,
+                    match_decision,
                 });
             }
         }
@@ -826,6 +854,34 @@ fn normalize_existing_provenance(
     Ok(())
 }
 
+fn persist_asset_match_decision(
+    transaction: &Transaction<'_>,
+    asset_id: i64,
+    release_edition_id: i64,
+    match_decision: Option<&AssetCandidateMatch>,
+) -> Result<(), PortError> {
+    let Some(match_decision) = match_decision else {
+        return Ok(());
+    };
+    if match_decision.release_edition_id != Some(release_edition_id) {
+        return Err(PortError(format!(
+            "asset match decision targets release {:?}, expected #{release_edition_id}",
+            match_decision.release_edition_id
+        )));
+    }
+    let decision_json = serde_json::to_string(match_decision)
+        .map_err(|error| PortError(format!("failed to serialize asset match decision: {error}")))?;
+    transaction
+        .execute(
+            "INSERT INTO asset_match_decisions (asset_id, decision_json)
+             VALUES (?1, ?2)
+             ON CONFLICT(asset_id) DO UPDATE SET decision_json = excluded.decision_json",
+            params![asset_id, decision_json],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
 fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
     migrate_legacy_game_identity(connection)?;
     connection
@@ -876,6 +932,10 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
                 original_filename TEXT NOT NULL,
                 UNIQUE(release_edition_id, asset_type, object_hash)
+            );
+            CREATE TABLE IF NOT EXISTS asset_match_decisions (
+                asset_id INTEGER PRIMARY KEY REFERENCES assets(id),
+                decision_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS asset_provenance (
                 id INTEGER PRIMARY KEY,
@@ -1110,6 +1170,25 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
                 "asset_provenance",
                 &["asset_id", "source_kind", "source_location"],
             )?)
+    {
+        return Ok(false);
+    }
+
+    if table_exists(connection, "asset_match_decisions")?
+        && (!table_matches_columns(
+            connection,
+            "asset_match_decisions",
+            &[
+                ("asset_id", "INTEGER", false, true),
+                ("decision_json", "TEXT", true, false),
+            ],
+        )? || !has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "asset_id",
+            "assets",
+            "id",
+        )?)
     {
         return Ok(false);
     }
@@ -1623,6 +1702,7 @@ mod tests {
                         .persist_asset(PersistAsset {
                             existing_game_id: None,
                             existing_release_edition_id: None,
+                            match_decision: None,
                             game_title: "Concurrent Game".to_owned(),
                             platform: "Windows".to_owned(),
                             region: "Worldwide".to_owned(),
