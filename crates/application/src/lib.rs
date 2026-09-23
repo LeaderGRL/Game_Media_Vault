@@ -317,7 +317,8 @@ pub fn acquire_run_with_connector(
         imported_assets.push(imported);
     }
 
-    if load_acquisition_run(runs, run_id)?.queued_work == 0 {
+    let final_run = load_acquisition_run(runs, run_id)?;
+    if final_run.status == AcquisitionRunStatus::Running && final_run.queued_work == 0 {
         complete_acquisition_run(runs, run_id)?;
     }
 

@@ -33,6 +33,7 @@ fn request() -> AcquisitionRequest {
 struct FakeRuns {
     run: RefCell<AcquisitionRun>,
     work: RefCell<HashMap<String, bool>>,
+    status_after_complete: Option<AcquisitionRunStatus>,
 }
 
 impl FakeRuns {
@@ -40,7 +41,13 @@ impl FakeRuns {
         Self {
             run: RefCell::new(run),
             work: RefCell::new(HashMap::new()),
+            status_after_complete: None,
         }
+    }
+
+    fn with_status_after_complete(mut self, status: AcquisitionRunStatus) -> Self {
+        self.status_after_complete = Some(status);
+        self
     }
 }
 
@@ -86,6 +93,9 @@ impl RunRepositoryPort for FakeRuns {
             let mut run = self.run.borrow_mut();
             run.queued_work -= 1;
             run.completed_work += 1;
+            if let Some(status) = self.status_after_complete {
+                run.status = status;
+            }
         }
         Ok(())
     }
@@ -265,6 +275,34 @@ fn packaging_selector_acquires_the_supported_box_front() {
     assert_eq!(connector.downloads.borrow().len(), 1);
     assert_eq!(catalog.records.borrow()[0].asset_type, AssetType::BoxFront);
 }
+
+#[test]
+fn pause_or_cancel_during_the_last_download_preserves_the_requested_run_status() {
+    for status in [
+        AcquisitionRunStatus::Paused,
+        AcquisitionRunStatus::Cancelled,
+    ] {
+        let runs = FakeRuns::new(run_with_request(request())).with_status_after_complete(status);
+        let connector = FakeConnector {
+            downloads: RefCell::new(Vec::new()),
+            candidates: Vec::new(),
+        };
+
+        let imported = acquire_run_with_connector(
+            &runs,
+            &FakeCatalog::default(),
+            &FakeStore::default(),
+            &connector,
+            7,
+        )
+        .unwrap();
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(runs.run.borrow().status, status);
+        assert_eq!(runs.run.borrow().queued_work, 0);
+    }
+}
+
 fn run_with_request(request: AcquisitionRequest) -> AcquisitionRun {
     AcquisitionRun {
         id: 7,

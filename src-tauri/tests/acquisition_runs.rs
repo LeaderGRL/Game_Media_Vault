@@ -1,7 +1,9 @@
 use std::{
     io::{Cursor, Read},
+    sync::mpsc,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 use game_media_vault_application::{
@@ -83,6 +85,35 @@ impl ConnectorPort for ThreadRecordingConnector {
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         *self.worker_thread.lock().unwrap() = Some(thread::current().id());
+        FixtureConnector.download(candidate)
+    }
+}
+
+struct BlockingConnector {
+    download_started: mpsc::Sender<()>,
+    continue_download: mpsc::Receiver<()>,
+}
+
+impl ConnectorPort for BlockingConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        FixtureConnector.capabilities()
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        FixtureConnector.discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.download_started
+            .send(())
+            .map_err(|error| PortError(error.to_string()))?;
+        self.continue_download
+            .recv()
+            .map_err(|error| PortError(error.to_string()))?;
         FixtureConnector.download(candidate)
     }
 }
@@ -192,4 +223,64 @@ fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
 
     assert_eq!(completed.status, AcquisitionRunStatus::Completed);
     assert_ne!(worker_thread.lock().unwrap().unwrap(), calling_thread);
+}
+
+#[test]
+fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
+    for target_status in [
+        AcquisitionRunStatus::Paused,
+        AcquisitionRunStatus::Cancelled,
+    ] {
+        let temp = tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        let request = AcquisitionRequestInput {
+            sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+            platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+            games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+            regions: Vec::new(),
+            languages: Vec::new(),
+            asset_types: vec![AssetTypeSelector::BoxFront],
+            quality: None,
+            retention: RetentionPolicy::KeepEverything,
+            limits: AcquisitionLimits::default(),
+        };
+        let started =
+            game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+        let (download_started_tx, download_started_rx) = mpsc::channel();
+        let (continue_download_tx, continue_download_rx) = mpsc::channel();
+        let execution_vault = vault.clone();
+
+        let execution = thread::spawn(move || {
+            tauri::async_runtime::block_on(
+                game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector_async(
+                    execution_vault,
+                    started.id,
+                    Box::new(BlockingConnector {
+                        download_started: download_started_tx,
+                        continue_download: continue_download_rx,
+                    }),
+                ),
+            )
+        });
+
+        download_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let stopped = match target_status {
+            AcquisitionRunStatus::Paused => {
+                game_media_vault_tauri::pause_acquisition_run_in_vault(&vault, started.id).unwrap()
+            }
+            AcquisitionRunStatus::Cancelled => {
+                game_media_vault_tauri::cancel_acquisition_run_in_vault(&vault, started.id).unwrap()
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(stopped.status, target_status);
+
+        continue_download_tx.send(()).unwrap();
+        let execution_result = execution.join().unwrap().unwrap();
+
+        assert_eq!(execution_result.status, target_status);
+        assert_eq!(execution_result.queued_work, 0);
+    }
 }
