@@ -478,6 +478,114 @@ impl AssetCandidateMatch {
     }
 }
 
+pub fn match_asset_candidate_to_release(
+    candidate: &AssetCandidate,
+    releases: &[LibraryEntry],
+    policy: MatchingPolicy,
+) -> AssetCandidateMatch {
+    let mut scored_releases = releases
+        .iter()
+        .map(|release| {
+            let evidence = vec![
+                exact_match_evidence(
+                    MatchSignal::Title,
+                    &candidate.game_title,
+                    &release.game_title,
+                    50,
+                ),
+                exact_match_evidence(
+                    MatchSignal::Platform,
+                    &candidate.platform,
+                    &release.platform,
+                    30,
+                ),
+                exact_match_evidence(MatchSignal::Region, &candidate.region, &release.region, 15),
+                exact_match_evidence(
+                    MatchSignal::Edition,
+                    &candidate.edition_name,
+                    &release.edition_name,
+                    5,
+                ),
+            ];
+            let score = evidence
+                .iter()
+                .map(|evidence| evidence.score_delta)
+                .sum::<i16>()
+                .clamp(0, 100) as u8;
+            (release.release_edition_id, score, evidence)
+        })
+        .collect::<Vec<_>>();
+
+    scored_releases.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+    let Some((release_edition_id, score, evidence)) = scored_releases.first().cloned() else {
+        return AssetCandidateMatch {
+            release_edition_id: None,
+            score: 0,
+            confidence: MatchConfidence::Low,
+            evidence: Vec::new(),
+        };
+    };
+
+    let ambiguous_best_score = scored_releases
+        .get(1)
+        .is_some_and(|candidate| candidate.1 == score);
+    let has_material_conflict = evidence.iter().any(|evidence| {
+        evidence.score_delta < 0
+            && matches!(evidence.signal, MatchSignal::Region | MatchSignal::Edition)
+    });
+    let confidence = if (ambiguous_best_score || has_material_conflict)
+        && score >= policy.medium_confidence_threshold
+    {
+        MatchConfidence::Medium
+    } else if score >= policy.high_confidence_threshold {
+        MatchConfidence::High
+    } else if score >= policy.medium_confidence_threshold {
+        MatchConfidence::Medium
+    } else {
+        MatchConfidence::Low
+    };
+
+    AssetCandidateMatch {
+        release_edition_id: Some(release_edition_id),
+        score,
+        confidence,
+        evidence,
+    }
+}
+
+fn exact_match_evidence(
+    signal: MatchSignal,
+    candidate_value: &str,
+    release_value: &str,
+    score: i16,
+) -> MatchEvidence {
+    let score_delta = if is_missing_match_value(signal, candidate_value)
+        || is_missing_match_value(signal, release_value)
+    {
+        0
+    } else if candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase() {
+        score
+    } else {
+        -score
+    };
+    MatchEvidence {
+        signal,
+        candidate_value: candidate_value.to_owned(),
+        release_value: release_value.to_owned(),
+        score_delta,
+    }
+}
+
+fn is_missing_match_value(signal: MatchSignal, value: &str) -> bool {
+    let normalized = value.trim().to_lowercase();
+    normalized.is_empty()
+        || matches!(
+            (signal, normalized.as_str()),
+            (MatchSignal::Region, "unknown") | (MatchSignal::Edition, "unspecified")
+        )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredObject {
     pub hash: String,
