@@ -1118,6 +1118,7 @@ dependencies = [
  "game-media-vault-application",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
+ "quick-xml",
  "reqwest 0.12.28",
  "tempfile",
  "url",

@@ -22,6 +22,7 @@ game-media-vault-infrastructure = { path = "crates/infrastructure" }
 blake3 = "1.8"
 clap = { version = "4.5", features = ["derive"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
+quick-xml = "0.42"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

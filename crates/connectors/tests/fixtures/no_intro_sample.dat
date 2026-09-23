@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Nintendo - Game Boy</name>
+    <description>Nintendo - Game Boy</description>
+  </header>
+  <game name="Tetris (World) (Rev 1)">
+    <description>Tetris (World) (Rev 1)</description>
+    <rom
+      name="Tetris (World) (Rev 1).gb"
+      size="32768"
+      crc="63F9407D"
+      md5="982ED5D2B12A0377EB14BCDC4123744E"
+      sha1="74591CC9504F3BDEBDAE9D9F8F9D7D68A6B4873B"
+    />
+  </game>
+  <game name="Super Mario Land (USA, Europe)">
+    <description>Super Mario Land (USA, Europe)</description>
+    <rom
+      name="Super Mario Land (USA, Europe).gb"
+      size="65536"
+      crc="D5EC24E4"
+      md5="BFD5C78A5E3C3C64C7E4A6AAE9A725C6"
+      sha1="418203621B887C6DC68C4A7A58EC8DAF1B0E0A4C"
+    />
+  </game>
+  <game name="Kirby's Dream Land (USA, Europe)">
+    <description>Kirby's Dream Land (USA, Europe)</description>
+    <rom
+      name="Kirby's Dream Land (USA, Europe).gb"
+      size="262144"
+      crc="40F25740"
+      md5="2E79A5E29C5E95128B9E795CA9B5CFD6"
+      sha1="6C11D7AD4914DA5CF0D5A2E5E37D9714100C51E3"
+    />
+  </game>
+</datafile>
