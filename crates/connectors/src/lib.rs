@@ -199,7 +199,7 @@ fn thumbnail_filename(game_title: &str) -> String {
         .map(|character| {
             if matches!(
                 character,
-                '&' | '*' | '/' | ':' | '"' | '<' | '>' | '?' | '\\' | '|'
+                '&' | '*' | '/' | ':' | '"' | '<' | '>' | '?' | '\\' | '|' | '`'
             ) {
                 '_'
             } else {

@@ -148,6 +148,31 @@ fn resolves_the_branch_declared_by_libretro_metadata() {
 }
 
 #[test]
+fn replaces_backticks_in_libretro_thumbnail_filenames() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Rock`n Roll Racing".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+
+    let candidate = connector.discover(&request).unwrap().remove(0);
+
+    assert_eq!(candidate.original_filename, "Rock_n Roll Racing.png");
+    assert_eq!(
+        candidate.source_url,
+        "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Rock_n%20Roll%20Racing.png"
+    );
+}
+
+#[test]
 fn platform_bound_targets_respect_explicit_platform_filters() {
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
     let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
