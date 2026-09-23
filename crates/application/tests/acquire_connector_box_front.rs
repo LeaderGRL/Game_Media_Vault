@@ -607,6 +607,110 @@ fn deferred_review_decision_keeps_the_same_candidate_staged() {
     );
 }
 
+fn threshold_review_candidate_and_release() -> (AssetCandidate, LibraryEntry) {
+    let candidate = AssetCandidate {
+        game_title: "Threshold Review Game".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/threshold-review.png".to_owned(),
+        original_filename: "threshold-review.png".to_owned(),
+    };
+    let release = release_for_candidate(&candidate, 501);
+    (candidate, release)
+}
+
+fn stricter_matching_policy() -> MatchingPolicy {
+    MatchingPolicy {
+        high_confidence_threshold: 90,
+        medium_confidence_threshold: 50,
+    }
+}
+
+#[test]
+fn pending_review_is_re_evaluated_when_matching_policy_changes() {
+    let (candidate, release) = threshold_review_candidate_and_release();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library: vec![release],
+    };
+    let first_run = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &first_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        stricter_matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(catalog.review_items.borrow().len(), 1);
+    assert_eq!(catalog.review_items.borrow()[0].decision, None);
+
+    let second_run = FakeRuns::new(run_with_request(request()));
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+}
+
+#[test]
+fn deferred_review_is_re_evaluated_when_matching_policy_changes() {
+    let (candidate, release) = threshold_review_candidate_and_release();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library: vec![release],
+    };
+    let first_run = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &first_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        stricter_matching_policy(),
+    )
+    .unwrap();
+    catalog.review_items.borrow_mut()[0].decision = Some(ReviewDecision::Defer);
+
+    let second_run = FakeRuns::new(run_with_request(request()));
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+}
+
 #[test]
 fn packaging_selector_acquires_the_supported_box_front() {
     let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {

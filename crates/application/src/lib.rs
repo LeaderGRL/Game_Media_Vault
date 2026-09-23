@@ -442,7 +442,7 @@ pub fn acquire_run_with_connector(
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
             break;
         };
-        let (candidate_match, reviewed_release_edition_id) =
+        let reviewed_match =
             if let Some(review_item) = catalog.find_review_item_by_candidate_identity(&work.key)? {
                 match review_item.decision {
                     Some(ReviewDecision::Accept { release_edition_id }) => {
@@ -454,27 +454,28 @@ pub fn acquire_run_with_connector(
                                 review_item_id: review_item.id,
                                 release_edition_id,
                             })?;
-                        (
-                            AssetCandidateMatch {
-                                release_edition_id: Some(release_edition_id),
-                                score: accepted.score,
-                                confidence: MatchConfidence::Medium,
-                                evidence: accepted.evidence.clone(),
-                            },
-                            Some(release_edition_id),
-                        )
+                        Some(AssetCandidateMatch {
+                            release_edition_id: Some(release_edition_id),
+                            score: accepted.score,
+                            confidence: MatchConfidence::Medium,
+                            evidence: accepted.evidence.clone(),
+                        })
                     }
-                    Some(ReviewDecision::Reject | ReviewDecision::Defer) | None => {
+                    Some(ReviewDecision::Reject) => {
                         complete_acquisition_work(runs, run_id, &work.key)?;
                         continue;
                     }
+                    Some(ReviewDecision::Defer) | None => None,
                 }
             } else {
-                (
-                    match_asset_candidate_to_release(candidate, &releases, matching_policy),
-                    None,
-                )
+                None
             };
+        let reviewed_release_edition_id = reviewed_match
+            .as_ref()
+            .and_then(|candidate_match| candidate_match.release_edition_id);
+        let candidate_match = reviewed_match.unwrap_or_else(|| {
+            match_asset_candidate_to_release(candidate, &releases, matching_policy)
+        });
         if candidate_match.confidence == MatchConfidence::Medium
             && reviewed_release_edition_id.is_none()
         {
