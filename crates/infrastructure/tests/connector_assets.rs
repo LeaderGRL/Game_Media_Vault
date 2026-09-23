@@ -1,5 +1,8 @@
 use game_media_vault_application::{CatalogPort, ObjectStorePort};
-use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
+use game_media_vault_domain::{
+    AssetCandidateMatch, AssetType, MatchConfidence, MatchEvidence, MatchSignal, PersistAsset,
+    SourceId,
+};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
@@ -180,5 +183,70 @@ fn explicit_release_target_scopes_duplicate_lookup_to_that_release() {
 
     assert_eq!(imported.release_edition_id, target.release_edition_id);
     assert_ne!(imported.asset_id, existing.asset_id);
+}
+
+#[test]
+fn matched_asset_round_trips_its_decision_evidence() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let match_decision = AssetCandidateMatch {
+        release_edition_id: Some(1),
+        score: 100,
+        confidence: MatchConfidence::High,
+        evidence: vec![
+            MatchEvidence {
+                signal: MatchSignal::Title,
+                candidate_value: "Target Game".to_owned(),
+                release_value: "Target Game".to_owned(),
+                score_delta: 50,
+            },
+            MatchEvidence {
+                signal: MatchSignal::Platform,
+                candidate_value: "Nintendo Entertainment System".to_owned(),
+                release_value: "Nintendo Entertainment System".to_owned(),
+                score_delta: 30,
+            },
+            MatchEvidence {
+                signal: MatchSignal::Region,
+                candidate_value: "USA".to_owned(),
+                release_value: "USA".to_owned(),
+                score_delta: 15,
+            },
+            MatchEvidence {
+                signal: MatchSignal::Edition,
+                candidate_value: "Standard".to_owned(),
+                release_value: "Standard".to_owned(),
+                score_delta: 5,
+            },
+        ],
+    };
+
+    catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: Some(match_decision.clone()),
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "matched-hash".to_owned(),
+            byte_len: 11,
+            original_filename: "matched.png".to_owned(),
+            source_id: SourceId::from("fixture"),
+            source_asset_label: None,
+            source_location: "fixture://matched".to_owned(),
+        })
+        .unwrap();
+
+    let library = catalog.list_library().unwrap();
+
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].assets.len(), 1);
+    assert_eq!(
+        library[0].assets[0].match_decision.as_ref(),
+        Some(&match_decision)
+    );
 }
 

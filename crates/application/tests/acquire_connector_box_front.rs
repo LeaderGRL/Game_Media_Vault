@@ -11,8 +11,9 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchingPolicy, PersistAsset,
-    QualityRequirements, RetentionPolicy, SourceId, SourceSelection, StoredObject,
+    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchConfidence,
+    MatchingPolicy, PersistAsset, QualityRequirements, RetentionPolicy, SourceId, SourceSelection,
+    StoredObject,
 };
 
 fn matching_policy() -> MatchingPolicy {
@@ -291,6 +292,11 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     assert_eq!(records[0].asset_type, AssetType::BoxFront);
     assert_eq!(records[0].existing_game_id, Some(41));
     assert_eq!(records[0].existing_release_edition_id, Some(73));
+    let match_decision = records[0].match_decision.as_ref().unwrap();
+    assert_eq!(match_decision.release_edition_id, Some(73));
+    assert_eq!(match_decision.score, 80);
+    assert_eq!(match_decision.confidence, MatchConfidence::High);
+    assert_eq!(match_decision.evidence.len(), 4);
     assert_eq!(records[0].source_id, SourceId::from("libretro-thumbnails"));
     assert_eq!(
         records[0].source_location,
