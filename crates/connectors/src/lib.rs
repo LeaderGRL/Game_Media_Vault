@@ -521,7 +521,10 @@ struct ParsedNoIntroTitle {
 fn parse_no_intro_title(raw: &str) -> ParsedNoIntroTitle {
     let (game_title, tags) = split_trailing_tags(raw);
     let revision = tags.iter().find(|tag| is_revision_tag(tag)).cloned();
-    let region_index = tags.first().filter(|tag| !is_revision_tag(tag)).map(|_| 0);
+    let region_index = tags
+        .first()
+        .filter(|tag| is_region_candidate(tag))
+        .map(|_| 0);
     let region = region_index
         .map(|index| tags[index].clone())
         .unwrap_or_else(|| "Unknown".to_owned());
@@ -568,8 +571,91 @@ fn source_record_identifier(platform: &str, raw_name: &str) -> String {
     format!("{}:{platform}{raw_name}", platform.len())
 }
 
+fn is_region_candidate(tag: &str) -> bool {
+    !is_revision_tag(tag)
+        && !is_status_tag(tag)
+        && !is_language_tag(tag)
+        && !is_date_tag(tag)
+        && !is_edition_tag(tag)
+}
+
 fn is_revision_tag(tag: &str) -> bool {
-    tag.starts_with("Rev ") || tag.starts_with("Revision ")
+    tag.starts_with("Rev ")
+        || tag.starts_with("Revision ")
+        || tag
+            .strip_prefix('v')
+            .is_some_and(is_version_number)
+        || tag
+            .strip_prefix("Version ")
+            .is_some_and(is_version_number)
+}
+
+fn is_version_number(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn is_status_tag(tag: &str) -> bool {
+    const STATUS_MARKERS: &[&str] = &[
+        "Alpha",
+        "Beta",
+        "Demo",
+        "Kiosk",
+        "Preview",
+        "Promo",
+        "Proto",
+        "Prototype",
+        "Sample",
+        "Test",
+        "Debug",
+        "Pre-Release",
+        "Prerelease",
+        "Unl",
+        "Unlicensed",
+        "Pirate",
+        "Aftermarket",
+        "Homebrew",
+    ];
+
+    STATUS_MARKERS.iter().any(|marker| {
+        tag == *marker
+            || tag
+                .strip_prefix(marker)
+                .is_some_and(|suffix| suffix.starts_with(' ') || suffix.starts_with('-'))
+    })
+}
+
+fn is_language_tag(tag: &str) -> bool {
+    let mut parts = tag.split(',').map(str::trim);
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    is_language_code(first) && parts.all(is_language_code)
+}
+
+fn is_language_code(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    matches!(bytes.len(), 2 | 3)
+        && bytes[0].is_ascii_uppercase()
+        && bytes[1..].iter().all(|byte| byte.is_ascii_lowercase())
+}
+
+fn is_date_tag(tag: &str) -> bool {
+    let bytes = tag.as_bytes();
+    bytes.len() >= 5
+        && bytes[..4].iter().all(|byte| byte.is_ascii_digit())
+        && bytes[4] == b'-'
+}
+
+fn is_edition_tag(tag: &str) -> bool {
+    ["Edition", "Bundle", "Pack", "Disc", "Disk", "Side", "Alt"]
+        .iter()
+        .any(|marker| tag.contains(marker))
 }
 
 fn assertion(
