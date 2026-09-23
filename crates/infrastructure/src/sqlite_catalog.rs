@@ -394,6 +394,7 @@ impl CatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        let explicit_target = resolve_existing_release_target(&transaction, &record)?;
         let lookup = ExistingImportLookup {
             normalized_title: &normalized_title,
             normalized_platform: &normalized_platform,
@@ -402,6 +403,7 @@ impl CatalogPort for SqliteCatalog {
             asset_type,
             source_id,
             byte_len,
+            release_edition_id: explicit_target.map(|(_, release_edition_id)| release_edition_id),
         };
         if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
             normalize_existing_provenance(&transaction, &record, source_id, &existing)?;
@@ -409,7 +411,6 @@ impl CatalogPort for SqliteCatalog {
             return Ok(existing.imported);
         }
 
-        let explicit_target = resolve_existing_release_target(&transaction, &record)?;
         let game_id = match explicit_target {
             Some((game_id, _)) => game_id,
             None => resolve_game_id(&transaction, &record, &normalized_title)?,
@@ -651,6 +652,7 @@ struct ExistingImportLookup<'a> {
     asset_type: &'a str,
     source_id: &'a str,
     byte_len: i64,
+    release_edition_id: Option<i64>,
 }
 
 struct ExistingImportMatch {
@@ -740,7 +742,8 @@ fn find_existing_import(
                AND r.normalized_platform = ?6
                AND r.normalized_region = ?7
                AND r.normalized_edition_name = ?8
-               AND (?9 IS NULL OR g.id = ?9)",
+               AND (?9 IS NULL OR g.id = ?9)
+               AND (?10 IS NULL OR r.id = ?10)",
         )
         .map_err(sql_error)?;
     let mut rows = statement
@@ -754,6 +757,7 @@ fn find_existing_import(
             lookup.normalized_region,
             lookup.normalized_edition,
             record.existing_game_id,
+            lookup.release_edition_id,
         ])
         .map_err(sql_error)?;
 
