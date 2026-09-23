@@ -12,8 +12,8 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchConfidence,
-    MatchingPolicy, PersistAsset, QualityRequirements, RetentionPolicy, SourceId, SourceSelection,
-    StoredObject,
+    MatchingPolicy, NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy, SourceId,
+    SourceSelection, StoredObject,
 };
 
 fn matching_policy() -> MatchingPolicy {
@@ -206,6 +206,7 @@ impl ObjectStorePort for FakeStore {
 
 struct FakeCatalog {
     records: RefCell<Vec<PersistAsset>>,
+    review_items: RefCell<Vec<NewReviewItem>>,
     library: Vec<LibraryEntry>,
 }
 
@@ -213,6 +214,7 @@ impl Default for FakeCatalog {
     fn default() -> Self {
         Self {
             records: RefCell::new(Vec::new()),
+            review_items: RefCell::new(Vec::new()),
             library: vec![matching_release()],
         }
     }
@@ -232,6 +234,15 @@ impl CatalogPort for FakeCatalog {
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
         Ok(self.library.clone())
+    }
+
+    fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError> {
+        self.review_items.borrow_mut().push(item);
+        Ok(())
+    }
+
+    fn list_review_items(&self) -> Result<Vec<game_media_vault_domain::ReviewItem>, PortError> {
+        Ok(Vec::new())
     }
 }
 
@@ -339,6 +350,83 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
     assert!(connector.downloads.borrow().is_empty());
     assert!(store.bytes.borrow().is_empty());
     assert!(catalog.records.borrow().is_empty());
+    assert_eq!(runs.run.borrow().completed_work, 1);
+    assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn medium_confidence_candidate_creates_review_item_with_competing_release_evidence() {
+    let candidate = AssetCandidate {
+        game_title: "Super Mario Bros. (World)".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Collector".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/review.png".to_owned(),
+        original_filename: "review.png".to_owned(),
+    };
+    let first_release = LibraryEntry {
+        game_id: 101,
+        game_title: candidate.game_title.clone(),
+        release_edition_id: 201,
+        platform: candidate.platform.clone(),
+        region: candidate.region.clone(),
+        edition_name: "Standard".to_owned(),
+        assertions: Vec::new(),
+        assets: Vec::new(),
+    };
+    let second_release = LibraryEntry {
+        game_id: 102,
+        release_edition_id: 202,
+        edition_name: "Deluxe".to_owned(),
+        ..first_release.clone()
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate.clone()],
+    };
+    let store = FakeStore::default();
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library: vec![first_release, second_release],
+    };
+
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+    assert!(store.bytes.borrow().is_empty());
+    assert!(catalog.records.borrow().is_empty());
+    let review_items = catalog.review_items.borrow();
+    assert_eq!(review_items.len(), 1);
+    assert_eq!(review_items[0].run_id, 7);
+    assert_eq!(review_items[0].candidate, candidate);
+    assert_eq!(
+        review_items[0]
+            .competing_matches
+            .iter()
+            .map(|candidate_match| candidate_match.release_edition_id)
+            .collect::<Vec<_>>(),
+        vec![201, 202]
+    );
+    assert!(
+        review_items[0]
+            .competing_matches
+            .iter()
+            .all(|candidate_match| candidate_match.score == 90)
+    );
+    assert!(
+        review_items[0]
+            .competing_matches
+            .iter()
+            .all(|candidate_match| candidate_match.evidence.len() == 4)
+    );
     assert_eq!(runs.run.borrow().completed_work, 1);
     assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
 }
@@ -589,6 +677,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     let runs = FakeRuns::new(run_with_request(request()));
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
         library: vec![
             release_for_candidate(&first, 81),
             release_for_candidate(&second, 82),
@@ -635,6 +724,7 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     let runs = FakeRuns::new(run_with_request(request()));
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
         library: vec![
             release_for_candidate(&first, 91),
             release_for_candidate(&second, 92),

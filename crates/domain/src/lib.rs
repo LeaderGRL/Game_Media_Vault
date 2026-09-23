@@ -418,7 +418,7 @@ pub struct ConnectorCapabilities {
     pub direct_media_download: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetCandidate {
     pub game_title: String,
     pub platform: String,
@@ -429,6 +429,44 @@ pub struct AssetCandidate {
     pub source_asset_label: Option<String>,
     pub source_url: String,
     pub original_filename: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewMatchCandidate {
+    pub game_id: i64,
+    pub release_edition_id: i64,
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub edition_name: String,
+    pub score: u8,
+    pub evidence: Vec<MatchEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewReviewItem {
+    pub run_id: i64,
+    pub candidate_identity: String,
+    pub candidate: AssetCandidate,
+    pub competing_matches: Vec<ReviewMatchCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Accept { release_edition_id: i64 },
+    Reject,
+    Defer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewItem {
+    pub id: i64,
+    pub run_id: i64,
+    pub candidate_identity: String,
+    pub candidate: AssetCandidate,
+    pub competing_matches: Vec<ReviewMatchCandidate>,
+    pub decision: Option<ReviewDecision>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -539,32 +577,8 @@ pub fn match_asset_candidate_to_release(
     let mut scored_releases = releases
         .iter()
         .map(|release| {
-            let evidence = vec![
-                exact_match_evidence(
-                    MatchSignal::Title,
-                    &candidate.game_title,
-                    &release.game_title,
-                    50,
-                ),
-                exact_match_evidence(
-                    MatchSignal::Platform,
-                    &candidate.platform,
-                    &release.platform,
-                    30,
-                ),
-                exact_match_evidence(MatchSignal::Region, &candidate.region, &release.region, 15),
-                exact_match_evidence(
-                    MatchSignal::Edition,
-                    &candidate.edition_name,
-                    &release.edition_name,
-                    5,
-                ),
-            ];
-            let score = evidence
-                .iter()
-                .map(|evidence| evidence.score_delta)
-                .sum::<i16>()
-                .clamp(0, 100) as u8;
+            let evidence = asset_candidate_match_evidence(candidate, release);
+            let score = match_evidence_score(&evidence);
             (release.release_edition_id, score, evidence)
         })
         .collect::<Vec<_>>();
@@ -610,6 +624,73 @@ pub fn match_asset_candidate_to_release(
         confidence,
         evidence,
     }
+}
+
+pub fn review_matches_for_asset_candidate(
+    candidate: &AssetCandidate,
+    releases: &[LibraryEntry],
+    policy: ValidatedMatchingPolicy,
+) -> Vec<ReviewMatchCandidate> {
+    let mut matches = releases
+        .iter()
+        .map(|release| {
+            let evidence = asset_candidate_match_evidence(candidate, release);
+            let score = match_evidence_score(&evidence);
+            ReviewMatchCandidate {
+                game_id: release.game_id,
+                release_edition_id: release.release_edition_id,
+                game_title: release.game_title.clone(),
+                platform: release.platform.clone(),
+                region: release.region.clone(),
+                edition_name: release.edition_name.clone(),
+                score,
+                evidence,
+            }
+        })
+        .filter(|candidate_match| candidate_match.score >= policy.medium_confidence_threshold)
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.release_edition_id.cmp(&right.release_edition_id))
+    });
+    matches
+}
+
+fn asset_candidate_match_evidence(
+    candidate: &AssetCandidate,
+    release: &LibraryEntry,
+) -> Vec<MatchEvidence> {
+    vec![
+        exact_match_evidence(
+            MatchSignal::Title,
+            &candidate.game_title,
+            &release.game_title,
+            50,
+        ),
+        exact_match_evidence(
+            MatchSignal::Platform,
+            &candidate.platform,
+            &release.platform,
+            30,
+        ),
+        exact_match_evidence(MatchSignal::Region, &candidate.region, &release.region, 15),
+        exact_match_evidence(
+            MatchSignal::Edition,
+            &candidate.edition_name,
+            &release.edition_name,
+            5,
+        ),
+    ]
+}
+
+fn match_evidence_score(evidence: &[MatchEvidence]) -> u8 {
+    evidence
+        .iter()
+        .map(|evidence| evidence.score_delta)
+        .sum::<i16>()
+        .clamp(0, 100) as u8
 }
 
 fn exact_match_evidence(

@@ -7,14 +7,14 @@ use std::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
-    MatchingPolicy, MatchingPolicyValidationError, PersistAsset, ReferenceReleaseRecord,
-    RetentionPolicy, SourceId, StoredObject,
+    MatchConfidence, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem, PersistAsset,
+    ReferenceReleaseRecord, RetentionPolicy, ReviewItem, SourceId, StoredObject,
 };
 use thiserror::Error;
 
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
-    match_asset_candidate_to_release,
+    match_asset_candidate_to_release, review_matches_for_asset_candidate,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -34,6 +34,10 @@ pub trait ObjectStorePort {
 
 pub trait CatalogPort {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError>;
+
+    fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError>;
+
+    fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
@@ -374,6 +378,20 @@ pub fn acquire_run_with_connector(
         };
         let candidate_match =
             match_asset_candidate_to_release(candidate, &releases, matching_policy);
+        if candidate_match.confidence == MatchConfidence::Medium {
+            catalog.persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: work.key.clone(),
+                candidate: candidate.clone(),
+                competing_matches: review_matches_for_asset_candidate(
+                    candidate,
+                    &releases,
+                    matching_policy,
+                ),
+            })?;
+            complete_acquisition_work(runs, run_id, &work.key)?;
+            continue;
+        }
         let Some(release_edition_id) = candidate_match.auto_link_release_edition_id() else {
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;

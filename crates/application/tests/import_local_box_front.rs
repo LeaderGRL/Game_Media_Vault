@@ -49,6 +49,17 @@ impl CatalogPort for RecordingCatalog {
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
         Ok(Vec::new())
     }
+
+    fn persist_review_item(
+        &self,
+        _item: game_media_vault_domain::NewReviewItem,
+    ) -> Result<(), PortError> {
+        unreachable!()
+    }
+
+    fn list_review_items(&self) -> Result<Vec<game_media_vault_domain::ReviewItem>, PortError> {
+        Ok(Vec::new())
+    }
 }
 
 #[test]

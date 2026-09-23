@@ -10,8 +10,9 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
-    ImportedReleaseEdition, LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord,
-    ReleaseAssertion, ReleaseAssertionField, SourceId,
+    ImportedReleaseEdition, LibraryAsset, LibraryEntry, NewReviewItem, PersistAsset,
+    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewDecision, ReviewItem,
+    ReviewMatchCandidate, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -84,6 +85,7 @@ impl SqliteCatalog {
             "asset_match_decisions",
             "acquisition_runs",
             "acquisition_run_work",
+            "review_items",
         ];
         if !required_tables_exist(&connection, &current_catalog_tables)? {
             return Err(PortError(format!(
@@ -525,6 +527,92 @@ impl CatalogPort for SqliteCatalog {
             object_hash: record.object_hash,
             byte_len: record.byte_len,
         })
+    }
+
+    fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError> {
+        let connection = self.connect()?;
+        let candidate_json = serde_json::to_string(&item.candidate)
+            .map_err(|error| PortError(format!("failed to serialize review candidate: {error}")))?;
+        let competing_matches_json = serde_json::to_string(&item.competing_matches)
+            .map_err(|error| PortError(format!("failed to serialize review matches: {error}")))?;
+        connection
+            .execute(
+                "INSERT INTO review_items (
+                    run_id, candidate_identity, candidate_json, competing_matches_json
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(candidate_identity) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    candidate_json = excluded.candidate_json,
+                    competing_matches_json = excluded.competing_matches_json",
+                params![
+                    item.run_id,
+                    item.candidate_identity,
+                    candidate_json,
+                    competing_matches_json,
+                ],
+            )
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
+    fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json
+                 FROM review_items
+                 ORDER BY id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .map_err(sql_error)?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (
+                id,
+                run_id,
+                candidate_identity,
+                candidate_json,
+                competing_matches_json,
+                decision_json,
+            ) = row.map_err(sql_error)?;
+            let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
+                PortError(format!(
+                    "catalog contains invalid review candidate: {error}"
+                ))
+            })?;
+            let competing_matches: Vec<ReviewMatchCandidate> =
+                serde_json::from_str(&competing_matches_json).map_err(|error| {
+                    PortError(format!("catalog contains invalid review matches: {error}"))
+                })?;
+            let decision: Option<ReviewDecision> = decision_json
+                .map(|json| {
+                    serde_json::from_str(&json).map_err(|error| {
+                        PortError(format!("catalog contains invalid review decision: {error}"))
+                    })
+                })
+                .transpose()?;
+            items.push(ReviewItem {
+                id,
+                run_id,
+                candidate_identity,
+                candidate,
+                competing_matches,
+                decision,
+            });
+        }
+        Ok(items)
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
@@ -1002,6 +1090,14 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0, 1)),
                 UNIQUE(run_id, work_key)
             );
+            CREATE TABLE IF NOT EXISTS review_items (
+                id INTEGER PRIMARY KEY,
+                run_id INTEGER NOT NULL,
+                candidate_identity TEXT NOT NULL UNIQUE,
+                candidate_json TEXT NOT NULL,
+                competing_matches_json TEXT NOT NULL,
+                decision_json TEXT
+            );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
             CREATE INDEX IF NOT EXISTS idx_release_assertion_release
                 ON release_assertions(release_edition_id);
@@ -1014,7 +1110,9 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             CREATE INDEX IF NOT EXISTS idx_asset_release ON assets(release_edition_id);
             CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);
             CREATE INDEX IF NOT EXISTS idx_run_work_pending
-                ON acquisition_run_work(run_id, completed, id);",
+                ON acquisition_run_work(run_id, completed, id);
+            CREATE INDEX IF NOT EXISTS idx_review_items_run
+                ON review_items(run_id, id);",
             )
             .map_err(sql_error)?;
 
@@ -1283,6 +1381,23 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
         if !legacy_match_decisions && !provenance_match_decisions {
             return Ok(false);
         }
+    }
+
+    if table_exists(connection, "review_items")?
+        && (!table_matches_columns(
+            connection,
+            "review_items",
+            &[
+                ("id", "INTEGER", false, true),
+                ("run_id", "INTEGER", true, false),
+                ("candidate_identity", "TEXT", true, false),
+                ("candidate_json", "TEXT", true, false),
+                ("competing_matches_json", "TEXT", true, false),
+                ("decision_json", "TEXT", false, false),
+            ],
+        )? || !has_unique_index(connection, "review_items", &["candidate_identity"])?)
+    {
+        return Ok(false);
     }
 
     let has_runs = table_exists(connection, "acquisition_runs")?;
