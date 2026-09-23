@@ -91,6 +91,59 @@ fn imports_a_bounded_no_intro_fixture_as_release_assertions() {
 }
 
 #[test]
+fn decodes_xml_entities_and_preserves_no_intro_regions() {
+    let catalog = RecordingReferenceCatalog::default();
+    let source = NoIntroReferenceCatalog::new();
+
+    let summary = import_reference_catalog(
+        &catalog,
+        &source,
+        ImportReferenceCatalogRequest {
+            source_path: fixture_path(),
+            max_games: 6,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.imported_releases, 6);
+    let records = catalog.records.borrow();
+
+    let tom_and_jerry = records
+        .iter()
+        .find(|record| record.game_title == "Tom & Jerry")
+        .expect("escaped No-Intro title should be decoded");
+    assert_eq!(tom_and_jerry.region, "Portugal");
+    assert!(tom_and_jerry.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Identifier
+            && assertion.qualifier.as_deref() == Some("rom_name")
+            && assertion.value == "Tom & Jerry (Portugal).gb"
+    }));
+    assert!(tom_and_jerry.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Identifier
+            && assertion.qualifier.as_deref() == Some("source_record")
+            && assertion.value.ends_with("Tom & Jerry (Portugal)")
+    }));
+
+    let poland = records
+        .iter()
+        .find(|record| record.game_title == "Region Test Poland")
+        .unwrap();
+    assert_eq!(poland.region, "Poland");
+    assert!(poland.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Region && assertion.value == "Poland"
+    }));
+
+    let denmark = records
+        .iter()
+        .find(|record| record.game_title == "Region Test Denmark")
+        .unwrap();
+    assert_eq!(denmark.region, "Denmark");
+    assert!(denmark.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Region && assertion.value == "Denmark"
+    }));
+}
+
+#[test]
 fn rejects_an_unbounded_reference_import_before_reading_the_source() {
     struct PanicSource;
 
