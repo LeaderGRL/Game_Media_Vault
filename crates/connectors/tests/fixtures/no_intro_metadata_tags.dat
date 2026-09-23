@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Nintendo - Game Boy</name>
+  </header>
+  <game name="Preview Test (Beta)">
+    <rom name="Preview Test (Beta).gb" crc="55555555" />
+  </game>
+  <game name="Prototype Test (Proto)">
+    <rom name="Prototype Test (Proto).gb" crc="66666666" />
+  </game>
+  <game name="Version Test (USA) (v1.1)">
+    <rom name="Version Test (USA) (v1.1).gb" crc="77777777" />
+  </game>
+  <game name="Long Version Test (Europe) (Version 2.0)">
+    <rom name="Long Version Test (Europe) (Version 2.0).gb" crc="88888888" />
+  </game>
+</datafile>
