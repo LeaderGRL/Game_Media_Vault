@@ -378,13 +378,12 @@ pub fn resolve_review_item(
     let should_requeue = matches!(decision, ReviewDecision::Accept { .. });
     let work_key = should_requeue
         .then(|| connector_work_key(item.candidate.source_id.as_str(), &item.candidate));
-    let resolved = catalog
-        .set_review_decision(review_item_id, decision)?
-        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
     if let Some(work_key) = work_key {
         runs.requeue_completed_work(item.run_id, &work_key)?;
     }
-    Ok(resolved)
+    catalog
+        .set_review_decision(review_item_id, decision)?
+        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
 }
 
 pub fn import_reference_catalog(

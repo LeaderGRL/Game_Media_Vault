@@ -16,6 +16,7 @@ struct FakeCatalog {
 #[derive(Default)]
 struct FakeRuns {
     requeued: RefCell<Vec<(i64, String)>>,
+    fail_requeue: bool,
 }
 
 impl RunRepositoryPort for FakeRuns {
@@ -36,6 +37,9 @@ impl RunRepositoryPort for FakeRuns {
     }
 
     fn requeue_completed_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        if self.fail_requeue {
+            return Err(PortError("failed to requeue review work".to_owned()));
+        }
         self.requeued
             .borrow_mut()
             .push((run_id, work_key.to_owned()));
@@ -58,6 +62,30 @@ impl RunRepositoryPort for FakeRuns {
     ) -> Result<bool, PortError> {
         Ok(false)
     }
+}
+
+#[test]
+fn failed_requeue_does_not_persist_an_accept_decision() {
+    let catalog = FakeCatalog {
+        items: RefCell::new(vec![review_item()]),
+    };
+    let runs = FakeRuns {
+        fail_requeue: true,
+        ..FakeRuns::default()
+    };
+
+    let error = resolve_review_item(
+        &catalog,
+        &runs,
+        17,
+        ReviewDecision::Accept {
+            release_edition_id: 201,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("failed to requeue"));
+    assert_eq!(catalog.items.borrow()[0].decision, None);
 }
 
 impl CatalogPort for FakeCatalog {
