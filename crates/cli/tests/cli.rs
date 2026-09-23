@@ -6,11 +6,15 @@ use std::{
     process::Command,
 };
 
-use game_media_vault_application::{AcquisitionRequestValidationError, ConnectorPort, PortError};
+use game_media_vault_application::{
+    AcquisitionRequestValidationError, ConnectorPort, PortError, ReferenceCatalogRepositoryPort,
+};
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, SourceId,
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
+use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
 
 struct FixtureConnector;
@@ -70,6 +74,23 @@ fn help_exits_successfully() {
 fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3"))
+        .unwrap()
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            revision: None,
+            edition_name: "Unspecified".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
     let started = run_in_vault(
         &vault,
         &[
