@@ -663,7 +663,7 @@ fn attribute_value(
         let attribute = attribute
             .map_err(|error| PortError(format!("invalid No-Intro XML attribute: {error}")))?;
         if attribute.key.as_ref() == name {
-            let value = attribute.normalized_value().map_err(|error| {
+            let value = attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|error| {
                 PortError(format!("invalid No-Intro XML attribute value: {error}"))
             })?;
             return Ok(Some(value.into_owned()));
