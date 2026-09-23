@@ -141,11 +141,8 @@ fn equally_strong_release_matches_are_deterministic_but_not_auto_linked() {
         medium_confidence_threshold: 50,
     };
 
-    let forward = match_asset_candidate_to_release(
-        &candidate(),
-        &[first.clone(), second.clone()],
-        policy,
-    );
+    let forward =
+        match_asset_candidate_to_release(&candidate(), &[first.clone(), second.clone()], policy);
     let reversed = match_asset_candidate_to_release(&candidate(), &[second, first], policy);
 
     assert_eq!(forward, reversed);

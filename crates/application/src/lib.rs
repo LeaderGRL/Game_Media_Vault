@@ -152,12 +152,7 @@ pub fn match_asset_candidate_to_release(
         })
         .collect::<Vec<_>>();
 
-    scored_releases.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
+    scored_releases.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
 
     let Some((release_edition_id, score, evidence)) = scored_releases.first().cloned() else {
         return AssetCandidateMatch {
