@@ -375,11 +375,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
                 }
             }
             Event::Text(text) if reading_header_name => {
-                let value = text
-                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
-                    .map_err(|error| {
-                        PortError(format!("invalid No-Intro XML header text: {error}"))
-                    })?;
+                let value = text.xml_content(quick_xml::XmlVersion::Implicit1_0);
                 platform = Some(value.into_owned());
             }
             Event::End(element) => match element.name().as_ref() {
