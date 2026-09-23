@@ -1,13 +1,17 @@
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
 };
 
-use game_media_vault_application::{CatalogPort, PortError, RunRepositoryPort};
+use game_media_vault_application::{
+    CatalogPort, PortError, ReferenceCatalogRepositoryPort, RunRepositoryPort,
+};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset,
-    SourceId,
+    AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, ImportedReleaseEdition,
+    LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord, ReleaseAssertion,
+    ReleaseAssertionField, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -74,6 +78,7 @@ impl SqliteCatalog {
         let current_catalog_tables = [
             "games",
             "release_editions",
+            "release_assertions",
             "assets",
             "asset_provenance",
             "acquisition_runs",
@@ -343,6 +348,134 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 }
 
+impl ReferenceCatalogRepositoryPort for SqliteCatalog {
+    fn persist_reference_release(
+        &self,
+        record: ReferenceReleaseRecord,
+    ) -> Result<ImportedReleaseEdition, PortError> {
+        let identity = record
+            .assertions
+            .iter()
+            .find(|assertion| {
+                assertion.field == ReleaseAssertionField::Identifier
+                    && assertion.qualifier.as_deref() == Some("source_record")
+            })
+            .ok_or_else(|| {
+                PortError(
+                    "reference release is missing its source_record identifier assertion".into(),
+                )
+            })?;
+        let source_id = identity.source_id.as_str().to_owned();
+        let source_record = identity.value.clone();
+        let normalized_title = normalize(&record.game_title);
+        let normalized_platform = normalize(&record.platform);
+        let normalized_region = normalize(&record.region);
+        let normalized_edition = normalize(&record.edition_name);
+
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+
+        if let Some((game_id, release_edition_id)) = transaction
+            .query_row(
+                "SELECT r.game_id, r.id
+                 FROM release_assertions a
+                 JOIN release_editions r ON r.id = a.release_edition_id
+                 WHERE a.source_id = ?1
+                   AND a.field = 'identifier'
+                   AND a.qualifier = 'source_record'
+                   AND a.value = ?2
+                 LIMIT 1",
+                params![source_id, source_record],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sql_error)?
+        {
+            persist_release_assertions(&transaction, release_edition_id, &record.assertions)?;
+            transaction.commit().map_err(sql_error)?;
+            return Ok(ImportedReleaseEdition {
+                game_id,
+                release_edition_id,
+            });
+        }
+
+        let game_id = match transaction
+            .query_row(
+                "SELECT r.game_id
+                 FROM release_assertions a
+                 JOIN release_editions r ON r.id = a.release_edition_id
+                 WHERE a.source_id = ?1
+                   AND a.field = 'title'
+                   AND a.normalized_value = ?2
+                   AND r.normalized_platform = ?3
+                 ORDER BY r.id
+                 LIMIT 1",
+                params![source_id, normalized_title, normalized_platform],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+        {
+            Some(game_id) => game_id,
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO games (title, normalized_title) VALUES (?1, ?2)",
+                        params![record.game_title, normalized_title],
+                    )
+                    .map_err(sql_error)?;
+                transaction.last_insert_rowid()
+            }
+        };
+
+        transaction
+            .execute(
+                "INSERT INTO release_editions (
+                    game_id, platform, normalized_platform, region, normalized_region,
+                    edition_name, normalized_edition_name
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name)
+                 DO NOTHING",
+                params![
+                    game_id,
+                    record.platform,
+                    normalized_platform,
+                    record.region,
+                    normalized_region,
+                    record.edition_name,
+                    normalized_edition,
+                ],
+            )
+            .map_err(sql_error)?;
+        let release_edition_id = transaction
+            .query_row(
+                "SELECT id FROM release_editions
+                 WHERE game_id = ?1
+                   AND normalized_platform = ?2
+                   AND normalized_region = ?3
+                   AND normalized_edition_name = ?4",
+                params![
+                    game_id,
+                    normalized_platform,
+                    normalized_region,
+                    normalized_edition
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+
+        persist_release_assertions(&transaction, release_edition_id, &record.assertions)?;
+        transaction.commit().map_err(sql_error)?;
+
+        Ok(ImportedReleaseEdition {
+            game_id,
+            release_edition_id,
+        })
+    }
+}
+
 impl CatalogPort for SqliteCatalog {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError> {
         let mut connection = self.connect()?;
@@ -467,66 +600,131 @@ impl CatalogPort for SqliteCatalog {
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
         let connection = self.connect()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT
-                    g.id, g.title,
-                    r.id, r.platform, r.region, r.edition_name,
-                    a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
-                    p.source_kind, p.source_asset_label, p.source_location
-                 FROM assets a
-                 JOIN release_editions r ON r.id = a.release_edition_id
-                 JOIN games g ON g.id = r.game_id
-                 LEFT JOIN asset_provenance p ON p.asset_id = a.id
-                 ORDER BY g.title, r.id, a.id, p.id",
-            )
-            .map_err(sql_error)?;
-        let mut rows = statement.query([]).map_err(sql_error)?;
         let mut entries: Vec<LibraryEntry> = Vec::new();
 
-        while let Some(row) = rows.next().map_err(sql_error)? {
-            let asset_id: i64 = row.get(6).map_err(sql_error)?;
-            let source_id: Option<String> = row.get(11).map_err(sql_error)?;
-            let source_asset_label: Option<String> = row.get(12).map_err(sql_error)?;
-            let source_location: Option<String> = row.get(13).map_err(sql_error)?;
+        {
+            let mut statement = connection
+                .prepare(
+                    "SELECT
+                        g.id, g.title,
+                        r.id, r.platform, r.region, r.edition_name,
+                        a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
+                        p.source_kind, p.source_asset_label, p.source_location
+                     FROM release_editions r
+                     JOIN games g ON g.id = r.game_id
+                     LEFT JOIN assets a ON a.release_edition_id = r.id
+                     LEFT JOIN asset_provenance p ON p.asset_id = a.id
+                     ORDER BY g.title, r.id, a.id, p.id",
+                )
+                .map_err(sql_error)?;
+            let mut rows = statement.query([]).map_err(sql_error)?;
 
-            if let Some(existing) = entries
-                .last_mut()
-                .filter(|entry| entry.asset_id == asset_id)
-            {
+            while let Some(row) = rows.next().map_err(sql_error)? {
+                let release_edition_id: i64 = row.get(2).map_err(sql_error)?;
+                if entries
+                    .last()
+                    .is_none_or(|entry| entry.release_edition_id != release_edition_id)
+                {
+                    entries.push(LibraryEntry {
+                        game_id: row.get(0).map_err(sql_error)?,
+                        game_title: row.get(1).map_err(sql_error)?,
+                        release_edition_id,
+                        platform: row.get(3).map_err(sql_error)?,
+                        region: row.get(4).map_err(sql_error)?,
+                        edition_name: row.get(5).map_err(sql_error)?,
+                        assertions: Vec::new(),
+                        assets: Vec::new(),
+                    });
+                }
+
+                let Some(asset_id) = row.get::<_, Option<i64>>(6).map_err(sql_error)? else {
+                    continue;
+                };
+                let source_id: Option<String> = row.get(11).map_err(sql_error)?;
+                let source_asset_label: Option<String> = row.get(12).map_err(sql_error)?;
+                let source_location: Option<String> = row.get(13).map_err(sql_error)?;
+                let entry = entries
+                    .last_mut()
+                    .ok_or_else(|| PortError("library release aggregation failed".into()))?;
+
+                if let Some(asset) = entry
+                    .assets
+                    .last_mut()
+                    .filter(|asset| asset.asset_id == asset_id)
+                {
+                    if let (Some(id), Some(location)) = (source_id, source_location) {
+                        asset.provenance.push(AssetProvenance {
+                            source_id: SourceId::from(id),
+                            source_asset_label,
+                            source_location: location,
+                        });
+                    }
+                    continue;
+                }
+
+                let asset_type = row
+                    .get::<_, Option<String>>(7)
+                    .map_err(sql_error)?
+                    .ok_or_else(|| PortError("catalog asset is missing its type".into()))?;
+                let object_hash = row
+                    .get::<_, Option<String>>(8)
+                    .map_err(sql_error)?
+                    .ok_or_else(|| PortError("catalog asset is missing its object hash".into()))?;
+                let byte_len = row
+                    .get::<_, Option<i64>>(9)
+                    .map_err(sql_error)?
+                    .ok_or_else(|| PortError("catalog asset is missing its byte length".into()))?;
+                let original_filename = row
+                    .get::<_, Option<String>>(10)
+                    .map_err(sql_error)?
+                    .ok_or_else(|| {
+                        PortError("catalog asset is missing its original filename".into())
+                    })?;
+                let mut provenance = Vec::new();
                 if let (Some(id), Some(location)) = (source_id, source_location) {
-                    existing.provenance.push(AssetProvenance {
+                    provenance.push(AssetProvenance {
                         source_id: SourceId::from(id),
                         source_asset_label,
                         source_location: location,
                     });
                 }
-                continue;
-            }
-
-            let byte_len: i64 = row.get(9).map_err(sql_error)?;
-            let mut provenance = Vec::new();
-            if let (Some(id), Some(location)) = (source_id, source_location) {
-                provenance.push(AssetProvenance {
-                    source_id: SourceId::from(id),
-                    source_asset_label,
-                    source_location: location,
+                entry.assets.push(LibraryAsset {
+                    asset_id,
+                    asset_type: parse_asset_type(&asset_type)?,
+                    object_hash,
+                    byte_len: u64::try_from(byte_len)
+                        .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
+                    original_filename,
+                    provenance,
                 });
             }
-            entries.push(LibraryEntry {
-                game_id: row.get(0).map_err(sql_error)?,
-                game_title: row.get(1).map_err(sql_error)?,
-                release_edition_id: row.get(2).map_err(sql_error)?,
-                platform: row.get(3).map_err(sql_error)?,
-                region: row.get(4).map_err(sql_error)?,
-                edition_name: row.get(5).map_err(sql_error)?,
-                asset_id,
-                asset_type: parse_asset_type(&row.get::<_, String>(7).map_err(sql_error)?)?,
-                object_hash: row.get(8).map_err(sql_error)?,
-                byte_len: u64::try_from(byte_len)
-                    .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
-                original_filename: row.get(10).map_err(sql_error)?,
-                provenance,
+        }
+
+        let positions = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.release_edition_id, index))
+            .collect::<HashMap<_, _>>();
+        let mut assertion_statement = connection
+            .prepare(
+                "SELECT release_edition_id, source_id, source_location, field, qualifier, value
+                 FROM release_assertions
+                 ORDER BY release_edition_id, id",
+            )
+            .map_err(sql_error)?;
+        let mut assertion_rows = assertion_statement.query([]).map_err(sql_error)?;
+        while let Some(row) = assertion_rows.next().map_err(sql_error)? {
+            let release_edition_id: i64 = row.get(0).map_err(sql_error)?;
+            let Some(index) = positions.get(&release_edition_id).copied() else {
+                continue;
+            };
+            let qualifier: String = row.get(4).map_err(sql_error)?;
+            entries[index].assertions.push(ReleaseAssertion {
+                source_id: SourceId::from(row.get::<_, String>(1).map_err(sql_error)?),
+                source_location: row.get(2).map_err(sql_error)?,
+                field: parse_release_assertion_field(&row.get::<_, String>(3).map_err(sql_error)?)?,
+                qualifier: (!qualifier.is_empty()).then_some(qualifier),
+                value: row.get(5).map_err(sql_error)?,
             });
         }
 
@@ -704,6 +902,24 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 normalized_edition_name TEXT NOT NULL,
                 UNIQUE(game_id, normalized_platform, normalized_region, normalized_edition_name)
             );
+            CREATE TABLE IF NOT EXISTS release_assertions (
+                id INTEGER PRIMARY KEY,
+                release_edition_id INTEGER NOT NULL REFERENCES release_editions(id),
+                source_id TEXT NOT NULL,
+                source_location TEXT NOT NULL,
+                field TEXT NOT NULL,
+                qualifier TEXT NOT NULL,
+                value TEXT NOT NULL,
+                normalized_value TEXT NOT NULL,
+                UNIQUE(
+                    release_edition_id,
+                    source_id,
+                    source_location,
+                    field,
+                    qualifier,
+                    value
+                )
+            );
             CREATE TABLE IF NOT EXISTS assets (
                 id INTEGER PRIMARY KEY,
                 release_edition_id INTEGER NOT NULL REFERENCES release_editions(id),
@@ -738,6 +954,13 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 UNIQUE(run_id, work_key)
             );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
+            CREATE INDEX IF NOT EXISTS idx_release_assertion_release
+                ON release_assertions(release_edition_id);
+            CREATE INDEX IF NOT EXISTS idx_release_assertion_title
+                ON release_assertions(source_id, field, normalized_value);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_release_assertion_source_record
+                ON release_assertions(source_id, qualifier, value)
+                WHERE field = 'identifier' AND qualifier = 'source_record';
             CREATE INDEX IF NOT EXISTS idx_game_normalized_title ON games(normalized_title);
             CREATE INDEX IF NOT EXISTS idx_asset_release ON assets(release_edition_id);
             CREATE INDEX IF NOT EXISTS idx_provenance_asset ON asset_provenance(asset_id);
@@ -842,6 +1065,31 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
                 "normalized_edition_name",
             ],
         )?
+    {
+        return Ok(false);
+    }
+
+    if table_exists(connection, "release_assertions")?
+        && (!table_matches_columns(
+            connection,
+            "release_assertions",
+            &[
+                ("id", "INTEGER", false, true),
+                ("release_edition_id", "INTEGER", true, false),
+                ("source_id", "TEXT", true, false),
+                ("source_location", "TEXT", true, false),
+                ("field", "TEXT", true, false),
+                ("qualifier", "TEXT", true, false),
+                ("value", "TEXT", true, false),
+                ("normalized_value", "TEXT", true, false),
+            ],
+        )? || !has_foreign_key(
+            connection,
+            "release_assertions",
+            "release_edition_id",
+            "release_editions",
+            "id",
+        )?)
     {
         return Ok(false);
     }
@@ -1149,8 +1397,67 @@ fn migrate_legacy_game_identity(connection: &Connection) -> Result<(), PortError
     restore.map_err(sql_error)
 }
 
+fn persist_release_assertions(
+    transaction: &Transaction<'_>,
+    release_edition_id: i64,
+    assertions: &[ReleaseAssertion],
+) -> Result<(), PortError> {
+    for assertion in assertions {
+        if assertion.source_id.as_str().trim().is_empty() || assertion.value.trim().is_empty() {
+            return Err(PortError(
+                "release assertions require non-blank source ids and values".into(),
+            ));
+        }
+        let qualifier = assertion.qualifier.as_deref().unwrap_or("");
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO release_assertions (
+                    release_edition_id,
+                    source_id,
+                    source_location,
+                    field,
+                    qualifier,
+                    value,
+                    normalized_value
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    release_edition_id,
+                    assertion.source_id.as_str(),
+                    assertion.source_location,
+                    assertion_field_to_str(assertion.field),
+                    qualifier,
+                    assertion.value,
+                    normalize(&assertion.value),
+                ],
+            )
+            .map_err(sql_error)?;
+    }
+    Ok(())
+}
+
 fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+fn assertion_field_to_str(field: ReleaseAssertionField) -> &'static str {
+    match field {
+        ReleaseAssertionField::Title => "title",
+        ReleaseAssertionField::Region => "region",
+        ReleaseAssertionField::Revision => "revision",
+        ReleaseAssertionField::Identifier => "identifier",
+    }
+}
+
+fn parse_release_assertion_field(value: &str) -> Result<ReleaseAssertionField, PortError> {
+    match value {
+        "title" => Ok(ReleaseAssertionField::Title),
+        "region" => Ok(ReleaseAssertionField::Region),
+        "revision" => Ok(ReleaseAssertionField::Revision),
+        "identifier" => Ok(ReleaseAssertionField::Identifier),
+        other => Err(PortError(format!(
+            "unknown release assertion field in catalog: {other}"
+        ))),
+    }
 }
 
 fn asset_type_to_str(asset_type: AssetType) -> &'static str {

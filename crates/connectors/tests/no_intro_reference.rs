@@ -62,7 +62,7 @@ fn imports_a_bounded_no_intro_fixture_as_release_assertions() {
     assert_eq!(tetris.platform, "Nintendo - Game Boy");
     assert_eq!(tetris.region, "World");
     assert_eq!(tetris.revision.as_deref(), Some("Rev 1"));
-    assert_eq!(tetris.edition_name, "Standard");
+    assert_eq!(tetris.edition_name, "Rev 1");
     assert!(tetris.assertions.iter().any(|assertion| {
         assertion.field == ReleaseAssertionField::Title && assertion.value == "Tetris"
     }));

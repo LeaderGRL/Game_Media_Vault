@@ -449,8 +449,8 @@ impl NoIntroGame {
         assertions.push(assertion(
             &self.source_location,
             ReleaseAssertionField::Identifier,
-            Some("no_intro_record"),
-            &self.raw_name,
+            Some("source_record"),
+            &source_record_identifier(platform, &self.raw_name),
         ));
         if title.region != "Unknown" {
             assertions.push(assertion(
@@ -505,7 +505,7 @@ fn parse_no_intro_title(raw: &str) -> ParsedNoIntroTitle {
         .unwrap_or_else(|| "Unknown".to_owned());
     let edition_tags = tags
         .iter()
-        .filter(|tag| !is_revision_tag(tag) && !is_region_tag(tag))
+        .filter(|tag| !is_region_tag(tag))
         .cloned()
         .collect::<Vec<_>>();
     let edition_name = if edition_tags.is_empty() {
@@ -538,6 +538,10 @@ fn split_trailing_tags(raw: &str) -> (String, Vec<String>) {
     }
     tags.reverse();
     (base.to_owned(), tags)
+}
+
+fn source_record_identifier(platform: &str, raw_name: &str) -> String {
+    format!("{}:{platform}{raw_name}", platform.len())
 }
 
 fn is_revision_tag(tag: &str) -> bool {

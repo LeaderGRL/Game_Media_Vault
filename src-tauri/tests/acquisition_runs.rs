@@ -186,7 +186,7 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
     let library = game_media_vault_tauri::load_library(&vault).unwrap();
     assert_eq!(library.len(), 1);
     assert_eq!(
-        library[0].provenance[0].source_location,
+        library[0].assets[0].provenance[0].source_location,
         "https://example.invalid/smb-box-front.png"
     );
 }

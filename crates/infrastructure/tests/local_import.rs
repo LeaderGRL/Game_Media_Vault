@@ -98,16 +98,17 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     assert_eq!(library[0].game_title, "Metal Gear Solid");
     assert_eq!(library[0].platform, "PlayStation");
     assert_eq!(library[0].region, "France");
-    assert_eq!(library[0].original_filename, "mgs-front.png");
-    assert_eq!(library[0].provenance.len(), 1);
+    assert_eq!(library[0].assets.len(), 1);
+    assert_eq!(library[0].assets[0].original_filename, "mgs-front.png");
+    assert_eq!(library[0].assets[0].provenance.len(), 1);
     assert_eq!(
         fs::canonicalize(std::path::Path::new(
-            &library[0].provenance[0].source_location
+            &library[0].assets[0].provenance[0].source_location
         ))
         .unwrap(),
         fs::canonicalize(&canonical_source).unwrap()
     );
-    assert_eq!(library[0].object_hash, first.object_hash);
+    assert_eq!(library[0].assets[0].object_hash, first.object_hash);
 }
 
 #[test]
@@ -361,7 +362,11 @@ fn legacy_relative_provenance_is_not_rebased_to_the_current_working_directory() 
 
     let library = list_library(&catalog).unwrap();
     assert_eq!(library.len(), 2);
-    let legacy = library.iter().find(|entry| entry.asset_id == 1).unwrap();
+    let legacy = library
+        .iter()
+        .flat_map(|entry| entry.assets.iter())
+        .find(|asset| asset.asset_id == 1)
+        .unwrap();
     assert_eq!(legacy.provenance.len(), 1);
     assert_eq!(
         legacy.provenance[0].source_location,
@@ -369,7 +374,8 @@ fn legacy_relative_provenance_is_not_rebased_to_the_current_working_directory() 
     );
     let current = library
         .iter()
-        .find(|entry| entry.asset_id == imported.asset_id)
+        .flat_map(|entry| entry.assets.iter())
+        .find(|asset| asset.asset_id == imported.asset_id)
         .unwrap();
     assert_eq!(current.provenance.len(), 1);
     let current_location = std::path::Path::new(&current.provenance[0].source_location);

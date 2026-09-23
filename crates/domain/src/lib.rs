@@ -470,6 +470,16 @@ pub struct AssetProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryAsset {
+    pub asset_id: i64,
+    pub asset_type: AssetType,
+    pub object_hash: String,
+    pub byte_len: u64,
+    pub original_filename: String,
+    pub provenance: Vec<AssetProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryEntry {
     pub game_id: i64,
     pub game_title: String,
@@ -477,10 +487,6 @@ pub struct LibraryEntry {
     pub platform: String,
     pub region: String,
     pub edition_name: String,
-    pub asset_id: i64,
-    pub asset_type: AssetType,
-    pub object_hash: String,
-    pub byte_len: u64,
-    pub original_filename: String,
-    pub provenance: Vec<AssetProvenance>,
+    pub assertions: Vec<ReleaseAssertion>,
+    pub assets: Vec<LibraryAsset>,
 }

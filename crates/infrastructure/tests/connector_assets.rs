@@ -35,21 +35,22 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     );
 
     let library = catalog.list_library().unwrap();
-    let entry = library
+    let asset = library
         .iter()
-        .find(|entry| entry.asset_id == imported.asset_id)
+        .flat_map(|entry| entry.assets.iter())
+        .find(|asset| asset.asset_id == imported.asset_id)
         .unwrap();
-    assert_eq!(entry.provenance.len(), 1);
+    assert_eq!(asset.provenance.len(), 1);
     assert_eq!(
-        entry.provenance[0].source_id,
+        asset.provenance[0].source_id,
         SourceId::from("provider-added-without-domain-change")
     );
     assert_eq!(
-        entry.provenance[0].source_asset_label.as_deref(),
+        asset.provenance[0].source_asset_label.as_deref(),
         Some("Named_Boxarts")
     );
     assert_eq!(
-        entry.provenance[0].source_location,
+        asset.provenance[0].source_location,
         "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
     );
 }

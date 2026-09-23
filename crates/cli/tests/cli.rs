@@ -210,12 +210,9 @@ fn game_id_links_a_second_import_to_an_existing_game() {
     let entries: serde_json::Value = serde_json::from_str(&library).unwrap();
     let entries = entries.as_array().unwrap();
 
-    assert_eq!(entries.len(), 2);
-    assert!(
-        entries
-            .iter()
-            .all(|entry| entry["game_id"].as_i64() == Some(game_id))
-    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["game_id"].as_i64(), Some(game_id));
+    assert_eq!(entries[0]["assets"].as_array().unwrap().len(), 2);
 }
 
 #[test]
