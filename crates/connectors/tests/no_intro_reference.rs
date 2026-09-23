@@ -38,6 +38,13 @@ fn fixture_path() -> PathBuf {
         .join("no_intro_sample.dat")
 }
 
+fn escaped_platform_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_escaped_platform.dat")
+}
+
 #[test]
 fn imports_a_bounded_no_intro_fixture_as_release_assertions() {
     let catalog = RecordingReferenceCatalog::default();
@@ -141,6 +148,18 @@ fn decodes_xml_entities_and_preserves_no_intro_regions() {
     assert!(denmark.assertions.iter().any(|assertion| {
         assertion.field == ReleaseAssertionField::Region && assertion.value == "Denmark"
     }));
+}
+
+#[test]
+fn decodes_xml_entities_in_the_platform_header() {
+    let source = NoIntroReferenceCatalog::new();
+
+    let releases = source
+        .read_releases(&escaped_platform_fixture_path(), 1)
+        .unwrap();
+
+    assert_eq!(releases.len(), 1);
+    assert_eq!(releases[0].platform, "Nintendo - Game & Watch");
 }
 
 #[test]
