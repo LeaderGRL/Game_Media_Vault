@@ -582,12 +582,8 @@ fn is_region_candidate(tag: &str) -> bool {
 fn is_revision_tag(tag: &str) -> bool {
     tag.starts_with("Rev ")
         || tag.starts_with("Revision ")
-        || tag
-            .strip_prefix('v')
-            .is_some_and(is_version_number)
-        || tag
-            .strip_prefix("Version ")
-            .is_some_and(is_version_number)
+        || tag.strip_prefix('v').is_some_and(is_version_number)
+        || tag.strip_prefix("Version ").is_some_and(is_version_number)
 }
 
 fn is_version_number(value: &str) -> bool {
@@ -647,9 +643,7 @@ fn is_language_code(value: &str) -> bool {
 
 fn is_date_tag(tag: &str) -> bool {
     let bytes = tag.as_bytes();
-    bytes.len() >= 5
-        && bytes[..4].iter().all(|byte| byte.is_ascii_digit())
-        && bytes[4] == b'-'
+    bytes.len() >= 5 && bytes[..4].iter().all(|byte| byte.is_ascii_digit()) && bytes[4] == b'-'
 }
 
 fn is_edition_tag(tag: &str) -> bool {
