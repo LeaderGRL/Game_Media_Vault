@@ -437,6 +437,50 @@ pub struct MatchingPolicy {
     pub medium_confidence_threshold: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchingPolicyValidationError {
+    ThresholdOutOfRange { value: u8 },
+    MediumThresholdAboveHighThreshold,
+}
+
+impl std::fmt::Display for MatchingPolicyValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ThresholdOutOfRange { value } => {
+                write!(
+                    formatter,
+                    "matching threshold must be between 0 and 100, got {value}"
+                )
+            }
+            Self::MediumThresholdAboveHighThreshold => write!(
+                formatter,
+                "medium matching threshold cannot be higher than high matching threshold"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MatchingPolicyValidationError {}
+
+impl MatchingPolicy {
+    pub fn validate(self) -> Result<Self, MatchingPolicyValidationError> {
+        if self.high_confidence_threshold > 100 {
+            return Err(MatchingPolicyValidationError::ThresholdOutOfRange {
+                value: self.high_confidence_threshold,
+            });
+        }
+        if self.medium_confidence_threshold > 100 {
+            return Err(MatchingPolicyValidationError::ThresholdOutOfRange {
+                value: self.medium_confidence_threshold,
+            });
+        }
+        if self.medium_confidence_threshold > self.high_confidence_threshold {
+            return Err(MatchingPolicyValidationError::MediumThresholdAboveHighThreshold);
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchSignal {
@@ -647,4 +691,35 @@ pub struct LibraryEntry {
     pub edition_name: String,
     pub assertions: Vec<ReleaseAssertion>,
     pub assets: Vec<LibraryAsset>,
+}
+
+#[cfg(test)]
+mod matching_policy_tests {
+    use super::{MatchingPolicy, MatchingPolicyValidationError};
+
+    #[test]
+    fn rejects_medium_threshold_above_high_threshold() {
+        let policy = MatchingPolicy {
+            high_confidence_threshold: 60,
+            medium_confidence_threshold: 80,
+        };
+
+        assert_eq!(
+            policy.validate(),
+            Err(MatchingPolicyValidationError::MediumThresholdAboveHighThreshold)
+        );
+    }
+
+    #[test]
+    fn rejects_thresholds_above_confidence_range() {
+        let policy = MatchingPolicy {
+            high_confidence_threshold: 101,
+            medium_confidence_threshold: 50,
+        };
+
+        assert_eq!(
+            policy.validate(),
+            Err(MatchingPolicyValidationError::ThresholdOutOfRange { value: 101 })
+        );
+    }
 }

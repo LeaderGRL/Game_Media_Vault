@@ -7,7 +7,8 @@ use std::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
-    MatchingPolicy, PersistAsset, ReferenceReleaseRecord, RetentionPolicy, SourceId, StoredObject,
+    MatchingPolicy, MatchingPolicyValidationError, PersistAsset, ReferenceReleaseRecord,
+    RetentionPolicy, SourceId, StoredObject,
 };
 use thiserror::Error;
 
@@ -267,6 +268,8 @@ pub enum ApplicationError {
     Port(#[from] PortError),
     #[error("{0}")]
     Validation(#[from] AcquisitionRequestValidationError),
+    #[error("{0}")]
+    InvalidMatchingPolicy(#[from] MatchingPolicyValidationError),
     #[error("acquisition run #{0} does not exist")]
     RunNotFound(i64),
     #[error("acquisition work key must not be blank")]
@@ -328,6 +331,7 @@ pub fn acquire_run_with_connector(
     run_id: i64,
     matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
+    let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
     if run.status == AcquisitionRunStatus::Completed {
         return Ok(Vec::new());
