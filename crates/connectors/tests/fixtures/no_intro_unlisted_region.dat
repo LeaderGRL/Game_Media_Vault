@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Nintendo - Game Boy</name>
+  </header>
+  <game name="Region Preservation Test (Caribbean) (Rev 1)">
+    <rom name="Region Preservation Test (Caribbean) (Rev 1).gb" crc="44444444" />
+  </game>
+</datafile>

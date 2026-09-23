@@ -45,6 +45,13 @@ fn escaped_platform_fixture_path() -> PathBuf {
         .join("no_intro_escaped_platform.dat")
 }
 
+fn unlisted_region_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_unlisted_region.dat")
+}
+
 #[test]
 fn imports_a_bounded_no_intro_fixture_as_release_assertions() {
     let catalog = RecordingReferenceCatalog::default();
@@ -164,6 +171,24 @@ fn decodes_xml_entities_in_the_platform_header() {
         assertion.field == ReleaseAssertionField::Identifier
             && assertion.qualifier.as_deref() == Some("source_record")
             && assertion.value.starts_with("23:Nintendo - Game & Watch")
+    }));
+}
+
+#[test]
+fn preserves_unlisted_region_claims() {
+    let source = NoIntroReferenceCatalog::new();
+
+    let releases = source
+        .read_releases(&unlisted_region_fixture_path(), 1)
+        .unwrap();
+
+    assert_eq!(releases.len(), 1);
+    let release = &releases[0];
+    assert_eq!(release.game_title, "Region Preservation Test");
+    assert_eq!(release.region, "Caribbean");
+    assert_eq!(release.edition_name, "Rev 1");
+    assert!(release.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Region && assertion.value == "Caribbean"
     }));
 }
 
