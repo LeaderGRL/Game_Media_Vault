@@ -7,13 +7,13 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, ConnectorPort, PortError,
+    AcquisitionRequestInput, ConnectorPort, PortError, ReferenceCatalogRepositoryPort,
     load_acquisition_run as load_acquisition_run_use_case,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, GameSelection, RetentionPolicy, SourceId,
-    SourceSelection,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
@@ -33,6 +33,26 @@ fn request_input() -> AcquisitionRequestInput {
 }
 
 struct FixtureConnector;
+
+fn seed_matching_release(vault: &std::path::Path) {
+    let catalog = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            revision: None,
+            edition_name: "Unspecified".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
+}
 
 impl ConnectorPort for FixtureConnector {
     fn source_id(&self) -> &'static str {
@@ -174,6 +194,7 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
         limits: AcquisitionLimits::default(),
     };
     let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+    seed_matching_release(&vault);
 
     let completed = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
         &vault,
@@ -246,6 +267,7 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
         };
         let started =
             game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+        seed_matching_release(&vault);
         let (download_started_tx, download_started_rx) = mpsc::channel();
         let (continue_download_tx, continue_download_rx) = mpsc::channel();
         let execution_vault = vault.clone();
