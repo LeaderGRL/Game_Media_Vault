@@ -80,6 +80,16 @@ pub trait ReferenceCatalogRepositoryPort {
         &self,
         record: ReferenceReleaseRecord,
     ) -> Result<ImportedReleaseEdition, PortError>;
+
+    fn persist_reference_releases(
+        &self,
+        records: Vec<ReferenceReleaseRecord>,
+    ) -> Result<Vec<ImportedReleaseEdition>, PortError> {
+        records
+            .into_iter()
+            .map(|record| self.persist_reference_release(record))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,13 +301,23 @@ pub fn import_reference_catalog(
     let source_path = resolve_source_path(&request.source_path)?;
     let releases = source.read_releases(&source_path, request.max_games)?;
     let mut imported_releases = 0;
+    let mut batch = Vec::with_capacity(REFERENCE_IMPORT_BATCH_SIZE);
     for release in releases.into_iter().take(request.max_games) {
-        catalog.persist_reference_release(release)?;
-        imported_releases += 1;
+        batch.push(release);
+        if batch.len() == REFERENCE_IMPORT_BATCH_SIZE {
+            imported_releases += catalog
+                .persist_reference_releases(std::mem::take(&mut batch))?
+                .len();
+        }
+    }
+    if !batch.is_empty() {
+        imported_releases += catalog.persist_reference_releases(batch)?.len();
     }
 
     Ok(ReferenceImportSummary { imported_releases })
 }
+
+const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
 
 pub fn acquire_run_with_connector(
     runs: &dyn RunRepositoryPort,

@@ -320,6 +320,9 @@ impl ReferenceCatalogSourcePort for NoIntroReferenceCatalog {
         source_path: &Path,
         max_games: usize,
     ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+        if max_games == 0 {
+            return Ok(Vec::new());
+        }
         let file = File::open(source_path).map_err(|error| {
             PortError(format!(
                 "failed to open No-Intro datafile {}: {error}",
@@ -663,9 +666,11 @@ fn attribute_value(
         let attribute = attribute
             .map_err(|error| PortError(format!("invalid No-Intro XML attribute: {error}")))?;
         if attribute.key.as_ref() == name {
-            let value = attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|error| {
-                PortError(format!("invalid No-Intro XML attribute value: {error}"))
-            })?;
+            let value = attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|error| {
+                    PortError(format!("invalid No-Intro XML attribute value: {error}"))
+                })?;
             return Ok(Some(value.into_owned()));
         }
     }
