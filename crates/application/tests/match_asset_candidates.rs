@@ -91,6 +91,27 @@ fn explicit_region_conflict_prevents_high_confidence_auto_link() {
 }
 
 #[test]
+fn explicit_region_conflict_cannot_become_high_with_reversed_thresholds() {
+    let conflicting_release = LibraryEntry {
+        region: "Europe".to_owned(),
+        ..release()
+    };
+
+    let result = match_asset_candidate_to_release(
+        &candidate(),
+        &[conflicting_release],
+        MatchingPolicy {
+            high_confidence_threshold: 60,
+            medium_confidence_threshold: 80,
+        },
+    );
+
+    assert_eq!(result.score, 70);
+    assert_ne!(result.confidence, MatchConfidence::High);
+    assert_eq!(result.auto_link_release_edition_id(), None);
+}
+
+#[test]
 fn explicit_edition_conflict_prevents_high_confidence_auto_link() {
     let conflicting_release = LibraryEntry {
         edition_name: "Standard".to_owned(),
