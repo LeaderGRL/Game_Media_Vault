@@ -3,11 +3,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use game_media_vault_application::{CatalogPort, RunRepositoryPort, acquire_run_with_connector};
+use game_media_vault_application::{
+    CatalogPort, ReferenceCatalogRepositoryPort, RunRepositoryPort, acquire_run_with_connector,
+};
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
-    AssetType, AssetTypeSelector, GameSelection, RetentionPolicy, SourceId, SourceSelection,
+    AssetType, AssetTypeSelector, GameSelection, MatchingPolicy, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -60,6 +63,22 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     let catalog_path = temp.path().join("catalog.sqlite3");
     let object_root = temp.path().join("objects");
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    catalog
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "Unknown".to_owned(),
+            revision: None,
+            edition_name: "Unspecified".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
     let object_store = ContentAddressedStore::new(&object_root);
     let requested_urls = Arc::new(Mutex::new(Vec::new()));
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
@@ -67,8 +86,18 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     });
 
     let run = catalog.create_run(request()).unwrap();
-    let imported =
-        acquire_run_with_connector(&catalog, &catalog, &object_store, &connector, run.id).unwrap();
+    let imported = acquire_run_with_connector(
+        &catalog,
+        &catalog,
+        &object_store,
+        &connector,
+        run.id,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
 
     assert_eq!(imported.len(), 1);
     let final_run = catalog.get_run(run.id).unwrap().unwrap();

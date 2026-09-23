@@ -9,9 +9,9 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, ImportedReleaseEdition,
-    LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord, ReleaseAssertion,
-    ReleaseAssertionField, SourceId,
+    AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
+    ImportedReleaseEdition, LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -81,6 +81,7 @@ impl SqliteCatalog {
             "release_assertions",
             "assets",
             "asset_provenance",
+            "asset_match_decisions",
             "acquisition_runs",
             "acquisition_run_work",
         ];
@@ -394,6 +395,7 @@ impl CatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        let explicit_target = resolve_existing_release_target(&transaction, &record)?;
         let lookup = ExistingImportLookup {
             normalized_title: &normalized_title,
             normalized_platform: &normalized_platform,
@@ -402,49 +404,65 @@ impl CatalogPort for SqliteCatalog {
             asset_type,
             source_id,
             byte_len,
+            release_edition_id: explicit_target.map(|(_, release_edition_id)| release_edition_id),
         };
         if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
             normalize_existing_provenance(&transaction, &record, source_id, &existing)?;
+            persist_asset_match_decision(
+                &transaction,
+                existing.imported.asset_id,
+                existing.imported.release_edition_id,
+                source_id,
+                &record.source_location,
+                record.match_decision.as_ref(),
+            )?;
             transaction.commit().map_err(sql_error)?;
             return Ok(existing.imported);
         }
 
-        let game_id = resolve_game_id(&transaction, &record, &normalized_title)?;
+        let game_id = match explicit_target {
+            Some((game_id, _)) => game_id,
+            None => resolve_game_id(&transaction, &record, &normalized_title)?,
+        };
 
-        transaction
-            .execute(
-                "INSERT INTO release_editions (
-                    game_id, platform, normalized_platform, region, normalized_region,
-                    edition_name, normalized_edition_name
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
-                params![
-                    game_id,
-                    record.platform,
-                    normalized_platform,
-                    record.region,
-                    normalized_region,
-                    record.edition_name,
-                    normalized_edition,
-                ],
-            )
-            .map_err(sql_error)?;
-        let release_edition_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM release_editions
-                 WHERE game_id = ?1
-                   AND normalized_platform = ?2
-                   AND normalized_region = ?3
-                   AND normalized_edition_name = ?4",
-                params![
-                    game_id,
-                    normalized_platform,
-                    normalized_region,
-                    normalized_edition
-                ],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
+        let release_edition_id = if let Some((_, release_edition_id)) = explicit_target {
+            release_edition_id
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO release_editions (
+                        game_id, platform, normalized_platform, region, normalized_region,
+                        edition_name, normalized_edition_name
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
+                    params![
+                        game_id,
+                        record.platform,
+                        normalized_platform,
+                        record.region,
+                        normalized_region,
+                        record.edition_name,
+                        normalized_edition,
+                    ],
+                )
+                .map_err(sql_error)?;
+            transaction
+                .query_row(
+                    "SELECT id FROM release_editions
+                     WHERE game_id = ?1
+                       AND normalized_platform = ?2
+                       AND normalized_region = ?3
+                       AND normalized_edition_name = ?4",
+                    params![
+                        game_id,
+                        normalized_platform,
+                        normalized_region,
+                        normalized_edition
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?
+        };
 
         transaction
             .execute(
@@ -490,6 +508,14 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
+        persist_asset_match_decision(
+            &transaction,
+            asset_id,
+            release_edition_id,
+            source_id,
+            &record.source_location,
+            record.match_decision.as_ref(),
+        )?;
         transaction.commit().map_err(sql_error)?;
 
         Ok(ImportedAsset {
@@ -512,11 +538,16 @@ impl CatalogPort for SqliteCatalog {
                         g.id, g.title,
                         r.id, r.platform, r.region, r.edition_name,
                         a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
-                        p.source_kind, p.source_asset_label, p.source_location
+                        p.source_kind, p.source_asset_label, p.source_location,
+                        m.decision_json
                      FROM release_editions r
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
                      LEFT JOIN asset_provenance p ON p.asset_id = a.id
+                     LEFT JOIN asset_match_decisions m
+                       ON m.asset_id = p.asset_id
+                      AND m.source_kind = p.source_kind
+                      AND m.source_location = p.source_location
                      ORDER BY g.title, r.id, a.id, p.id",
                 )
                 .map_err(sql_error)?;
@@ -546,6 +577,19 @@ impl CatalogPort for SqliteCatalog {
                 let source_id: Option<String> = row.get(11).map_err(sql_error)?;
                 let source_asset_label: Option<String> = row.get(12).map_err(sql_error)?;
                 let source_location: Option<String> = row.get(13).map_err(sql_error)?;
+                let match_decision = row
+                    .get::<_, Option<String>>(14)
+                    .map_err(sql_error)?
+                    .map(|decision_json| {
+                        serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(
+                            |error| {
+                                PortError(format!(
+                                    "catalog contains invalid asset match decision: {error}"
+                                ))
+                            },
+                        )
+                    })
+                    .transpose()?;
                 let entry = entries
                     .last_mut()
                     .ok_or_else(|| PortError("library release aggregation failed".into()))?;
@@ -560,6 +604,7 @@ impl CatalogPort for SqliteCatalog {
                             source_id: SourceId::from(id),
                             source_asset_label,
                             source_location: location,
+                            match_decision,
                         });
                     }
                     continue;
@@ -589,6 +634,7 @@ impl CatalogPort for SqliteCatalog {
                         source_id: SourceId::from(id),
                         source_asset_label,
                         source_location: location,
+                        match_decision,
                     });
                 }
                 entry.assets.push(LibraryAsset {
@@ -643,6 +689,7 @@ struct ExistingImportLookup<'a> {
     asset_type: &'a str,
     source_id: &'a str,
     byte_len: i64,
+    release_edition_id: Option<i64>,
 }
 
 struct ExistingImportMatch {
@@ -679,6 +726,39 @@ fn resolve_game_id(
     }
 }
 
+fn resolve_existing_release_target(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+) -> Result<Option<(i64, i64)>, PortError> {
+    let Some(release_edition_id) = record.existing_release_edition_id else {
+        return Ok(None);
+    };
+
+    let game_id = transaction
+        .query_row(
+            "SELECT game_id FROM release_editions WHERE id = ?1",
+            params![release_edition_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(sql_error)?
+        .ok_or_else(|| {
+            PortError(format!(
+                "release edition #{release_edition_id} does not exist"
+            ))
+        })?;
+
+    if let Some(existing_game_id) = record.existing_game_id
+        && existing_game_id != game_id
+    {
+        return Err(PortError(format!(
+            "release edition #{release_edition_id} does not belong to game #{existing_game_id}"
+        )));
+    }
+
+    Ok(Some((game_id, release_edition_id)))
+}
+
 fn find_existing_import(
     transaction: &Transaction<'_>,
     record: &PersistAsset,
@@ -699,7 +779,8 @@ fn find_existing_import(
                AND r.normalized_platform = ?6
                AND r.normalized_region = ?7
                AND r.normalized_edition_name = ?8
-               AND (?9 IS NULL OR g.id = ?9)",
+               AND (?9 IS NULL OR g.id = ?9)
+               AND (?10 IS NULL OR r.id = ?10)",
         )
         .map_err(sql_error)?;
     let mut rows = statement
@@ -713,6 +794,7 @@ fn find_existing_import(
             lookup.normalized_region,
             lookup.normalized_edition,
             record.existing_game_id,
+            lookup.release_edition_id,
         ])
         .map_err(sql_error)?;
 
@@ -781,12 +863,67 @@ fn normalize_existing_provenance(
     Ok(())
 }
 
+fn persist_asset_match_decision(
+    transaction: &Transaction<'_>,
+    asset_id: i64,
+    release_edition_id: i64,
+    source_id: &str,
+    source_location: &str,
+    match_decision: Option<&AssetCandidateMatch>,
+) -> Result<(), PortError> {
+    let Some(match_decision) = match_decision else {
+        return Ok(());
+    };
+    if match_decision.release_edition_id != Some(release_edition_id) {
+        return Err(PortError(format!(
+            "asset match decision targets release {:?}, expected #{release_edition_id}",
+            match_decision.release_edition_id
+        )));
+    }
+    let decision_json = serde_json::to_string(match_decision)
+        .map_err(|error| PortError(format!("failed to serialize asset match decision: {error}")))?;
+    transaction
+        .execute(
+            "INSERT INTO asset_match_decisions (
+                asset_id, source_kind, source_location, decision_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(asset_id, source_kind, source_location)
+             DO UPDATE SET decision_json = excluded.decision_json",
+            params![asset_id, source_id, source_location, decision_json],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
 fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
     migrate_legacy_game_identity(connection)?;
     connection
         .execute_batch("BEGIN IMMEDIATE;")
         .map_err(sql_error)?;
     let migration = (|| -> Result<(), PortError> {
+        let legacy_asset_match_decisions = table_matches_columns(
+            connection,
+            "asset_match_decisions",
+            &[
+                ("asset_id", "INTEGER", false, true),
+                ("decision_json", "TEXT", true, false),
+            ],
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "asset_id",
+            "assets",
+            "id",
+        )?;
+        if legacy_asset_match_decisions {
+            connection
+                .execute_batch(
+                    "ALTER TABLE asset_match_decisions
+                     RENAME TO asset_match_decisions_legacy;",
+                )
+                .map_err(sql_error)?;
+        }
+
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS games (
@@ -839,6 +976,15 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 source_location TEXT NOT NULL,
                 source_asset_label TEXT,
                 UNIQUE(asset_id, source_kind, source_location)
+            );
+            CREATE TABLE IF NOT EXISTS asset_match_decisions (
+                asset_id INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_location TEXT NOT NULL,
+                decision_json TEXT NOT NULL,
+                PRIMARY KEY(asset_id, source_kind, source_location),
+                FOREIGN KEY(asset_id, source_kind, source_location)
+                    REFERENCES asset_provenance(asset_id, source_kind, source_location)
             );
             CREATE TABLE IF NOT EXISTS acquisition_runs (
                 id INTEGER PRIMARY KEY,
@@ -902,6 +1048,24 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 .execute_batch(
                     "ALTER TABLE asset_provenance
                      ADD COLUMN source_asset_label TEXT;",
+                )
+                .map_err(sql_error)?;
+        }
+        if legacy_asset_match_decisions {
+            connection
+                .execute_batch(
+                    "INSERT INTO asset_match_decisions (
+                        asset_id, source_kind, source_location, decision_json
+                     )
+                     SELECT d.asset_id, p.source_kind, p.source_location, d.decision_json
+                     FROM asset_match_decisions_legacy d
+                     JOIN asset_provenance p ON p.asset_id = d.asset_id
+                     WHERE p.id = (
+                         SELECT MAX(latest.id)
+                         FROM asset_provenance latest
+                         WHERE latest.asset_id = d.asset_id
+                     );
+                     DROP TABLE asset_match_decisions_legacy;",
                 )
                 .map_err(sql_error)?;
         }
@@ -1067,6 +1231,58 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
             )?)
     {
         return Ok(false);
+    }
+
+    if table_exists(connection, "asset_match_decisions")? {
+        let legacy_match_decisions = table_matches_columns(
+            connection,
+            "asset_match_decisions",
+            &[
+                ("asset_id", "INTEGER", false, true),
+                ("decision_json", "TEXT", true, false),
+            ],
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "asset_id",
+            "assets",
+            "id",
+        )?;
+        let provenance_match_decisions = table_matches_columns(
+            connection,
+            "asset_match_decisions",
+            &[
+                ("asset_id", "INTEGER", true, true),
+                ("source_kind", "TEXT", true, true),
+                ("source_location", "TEXT", true, true),
+                ("decision_json", "TEXT", true, false),
+            ],
+        )? && has_unique_index(
+            connection,
+            "asset_match_decisions",
+            &["asset_id", "source_kind", "source_location"],
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "asset_id",
+            "asset_provenance",
+            "asset_id",
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "source_kind",
+            "asset_provenance",
+            "source_kind",
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "source_location",
+            "asset_provenance",
+            "source_location",
+        )?;
+        if !legacy_match_decisions && !provenance_match_decisions {
+            return Ok(false);
+        }
     }
 
     let has_runs = table_exists(connection, "acquisition_runs")?;
@@ -1577,6 +1793,8 @@ mod tests {
                     catalog
                         .persist_asset(PersistAsset {
                             existing_game_id: None,
+                            existing_release_edition_id: None,
+                            match_decision: None,
                             game_title: "Concurrent Game".to_owned(),
                             platform: "Windows".to_owned(),
                             region: "Worldwide".to_owned(),

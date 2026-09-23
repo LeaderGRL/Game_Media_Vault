@@ -7,12 +7,14 @@ use std::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
-    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, SourceId, StoredObject,
+    MatchingPolicy, MatchingPolicyValidationError, PersistAsset, ReferenceReleaseRecord,
+    RetentionPolicy, SourceId, StoredObject,
 };
 use thiserror::Error;
 
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
+    match_asset_candidate_to_release,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -266,6 +268,8 @@ pub enum ApplicationError {
     Port(#[from] PortError),
     #[error("{0}")]
     Validation(#[from] AcquisitionRequestValidationError),
+    #[error("{0}")]
+    InvalidMatchingPolicy(#[from] MatchingPolicyValidationError),
     #[error("acquisition run #{0} does not exist")]
     RunNotFound(i64),
     #[error("acquisition work key must not be blank")]
@@ -325,7 +329,9 @@ pub fn acquire_run_with_connector(
     object_store: &dyn ObjectStorePort,
     connector: &dyn ConnectorPort,
     run_id: i64,
+    matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
+    let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
     if run.status == AcquisitionRunStatus::Completed {
         return Ok(Vec::new());
@@ -346,6 +352,7 @@ pub fn acquire_run_with_connector(
         });
     }
     validate_connector_plan(&run.request, connector.source_id(), &capabilities)?;
+    let releases = catalog.list_library()?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
     for candidate in connector.discover(&run.request)? {
@@ -365,10 +372,25 @@ pub fn acquire_run_with_connector(
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
             break;
         };
+        let candidate_match =
+            match_asset_candidate_to_release(candidate, &releases, matching_policy);
+        let Some(release_edition_id) = candidate_match.auto_link_release_edition_id() else {
+            complete_acquisition_work(runs, run_id, &work.key)?;
+            continue;
+        };
+        let Some(release) = releases
+            .iter()
+            .find(|release| release.release_edition_id == release_edition_id)
+        else {
+            complete_acquisition_work(runs, run_id, &work.key)?;
+            continue;
+        };
         let mut stream = connector.download(candidate)?;
         let stored = object_store.store_original_reader(stream.as_mut())?;
         let imported = catalog.persist_asset(PersistAsset {
-            existing_game_id: None,
+            existing_game_id: Some(release.game_id),
+            existing_release_edition_id: Some(release.release_edition_id),
+            match_decision: Some(candidate_match),
             game_title: candidate.game_title.clone(),
             platform: candidate.platform.clone(),
             region: candidate.region.clone(),
@@ -477,6 +499,8 @@ pub fn import_local_box_front(
 
     Ok(catalog.persist_asset(PersistAsset {
         existing_game_id: request.existing_game_id,
+        existing_release_edition_id: None,
+        match_decision: None,
         game_title: request.game_title,
         platform: request.platform,
         region: request.region,

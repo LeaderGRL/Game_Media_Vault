@@ -123,6 +123,8 @@ fn canonical_provenance_identity_ignores_caller_filename_alias() {
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
     let first_record = PersistAsset {
         existing_game_id: None,
+        existing_release_edition_id: None,
+        match_decision: None,
         game_title: "Alias Game".to_owned(),
         platform: "Windows".to_owned(),
         region: "Worldwide".to_owned(),

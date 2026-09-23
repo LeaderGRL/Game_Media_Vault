@@ -431,6 +431,219 @@ pub struct AssetCandidate {
     pub original_filename: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchingPolicy {
+    pub high_confidence_threshold: u8,
+    pub medium_confidence_threshold: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedMatchingPolicy {
+    high_confidence_threshold: u8,
+    medium_confidence_threshold: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchingPolicyValidationError {
+    ThresholdOutOfRange { value: u8 },
+    MediumThresholdAboveHighThreshold,
+}
+
+impl std::fmt::Display for MatchingPolicyValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ThresholdOutOfRange { value } => {
+                write!(
+                    formatter,
+                    "matching threshold must be between 0 and 100, got {value}"
+                )
+            }
+            Self::MediumThresholdAboveHighThreshold => write!(
+                formatter,
+                "medium matching threshold cannot be higher than high matching threshold"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MatchingPolicyValidationError {}
+
+impl MatchingPolicy {
+    pub fn validate(self) -> Result<ValidatedMatchingPolicy, MatchingPolicyValidationError> {
+        if self.high_confidence_threshold > 100 {
+            return Err(MatchingPolicyValidationError::ThresholdOutOfRange {
+                value: self.high_confidence_threshold,
+            });
+        }
+        if self.medium_confidence_threshold > 100 {
+            return Err(MatchingPolicyValidationError::ThresholdOutOfRange {
+                value: self.medium_confidence_threshold,
+            });
+        }
+        if self.medium_confidence_threshold > self.high_confidence_threshold {
+            return Err(MatchingPolicyValidationError::MediumThresholdAboveHighThreshold);
+        }
+        Ok(ValidatedMatchingPolicy {
+            high_confidence_threshold: self.high_confidence_threshold,
+            medium_confidence_threshold: self.medium_confidence_threshold,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchSignal {
+    Title,
+    Platform,
+    Region,
+    Edition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchEvidence {
+    pub signal: MatchSignal,
+    pub candidate_value: String,
+    pub release_value: String,
+    pub score_delta: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetCandidateMatch {
+    pub release_edition_id: Option<i64>,
+    pub score: u8,
+    pub confidence: MatchConfidence,
+    pub evidence: Vec<MatchEvidence>,
+}
+
+impl AssetCandidateMatch {
+    pub fn auto_link_release_edition_id(&self) -> Option<i64> {
+        (self.confidence == MatchConfidence::High)
+            .then_some(self.release_edition_id)
+            .flatten()
+    }
+}
+
+pub fn match_asset_candidate_to_release(
+    candidate: &AssetCandidate,
+    releases: &[LibraryEntry],
+    policy: ValidatedMatchingPolicy,
+) -> AssetCandidateMatch {
+    let mut scored_releases = releases
+        .iter()
+        .map(|release| {
+            let evidence = vec![
+                exact_match_evidence(
+                    MatchSignal::Title,
+                    &candidate.game_title,
+                    &release.game_title,
+                    50,
+                ),
+                exact_match_evidence(
+                    MatchSignal::Platform,
+                    &candidate.platform,
+                    &release.platform,
+                    30,
+                ),
+                exact_match_evidence(MatchSignal::Region, &candidate.region, &release.region, 15),
+                exact_match_evidence(
+                    MatchSignal::Edition,
+                    &candidate.edition_name,
+                    &release.edition_name,
+                    5,
+                ),
+            ];
+            let score = evidence
+                .iter()
+                .map(|evidence| evidence.score_delta)
+                .sum::<i16>()
+                .clamp(0, 100) as u8;
+            (release.release_edition_id, score, evidence)
+        })
+        .collect::<Vec<_>>();
+
+    scored_releases.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+    let Some((release_edition_id, score, evidence)) = scored_releases.first().cloned() else {
+        return AssetCandidateMatch {
+            release_edition_id: None,
+            score: 0,
+            confidence: MatchConfidence::Low,
+            evidence: Vec::new(),
+        };
+    };
+
+    let ambiguous_best_score = scored_releases
+        .get(1)
+        .is_some_and(|candidate| candidate.1 == score);
+    let has_material_conflict = evidence.iter().any(|evidence| {
+        evidence.score_delta < 0
+            && matches!(
+                evidence.signal,
+                MatchSignal::Platform | MatchSignal::Region | MatchSignal::Edition
+            )
+    });
+    let confidence = if ambiguous_best_score || has_material_conflict {
+        if score >= policy.medium_confidence_threshold {
+            MatchConfidence::Medium
+        } else {
+            MatchConfidence::Low
+        }
+    } else if score >= policy.high_confidence_threshold {
+        MatchConfidence::High
+    } else if score >= policy.medium_confidence_threshold {
+        MatchConfidence::Medium
+    } else {
+        MatchConfidence::Low
+    };
+
+    AssetCandidateMatch {
+        release_edition_id: Some(release_edition_id),
+        score,
+        confidence,
+        evidence,
+    }
+}
+
+fn exact_match_evidence(
+    signal: MatchSignal,
+    candidate_value: &str,
+    release_value: &str,
+    score: i16,
+) -> MatchEvidence {
+    let score_delta = if is_missing_match_value(signal, candidate_value)
+        || is_missing_match_value(signal, release_value)
+    {
+        0
+    } else if candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase() {
+        score
+    } else {
+        -score
+    };
+    MatchEvidence {
+        signal,
+        candidate_value: candidate_value.to_owned(),
+        release_value: release_value.to_owned(),
+        score_delta,
+    }
+}
+
+fn is_missing_match_value(signal: MatchSignal, value: &str) -> bool {
+    let normalized = value.trim().to_lowercase();
+    normalized.is_empty()
+        || matches!(
+            (signal, normalized.as_str()),
+            (MatchSignal::Region, "unknown") | (MatchSignal::Edition, "unspecified")
+        )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredObject {
     pub hash: String,
@@ -440,6 +653,8 @@ pub struct StoredObject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistAsset {
     pub existing_game_id: Option<i64>,
+    pub existing_release_edition_id: Option<i64>,
+    pub match_decision: Option<AssetCandidateMatch>,
     pub game_title: String,
     pub platform: String,
     pub region: String,
@@ -467,6 +682,7 @@ pub struct AssetProvenance {
     pub source_id: SourceId,
     pub source_asset_label: Option<String>,
     pub source_location: String,
+    pub match_decision: Option<AssetCandidateMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -489,4 +705,35 @@ pub struct LibraryEntry {
     pub edition_name: String,
     pub assertions: Vec<ReleaseAssertion>,
     pub assets: Vec<LibraryAsset>,
+}
+
+#[cfg(test)]
+mod matching_policy_tests {
+    use super::{MatchingPolicy, MatchingPolicyValidationError};
+
+    #[test]
+    fn rejects_medium_threshold_above_high_threshold() {
+        let policy = MatchingPolicy {
+            high_confidence_threshold: 60,
+            medium_confidence_threshold: 80,
+        };
+
+        assert_eq!(
+            policy.validate(),
+            Err(MatchingPolicyValidationError::MediumThresholdAboveHighThreshold)
+        );
+    }
+
+    #[test]
+    fn rejects_thresholds_above_confidence_range() {
+        let policy = MatchingPolicy {
+            high_confidence_threshold: 101,
+            medium_confidence_threshold: 50,
+        };
+
+        assert_eq!(
+            policy.validate(),
+            Err(MatchingPolicyValidationError::ThresholdOutOfRange { value: 101 })
+        );
+    }
 }

@@ -1,6 +1,10 @@
 use game_media_vault_application::{CatalogPort, ObjectStorePort};
-use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
+use game_media_vault_domain::{
+    AssetCandidateMatch, AssetType, MatchConfidence, MatchEvidence, MatchSignal, PersistAsset,
+    SourceId,
+};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use rusqlite::params;
 use tempfile::tempdir;
 
 #[test]
@@ -15,6 +19,8 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     let imported = catalog
         .persist_asset(PersistAsset {
             existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: None,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "Unknown".to_owned(),
@@ -52,5 +58,346 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     assert_eq!(
         asset.provenance[0].source_location,
         "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
+    );
+}
+
+#[test]
+fn explicit_release_target_attaches_asset_to_that_release() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+
+    let existing = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: None,
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "existing-hash".to_owned(),
+            byte_len: 10,
+            original_filename: "existing.png".to_owned(),
+            source_id: SourceId::from("fixture"),
+            source_asset_label: None,
+            source_location: "fixture://existing".to_owned(),
+        })
+        .unwrap();
+
+    let imported = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: Some(existing.game_id),
+            existing_release_edition_id: Some(existing.release_edition_id),
+            match_decision: None,
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "Europe".to_owned(),
+            edition_name: "Collector".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "matched-hash".to_owned(),
+            byte_len: 11,
+            original_filename: "matched.png".to_owned(),
+            source_id: SourceId::from("fixture"),
+            source_asset_label: None,
+            source_location: "fixture://matched".to_owned(),
+        })
+        .unwrap();
+
+    assert_eq!(imported.game_id, existing.game_id);
+    assert_eq!(imported.release_edition_id, existing.release_edition_id);
+    assert_eq!(catalog.list_library().unwrap().len(), 1);
+}
+
+#[test]
+fn explicit_release_target_is_validated_before_duplicate_lookup() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let existing_record = PersistAsset {
+        existing_game_id: None,
+        existing_release_edition_id: None,
+        match_decision: None,
+        game_title: "Target Game".to_owned(),
+        platform: "Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        object_hash: "shared-hash".to_owned(),
+        byte_len: 10,
+        original_filename: "front.png".to_owned(),
+        source_id: SourceId::from("fixture"),
+        source_asset_label: None,
+        source_location: "fixture://shared".to_owned(),
+    };
+    let existing = catalog.persist_asset(existing_record.clone()).unwrap();
+
+    let error = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: Some(existing.game_id),
+            existing_release_edition_id: Some(999_999),
+            match_decision: None,
+            ..existing_record
+        })
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("release edition #999999 does not exist")
+    );
+}
+
+#[test]
+fn explicit_release_target_scopes_duplicate_lookup_to_that_release() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let existing_record = PersistAsset {
+        existing_game_id: None,
+        existing_release_edition_id: None,
+        match_decision: None,
+        game_title: "Target Game".to_owned(),
+        platform: "Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        object_hash: "shared-hash".to_owned(),
+        byte_len: 10,
+        original_filename: "front.png".to_owned(),
+        source_id: SourceId::from("fixture"),
+        source_asset_label: None,
+        source_location: "fixture://shared".to_owned(),
+    };
+    let existing = catalog.persist_asset(existing_record.clone()).unwrap();
+    let target = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: Some(existing.game_id),
+            existing_release_edition_id: None,
+            region: "Europe".to_owned(),
+            edition_name: "Collector".to_owned(),
+            object_hash: "target-seed-hash".to_owned(),
+            source_location: "fixture://target-seed".to_owned(),
+            ..existing_record.clone()
+        })
+        .unwrap();
+
+    let imported = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: Some(existing.game_id),
+            existing_release_edition_id: Some(target.release_edition_id),
+            match_decision: None,
+            ..existing_record
+        })
+        .unwrap();
+
+    assert_eq!(imported.release_edition_id, target.release_edition_id);
+    assert_ne!(imported.asset_id, existing.asset_id);
+}
+
+#[test]
+fn matched_asset_round_trips_its_decision_evidence() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let match_decision = AssetCandidateMatch {
+        release_edition_id: Some(1),
+        score: 100,
+        confidence: MatchConfidence::High,
+        evidence: vec![
+            MatchEvidence {
+                signal: MatchSignal::Title,
+                candidate_value: "Target Game".to_owned(),
+                release_value: "Target Game".to_owned(),
+                score_delta: 50,
+            },
+            MatchEvidence {
+                signal: MatchSignal::Platform,
+                candidate_value: "Nintendo Entertainment System".to_owned(),
+                release_value: "Nintendo Entertainment System".to_owned(),
+                score_delta: 30,
+            },
+            MatchEvidence {
+                signal: MatchSignal::Region,
+                candidate_value: "USA".to_owned(),
+                release_value: "USA".to_owned(),
+                score_delta: 15,
+            },
+            MatchEvidence {
+                signal: MatchSignal::Edition,
+                candidate_value: "Standard".to_owned(),
+                release_value: "Standard".to_owned(),
+                score_delta: 5,
+            },
+        ],
+    };
+
+    catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: Some(match_decision.clone()),
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "matched-hash".to_owned(),
+            byte_len: 11,
+            original_filename: "matched.png".to_owned(),
+            source_id: SourceId::from("fixture"),
+            source_asset_label: None,
+            source_location: "fixture://matched".to_owned(),
+        })
+        .unwrap();
+
+    let library = catalog.list_library().unwrap();
+
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].assets.len(), 1);
+    assert_eq!(
+        library[0].assets[0].provenance[0].match_decision.as_ref(),
+        Some(&match_decision)
+    );
+}
+
+#[test]
+fn deduplicated_asset_preserves_match_decision_per_provenance() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_decision = AssetCandidateMatch {
+        release_edition_id: Some(1),
+        score: 100,
+        confidence: MatchConfidence::High,
+        evidence: vec![MatchEvidence {
+            signal: MatchSignal::Title,
+            candidate_value: "Provider One Title".to_owned(),
+            release_value: "Target Game".to_owned(),
+            score_delta: 50,
+        }],
+    };
+    let second_decision = AssetCandidateMatch {
+        release_edition_id: Some(1),
+        score: 95,
+        confidence: MatchConfidence::High,
+        evidence: vec![MatchEvidence {
+            signal: MatchSignal::Title,
+            candidate_value: "Provider Two Title".to_owned(),
+            release_value: "Target Game".to_owned(),
+            score_delta: 50,
+        }],
+    };
+    let first_record = PersistAsset {
+        existing_game_id: None,
+        existing_release_edition_id: None,
+        match_decision: Some(first_decision.clone()),
+        game_title: "Target Game".to_owned(),
+        platform: "Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        object_hash: "shared-matched-hash".to_owned(),
+        byte_len: 11,
+        original_filename: "matched.png".to_owned(),
+        source_id: SourceId::from("provider-one"),
+        source_asset_label: Some("front".to_owned()),
+        source_location: "fixture://provider-one/matched".to_owned(),
+    };
+    let first = catalog.persist_asset(first_record.clone()).unwrap();
+    let second = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: Some(first.game_id),
+            existing_release_edition_id: Some(first.release_edition_id),
+            match_decision: Some(second_decision.clone()),
+            source_id: SourceId::from("provider-two"),
+            source_location: "fixture://provider-two/matched".to_owned(),
+            ..first_record
+        })
+        .unwrap();
+
+    assert_eq!(second.asset_id, first.asset_id);
+    let library = catalog.list_library().unwrap();
+    let provenance = &library[0].assets[0].provenance;
+    assert_eq!(provenance.len(), 2);
+    assert_eq!(
+        provenance
+            .iter()
+            .find(|item| item.source_id == SourceId::from("provider-one"))
+            .unwrap()
+            .match_decision
+            .as_ref(),
+        Some(&first_decision)
+    );
+    assert_eq!(
+        provenance
+            .iter()
+            .find(|item| item.source_id == SourceId::from("provider-two"))
+            .unwrap()
+            .match_decision
+            .as_ref(),
+        Some(&second_decision)
+    );
+}
+
+#[test]
+fn opening_asset_scoped_match_decisions_migrates_them_to_provenance() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let match_decision = AssetCandidateMatch {
+        release_edition_id: Some(1),
+        score: 100,
+        confidence: MatchConfidence::High,
+        evidence: vec![MatchEvidence {
+            signal: MatchSignal::Title,
+            candidate_value: "Target Game".to_owned(),
+            release_value: "Target Game".to_owned(),
+            score_delta: 50,
+        }],
+    };
+    let imported = catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: Some(match_decision.clone()),
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "legacy-match-hash".to_owned(),
+            byte_len: 11,
+            original_filename: "matched.png".to_owned(),
+            source_id: SourceId::from("legacy-provider"),
+            source_asset_label: None,
+            source_location: "fixture://legacy-provider/matched".to_owned(),
+        })
+        .unwrap();
+    drop(catalog);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE asset_match_decisions;
+             CREATE TABLE asset_match_decisions (
+                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id),
+                 decision_json TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO asset_match_decisions (asset_id, decision_json) VALUES (?1, ?2)",
+            params![
+                imported.asset_id,
+                serde_json::to_string(&match_decision).unwrap()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let library = reopened.list_library().unwrap();
+
+    assert_eq!(
+        library[0].assets[0].provenance[0].match_decision.as_ref(),
+        Some(&match_decision)
     );
 }

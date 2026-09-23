@@ -12,7 +12,7 @@ use game_media_vault_application::{
     start_acquisition_run as start_acquisition_run_use_case,
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
-use game_media_vault_domain::{AcquisitionRequest, AcquisitionRun, LibraryEntry};
+use game_media_vault_domain::{AcquisitionRequest, AcquisitionRun, LibraryEntry, MatchingPolicy};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 
 pub fn validate_acquisition_request(
@@ -52,12 +52,20 @@ pub fn execute_acquisition_run_in_vault_with_connector(
     vault_root: &Path,
     run_id: i64,
     connector: &dyn ConnectorPort,
+    matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, String> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
         .map_err(|error| error.to_string())?;
     let object_store = ContentAddressedStore::new(vault_root);
-    acquire_run_with_connector_use_case(&catalog, &catalog, &object_store, connector, run_id)
-        .map_err(|error| error.to_string())?;
+    acquire_run_with_connector_use_case(
+        &catalog,
+        &catalog,
+        &object_store,
+        connector,
+        run_id,
+        matching_policy,
+    )
+    .map_err(|error| error.to_string())?;
     load_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
 }
 
@@ -65,9 +73,15 @@ pub async fn execute_acquisition_run_in_vault_with_connector_async(
     vault_root: PathBuf,
     run_id: i64,
     connector: Box<dyn ConnectorPort + Send>,
+    matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        execute_acquisition_run_in_vault_with_connector(&vault_root, run_id, connector.as_ref())
+        execute_acquisition_run_in_vault_with_connector(
+            &vault_root,
+            run_id,
+            connector.as_ref(),
+            matching_policy,
+        )
     })
     .await
     .map_err(|error| format!("acquisition worker failed: {error}"))?
@@ -127,11 +141,13 @@ fn start_acquisition_run(
 async fn execute_acquisition_run(
     vault_root: String,
     run_id: i64,
+    matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, String> {
     execute_acquisition_run_in_vault_with_connector_async(
         PathBuf::from(vault_root),
         run_id,
         Box::new(LibretroThumbnailsConnector::new()),
+        matching_policy,
     )
     .await
 }

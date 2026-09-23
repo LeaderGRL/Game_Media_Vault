@@ -11,9 +11,17 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, PersistAsset,
-    QualityRequirements, RetentionPolicy, SourceId, SourceSelection, StoredObject,
+    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchConfidence,
+    MatchingPolicy, PersistAsset, QualityRequirements, RetentionPolicy, SourceId, SourceSelection,
+    StoredObject,
 };
+
+fn matching_policy() -> MatchingPolicy {
+    MatchingPolicy {
+        high_confidence_threshold: 80,
+        medium_confidence_threshold: 50,
+    }
+}
 
 fn request() -> AcquisitionRequest {
     AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
@@ -196,9 +204,18 @@ impl ObjectStorePort for FakeStore {
     }
 }
 
-#[derive(Default)]
 struct FakeCatalog {
     records: RefCell<Vec<PersistAsset>>,
+    library: Vec<LibraryEntry>,
+}
+
+impl Default for FakeCatalog {
+    fn default() -> Self {
+        Self {
+            records: RefCell::new(Vec::new()),
+            library: vec![matching_release()],
+        }
+    }
 }
 
 impl CatalogPort for FakeCatalog {
@@ -214,7 +231,33 @@ impl CatalogPort for FakeCatalog {
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
-        Ok(Vec::new())
+        Ok(self.library.clone())
+    }
+}
+
+fn matching_release() -> LibraryEntry {
+    LibraryEntry {
+        game_id: 41,
+        game_title: "Super Mario Bros. (World)".to_owned(),
+        release_edition_id: 73,
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        assertions: Vec::new(),
+        assets: Vec::new(),
+    }
+}
+
+fn release_for_candidate(candidate: &AssetCandidate, release_edition_id: i64) -> LibraryEntry {
+    LibraryEntry {
+        game_id: release_edition_id + 1_000,
+        game_title: candidate.game_title.clone(),
+        release_edition_id,
+        platform: candidate.platform.clone(),
+        region: candidate.region.clone(),
+        edition_name: candidate.edition_name.clone(),
+        assertions: Vec::new(),
+        assets: Vec::new(),
     }
 }
 
@@ -235,7 +278,9 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7).unwrap();
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
@@ -247,6 +292,13 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     let records = catalog.records.borrow();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].asset_type, AssetType::BoxFront);
+    assert_eq!(records[0].existing_game_id, Some(41));
+    assert_eq!(records[0].existing_release_edition_id, Some(73));
+    let match_decision = records[0].match_decision.as_ref().unwrap();
+    assert_eq!(match_decision.release_edition_id, Some(73));
+    assert_eq!(match_decision.score, 80);
+    assert_eq!(match_decision.confidence, MatchConfidence::High);
+    assert_eq!(match_decision.evidence.len(), 4);
     assert_eq!(records[0].source_id, SourceId::from("libretro-thumbnails"));
     assert_eq!(
         records[0].source_location,
@@ -257,6 +309,38 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     assert_eq!(final_run.status, AcquisitionRunStatus::Completed);
     assert_eq!(final_run.queued_work, 0);
     assert_eq!(final_run.completed_work, 1);
+}
+
+#[test]
+fn low_confidence_candidate_is_left_unattached_without_downloading() {
+    let runs = FakeRuns::new(run_with_request(request()));
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![AssetCandidate {
+            game_title: "Completely Different Game".to_owned(),
+            platform: "Different Platform".to_owned(),
+            region: "Europe".to_owned(),
+            edition_name: "Collector".to_owned(),
+            asset_type: AssetType::BoxFront,
+            source_id: SourceId::from("libretro-thumbnails"),
+            source_asset_label: Some("Named_Boxarts".to_owned()),
+            source_url: "https://example.invalid/unmatched.png".to_owned(),
+            original_filename: "unmatched.png".to_owned(),
+        }],
+    };
+    let store = FakeStore::default();
+    let catalog = FakeCatalog::default();
+
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+    assert!(store.bytes.borrow().is_empty());
+    assert!(catalog.records.borrow().is_empty());
+    assert_eq!(runs.run.borrow().completed_work, 1);
+    assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
 }
 
 #[test]
@@ -281,7 +365,9 @@ fn packaging_selector_acquires_the_supported_box_front() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7).unwrap();
+    let imported =
+        acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy())
+            .unwrap();
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
@@ -306,6 +392,7 @@ fn pause_or_cancel_during_the_last_download_preserves_the_requested_run_status()
             &FakeStore::default(),
             &connector,
             7,
+            matching_policy(),
         )
         .unwrap();
 
@@ -334,6 +421,7 @@ fn pause_or_cancel_winning_the_final_completion_race_does_not_fail_execution() {
             &FakeStore::default(),
             &connector,
             7,
+            matching_policy(),
         )
         .unwrap();
 
@@ -365,6 +453,7 @@ fn execute_error(request: AcquisitionRequest) -> game_media_vault_application::A
         &FakeStore::default(),
         &connector,
         7,
+        matching_policy(),
     )
     .unwrap_err()
 }
@@ -498,14 +587,27 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
         ..first.clone()
     };
     let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        library: vec![
+            release_for_candidate(&first, 81),
+            release_for_candidate(&second, 82),
+        ],
+    };
     let connector = FakeConnector {
         downloads: RefCell::new(Vec::new()),
         candidates: vec![first, second],
     };
-    let catalog = FakeCatalog::default();
 
-    let imported =
-        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7).unwrap();
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
 
     assert_eq!(imported.len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);
@@ -531,14 +633,27 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
         ..first.clone()
     };
     let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        library: vec![
+            release_for_candidate(&first, 91),
+            release_for_candidate(&second, 92),
+        ],
+    };
     let connector = FakeConnector {
         downloads: RefCell::new(Vec::new()),
         candidates: vec![first, second],
     };
-    let catalog = FakeCatalog::default();
 
-    let imported =
-        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7).unwrap();
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
 
     assert_eq!(imported.len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);
