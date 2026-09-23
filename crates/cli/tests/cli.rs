@@ -138,6 +138,7 @@ fn seed_review_item(vault: &Path) -> i64 {
                     release_value: "Review Game".to_owned(),
                     score_delta: 50,
                 }],
+                assertions: Vec::new(),
             }],
         })
         .unwrap();

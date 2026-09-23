@@ -121,6 +121,7 @@ fn review_item() -> ReviewItem {
                 release_value: "Target Game".to_owned(),
                 score_delta: 50,
             }],
+            assertions: Vec::new(),
         }],
         decision: None,
     }

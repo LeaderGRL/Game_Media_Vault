@@ -12,8 +12,9 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchConfidence,
-    MatchingPolicy, NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy,
-    ReviewDecision, ReviewItem, SourceId, SourceSelection, StoredObject,
+    MatchingPolicy, NewReviewItem, PersistAsset, QualityRequirements, ReleaseAssertion,
+    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem, SourceId, SourceSelection,
+    StoredObject,
 };
 
 fn matching_policy() -> MatchingPolicy {
@@ -456,7 +457,13 @@ fn medium_confidence_candidate_creates_review_item_with_competing_release_eviden
         platform: candidate.platform.clone(),
         region: candidate.region.clone(),
         edition_name: "Standard".to_owned(),
-        assertions: Vec::new(),
+        assertions: vec![ReleaseAssertion {
+            source_id: SourceId::from("reference-catalog"),
+            source_location: "fixture://reference/smb-standard".to_owned(),
+            field: ReleaseAssertionField::Identifier,
+            qualifier: Some("source_record".to_owned()),
+            value: "smb-standard".to_owned(),
+        }],
         assets: Vec::new(),
     };
     let second_release = LibraryEntry {
@@ -508,6 +515,10 @@ fn medium_confidence_candidate_creates_review_item_with_competing_release_eviden
             .competing_matches
             .iter()
             .all(|candidate_match| candidate_match.evidence.len() == 4)
+    );
+    assert_eq!(
+        review_items[0].competing_matches[0].assertions[0].source_id,
+        SourceId::from("reference-catalog")
     );
     assert_eq!(runs.run.borrow().completed_work, 1);
     assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);

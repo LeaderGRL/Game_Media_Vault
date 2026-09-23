@@ -83,6 +83,7 @@ fn tauri_lists_review_evidence_and_persists_resolution() {
                     release_value: "Review Game".to_owned(),
                     score_delta: 50,
                 }],
+                assertions: Vec::new(),
             }],
         })
         .unwrap();

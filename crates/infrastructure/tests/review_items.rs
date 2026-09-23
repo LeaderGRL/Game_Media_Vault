@@ -1,7 +1,7 @@
 use game_media_vault_application::CatalogPort;
 use game_media_vault_domain::{
-    AssetCandidate, AssetType, MatchEvidence, MatchSignal, NewReviewItem, ReviewDecision,
-    ReviewMatchCandidate, SourceId,
+    AssetCandidate, AssetType, MatchEvidence, MatchSignal, NewReviewItem, ReleaseAssertion,
+    ReleaseAssertionField, ReviewDecision, ReviewMatchCandidate, SourceId,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
@@ -43,6 +43,13 @@ fn review_match(release_edition_id: i64, edition_name: &str) -> ReviewMatchCandi
                 score_delta: -5,
             },
         ],
+        assertions: vec![ReleaseAssertion {
+            source_id: SourceId::from("reference-catalog"),
+            source_location: "fixture://reference/target-game".to_owned(),
+            field: ReleaseAssertionField::Identifier,
+            qualifier: Some("source_record".to_owned()),
+            value: format!("release-{release_edition_id}"),
+        }],
     }
 }
 

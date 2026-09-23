@@ -441,6 +441,8 @@ pub struct ReviewMatchCandidate {
     pub edition_name: String,
     pub score: u8,
     pub evidence: Vec<MatchEvidence>,
+    #[serde(default)]
+    pub assertions: Vec<ReleaseAssertion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -645,6 +647,7 @@ pub fn review_matches_for_asset_candidate(
                 edition_name: release.edition_name.clone(),
                 score,
                 evidence,
+                assertions: release.assertions.clone(),
             }
         })
         .filter(|candidate_match| candidate_match.score >= policy.medium_confidence_threshold)
