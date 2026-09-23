@@ -8,8 +8,8 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     AssetCandidateMatch, AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition,
     LibraryEntry, MatchConfidence, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
-    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, ReviewDecision, ReviewItem, SourceId,
-    StoredObject,
+    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceId, StoredObject,
 };
 use thiserror::Error;
 
@@ -64,6 +64,16 @@ pub trait CatalogPort {
     ) -> Result<Option<ReviewItem>, PortError> {
         Err(PortError(
             "catalog does not support review decision persistence".to_owned(),
+        ))
+    }
+
+    fn set_review_status(
+        &self,
+        _review_item_id: i64,
+        _status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support review status persistence".to_owned(),
         ))
     }
 
@@ -470,9 +480,13 @@ pub fn acquire_run_with_connector(
             break;
         };
         let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
-        let reviewed_match = if let Some(review_item) =
-            catalog.find_review_item_by_candidate_identity(&candidate_identity)?
-        {
+        let existing_review_item =
+            catalog.find_review_item_by_candidate_identity(&candidate_identity)?;
+        let review_item_to_reconcile = existing_review_item.as_ref().and_then(|review_item| {
+            matches!(review_item.decision, None | Some(ReviewDecision::Defer))
+                .then_some(review_item.id)
+        });
+        let reviewed_match = if let Some(review_item) = existing_review_item {
             match review_item.decision {
                 Some(ReviewDecision::Accept { release_edition_id }) => {
                     let accepted = review_item
@@ -524,6 +538,9 @@ pub fn acquire_run_with_connector(
         let Some(release_edition_id) =
             reviewed_release_edition_id.or_else(|| candidate_match.auto_link_release_edition_id())
         else {
+            if let Some(review_item_id) = review_item_to_reconcile {
+                catalog.set_review_status(review_item_id, ReviewStatus::Superseded)?;
+            }
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };
@@ -552,6 +569,9 @@ pub fn acquire_run_with_connector(
             source_asset_label: candidate.source_asset_label.clone(),
             source_location: candidate.source_url.clone(),
         })?;
+        if let Some(review_item_id) = review_item_to_reconcile {
+            catalog.set_review_status(review_item_id, ReviewStatus::AutoResolved)?;
+        }
         complete_acquisition_work(runs, run_id, &work.key)?;
         imported_assets.push(imported);
     }

@@ -461,6 +461,17 @@ pub enum ReviewDecision {
     Defer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Pending,
+    Deferred,
+    Accepted,
+    Rejected,
+    AutoResolved,
+    Superseded,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewItem {
     pub id: i64,
@@ -469,6 +480,7 @@ pub struct ReviewItem {
     pub candidate: AssetCandidate,
     pub competing_matches: Vec<ReviewMatchCandidate>,
     pub decision: Option<ReviewDecision>,
+    pub status: ReviewStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

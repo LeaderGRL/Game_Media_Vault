@@ -74,6 +74,14 @@ export type ReviewDecision =
   | { decision: "reject" }
   | { decision: "defer" };
 
+export type ReviewStatus =
+  | "pending"
+  | "deferred"
+  | "accepted"
+  | "rejected"
+  | "auto_resolved"
+  | "superseded";
+
 export interface ReviewItem {
   id: number;
   run_id: number;
@@ -81,4 +89,5 @@ export interface ReviewItem {
   candidate: AssetCandidate;
   competing_matches: ReviewMatchCandidate[];
   decision: ReviewDecision | null;
+  status: ReviewStatus;
 }

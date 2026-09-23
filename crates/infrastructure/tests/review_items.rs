@@ -1,9 +1,10 @@
 use game_media_vault_application::CatalogPort;
 use game_media_vault_domain::{
     AssetCandidate, AssetType, MatchEvidence, MatchSignal, NewReviewItem, ReleaseAssertion,
-    ReleaseAssertionField, ReviewDecision, ReviewMatchCandidate, SourceId,
+    ReleaseAssertionField, ReviewDecision, ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 fn candidate() -> AssetCandidate {
@@ -72,6 +73,7 @@ fn review_item_round_trips_candidate_competitors_and_evidence() {
     let review_items = reopened.list_review_items().unwrap();
 
     assert_eq!(review_items.len(), 1);
+    assert_eq!(review_items[0].status, ReviewStatus::Pending);
     assert_eq!(review_items[0].run_id, new_item.run_id);
     assert_eq!(
         review_items[0].candidate_identity,
@@ -118,9 +120,41 @@ fn review_decision_round_trips_and_can_be_found_by_candidate_identity() {
             release_edition_id: 201
         })
     );
+    assert_eq!(resolved.status, ReviewStatus::Accepted);
     drop(catalog);
 
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
     let persisted = reopened.get_review_item(item.id).unwrap().unwrap();
     assert_eq!(persisted, resolved);
+}
+
+#[test]
+fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:legacy-review".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .set_review_decision(item.id, ReviewDecision::Defer)
+        .unwrap();
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("ALTER TABLE review_items DROP COLUMN status;")
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let migrated = reopened.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(migrated.status, ReviewStatus::Deferred);
+    assert_eq!(migrated.decision, Some(ReviewDecision::Defer));
 }

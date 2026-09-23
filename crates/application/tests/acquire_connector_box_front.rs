@@ -13,8 +13,8 @@ use game_media_vault_domain::{
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchConfidence,
     MatchingPolicy, NewReviewItem, PersistAsset, QualityRequirements, ReleaseAssertion,
-    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem, SourceId, SourceSelection,
-    StoredObject,
+    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceId,
+    SourceSelection, StoredObject,
 };
 
 fn matching_policy() -> MatchingPolicy {
@@ -294,6 +294,11 @@ impl CatalogPort for FakeCatalog {
             existing.run_id = item.run_id;
             existing.candidate = item.candidate;
             existing.competing_matches = item.competing_matches;
+            existing.status = if existing.decision == Some(ReviewDecision::Defer) {
+                ReviewStatus::Deferred
+            } else {
+                ReviewStatus::Pending
+            };
             return Ok(());
         }
         let id = review_items.len() as i64 + 1;
@@ -304,6 +309,7 @@ impl CatalogPort for FakeCatalog {
             candidate: item.candidate,
             competing_matches: item.competing_matches,
             decision: None,
+            status: ReviewStatus::Pending,
         });
         Ok(())
     }
@@ -324,7 +330,28 @@ impl CatalogPort for FakeCatalog {
         else {
             return Ok(None);
         };
+        review_item.status = match &decision {
+            ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
+            ReviewDecision::Reject => ReviewStatus::Rejected,
+            ReviewDecision::Defer => ReviewStatus::Deferred,
+        };
         review_item.decision = Some(decision);
+        Ok(Some(review_item.clone()))
+    }
+
+    fn set_review_status(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let mut review_items = self.review_items.borrow_mut();
+        let Some(review_item) = review_items
+            .iter_mut()
+            .find(|review_item| review_item.id == review_item_id)
+        else {
+            return Ok(None);
+        };
+        review_item.status = status;
         Ok(Some(review_item.clone()))
     }
 }
@@ -854,6 +881,10 @@ fn pending_review_is_re_evaluated_when_matching_policy_changes() {
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
+    assert_eq!(
+        catalog.review_items.borrow()[0].status,
+        ReviewStatus::AutoResolved
+    );
 }
 
 #[test]
@@ -894,6 +925,57 @@ fn deferred_review_is_re_evaluated_when_matching_policy_changes() {
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
+    assert_eq!(
+        catalog.review_items.borrow()[0].status,
+        ReviewStatus::AutoResolved
+    );
+}
+
+#[test]
+fn pending_review_is_superseded_when_re_evaluation_becomes_low_confidence() {
+    let (candidate, release) = threshold_review_candidate_and_release();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library: vec![release],
+    };
+    let first_run = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &first_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        stricter_matching_policy(),
+    )
+    .unwrap();
+
+    let low_confidence_policy = MatchingPolicy {
+        high_confidence_threshold: 90,
+        medium_confidence_threshold: 81,
+    };
+    let second_run = FakeRuns::new(run_with_request(request()));
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        low_confidence_policy,
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+    assert_eq!(
+        catalog.review_items.borrow()[0].status,
+        ReviewStatus::Superseded
+    );
 }
 
 #[test]

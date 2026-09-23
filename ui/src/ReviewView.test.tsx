@@ -54,6 +54,7 @@ const item: ReviewItem = {
     },
   ],
   decision: null,
+  status: "pending",
 };
 
 describe("ReviewView", () => {
@@ -90,5 +91,25 @@ describe("ReviewView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Defer review" }));
     expect(onResolve).toHaveBeenLastCalledWith(17, { decision: "defer" });
+  });
+
+  it("labels reviews closed by matching re-evaluation", () => {
+    const { rerender } = render(
+      <ReviewView
+        items={[{ ...item, status: "auto_resolved" }]}
+        resolvingId={null}
+        onResolve={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Auto-resolved")).toBeInTheDocument();
+
+    rerender(
+      <ReviewView
+        items={[{ ...item, status: "superseded" }]}
+        resolvingId={null}
+        onResolve={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Superseded")).toBeInTheDocument();
   });
 });

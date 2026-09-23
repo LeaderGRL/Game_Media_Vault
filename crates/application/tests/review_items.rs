@@ -6,7 +6,7 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     AssetType, ImportedAsset, LibraryEntry, MatchEvidence, MatchSignal, NewReviewItem,
-    PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate, SourceId,
+    PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 
 struct FakeCatalog {
@@ -124,6 +124,7 @@ fn review_item() -> ReviewItem {
             assertions: Vec::new(),
         }],
         decision: None,
+        status: ReviewStatus::Pending,
     }
 }
 

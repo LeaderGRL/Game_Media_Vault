@@ -12,7 +12,7 @@ use game_media_vault_domain::{
     AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
     ImportedReleaseEdition, LibraryAsset, LibraryEntry, NewReviewItem, PersistAsset,
     ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewDecision, ReviewItem,
-    ReviewMatchCandidate, SourceId,
+    ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -601,7 +601,11 @@ impl CatalogPort for SqliteCatalog {
                  ON CONFLICT(candidate_identity) DO UPDATE SET
                     run_id = excluded.run_id,
                     candidate_json = excluded.candidate_json,
-                    competing_matches_json = excluded.competing_matches_json",
+                    competing_matches_json = excluded.competing_matches_json,
+                    status = CASE
+                        WHEN review_items.decision_json LIKE '%\"defer\"%' THEN 'deferred'
+                        ELSE 'pending'
+                    END",
                 params![
                     item.run_id,
                     item.candidate_identity,
@@ -618,7 +622,7 @@ impl CatalogPort for SqliteCatalog {
         let mut statement = connection
             .prepare(
                 "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json
+                        competing_matches_json, decision_json, status
                  FROM review_items
                  ORDER BY id",
             )
@@ -632,6 +636,7 @@ impl CatalogPort for SqliteCatalog {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(sql_error)?;
@@ -647,7 +652,7 @@ impl CatalogPort for SqliteCatalog {
         let row = connection
             .query_row(
                 "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json
+                        competing_matches_json, decision_json, status
                  FROM review_items
                  WHERE id = ?1",
                 params![review_item_id],
@@ -666,7 +671,7 @@ impl CatalogPort for SqliteCatalog {
         let row = connection
             .query_row(
                 "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json
+                        competing_matches_json, decision_json, status
                  FROM review_items
                  WHERE candidate_identity = ?1",
                 params![candidate_identity],
@@ -682,13 +687,37 @@ impl CatalogPort for SqliteCatalog {
         review_item_id: i64,
         decision: ReviewDecision,
     ) -> Result<Option<ReviewItem>, PortError> {
+        let status = match decision {
+            ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
+            ReviewDecision::Reject => ReviewStatus::Rejected,
+            ReviewDecision::Defer => ReviewStatus::Deferred,
+        };
         let decision_json = serde_json::to_string(&decision)
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
         let connection = self.connect()?;
         let changed = connection
             .execute(
-                "UPDATE review_items SET decision_json = ?1 WHERE id = ?2",
-                params![decision_json, review_item_id],
+                "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
+                params![decision_json, review_status_to_str(status), review_item_id],
+            )
+            .map_err(sql_error)?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        drop(connection);
+        self.get_review_item(review_item_id)
+    }
+
+    fn set_review_status(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let changed = connection
+            .execute(
+                "UPDATE review_items SET status = ?1 WHERE id = ?2",
+                params![review_status_to_str(status), review_item_id],
             )
             .map_err(sql_error)?;
         if changed == 0 {
@@ -852,7 +881,7 @@ impl CatalogPort for SqliteCatalog {
     }
 }
 
-type ReviewItemRow = (i64, i64, String, String, String, Option<String>);
+type ReviewItemRow = (i64, i64, String, String, String, Option<String>, String);
 
 fn review_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewItemRow> {
     Ok((
@@ -862,11 +891,20 @@ fn review_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewItemRow> {
         row.get(3)?,
         row.get(4)?,
         row.get(5)?,
+        row.get(6)?,
     ))
 }
 
 fn decode_review_item_row(
-    (id, run_id, candidate_identity, candidate_json, competing_matches_json, decision_json): ReviewItemRow,
+    (
+        id,
+        run_id,
+        candidate_identity,
+        candidate_json,
+        competing_matches_json,
+        decision_json,
+        status,
+    ): ReviewItemRow,
 ) -> Result<ReviewItem, PortError> {
     let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
         PortError(format!(
@@ -891,6 +929,7 @@ fn decode_review_item_row(
         candidate,
         competing_matches,
         decision,
+        status: parse_review_status(&status)?,
     })
 }
 
@@ -1221,7 +1260,8 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 candidate_identity TEXT NOT NULL UNIQUE,
                 candidate_json TEXT NOT NULL,
                 competing_matches_json TEXT NOT NULL,
-                decision_json TEXT
+                decision_json TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
             );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
             CREATE INDEX IF NOT EXISTS idx_release_assertion_release
@@ -1271,6 +1311,29 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 .execute_batch(
                     "ALTER TABLE asset_provenance
                      ADD COLUMN source_asset_label TEXT;",
+                )
+                .map_err(sql_error)?;
+        }
+        let review_status_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('review_items')
+                 WHERE name = 'status'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if review_status_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE review_items
+                     ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
+                     UPDATE review_items
+                     SET status = CASE
+                         WHEN decision_json LIKE '%\"accept\"%' THEN 'accepted'
+                         WHEN decision_json LIKE '%\"reject\"%' THEN 'rejected'
+                         WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
+                         ELSE 'pending'
+                     END;",
                 )
                 .map_err(sql_error)?;
         }
@@ -1508,8 +1571,8 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
         }
     }
 
-    if table_exists(connection, "review_items")?
-        && (!table_matches_columns(
+    if table_exists(connection, "review_items")? {
+        let legacy_review_items = table_matches_columns(
             connection,
             "review_items",
             &[
@@ -1520,9 +1583,25 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
                 ("competing_matches_json", "TEXT", true, false),
                 ("decision_json", "TEXT", false, false),
             ],
-        )? || !has_unique_index(connection, "review_items", &["candidate_identity"])?)
-    {
-        return Ok(false);
+        )?;
+        let status_review_items = table_matches_columns(
+            connection,
+            "review_items",
+            &[
+                ("id", "INTEGER", false, true),
+                ("run_id", "INTEGER", true, false),
+                ("candidate_identity", "TEXT", true, false),
+                ("candidate_json", "TEXT", true, false),
+                ("competing_matches_json", "TEXT", true, false),
+                ("decision_json", "TEXT", false, false),
+                ("status", "TEXT", true, false),
+            ],
+        )?;
+        if (!legacy_review_items && !status_review_items)
+            || !has_unique_index(connection, "review_items", &["candidate_identity"])?
+        {
+            return Ok(false);
+        }
     }
 
     let has_runs = table_exists(connection, "acquisition_runs")?;
@@ -1943,6 +2022,31 @@ fn parse_release_assertion_field(value: &str) -> Result<ReleaseAssertionField, P
         "identifier" => Ok(ReleaseAssertionField::Identifier),
         other => Err(PortError(format!(
             "unknown release assertion field in catalog: {other}"
+        ))),
+    }
+}
+
+fn review_status_to_str(status: ReviewStatus) -> &'static str {
+    match status {
+        ReviewStatus::Pending => "pending",
+        ReviewStatus::Deferred => "deferred",
+        ReviewStatus::Accepted => "accepted",
+        ReviewStatus::Rejected => "rejected",
+        ReviewStatus::AutoResolved => "auto_resolved",
+        ReviewStatus::Superseded => "superseded",
+    }
+}
+
+fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
+    match value {
+        "pending" => Ok(ReviewStatus::Pending),
+        "deferred" => Ok(ReviewStatus::Deferred),
+        "accepted" => Ok(ReviewStatus::Accepted),
+        "rejected" => Ok(ReviewStatus::Rejected),
+        "auto_resolved" => Ok(ReviewStatus::AutoResolved),
+        "superseded" => Ok(ReviewStatus::Superseded),
+        _ => Err(PortError(format!(
+            "catalog contains invalid review status {value:?}"
         ))),
     }
 }

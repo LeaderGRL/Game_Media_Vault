@@ -68,6 +68,7 @@ const reviewItem: ReviewItem = {
     },
   ],
   decision: null,
+  status: "pending",
 };
 
 describe("App", () => {
@@ -104,6 +105,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce({
       ...reviewItem,
       decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
     });
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 
@@ -128,6 +130,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce({
       ...reviewItem,
       decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
     });
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 

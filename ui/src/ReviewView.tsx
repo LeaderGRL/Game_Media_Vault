@@ -20,6 +20,9 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
     <section className="review-list" aria-label="Review items">
       {items.map((item) => {
         const busy = resolvingId === item.id;
+        const closed = ["accepted", "rejected", "auto_resolved", "superseded"].includes(
+          item.status,
+        );
         return (
           <article className="review-card" key={item.id}>
             <div className="review-heading">
@@ -30,7 +33,7 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
                   {item.candidate.platform} · {item.candidate.region} · {item.candidate.edition_name}
                 </p>
               </div>
-              <span className="review-status">{formatDecision(item.decision)}</span>
+              <span className="review-status">{formatStatus(item.status, item.decision)}</span>
             </div>
 
             <div className="review-source">
@@ -96,7 +99,7 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
 
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || closed}
                     onClick={() =>
                       onResolve(item.id, {
                         decision: "accept",
@@ -113,14 +116,14 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
             <div className="review-actions">
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || closed}
                 onClick={() => onResolve(item.id, { decision: "reject" })}
               >
                 Reject candidate
               </button>
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || closed}
                 onClick={() => onResolve(item.id, { decision: "defer" })}
               >
                 Defer review
@@ -133,17 +136,23 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
   );
 }
 
-function formatDecision(decision: ReviewDecision | null) {
-  if (decision === null) {
-    return "Pending";
-  }
-  if (decision.decision === "accept") {
+function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | null) {
+  if (status === "accepted" && decision?.decision === "accept") {
     return `Accepted · release #${decision.release_edition_id}`;
   }
-  if (decision.decision === "reject") {
+  if (status === "rejected") {
     return "Rejected";
   }
-  return "Deferred";
+  if (status === "deferred") {
+    return "Deferred";
+  }
+  if (status === "auto_resolved") {
+    return "Auto-resolved";
+  }
+  if (status === "superseded") {
+    return "Superseded";
+  }
+  return "Pending";
 }
 
 function formatSignal(signal: string) {
