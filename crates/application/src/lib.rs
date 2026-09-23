@@ -472,6 +472,7 @@ pub fn acquire_run_with_connector(
         let stored = object_store.store_original_reader(stream.as_mut())?;
         let imported = catalog.persist_asset(PersistAsset {
             existing_game_id: None,
+            existing_release_edition_id: None,
             game_title: candidate.game_title.clone(),
             platform: candidate.platform.clone(),
             region: candidate.region.clone(),
@@ -580,6 +581,7 @@ pub fn import_local_box_front(
 
     Ok(catalog.persist_asset(PersistAsset {
         existing_game_id: request.existing_game_id,
+        existing_release_edition_id: None,
         game_title: request.game_title,
         platform: request.platform,
         region: request.region,

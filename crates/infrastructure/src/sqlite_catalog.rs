@@ -409,42 +409,50 @@ impl CatalogPort for SqliteCatalog {
             return Ok(existing.imported);
         }
 
-        let game_id = resolve_game_id(&transaction, &record, &normalized_title)?;
+        let explicit_target = resolve_existing_release_target(&transaction, &record)?;
+        let game_id = match explicit_target {
+            Some((game_id, _)) => game_id,
+            None => resolve_game_id(&transaction, &record, &normalized_title)?,
+        };
 
-        transaction
-            .execute(
-                "INSERT INTO release_editions (
-                    game_id, platform, normalized_platform, region, normalized_region,
-                    edition_name, normalized_edition_name
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
-                params![
-                    game_id,
-                    record.platform,
-                    normalized_platform,
-                    record.region,
-                    normalized_region,
-                    record.edition_name,
-                    normalized_edition,
-                ],
-            )
-            .map_err(sql_error)?;
-        let release_edition_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM release_editions
-                 WHERE game_id = ?1
-                   AND normalized_platform = ?2
-                   AND normalized_region = ?3
-                   AND normalized_edition_name = ?4",
-                params![
-                    game_id,
-                    normalized_platform,
-                    normalized_region,
-                    normalized_edition
-                ],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
+        let release_edition_id = if let Some((_, release_edition_id)) = explicit_target {
+            release_edition_id
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO release_editions (
+                        game_id, platform, normalized_platform, region, normalized_region,
+                        edition_name, normalized_edition_name
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
+                    params![
+                        game_id,
+                        record.platform,
+                        normalized_platform,
+                        record.region,
+                        normalized_region,
+                        record.edition_name,
+                        normalized_edition,
+                    ],
+                )
+                .map_err(sql_error)?;
+            transaction
+                .query_row(
+                    "SELECT id FROM release_editions
+                     WHERE game_id = ?1
+                       AND normalized_platform = ?2
+                       AND normalized_region = ?3
+                       AND normalized_edition_name = ?4",
+                    params![
+                        game_id,
+                        normalized_platform,
+                        normalized_region,
+                        normalized_edition
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?
+        };
 
         transaction
             .execute(
@@ -677,6 +685,39 @@ fn resolve_game_id(
         None => Err(PortError(format!("game #{game_id} does not exist"))),
         Some(_) => Ok(game_id),
     }
+}
+
+fn resolve_existing_release_target(
+    transaction: &Transaction<'_>,
+    record: &PersistAsset,
+) -> Result<Option<(i64, i64)>, PortError> {
+    let Some(release_edition_id) = record.existing_release_edition_id else {
+        return Ok(None);
+    };
+
+    let game_id = transaction
+        .query_row(
+            "SELECT game_id FROM release_editions WHERE id = ?1",
+            params![release_edition_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(sql_error)?
+        .ok_or_else(|| {
+            PortError(format!(
+                "release edition #{release_edition_id} does not exist"
+            ))
+        })?;
+
+    if let Some(existing_game_id) = record.existing_game_id
+        && existing_game_id != game_id
+    {
+        return Err(PortError(format!(
+            "release edition #{release_edition_id} does not belong to game #{existing_game_id}"
+        )));
+    }
+
+    Ok(Some((game_id, release_edition_id)))
 }
 
 fn find_existing_import(
@@ -1577,6 +1618,7 @@ mod tests {
                     catalog
                         .persist_asset(PersistAsset {
                             existing_game_id: None,
+                            existing_release_edition_id: None,
                             game_title: "Concurrent Game".to_owned(),
                             platform: "Windows".to_owned(),
                             region: "Worldwide".to_owned(),
