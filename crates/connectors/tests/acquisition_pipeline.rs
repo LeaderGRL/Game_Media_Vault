@@ -9,8 +9,8 @@ use game_media_vault_application::{
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
-    AssetType, AssetTypeSelector, GameSelection, ReferenceReleaseRecord, ReleaseAssertion,
-    ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
+    AssetType, AssetTypeSelector, GameSelection, MatchingPolicy, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -86,8 +86,18 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     });
 
     let run = catalog.create_run(request()).unwrap();
-    let imported =
-        acquire_run_with_connector(&catalog, &catalog, &object_store, &connector, run.id).unwrap();
+    let imported = acquire_run_with_connector(
+        &catalog,
+        &catalog,
+        &object_store,
+        &connector,
+        run.id,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
 
     assert_eq!(imported.len(), 1);
     let final_run = catalog.get_run(run.id).unwrap().unwrap();

@@ -12,11 +12,18 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, GameSelection, ReferenceReleaseRecord,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, MatchingPolicy, ReferenceReleaseRecord,
     ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
+
+fn matching_policy() -> MatchingPolicy {
+    MatchingPolicy {
+        high_confidence_threshold: 80,
+        medium_confidence_threshold: 50,
+    }
+}
 
 fn request_input() -> AcquisitionRequestInput {
     AcquisitionRequestInput {
@@ -200,6 +207,7 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
         &vault,
         started.id,
         &FixtureConnector,
+        matching_policy(),
     )
     .unwrap();
 
@@ -238,6 +246,7 @@ fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
             Box::new(ThreadRecordingConnector {
                 worker_thread: Arc::clone(&worker_thread),
             }),
+            matching_policy(),
         ),
     )
     .unwrap();
@@ -281,6 +290,7 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
                         download_started: download_started_tx,
                         continue_download: continue_download_rx,
                     }),
+                    matching_policy(),
                 ),
             )
         });

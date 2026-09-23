@@ -319,29 +319,8 @@ pub fn import_reference_catalog(
 }
 
 const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
-pub const DEFAULT_MATCHING_POLICY: MatchingPolicy = MatchingPolicy {
-    high_confidence_threshold: 80,
-    medium_confidence_threshold: 50,
-};
 
 pub fn acquire_run_with_connector(
-    runs: &dyn RunRepositoryPort,
-    catalog: &dyn CatalogPort,
-    object_store: &dyn ObjectStorePort,
-    connector: &dyn ConnectorPort,
-    run_id: i64,
-) -> Result<Vec<ImportedAsset>, ApplicationError> {
-    acquire_run_with_connector_with_policy(
-        runs,
-        catalog,
-        object_store,
-        connector,
-        run_id,
-        DEFAULT_MATCHING_POLICY,
-    )
-}
-
-pub fn acquire_run_with_connector_with_policy(
     runs: &dyn RunRepositoryPort,
     catalog: &dyn CatalogPort,
     object_store: &dyn ObjectStorePort,

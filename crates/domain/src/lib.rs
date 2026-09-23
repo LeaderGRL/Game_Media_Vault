@@ -431,7 +431,7 @@ pub struct AssetCandidate {
     pub original_filename: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchingPolicy {
     pub high_confidence_threshold: u8,
     pub medium_confidence_threshold: u8,

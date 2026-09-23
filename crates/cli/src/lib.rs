@@ -13,8 +13,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRun, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
-    QualityRequirements, RetentionPolicy, SourceSelection,
+    AcquisitionLimits, AcquisitionRun, AssetTypeSelector, GameSelection, MatchingPolicy,
+    PlatformBoundGameSelector, QualityRequirements, RetentionPolicy, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use thiserror::Error;
@@ -112,7 +112,13 @@ enum Command {
 enum RunCommand {
     List,
     Show { id: i64 },
-    Execute { id: i64 },
+    Execute {
+        id: i64,
+        #[arg(long, default_value_t = 80)]
+        match_high_threshold: u8,
+        #[arg(long, default_value_t = 50)]
+        match_medium_threshold: u8,
+    },
     Pause { id: i64 },
     Resume { id: i64 },
     Cancel { id: i64 },
@@ -247,10 +253,22 @@ where
             Ok(serde_json::to_string_pretty(&run)?)
         }
         Command::Run { command } => match command {
-            RunCommand::Execute { id } => {
+            RunCommand::Execute {
+                id,
+                match_high_threshold,
+                match_medium_threshold,
+            } => {
                 let connector = LibretroThumbnailsConnector::new();
                 Ok(serde_json::to_string_pretty(
-                    &execute_acquisition_run_in_vault_with_connector(&cli.vault, id, &connector)?,
+                    &execute_acquisition_run_in_vault_with_connector(
+                        &cli.vault,
+                        id,
+                        &connector,
+                        MatchingPolicy {
+                            high_confidence_threshold: match_high_threshold,
+                            medium_confidence_threshold: match_medium_threshold,
+                        },
+                    )?,
                 )?)
             }
             other => {
@@ -328,10 +346,18 @@ pub fn execute_acquisition_run_in_vault_with_connector(
     vault_root: &Path,
     run_id: i64,
     connector: &dyn ConnectorPort,
+    matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CliError> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))?;
     let object_store = ContentAddressedStore::new(vault_root);
-    acquire_run_with_connector(&catalog, &catalog, &object_store, connector, run_id)?;
+    acquire_run_with_connector(
+        &catalog,
+        &catalog,
+        &object_store,
+        connector,
+        run_id,
+        matching_policy,
+    )?;
     Ok(load_acquisition_run(&catalog, run_id)?)
 }
 

@@ -11,8 +11,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, ReferenceReleaseRecord,
-    ReleaseAssertion, ReleaseAssertionField, SourceId,
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, MatchingPolicy,
+    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
@@ -113,6 +113,10 @@ fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
         &vault,
         run_id,
         &FixtureConnector,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
     )
     .unwrap();
 
@@ -123,6 +127,61 @@ fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
     let library = run_in_vault(&vault, &["library"]).unwrap();
     assert!(library.contains("Super Mario Bros. (World)"));
     assert!(library.contains("https://example.invalid/smb-box-front.png"));
+}
+
+#[test]
+fn cli_adapter_uses_the_configured_matching_thresholds() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3"))
+        .unwrap()
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            revision: None,
+            edition_name: "Unspecified".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:custom-thresholds".to_owned(),
+            }],
+        })
+        .unwrap();
+    let started = run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "libretro-thumbnails",
+            "--platform",
+            "Nintendo - Nintendo Entertainment System",
+            "--game",
+            "Super Mario Bros. (World)",
+            "--asset-type",
+            "box-front",
+        ],
+    )
+    .unwrap();
+    let started: serde_json::Value = serde_json::from_str(&started).unwrap();
+    let run_id = started["id"].as_i64().unwrap();
+
+    game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+        &vault,
+        run_id,
+        &FixtureConnector,
+        MatchingPolicy {
+            high_confidence_threshold: 96,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
+
+    let library = run_in_vault(&vault, &["library"]).unwrap();
+    let entries: serde_json::Value = serde_json::from_str(&library).unwrap();
+    assert!(entries[0]["assets"].as_array().unwrap().is_empty());
 }
 
 #[test]

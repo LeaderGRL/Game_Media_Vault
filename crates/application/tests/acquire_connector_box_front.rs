@@ -11,9 +11,16 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, PersistAsset,
+    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchingPolicy, PersistAsset,
     QualityRequirements, RetentionPolicy, SourceId, SourceSelection, StoredObject,
 };
+
+fn matching_policy() -> MatchingPolicy {
+    MatchingPolicy {
+        high_confidence_threshold: 80,
+        medium_confidence_threshold: 50,
+    }
+}
 
 fn request() -> AcquisitionRequest {
     AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
@@ -270,7 +277,7 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7).unwrap();
+    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy()).unwrap();
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
@@ -316,7 +323,7 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7).unwrap();
+    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy()).unwrap();
 
     assert!(imported.is_empty());
     assert!(connector.downloads.borrow().is_empty());
@@ -348,7 +355,7 @@ fn packaging_selector_acquires_the_supported_box_front() {
     let store = FakeStore::default();
     let catalog = FakeCatalog::default();
 
-    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7).unwrap();
+    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7, matching_policy()).unwrap();
 
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
@@ -373,6 +380,7 @@ fn pause_or_cancel_during_the_last_download_preserves_the_requested_run_status()
             &FakeStore::default(),
             &connector,
             7,
+            matching_policy(),
         )
         .unwrap();
 
@@ -401,6 +409,7 @@ fn pause_or_cancel_winning_the_final_completion_race_does_not_fail_execution() {
             &FakeStore::default(),
             &connector,
             7,
+            matching_policy(),
         )
         .unwrap();
 
@@ -432,6 +441,7 @@ fn execute_error(request: AcquisitionRequest) -> game_media_vault_application::A
         &FakeStore::default(),
         &connector,
         7,
+        matching_policy(),
     )
     .unwrap_err()
 }
@@ -578,7 +588,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     };
 
     let imported =
-        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7).unwrap();
+        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7, matching_policy()).unwrap();
 
     assert_eq!(imported.len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);
@@ -617,7 +627,7 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     };
 
     let imported =
-        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7).unwrap();
+        acquire_run_with_connector(&runs, &catalog, &FakeStore::default(), &connector, 7, matching_policy()).unwrap();
 
     assert_eq!(imported.len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);
