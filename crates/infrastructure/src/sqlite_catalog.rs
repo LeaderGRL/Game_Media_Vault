@@ -992,6 +992,17 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
             "release_edition_id",
             "release_editions",
             "id",
+        )? || !has_unique_index(
+            connection,
+            "release_assertions",
+            &[
+                "release_edition_id",
+                "source_id",
+                "source_location",
+                "field",
+                "qualifier",
+                "value",
+            ],
         )?)
     {
         return Ok(false);
