@@ -6,9 +6,10 @@ use std::{
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
-    MatchConfidence, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem, PersistAsset,
-    ReferenceReleaseRecord, RetentionPolicy, ReviewItem, SourceId, StoredObject,
+    AssetCandidateMatch, AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition,
+    LibraryEntry, MatchConfidence, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
+    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, ReviewDecision, ReviewItem, SourceId,
+    StoredObject,
 };
 use thiserror::Error;
 
@@ -38,6 +39,33 @@ pub trait CatalogPort {
     fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError>;
 
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
+
+    fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError> {
+        Ok(self
+            .list_review_items()?
+            .into_iter()
+            .find(|item| item.id == review_item_id))
+    }
+
+    fn find_review_item_by_candidate_identity(
+        &self,
+        candidate_identity: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Ok(self
+            .list_review_items()?
+            .into_iter()
+            .find(|item| item.candidate_identity == candidate_identity))
+    }
+
+    fn set_review_decision(
+        &self,
+        _review_item_id: i64,
+        _decision: ReviewDecision,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support review decision persistence".to_owned(),
+        ))
+    }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
@@ -295,6 +323,44 @@ pub enum ApplicationError {
     RunNotExecutable { status: AcquisitionRunStatus },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
+    #[error("review item #{0} does not exist")]
+    ReviewItemNotFound(i64),
+    #[error(
+        "release edition #{release_edition_id} is not a competing release for review item #{review_item_id}"
+    )]
+    ReviewAcceptanceNotCompeting {
+        review_item_id: i64,
+        release_edition_id: i64,
+    },
+}
+
+pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, ApplicationError> {
+    Ok(catalog.list_review_items()?)
+}
+
+pub fn resolve_review_item(
+    catalog: &dyn CatalogPort,
+    review_item_id: i64,
+    decision: ReviewDecision,
+) -> Result<ReviewItem, ApplicationError> {
+    let item = catalog
+        .get_review_item(review_item_id)?
+        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    if let ReviewDecision::Accept { release_edition_id } = decision
+        && !item
+            .competing_matches
+            .iter()
+            .any(|candidate| candidate.release_edition_id == release_edition_id)
+    {
+        return Err(ApplicationError::ReviewAcceptanceNotCompeting {
+            review_item_id,
+            release_edition_id,
+        });
+    }
+
+    catalog
+        .set_review_decision(review_item_id, decision)?
+        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
 }
 
 pub fn import_reference_catalog(
@@ -376,9 +442,42 @@ pub fn acquire_run_with_connector(
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
             break;
         };
-        let candidate_match =
-            match_asset_candidate_to_release(candidate, &releases, matching_policy);
-        if candidate_match.confidence == MatchConfidence::Medium {
+        let (candidate_match, reviewed_release_edition_id) =
+            if let Some(review_item) = catalog.find_review_item_by_candidate_identity(&work.key)? {
+                match review_item.decision {
+                    Some(ReviewDecision::Accept { release_edition_id }) => {
+                        let accepted = review_item
+                            .competing_matches
+                            .iter()
+                            .find(|candidate| candidate.release_edition_id == release_edition_id)
+                            .ok_or(ApplicationError::ReviewAcceptanceNotCompeting {
+                                review_item_id: review_item.id,
+                                release_edition_id,
+                            })?;
+                        (
+                            AssetCandidateMatch {
+                                release_edition_id: Some(release_edition_id),
+                                score: accepted.score,
+                                confidence: MatchConfidence::Medium,
+                                evidence: accepted.evidence.clone(),
+                            },
+                            Some(release_edition_id),
+                        )
+                    }
+                    Some(ReviewDecision::Reject | ReviewDecision::Defer) | None => {
+                        complete_acquisition_work(runs, run_id, &work.key)?;
+                        continue;
+                    }
+                }
+            } else {
+                (
+                    match_asset_candidate_to_release(candidate, &releases, matching_policy),
+                    None,
+                )
+            };
+        if candidate_match.confidence == MatchConfidence::Medium
+            && reviewed_release_edition_id.is_none()
+        {
             catalog.persist_review_item(NewReviewItem {
                 run_id,
                 candidate_identity: work.key.clone(),
@@ -392,7 +491,9 @@ pub fn acquire_run_with_connector(
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         }
-        let Some(release_edition_id) = candidate_match.auto_link_release_edition_id() else {
+        let Some(release_edition_id) =
+            reviewed_release_edition_id.or_else(|| candidate_match.auto_link_release_edition_id())
+        else {
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };

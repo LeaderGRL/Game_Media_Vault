@@ -579,40 +579,65 @@ impl CatalogPort for SqliteCatalog {
             .map_err(sql_error)?;
         let mut items = Vec::new();
         for row in rows {
-            let (
-                id,
-                run_id,
-                candidate_identity,
-                candidate_json,
-                competing_matches_json,
-                decision_json,
-            ) = row.map_err(sql_error)?;
-            let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
-                PortError(format!(
-                    "catalog contains invalid review candidate: {error}"
-                ))
-            })?;
-            let competing_matches: Vec<ReviewMatchCandidate> =
-                serde_json::from_str(&competing_matches_json).map_err(|error| {
-                    PortError(format!("catalog contains invalid review matches: {error}"))
-                })?;
-            let decision: Option<ReviewDecision> = decision_json
-                .map(|json| {
-                    serde_json::from_str(&json).map_err(|error| {
-                        PortError(format!("catalog contains invalid review decision: {error}"))
-                    })
-                })
-                .transpose()?;
-            items.push(ReviewItem {
-                id,
-                run_id,
-                candidate_identity,
-                candidate,
-                competing_matches,
-                decision,
-            });
+            items.push(decode_review_item_row(row.map_err(sql_error)?)?);
         }
         Ok(items)
+    }
+
+    fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let row = connection
+            .query_row(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json
+                 FROM review_items
+                 WHERE id = ?1",
+                params![review_item_id],
+                review_item_row,
+            )
+            .optional()
+            .map_err(sql_error)?;
+        row.map(decode_review_item_row).transpose()
+    }
+
+    fn find_review_item_by_candidate_identity(
+        &self,
+        candidate_identity: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let row = connection
+            .query_row(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json
+                 FROM review_items
+                 WHERE candidate_identity = ?1",
+                params![candidate_identity],
+                review_item_row,
+            )
+            .optional()
+            .map_err(sql_error)?;
+        row.map(decode_review_item_row).transpose()
+    }
+
+    fn set_review_decision(
+        &self,
+        review_item_id: i64,
+        decision: ReviewDecision,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let decision_json = serde_json::to_string(&decision)
+            .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
+        let connection = self.connect()?;
+        let changed = connection
+            .execute(
+                "UPDATE review_items SET decision_json = ?1 WHERE id = ?2",
+                params![decision_json, review_item_id],
+            )
+            .map_err(sql_error)?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        drop(connection);
+        self.get_review_item(review_item_id)
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
@@ -767,6 +792,48 @@ impl CatalogPort for SqliteCatalog {
 
         Ok(entries)
     }
+}
+
+type ReviewItemRow = (i64, i64, String, String, String, Option<String>);
+
+fn review_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewItemRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_review_item_row(
+    (id, run_id, candidate_identity, candidate_json, competing_matches_json, decision_json): ReviewItemRow,
+) -> Result<ReviewItem, PortError> {
+    let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
+        PortError(format!(
+            "catalog contains invalid review candidate: {error}"
+        ))
+    })?;
+    let competing_matches: Vec<ReviewMatchCandidate> =
+        serde_json::from_str(&competing_matches_json).map_err(|error| {
+            PortError(format!("catalog contains invalid review matches: {error}"))
+        })?;
+    let decision: Option<ReviewDecision> = decision_json
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| {
+                PortError(format!("catalog contains invalid review decision: {error}"))
+            })
+        })
+        .transpose()?;
+    Ok(ReviewItem {
+        id,
+        run_id,
+        candidate_identity,
+        candidate,
+        competing_matches,
+        decision,
+    })
 }
 
 struct ExistingImportLookup<'a> {

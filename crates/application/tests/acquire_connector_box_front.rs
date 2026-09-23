@@ -12,8 +12,8 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchConfidence,
-    MatchingPolicy, NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy, SourceId,
-    SourceSelection, StoredObject,
+    MatchingPolicy, NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy,
+    ReviewDecision, ReviewItem, SourceId, SourceSelection, StoredObject,
 };
 
 fn matching_policy() -> MatchingPolicy {
@@ -206,7 +206,7 @@ impl ObjectStorePort for FakeStore {
 
 struct FakeCatalog {
     records: RefCell<Vec<PersistAsset>>,
-    review_items: RefCell<Vec<NewReviewItem>>,
+    review_items: RefCell<Vec<ReviewItem>>,
     library: Vec<LibraryEntry>,
 }
 
@@ -237,12 +237,30 @@ impl CatalogPort for FakeCatalog {
     }
 
     fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError> {
-        self.review_items.borrow_mut().push(item);
+        let mut review_items = self.review_items.borrow_mut();
+        if let Some(existing) = review_items
+            .iter_mut()
+            .find(|existing| existing.candidate_identity == item.candidate_identity)
+        {
+            existing.run_id = item.run_id;
+            existing.candidate = item.candidate;
+            existing.competing_matches = item.competing_matches;
+            return Ok(());
+        }
+        let id = review_items.len() as i64 + 1;
+        review_items.push(ReviewItem {
+            id,
+            run_id: item.run_id,
+            candidate_identity: item.candidate_identity,
+            candidate: item.candidate,
+            competing_matches: item.competing_matches,
+            decision: None,
+        });
         Ok(())
     }
 
-    fn list_review_items(&self) -> Result<Vec<game_media_vault_domain::ReviewItem>, PortError> {
-        Ok(Vec::new())
+    fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
+        Ok(self.review_items.borrow().clone())
     }
 }
 
@@ -429,6 +447,164 @@ fn medium_confidence_candidate_creates_review_item_with_competing_release_eviden
     );
     assert_eq!(runs.run.borrow().completed_work, 1);
     assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
+}
+
+fn ambiguous_candidate_and_releases() -> (AssetCandidate, Vec<LibraryEntry>) {
+    let candidate = AssetCandidate {
+        game_title: "Review Game".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Collector".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/review-reuse.png".to_owned(),
+        original_filename: "review-reuse.png".to_owned(),
+    };
+    let first = LibraryEntry {
+        game_id: 301,
+        game_title: candidate.game_title.clone(),
+        release_edition_id: 401,
+        platform: candidate.platform.clone(),
+        region: candidate.region.clone(),
+        edition_name: "Standard".to_owned(),
+        assertions: Vec::new(),
+        assets: Vec::new(),
+    };
+    let second = LibraryEntry {
+        game_id: 302,
+        release_edition_id: 402,
+        edition_name: "Deluxe".to_owned(),
+        ..first.clone()
+    };
+    (candidate, vec![first, second])
+}
+
+fn create_review_then_set_decision(
+    catalog: &FakeCatalog,
+    connector: &FakeConnector,
+    decision: ReviewDecision,
+) {
+    let first_run = FakeRuns::new(run_with_request(request()));
+    acquire_run_with_connector(
+        &first_run,
+        catalog,
+        &FakeStore::default(),
+        connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    catalog.review_items.borrow_mut()[0].decision = Some(decision);
+}
+
+#[test]
+fn accepted_review_decision_is_reused_for_the_same_candidate_identity() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    create_review_then_set_decision(
+        &catalog,
+        &connector,
+        ReviewDecision::Accept {
+            release_edition_id: 402,
+        },
+    );
+    let second_run = FakeRuns::new(run_with_request(request()));
+
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+    let records = catalog.records.borrow();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].existing_game_id, Some(302));
+    assert_eq!(records[0].existing_release_edition_id, Some(402));
+    assert_eq!(
+        records[0].match_decision.as_ref().unwrap().confidence,
+        MatchConfidence::Medium
+    );
+}
+
+#[test]
+fn rejected_review_decision_skips_the_same_candidate_identity() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    create_review_then_set_decision(&catalog, &connector, ReviewDecision::Reject);
+    let second_run = FakeRuns::new(run_with_request(request()));
+
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+    assert!(catalog.records.borrow().is_empty());
+    assert_eq!(catalog.review_items.borrow().len(), 1);
+}
+
+#[test]
+fn deferred_review_decision_keeps_the_same_candidate_staged() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    create_review_then_set_decision(&catalog, &connector, ReviewDecision::Defer);
+    let second_run = FakeRuns::new(run_with_request(request()));
+
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+    assert!(catalog.records.borrow().is_empty());
+    assert_eq!(catalog.review_items.borrow().len(), 1);
+    assert_eq!(
+        catalog.review_items.borrow()[0].decision,
+        Some(ReviewDecision::Defer)
+    );
 }
 
 #[test]

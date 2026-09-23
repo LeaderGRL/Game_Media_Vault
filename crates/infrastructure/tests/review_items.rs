@@ -1,7 +1,7 @@
 use game_media_vault_application::CatalogPort;
 use game_media_vault_domain::{
-    AssetCandidate, AssetType, MatchEvidence, MatchSignal, NewReviewItem, ReviewMatchCandidate,
-    SourceId,
+    AssetCandidate, AssetType, MatchEvidence, MatchSignal, NewReviewItem, ReviewDecision,
+    ReviewMatchCandidate, SourceId,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
@@ -75,4 +75,45 @@ fn review_item_round_trips_candidate_competitors_and_evidence() {
         review_items[0].competing_matches,
         new_item.competing_matches
     );
+}
+
+#[test]
+fn review_decision_round_trips_and_can_be_found_by_candidate_identity() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:fixture-review".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog
+        .find_review_item_by_candidate_identity("connector:fixture-review")
+        .unwrap()
+        .unwrap();
+
+    let resolved = catalog
+        .set_review_decision(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        resolved.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let persisted = reopened.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(persisted, resolved);
 }
