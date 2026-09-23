@@ -6,8 +6,9 @@ use std::{
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
-    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, SourceId, StoredObject,
+    AssetCandidateMatch, AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition,
+    LibraryEntry, MatchConfidence, MatchEvidence, MatchSignal, MatchingPolicy, PersistAsset,
+    ReferenceReleaseRecord, RetentionPolicy, SourceId, StoredObject,
 };
 use thiserror::Error;
 
@@ -111,6 +112,84 @@ pub struct ImportReferenceCatalogRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceImportSummary {
     pub imported_releases: usize,
+}
+
+pub fn match_asset_candidate_to_release(
+    candidate: &AssetCandidate,
+    releases: &[LibraryEntry],
+    policy: MatchingPolicy,
+) -> AssetCandidateMatch {
+    let best = releases
+        .iter()
+        .map(|release| {
+            let evidence = vec![
+                exact_match_evidence(
+                    MatchSignal::Title,
+                    &candidate.game_title,
+                    &release.game_title,
+                    50,
+                ),
+                exact_match_evidence(
+                    MatchSignal::Platform,
+                    &candidate.platform,
+                    &release.platform,
+                    30,
+                ),
+                exact_match_evidence(MatchSignal::Region, &candidate.region, &release.region, 15),
+                exact_match_evidence(
+                    MatchSignal::Edition,
+                    &candidate.edition_name,
+                    &release.edition_name,
+                    5,
+                ),
+            ];
+            let score = evidence
+                .iter()
+                .map(|evidence| evidence.score_delta)
+                .sum::<i16>()
+                .clamp(0, 100) as u8;
+            (release.release_edition_id, score, evidence)
+        })
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)));
+
+    let Some((release_edition_id, score, evidence)) = best else {
+        return AssetCandidateMatch {
+            release_edition_id: None,
+            score: 0,
+            confidence: MatchConfidence::Low,
+            evidence: Vec::new(),
+        };
+    };
+
+    let confidence = if score >= policy.high_confidence_threshold {
+        MatchConfidence::High
+    } else if score >= policy.medium_confidence_threshold {
+        MatchConfidence::Medium
+    } else {
+        MatchConfidence::Low
+    };
+
+    AssetCandidateMatch {
+        release_edition_id: Some(release_edition_id),
+        score,
+        confidence,
+        evidence,
+    }
+}
+
+fn exact_match_evidence(
+    signal: MatchSignal,
+    candidate_value: &str,
+    release_value: &str,
+    score: i16,
+) -> MatchEvidence {
+    let matched = candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase();
+    MatchEvidence {
+        signal,
+        candidate_value: candidate_value.to_owned(),
+        release_value: release_value.to_owned(),
+        score_delta: if matched { score } else { 0 },
+    }
 }
 
 pub fn build_acquisition_request(

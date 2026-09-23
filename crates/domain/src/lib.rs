@@ -431,6 +431,53 @@ pub struct AssetCandidate {
     pub original_filename: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchingPolicy {
+    pub high_confidence_threshold: u8,
+    pub medium_confidence_threshold: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchSignal {
+    Title,
+    Platform,
+    Region,
+    Edition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchEvidence {
+    pub signal: MatchSignal,
+    pub candidate_value: String,
+    pub release_value: String,
+    pub score_delta: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetCandidateMatch {
+    pub release_edition_id: Option<i64>,
+    pub score: u8,
+    pub confidence: MatchConfidence,
+    pub evidence: Vec<MatchEvidence>,
+}
+
+impl AssetCandidateMatch {
+    pub fn auto_link_release_edition_id(&self) -> Option<i64> {
+        (self.confidence == MatchConfidence::High)
+            .then_some(self.release_edition_id)
+            .flatten()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredObject {
     pub hash: String,
