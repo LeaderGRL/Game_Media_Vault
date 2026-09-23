@@ -285,6 +285,64 @@ impl RunRepositoryPort for SqliteCatalog {
         transaction.commit().map_err(sql_error)
     }
 
+    fn requeue_completed_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let state: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT run.status, work.completed
+                 FROM acquisition_run_work AS work
+                 INNER JOIN acquisition_runs AS run ON run.id = work.run_id
+                 WHERE work.run_id = ?1 AND work.work_key = ?2",
+                params![run_id, work_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some((status, completed)) = state else {
+            return Err(PortError(format!(
+                "acquisition work {work_key:?} does not exist for run #{run_id}"
+            )));
+        };
+        if status == "cancelled" {
+            return Err(PortError(format!(
+                "acquisition run #{run_id} cannot requeue review work while cancelled"
+            )));
+        }
+        if completed == 0 {
+            return transaction.commit().map_err(sql_error);
+        }
+
+        let changed = transaction
+            .execute(
+                "UPDATE acquisition_run_work
+                 SET completed = 0
+                 WHERE run_id = ?1 AND work_key = ?2 AND completed = 1",
+                params![run_id, work_key],
+            )
+            .map_err(sql_error)?;
+        if changed == 1 {
+            let updated = transaction
+                .execute(
+                    "UPDATE acquisition_runs
+                     SET queued_work = queued_work + 1,
+                         completed_work = completed_work - 1,
+                         status = CASE WHEN status = 'completed' THEN 'running' ELSE status END
+                     WHERE id = ?1 AND completed_work > 0",
+                    params![run_id],
+                )
+                .map_err(sql_error)?;
+            if updated != 1 {
+                return Err(PortError(format!(
+                    "acquisition run #{run_id} has inconsistent completed work state"
+                )));
+            }
+        }
+        transaction.commit().map_err(sql_error)
+    }
+
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
         let connection = self.connect()?;
         connection

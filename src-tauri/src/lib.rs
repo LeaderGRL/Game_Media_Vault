@@ -51,7 +51,7 @@ pub fn resolve_review_item_in_vault(
 ) -> Result<ReviewItem, String> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
         .map_err(|error| error.to_string())?;
-    resolve_review_item_use_case(&catalog, review_item_id, decision)
+    resolve_review_item_use_case(&catalog, &catalog, review_item_id, decision)
         .map_err(|error| error.to_string())
 }
 

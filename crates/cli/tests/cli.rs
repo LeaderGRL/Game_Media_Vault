@@ -8,7 +8,8 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionRequestValidationError, ApplicationError, CatalogPort, ConnectorPort, PortError,
-    ReferenceCatalogRepositoryPort,
+    ReferenceCatalogRepositoryPort, complete_acquisition_run, complete_acquisition_work,
+    queue_acquisition_work,
 };
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
@@ -63,23 +64,66 @@ fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
     game_media_vault_cli::run(command)
 }
 
+fn review_work_key(candidate: &AssetCandidate) -> String {
+    let mut key = "connector".to_owned();
+    for part in [
+        candidate.source_id.as_str(),
+        candidate.platform.as_str(),
+        candidate.game_title.as_str(),
+        candidate.region.as_str(),
+        candidate.edition_name.as_str(),
+        "box_front",
+        candidate.source_url.as_str(),
+    ] {
+        key.push(':');
+        key.push_str(&part.len().to_string());
+        key.push(':');
+        key.push_str(part);
+    }
+    key
+}
+
 fn seed_review_item(vault: &Path) -> i64 {
-    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let started: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            vault,
+            &[
+                "acquire",
+                "--source",
+                "fixture-provider",
+                "--platform",
+                "Nintendo Entertainment System",
+                "--game",
+                "Review Game",
+                "--asset-type",
+                "box-front",
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let run_id = started["id"].as_i64().unwrap();
+    let catalog = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
+    let candidate = AssetCandidate {
+        game_title: "Review Game".to_owned(),
+        platform: "Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Collector".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("fixture-provider"),
+        source_asset_label: Some("front".to_owned()),
+        source_url: "fixture://review/front".to_owned(),
+        original_filename: "front.png".to_owned(),
+    };
+    let work_key = review_work_key(&candidate);
+    queue_acquisition_work(&catalog, run_id, work_key.clone()).unwrap();
+    complete_acquisition_work(&catalog, run_id, &work_key).unwrap();
+    complete_acquisition_run(&catalog, run_id).unwrap();
     catalog
         .persist_review_item(NewReviewItem {
-            run_id: 7,
+            run_id,
             candidate_identity: "connector:cli-review".to_owned(),
-            candidate: AssetCandidate {
-                game_title: "Review Game".to_owned(),
-                platform: "Nintendo Entertainment System".to_owned(),
-                region: "USA".to_owned(),
-                edition_name: "Collector".to_owned(),
-                asset_type: AssetType::BoxFront,
-                source_id: SourceId::from("fixture-provider"),
-                source_asset_label: Some("front".to_owned()),
-                source_url: "fixture://review/front".to_owned(),
-                original_filename: "front.png".to_owned(),
-            },
+            candidate,
             competing_matches: vec![ReviewMatchCandidate {
                 game_id: 301,
                 release_edition_id: 201,

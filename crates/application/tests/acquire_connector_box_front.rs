@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, RunRepositoryPort,
-    acquire_run_with_connector,
+    acquire_run_with_connector, resolve_review_item,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -88,6 +88,26 @@ impl RunRepositoryPort for FakeRuns {
         Ok(())
     }
 
+    fn requeue_completed_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        assert_eq!(run_id, self.run.borrow().id);
+        let mut work = self.work.borrow_mut();
+        let Some(completed) = work.get_mut(work_key) else {
+            return Err(PortError(format!(
+                "acquisition work {work_key:?} does not exist for run #{run_id}"
+            )));
+        };
+        if *completed {
+            *completed = false;
+            let mut run = self.run.borrow_mut();
+            run.queued_work += 1;
+            run.completed_work -= 1;
+            if run.status == AcquisitionRunStatus::Completed {
+                run.status = AcquisitionRunStatus::Running;
+            }
+        }
+        Ok(())
+    }
+
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
         assert_eq!(run_id, self.run.borrow().id);
         Ok(self
@@ -143,6 +163,10 @@ struct FakeConnector {
     candidates: Vec<AssetCandidate>,
 }
 
+struct NoDiscoveryConnector {
+    downloads: RefCell<Vec<String>>,
+}
+
 impl ConnectorPort for FakeConnector {
     fn source_id(&self) -> &'static str {
         "libretro-thumbnails"
@@ -171,6 +195,30 @@ impl ConnectorPort for FakeConnector {
                 .to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
         }])
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.downloads
+            .borrow_mut()
+            .push(candidate.source_url.clone());
+        Ok(Box::new(Cursor::new(b"fixture box front".to_vec())))
+    }
+}
+
+impl ConnectorPort for NoDiscoveryConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
@@ -261,6 +309,22 @@ impl CatalogPort for FakeCatalog {
 
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
         Ok(self.review_items.borrow().clone())
+    }
+
+    fn set_review_decision(
+        &self,
+        review_item_id: i64,
+        decision: ReviewDecision,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let mut review_items = self.review_items.borrow_mut();
+        let Some(review_item) = review_items
+            .iter_mut()
+            .find(|review_item| review_item.id == review_item_id)
+        else {
+            return Ok(None);
+        };
+        review_item.decision = Some(decision);
+        Ok(Some(review_item.clone()))
     }
 }
 
@@ -539,6 +603,66 @@ fn accepted_review_decision_is_reused_for_the_same_candidate_identity() {
         records[0].match_decision.as_ref().unwrap().confidence,
         MatchConfidence::Medium
     );
+}
+
+#[test]
+fn accepting_review_requeues_the_staged_candidate_on_the_original_run() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    let first_import = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    assert!(first_import.is_empty());
+    assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
+
+    let review_item_id = catalog.review_items.borrow()[0].id;
+    resolve_review_item(
+        &catalog,
+        &runs,
+        review_item_id,
+        ReviewDecision::Accept {
+            release_edition_id: 402,
+        },
+    )
+    .unwrap();
+    assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Running);
+
+    let staged_connector = NoDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &staged_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(staged_connector.downloads.borrow().len(), 1);
+    assert_eq!(
+        catalog.records.borrow()[0].existing_release_edition_id,
+        Some(402)
+    );
+    assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
 }
 
 #[test]

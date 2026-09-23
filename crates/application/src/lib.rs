@@ -79,6 +79,12 @@ pub trait RunRepositoryPort {
 
     fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError>;
 
+    fn requeue_completed_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Err(PortError(
+            "run repository does not support requeuing completed work".to_owned(),
+        ))
+    }
+
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
@@ -340,6 +346,7 @@ pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, A
 
 pub fn resolve_review_item(
     catalog: &dyn CatalogPort,
+    runs: &dyn RunRepositoryPort,
     review_item_id: i64,
     decision: ReviewDecision,
 ) -> Result<ReviewItem, ApplicationError> {
@@ -358,9 +365,16 @@ pub fn resolve_review_item(
         });
     }
 
-    catalog
+    let should_requeue = matches!(decision, ReviewDecision::Accept { .. });
+    let work_key = should_requeue
+        .then(|| connector_work_key(item.candidate.source_id.as_str(), &item.candidate));
+    let resolved = catalog
         .set_review_decision(review_item_id, decision)?
-        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
+        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    if let Some(work_key) = work_key {
+        runs.requeue_completed_work(item.run_id, &work_key)?;
+    }
+    Ok(resolved)
 }
 
 pub fn import_reference_catalog(
@@ -435,6 +449,19 @@ pub fn acquire_run_with_connector(
         let work_key = connector_work_key(connector.source_id(), &candidate);
         queue_acquisition_work(runs, run_id, work_key.clone())?;
         candidates_by_work_key.insert(work_key, candidate);
+    }
+
+    for review_item in catalog.list_review_items()? {
+        if review_item.run_id != run_id {
+            continue;
+        }
+        if review_item.candidate.source_id.as_str() != connector.source_id() {
+            continue;
+        }
+        let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
+        candidates_by_work_key
+            .entry(work_key)
+            .or_insert(review_item.candidate);
     }
 
     let mut imported_assets = Vec::new();

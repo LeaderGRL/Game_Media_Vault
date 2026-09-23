@@ -1,15 +1,63 @@
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    CatalogPort, PortError, list_review_items, resolve_review_item,
+    CatalogPort, PortError, RunRepositoryPort, list_review_items, resolve_review_item,
 };
 use game_media_vault_domain::{
-    AssetCandidate, AssetType, ImportedAsset, LibraryEntry, MatchEvidence, MatchSignal,
-    NewReviewItem, PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate, SourceId,
+    AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
+    AssetType, ImportedAsset, LibraryEntry, MatchEvidence, MatchSignal, NewReviewItem,
+    PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate, SourceId,
 };
 
 struct FakeCatalog {
     items: RefCell<Vec<ReviewItem>>,
+}
+
+#[derive(Default)]
+struct FakeRuns {
+    requeued: RefCell<Vec<(i64, String)>>,
+}
+
+impl RunRepositoryPort for FakeRuns {
+    fn create_run(&self, _request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+        unreachable!()
+    }
+
+    fn get_run(&self, _run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
+        Ok(None)
+    }
+
+    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
+        unreachable!()
+    }
+
+    fn requeue_completed_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        self.requeued
+            .borrow_mut()
+            .push((run_id, work_key.to_owned()));
+        Ok(())
+    }
+
+    fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        Ok(None)
+    }
+
+    fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn compare_and_set_run_status(
+        &self,
+        _run_id: i64,
+        _expected: AcquisitionRunStatus,
+        _target: AcquisitionRunStatus,
+    ) -> Result<bool, PortError> {
+        Ok(false)
+    }
 }
 
 impl CatalogPort for FakeCatalog {
@@ -83,9 +131,11 @@ fn resolves_and_lists_a_review_decision_through_the_application_seam() {
     let catalog = FakeCatalog {
         items: RefCell::new(vec![review_item()]),
     };
+    let runs = FakeRuns::default();
 
     let resolved = resolve_review_item(
         &catalog,
+        &runs,
         17,
         ReviewDecision::Accept {
             release_edition_id: 201,
@@ -100,6 +150,10 @@ fn resolves_and_lists_a_review_decision_through_the_application_seam() {
         })
     );
     assert_eq!(list_review_items(&catalog).unwrap(), vec![resolved]);
+    let requeued = runs.requeued.borrow();
+    assert_eq!(requeued.len(), 1);
+    assert_eq!(requeued[0].0, 7);
+    assert!(requeued[0].1.contains("fixture://candidate/front"));
 }
 
 #[test]
@@ -107,9 +161,11 @@ fn rejects_an_accept_decision_for_an_edition_not_offered_by_the_review_item() {
     let catalog = FakeCatalog {
         items: RefCell::new(vec![review_item()]),
     };
+    let runs = FakeRuns::default();
 
     let error = resolve_review_item(
         &catalog,
+        &runs,
         17,
         ReviewDecision::Accept {
             release_edition_id: 999,
@@ -119,4 +175,5 @@ fn rejects_an_accept_decision_for_an_edition_not_offered_by_the_review_item() {
 
     assert!(error.to_string().contains("not a competing release"));
     assert_eq!(catalog.items.borrow()[0].decision, None);
+    assert!(runs.requeued.borrow().is_empty());
 }
