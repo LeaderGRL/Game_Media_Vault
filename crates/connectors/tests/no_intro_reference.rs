@@ -169,3 +169,12 @@ fn rejects_an_unbounded_reference_import_before_reading_the_source() {
 
     assert_eq!(error, ApplicationError::InvalidReferenceImportLimit);
 }
+
+#[test]
+fn connector_returns_no_releases_when_the_requested_bound_is_zero() {
+    let source = NoIntroReferenceCatalog::new();
+
+    let releases = source.read_releases(&fixture_path(), 0).unwrap();
+
+    assert!(releases.is_empty());
+}
