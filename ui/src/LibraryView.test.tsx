@@ -18,7 +18,8 @@ const entry: LibraryEntry = {
   original_filename: "mgs-front.png",
   provenance: [
     {
-      source_kind: "local_import",
+      source_id: "local_import",
+      source_asset_label: null,
       source_location: "C:/covers/mgs-front.png",
     },
   ],
@@ -32,6 +33,37 @@ describe("LibraryView", () => {
     expect(screen.getByText("PlayStation · France · Original")).toBeInTheDocument();
     expect(screen.getByText("Box Front")).toBeInTheDocument();
     expect(screen.getByText("mgs-front.png")).toBeInTheDocument();
-    expect(screen.getByText("C:/covers/mgs-front.png")).toBeInTheDocument();
+    expect(screen.getByText("local_import: C:/covers/mgs-front.png")).toBeInTheDocument();
+  });
+
+  it("keeps provenance entries distinct when providers share a location", () => {
+    render(
+      <LibraryView
+        entries={[
+          {
+            ...entry,
+            provenance: [
+              {
+                source_id: "provider-a",
+                source_asset_label: "Named_Boxarts",
+                source_location: "https://example.invalid/shared.png",
+              },
+              {
+                source_id: "provider-b",
+                source_asset_label: "Box Front",
+                source_location: "https://example.invalid/shared.png",
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("provider-a · Named_Boxarts: https://example.invalid/shared.png"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("provider-b · Box Front: https://example.invalid/shared.png"),
+    ).toBeInTheDocument();
   });
 });

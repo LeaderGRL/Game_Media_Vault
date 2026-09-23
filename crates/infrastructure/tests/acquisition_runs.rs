@@ -409,6 +409,47 @@ fn opening_a_pre_acquisition_run_catalog_migrates_it_in_place() {
 }
 
 #[test]
+fn opening_a_catalog_without_source_asset_labels_migrates_provenance_in_place() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE asset_provenance;
+             CREATE TABLE asset_provenance (
+                 id INTEGER PRIMARY KEY,
+                 asset_id INTEGER NOT NULL REFERENCES assets(id),
+                 source_kind TEXT NOT NULL,
+                 source_location TEXT NOT NULL,
+                 UNIQUE(asset_id, source_kind, source_location)
+             );
+             CREATE INDEX idx_provenance_asset ON asset_provenance(asset_id);",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    drop(reopened);
+
+    let connection = Connection::open(&path).unwrap();
+    let source_asset_label_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('asset_provenance')
+             WHERE name = 'source_asset_label'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(source_asset_label_columns, 1);
+
+    drop(connection);
+    SqliteCatalog::open_existing(&path).unwrap();
+}
+
+#[test]
 fn opening_an_unversioned_acquisition_run_catalog_adds_the_request_schema_version() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");

@@ -43,8 +43,11 @@ export function LibraryView({ entries }: LibraryViewProps) {
           <div className="provenance">
             <span className="detail-label">Provenance</span>
             {entry.provenance.map((source) => (
-              <code key={`${source.source_kind}:${source.source_location}`}>
-                {source.source_location}
+              <code
+                key={`${source.source_id}:${source.source_asset_label ?? ""}:${source.source_location}`}
+              >
+                {source.source_id}
+                {source.source_asset_label ? ` · ${source.source_asset_label}` : ""}: {source.source_location}
               </code>
             ))}
           </div>

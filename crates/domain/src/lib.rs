@@ -243,6 +243,68 @@ impl QualityRequirements {
 }
 
 impl AcquisitionRequest {
+    pub fn platforms(&self) -> &[String] {
+        &self.platforms
+    }
+
+    pub fn games(&self) -> &GameSelection {
+        &self.games
+    }
+
+    pub fn regions(&self) -> &[String] {
+        &self.regions
+    }
+
+    pub fn languages(&self) -> &[String] {
+        &self.languages
+    }
+
+    pub fn quality(&self) -> Option<&QualityRequirements> {
+        self.quality.as_ref()
+    }
+
+    pub fn retention(&self) -> RetentionPolicy {
+        self.retention
+    }
+
+    pub fn limits(&self) -> &AcquisitionLimits {
+        &self.limits
+    }
+
+    pub fn selects_only_source(&self, source_id: &str) -> bool {
+        matches!(
+            &self.sources,
+            SourceSelection::Explicit(values)
+                if values.len() == 1 && values[0] == source_id
+        )
+    }
+
+    pub fn selects_source(&self, source_id: &str) -> bool {
+        match &self.sources {
+            SourceSelection::Auto => true,
+            SourceSelection::Explicit(values) => values.iter().any(|value| value == source_id),
+        }
+    }
+
+    pub fn requests_asset_type(&self, asset_type: AssetType) -> bool {
+        self.asset_types.iter().any(|selector| {
+            matches!(
+                (selector, asset_type),
+                (AssetTypeSelector::Packaging, AssetType::BoxFront)
+                    | (AssetTypeSelector::BoxFront, AssetType::BoxFront)
+            )
+        })
+    }
+
+    pub fn requested_asset_types_supported_by(&self, supported: &[AssetType]) -> bool {
+        self.asset_types.iter().all(|selector| match selector {
+            AssetTypeSelector::Packaging | AssetTypeSelector::BoxFront => {
+                supported.contains(&AssetType::BoxFront)
+            }
+            _ => false,
+        })
+    }
+
     pub fn try_from_draft(
         draft: AcquisitionRequestDraft,
     ) -> Result<Self, AcquisitionRequestValidationError> {
@@ -294,10 +356,45 @@ pub enum AssetType {
     BoxFront,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceKind {
-    LocalImport,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SourceId(String);
+
+impl SourceId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for SourceId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for SourceId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectorCapabilities {
+    pub asset_types: Vec<AssetType>,
+    pub direct_media_download: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetCandidate {
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub edition_name: String,
+    pub asset_type: AssetType,
+    pub source_id: SourceId,
+    pub source_asset_label: Option<String>,
+    pub source_url: String,
+    pub original_filename: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,7 +414,8 @@ pub struct PersistAsset {
     pub object_hash: String,
     pub byte_len: u64,
     pub original_filename: String,
-    pub source_kind: SourceKind,
+    pub source_id: SourceId,
+    pub source_asset_label: Option<String>,
     pub source_location: String,
 }
 
@@ -332,7 +430,8 @@ pub struct ImportedAsset {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetProvenance {
-    pub source_kind: SourceKind,
+    pub source_id: SourceId,
+    pub source_asset_label: Option<String>,
     pub source_location: String,
 }
 

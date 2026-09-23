@@ -1,14 +1,18 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
-    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError,
-    ImportLocalBoxFrontRequest, PortError, cancel_acquisition_run, import_local_box_front,
-    list_acquisition_runs, list_library, load_acquisition_run, pause_acquisition_run,
-    resume_acquisition_run, start_acquisition_run,
+    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
+    ImportLocalBoxFrontRequest, PortError, acquire_run_with_connector, cancel_acquisition_run,
+    import_local_box_front, list_acquisition_runs, list_library, load_acquisition_run,
+    pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
 };
+use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
-    AcquisitionLimits, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
+    AcquisitionLimits, AcquisitionRun, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
     QualityRequirements, RetentionPolicy, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
@@ -101,6 +105,7 @@ enum Command {
 enum RunCommand {
     List,
     Show { id: i64 },
+    Execute { id: i64 },
     Pause { id: i64 },
     Resume { id: i64 },
     Cancel { id: i64 },
@@ -234,26 +239,35 @@ where
             let run = start_acquisition_run(&catalog, input).map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&run)?)
         }
-        Command::Run { command } => {
-            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
-            match command {
-                RunCommand::List => Ok(serde_json::to_string_pretty(&list_acquisition_runs(
-                    &catalog,
-                )?)?),
-                RunCommand::Show { id } => Ok(serde_json::to_string_pretty(
-                    &load_acquisition_run(&catalog, id)?,
-                )?),
-                RunCommand::Pause { id } => Ok(serde_json::to_string_pretty(
-                    &pause_acquisition_run(&catalog, id)?,
-                )?),
-                RunCommand::Resume { id } => Ok(serde_json::to_string_pretty(
-                    &resume_acquisition_run(&catalog, id)?,
-                )?),
-                RunCommand::Cancel { id } => Ok(serde_json::to_string_pretty(
-                    &cancel_acquisition_run(&catalog, id)?,
-                )?),
+        Command::Run { command } => match command {
+            RunCommand::Execute { id } => {
+                let connector = LibretroThumbnailsConnector::new();
+                Ok(serde_json::to_string_pretty(
+                    &execute_acquisition_run_in_vault_with_connector(&cli.vault, id, &connector)?,
+                )?)
             }
-        }
+            other => {
+                let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+                match other {
+                    RunCommand::List => Ok(serde_json::to_string_pretty(&list_acquisition_runs(
+                        &catalog,
+                    )?)?),
+                    RunCommand::Show { id } => Ok(serde_json::to_string_pretty(
+                        &load_acquisition_run(&catalog, id)?,
+                    )?),
+                    RunCommand::Pause { id } => Ok(serde_json::to_string_pretty(
+                        &pause_acquisition_run(&catalog, id)?,
+                    )?),
+                    RunCommand::Resume { id } => Ok(serde_json::to_string_pretty(
+                        &resume_acquisition_run(&catalog, id)?,
+                    )?),
+                    RunCommand::Cancel { id } => Ok(serde_json::to_string_pretty(
+                        &cancel_acquisition_run(&catalog, id)?,
+                    )?),
+                    RunCommand::Execute { .. } => unreachable!(),
+                }
+            }
+        },
         Command::ImportBoxFront {
             game_id,
             game,
@@ -286,6 +300,17 @@ where
             Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?)
         }
     }
+}
+
+pub fn execute_acquisition_run_in_vault_with_connector(
+    vault_root: &Path,
+    run_id: i64,
+    connector: &dyn ConnectorPort,
+) -> Result<AcquisitionRun, CliError> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))?;
+    let object_store = ContentAddressedStore::new(vault_root);
+    acquire_run_with_connector(&catalog, &catalog, &object_store, connector, run_id)?;
+    Ok(load_acquisition_run(&catalog, run_id)?)
 }
 
 fn map_start_run_error(error: ApplicationError) -> CliError {

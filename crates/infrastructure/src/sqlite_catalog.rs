@@ -7,7 +7,7 @@ use game_media_vault_application::{CatalogPort, PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetProvenance, AssetType, ImportedAsset, LibraryEntry, PersistAsset,
-    SourceKind,
+    SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -351,7 +351,7 @@ impl CatalogPort for SqliteCatalog {
         let normalized_region = normalize(&record.region);
         let normalized_edition = normalize(&record.edition_name);
         let asset_type = asset_type_to_str(record.asset_type);
-        let source_kind = source_kind_to_str(record.source_kind);
+        let source_id = record.source_id.as_str();
         let byte_len = i64::try_from(record.byte_len)
             .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
 
@@ -364,11 +364,11 @@ impl CatalogPort for SqliteCatalog {
             normalized_region: &normalized_region,
             normalized_edition: &normalized_edition,
             asset_type,
-            source_kind,
+            source_id,
             byte_len,
         };
         if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
-            normalize_existing_provenance(&transaction, &record, source_kind, &existing)?;
+            normalize_existing_provenance(&transaction, &record, source_id, &existing)?;
             transaction.commit().map_err(sql_error)?;
             return Ok(existing.imported);
         }
@@ -438,10 +438,20 @@ impl CatalogPort for SqliteCatalog {
 
         transaction
             .execute(
-                "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
-                params![asset_id, source_kind, record.source_location,],
+                "INSERT INTO asset_provenance (
+                    asset_id, source_kind, source_asset_label, source_location
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                    source_asset_label = COALESCE(
+                        excluded.source_asset_label,
+                        asset_provenance.source_asset_label
+                    )",
+                params![
+                    asset_id,
+                    source_id,
+                    record.source_asset_label,
+                    record.source_location,
+                ],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
@@ -463,7 +473,7 @@ impl CatalogPort for SqliteCatalog {
                     g.id, g.title,
                     r.id, r.platform, r.region, r.edition_name,
                     a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
-                    p.source_kind, p.source_location
+                    p.source_kind, p.source_asset_label, p.source_location
                  FROM assets a
                  JOIN release_editions r ON r.id = a.release_edition_id
                  JOIN games g ON g.id = r.game_id
@@ -476,16 +486,18 @@ impl CatalogPort for SqliteCatalog {
 
         while let Some(row) = rows.next().map_err(sql_error)? {
             let asset_id: i64 = row.get(6).map_err(sql_error)?;
-            let source_kind: Option<String> = row.get(11).map_err(sql_error)?;
-            let source_location: Option<String> = row.get(12).map_err(sql_error)?;
+            let source_id: Option<String> = row.get(11).map_err(sql_error)?;
+            let source_asset_label: Option<String> = row.get(12).map_err(sql_error)?;
+            let source_location: Option<String> = row.get(13).map_err(sql_error)?;
 
             if let Some(existing) = entries
                 .last_mut()
                 .filter(|entry| entry.asset_id == asset_id)
             {
-                if let (Some(kind), Some(location)) = (source_kind, source_location) {
+                if let (Some(id), Some(location)) = (source_id, source_location) {
                     existing.provenance.push(AssetProvenance {
-                        source_kind: parse_source_kind(&kind)?,
+                        source_id: SourceId::from(id),
+                        source_asset_label,
                         source_location: location,
                     });
                 }
@@ -494,9 +506,10 @@ impl CatalogPort for SqliteCatalog {
 
             let byte_len: i64 = row.get(9).map_err(sql_error)?;
             let mut provenance = Vec::new();
-            if let (Some(kind), Some(location)) = (source_kind, source_location) {
+            if let (Some(id), Some(location)) = (source_id, source_location) {
                 provenance.push(AssetProvenance {
-                    source_kind: parse_source_kind(&kind)?,
+                    source_id: SourceId::from(id),
+                    source_asset_label,
                     source_location: location,
                 });
             }
@@ -527,13 +540,12 @@ struct ExistingImportLookup<'a> {
     normalized_region: &'a str,
     normalized_edition: &'a str,
     asset_type: &'a str,
-    source_kind: &'a str,
+    source_id: &'a str,
     byte_len: i64,
 }
 
 struct ExistingImportMatch {
     imported: ImportedAsset,
-    matched_source_location: String,
 }
 
 fn resolve_game_id(
@@ -591,7 +603,7 @@ fn find_existing_import(
         .map_err(sql_error)?;
     let mut rows = statement
         .query(params![
-            lookup.source_kind,
+            lookup.source_id,
             lookup.asset_type,
             record.object_hash,
             lookup.byte_len,
@@ -617,7 +629,6 @@ fn find_existing_import(
                 object_hash: record.object_hash.clone(),
                 byte_len: record.byte_len,
             },
-            matched_source_location,
         }));
     }
 
@@ -645,21 +656,23 @@ fn canonicalize_location(location: &str) -> Option<PathBuf> {
 fn normalize_existing_provenance(
     transaction: &Transaction<'_>,
     record: &PersistAsset,
-    source_kind: &str,
+    source_id: &str,
     existing: &ExistingImportMatch,
 ) -> Result<(), PortError> {
-    if existing.matched_source_location == record.source_location {
-        return Ok(());
-    }
-
     transaction
         .execute(
-            "INSERT INTO asset_provenance (asset_id, source_kind, source_location)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(asset_id, source_kind, source_location) DO NOTHING",
+            "INSERT INTO asset_provenance (
+                asset_id, source_kind, source_asset_label, source_location
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                source_asset_label = COALESCE(
+                    excluded.source_asset_label,
+                    asset_provenance.source_asset_label
+                )",
             params![
                 existing.imported.asset_id,
-                source_kind,
+                source_id,
+                record.source_asset_label,
                 record.source_location,
             ],
         )
@@ -705,6 +718,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 asset_id INTEGER NOT NULL REFERENCES assets(id),
                 source_kind TEXT NOT NULL,
                 source_location TEXT NOT NULL,
+                source_asset_label TEXT,
                 UNIQUE(asset_id, source_kind, source_location)
             );
             CREATE TABLE IF NOT EXISTS acquisition_runs (
@@ -746,6 +760,22 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                     "ALTER TABLE acquisition_runs
                  ADD COLUMN request_schema_version INTEGER NOT NULL DEFAULT 1
                  CHECK(request_schema_version > 0);",
+                )
+                .map_err(sql_error)?;
+        }
+        let source_asset_label_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('asset_provenance')
+                 WHERE name = 'source_asset_label'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if source_asset_label_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE asset_provenance
+                     ADD COLUMN source_asset_label TEXT;",
                 )
                 .map_err(sql_error)?;
         }
@@ -821,6 +851,29 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
     if has_assets != has_provenance {
         return Ok(false);
     }
+    let legacy_provenance = has_provenance
+        && table_matches_columns(
+            connection,
+            "asset_provenance",
+            &[
+                ("id", "INTEGER", false, true),
+                ("asset_id", "INTEGER", true, false),
+                ("source_kind", "TEXT", true, false),
+                ("source_location", "TEXT", true, false),
+            ],
+        )?;
+    let labeled_provenance = has_provenance
+        && table_matches_columns(
+            connection,
+            "asset_provenance",
+            &[
+                ("id", "INTEGER", false, true),
+                ("asset_id", "INTEGER", true, false),
+                ("source_kind", "TEXT", true, false),
+                ("source_location", "TEXT", true, false),
+                ("source_asset_label", "TEXT", false, false),
+            ],
+        )?;
     if has_assets
         && (!table_matches_columns(
             connection,
@@ -843,16 +896,8 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
             connection,
             "assets",
             &["release_edition_id", "asset_type", "object_hash"],
-        )? || !table_matches_columns(
-            connection,
-            "asset_provenance",
-            &[
-                ("id", "INTEGER", false, true),
-                ("asset_id", "INTEGER", true, false),
-                ("source_kind", "TEXT", true, false),
-                ("source_location", "TEXT", true, false),
-            ],
-        )? || !has_foreign_key(connection, "asset_provenance", "asset_id", "assets", "id")?
+        )? || (!legacy_provenance && !labeled_provenance)
+            || !has_foreign_key(connection, "asset_provenance", "asset_id", "assets", "id")?
             || !has_unique_index(
                 connection,
                 "asset_provenance",
@@ -1121,21 +1166,6 @@ fn parse_asset_type(value: &str) -> Result<AssetType, PortError> {
     }
 }
 
-fn source_kind_to_str(source_kind: SourceKind) -> &'static str {
-    match source_kind {
-        SourceKind::LocalImport => "local_import",
-    }
-}
-
-fn parse_source_kind(value: &str) -> Result<SourceKind, PortError> {
-    match value {
-        "local_import" => Ok(SourceKind::LocalImport),
-        other => Err(PortError(format!(
-            "unknown source kind in catalog: {other}"
-        ))),
-    }
-}
-
 fn io_error(error: std::io::Error) -> PortError {
     PortError(error.to_string())
 }
@@ -1154,7 +1184,7 @@ mod tests {
     };
 
     use game_media_vault_application::CatalogPort;
-    use game_media_vault_domain::{AssetType, PersistAsset, SourceKind};
+    use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
     use tempfile::tempdir;
 
     use super::*;
@@ -1217,7 +1247,8 @@ mod tests {
                             object_hash: "shared-object-hash".to_owned(),
                             byte_len: 42,
                             original_filename: "front.png".to_owned(),
-                            source_kind: SourceKind::LocalImport,
+                            source_id: SourceId::from("local_import"),
+                            source_asset_label: None,
                             source_location: "C:/collection/front.png".to_owned(),
                         })
                         .unwrap()

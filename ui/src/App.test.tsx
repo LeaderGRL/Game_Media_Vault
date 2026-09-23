@@ -27,7 +27,8 @@ const entry: LibraryEntry = {
   original_filename: "mgs-front.png",
   provenance: [
     {
-      source_kind: "local_import",
+      source_id: "local_import",
+      source_asset_label: null,
       source_location: "C:/covers/mgs-front.png",
     },
   ],
