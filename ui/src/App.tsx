@@ -7,6 +7,7 @@ import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
+  const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<"library" | "review">("library");
@@ -18,17 +19,20 @@ export function App() {
 
   async function loadVault(event?: FormEvent) {
     event?.preventDefault();
+    const requestedVaultRoot = vaultRoot;
     setLoading(true);
     setError(null);
     setEntries([]);
     setReviewItems([]);
+    setLoadedVaultRoot(null);
     try {
       const [library, reviews] = await Promise.all([
-        invoke<LibraryEntry[]>("list_library", { vault_root: vaultRoot }),
-        invoke<ReviewItem[]>("list_review_items", { vault_root: vaultRoot }),
+        invoke<LibraryEntry[]>("list_library", { vault_root: requestedVaultRoot }),
+        invoke<ReviewItem[]>("list_review_items", { vault_root: requestedVaultRoot }),
       ]);
       setEntries(library);
       setReviewItems(reviews);
+      setLoadedVaultRoot(requestedVaultRoot);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -37,11 +41,15 @@ export function App() {
   }
 
   async function resolveReviewItem(reviewItemId: number, decision: ReviewDecision) {
+    if (loadedVaultRoot === null) {
+      setError("Load a vault before resolving review items.");
+      return;
+    }
     setResolvingId(reviewItemId);
     setError(null);
     try {
       const resolved = await invoke<ReviewItem>("resolve_review_item", {
-        vault_root: vaultRoot,
+        vault_root: loadedVaultRoot,
         review_item_id: reviewItemId,
         decision,
       });

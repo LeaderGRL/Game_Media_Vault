@@ -113,4 +113,27 @@ describe("App", () => {
     });
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
+
+  it("resolves review items against the vault that was actually loaded", async () => {
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "another-vault" },
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    expect(invokeMock).toHaveBeenLastCalledWith("resolve_review_item", {
+      vault_root: ".game-media-vault",
+      review_item_id: 17,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+  });
 });
