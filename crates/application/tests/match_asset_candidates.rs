@@ -91,6 +91,36 @@ fn explicit_region_conflict_prevents_high_confidence_auto_link() {
 }
 
 #[test]
+fn explicit_edition_conflict_prevents_high_confidence_auto_link() {
+    let conflicting_release = LibraryEntry {
+        edition_name: "Standard".to_owned(),
+        ..release()
+    };
+
+    let result = match_asset_candidate_to_release(
+        &candidate(),
+        &[conflicting_release],
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    );
+
+    assert_eq!(result.score, 90);
+    assert_eq!(result.confidence, MatchConfidence::Medium);
+    assert_eq!(result.auto_link_release_edition_id(), None);
+    assert_eq!(
+        result
+            .evidence
+            .iter()
+            .find(|evidence| evidence.signal == MatchSignal::Edition)
+            .unwrap()
+            .score_delta,
+        -5
+    );
+}
+
+#[test]
 fn missing_region_and_edition_values_do_not_increase_confidence() {
     let sparse_candidate = AssetCandidate {
         region: "Unknown".to_owned(),

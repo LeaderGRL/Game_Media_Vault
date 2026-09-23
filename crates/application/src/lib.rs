@@ -166,7 +166,13 @@ pub fn match_asset_candidate_to_release(
     let ambiguous_best_score = scored_releases
         .get(1)
         .is_some_and(|candidate| candidate.1 == score);
-    let confidence = if ambiguous_best_score && score >= policy.medium_confidence_threshold {
+    let has_material_conflict = evidence.iter().any(|evidence| {
+        evidence.score_delta < 0
+            && matches!(evidence.signal, MatchSignal::Region | MatchSignal::Edition)
+    });
+    let confidence = if (ambiguous_best_score || has_material_conflict)
+        && score >= policy.medium_confidence_threshold
+    {
         MatchConfidence::Medium
     } else if score >= policy.high_confidence_threshold {
         MatchConfidence::High
