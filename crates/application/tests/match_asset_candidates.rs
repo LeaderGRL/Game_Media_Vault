@@ -1,6 +1,7 @@
 use game_media_vault_application::match_asset_candidate_to_release;
 use game_media_vault_domain::{
-    AssetCandidate, AssetType, LibraryEntry, MatchConfidence, MatchSignal, MatchingPolicy, SourceId,
+    AssetCandidate, AssetType, LibraryEntry, MatchConfidence, MatchSignal, MatchingPolicy,
+    SourceId, ValidatedMatchingPolicy,
 };
 
 fn candidate() -> AssetCandidate {
@@ -30,16 +31,19 @@ fn release() -> LibraryEntry {
     }
 }
 
+fn matching_policy(high: u8, medium: u8) -> ValidatedMatchingPolicy {
+    MatchingPolicy {
+        high_confidence_threshold: high,
+        medium_confidence_threshold: medium,
+    }
+    .validate()
+    .unwrap()
+}
+
 #[test]
 fn matching_combines_multiple_signals_and_exposes_evidence() {
-    let result = match_asset_candidate_to_release(
-        &candidate(),
-        &[release()],
-        MatchingPolicy {
-            high_confidence_threshold: 80,
-            medium_confidence_threshold: 50,
-        },
-    );
+    let result =
+        match_asset_candidate_to_release(&candidate(), &[release()], matching_policy(80, 50));
 
     assert_eq!(result.release_edition_id, Some(11));
     assert_eq!(result.score, 100);
@@ -70,10 +74,7 @@ fn explicit_region_conflict_prevents_high_confidence_auto_link() {
     let result = match_asset_candidate_to_release(
         &candidate(),
         &[conflicting_release],
-        MatchingPolicy {
-            high_confidence_threshold: 80,
-            medium_confidence_threshold: 50,
-        },
+        matching_policy(80, 50),
     );
 
     assert_eq!(result.score, 70);
@@ -100,10 +101,7 @@ fn explicit_platform_conflict_prevents_high_confidence_auto_link() {
     let result = match_asset_candidate_to_release(
         &candidate(),
         &[conflicting_release],
-        MatchingPolicy {
-            high_confidence_threshold: 40,
-            medium_confidence_threshold: 20,
-        },
+        matching_policy(40, 20),
     );
 
     assert_eq!(result.score, 40);
@@ -121,27 +119,6 @@ fn explicit_platform_conflict_prevents_high_confidence_auto_link() {
 }
 
 #[test]
-fn explicit_region_conflict_cannot_become_high_with_reversed_thresholds() {
-    let conflicting_release = LibraryEntry {
-        region: "Europe".to_owned(),
-        ..release()
-    };
-
-    let result = match_asset_candidate_to_release(
-        &candidate(),
-        &[conflicting_release],
-        MatchingPolicy {
-            high_confidence_threshold: 60,
-            medium_confidence_threshold: 80,
-        },
-    );
-
-    assert_eq!(result.score, 70);
-    assert_ne!(result.confidence, MatchConfidence::High);
-    assert_eq!(result.auto_link_release_edition_id(), None);
-}
-
-#[test]
 fn explicit_edition_conflict_prevents_high_confidence_auto_link() {
     let conflicting_release = LibraryEntry {
         edition_name: "Standard".to_owned(),
@@ -151,10 +128,7 @@ fn explicit_edition_conflict_prevents_high_confidence_auto_link() {
     let result = match_asset_candidate_to_release(
         &candidate(),
         &[conflicting_release],
-        MatchingPolicy {
-            high_confidence_threshold: 80,
-            medium_confidence_threshold: 50,
-        },
+        matching_policy(80, 50),
     );
 
     assert_eq!(result.score, 90);
@@ -187,10 +161,7 @@ fn missing_region_and_edition_values_do_not_increase_confidence() {
     let result = match_asset_candidate_to_release(
         &sparse_candidate,
         &[sparse_release],
-        MatchingPolicy {
-            high_confidence_threshold: 80,
-            medium_confidence_threshold: 50,
-        },
+        matching_policy(80, 50),
     );
 
     assert_eq!(result.score, 80);
@@ -217,10 +188,7 @@ fn equally_strong_release_matches_are_deterministic_but_not_auto_linked() {
         release_edition_id: 12,
         ..release()
     };
-    let policy = MatchingPolicy {
-        high_confidence_threshold: 80,
-        medium_confidence_threshold: 50,
-    };
+    let policy = matching_policy(80, 50);
 
     let forward =
         match_asset_candidate_to_release(&candidate(), &[first.clone(), second.clone()], policy);

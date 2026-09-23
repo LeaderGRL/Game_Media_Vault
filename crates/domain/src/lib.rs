@@ -438,6 +438,12 @@ pub struct MatchingPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedMatchingPolicy {
+    high_confidence_threshold: u8,
+    medium_confidence_threshold: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchingPolicyValidationError {
     ThresholdOutOfRange { value: u8 },
     MediumThresholdAboveHighThreshold,
@@ -463,7 +469,7 @@ impl std::fmt::Display for MatchingPolicyValidationError {
 impl std::error::Error for MatchingPolicyValidationError {}
 
 impl MatchingPolicy {
-    pub fn validate(self) -> Result<Self, MatchingPolicyValidationError> {
+    pub fn validate(self) -> Result<ValidatedMatchingPolicy, MatchingPolicyValidationError> {
         if self.high_confidence_threshold > 100 {
             return Err(MatchingPolicyValidationError::ThresholdOutOfRange {
                 value: self.high_confidence_threshold,
@@ -477,7 +483,10 @@ impl MatchingPolicy {
         if self.medium_confidence_threshold > self.high_confidence_threshold {
             return Err(MatchingPolicyValidationError::MediumThresholdAboveHighThreshold);
         }
-        Ok(self)
+        Ok(ValidatedMatchingPolicy {
+            high_confidence_threshold: self.high_confidence_threshold,
+            medium_confidence_threshold: self.medium_confidence_threshold,
+        })
     }
 }
 
@@ -525,7 +534,7 @@ impl AssetCandidateMatch {
 pub fn match_asset_candidate_to_release(
     candidate: &AssetCandidate,
     releases: &[LibraryEntry],
-    policy: MatchingPolicy,
+    policy: ValidatedMatchingPolicy,
 ) -> AssetCandidateMatch {
     let mut scored_releases = releases
         .iter()
