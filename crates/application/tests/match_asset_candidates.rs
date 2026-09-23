@@ -91,6 +91,36 @@ fn explicit_region_conflict_prevents_high_confidence_auto_link() {
 }
 
 #[test]
+fn explicit_platform_conflict_prevents_high_confidence_auto_link() {
+    let conflicting_release = LibraryEntry {
+        platform: "Super Nintendo Entertainment System".to_owned(),
+        ..release()
+    };
+
+    let result = match_asset_candidate_to_release(
+        &candidate(),
+        &[conflicting_release],
+        MatchingPolicy {
+            high_confidence_threshold: 40,
+            medium_confidence_threshold: 20,
+        },
+    );
+
+    assert_eq!(result.score, 40);
+    assert_eq!(result.confidence, MatchConfidence::Medium);
+    assert_eq!(result.auto_link_release_edition_id(), None);
+    assert_eq!(
+        result
+            .evidence
+            .iter()
+            .find(|evidence| evidence.signal == MatchSignal::Platform)
+            .unwrap()
+            .score_delta,
+        -30
+    );
+}
+
+#[test]
 fn explicit_region_conflict_cannot_become_high_with_reversed_thresholds() {
     let conflicting_release = LibraryEntry {
         region: "Europe".to_owned(),
