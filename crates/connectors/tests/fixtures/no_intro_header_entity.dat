@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Nintendo - Game &amp; Watch</name>
+    <description>Nintendo - Game &amp; Watch</description>
+  </header>
+  <game name="Ball (World)">
+    <description>Ball (World)</description>
+    <rom name="Ball (World).bin" size="1024" crc="AAAAAAAA" />
+  </game>
+</datafile>
