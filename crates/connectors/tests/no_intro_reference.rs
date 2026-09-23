@@ -213,9 +213,12 @@ fn preserves_status_tags_as_editions_and_version_tags_as_revisions() {
     assert_eq!(beta.game_title, "Preview Test");
     assert_eq!(beta.region, "Unknown");
     assert_eq!(beta.edition_name, "Beta");
-    assert!(!beta.assertions.iter().any(|assertion| {
-        assertion.field == ReleaseAssertionField::Region
-    }));
+    assert!(
+        !beta
+            .assertions
+            .iter()
+            .any(|assertion| { assertion.field == ReleaseAssertionField::Region })
+    );
 
     let proto = &releases[1];
     assert_eq!(proto.game_title, "Prototype Test");
@@ -235,8 +238,7 @@ fn preserves_status_tags_as_editions_and_version_tags_as_revisions() {
     assert_eq!(long_version.revision.as_deref(), Some("Version 2.0"));
     assert_eq!(long_version.edition_name, "Version 2.0");
     assert!(long_version.assertions.iter().any(|assertion| {
-        assertion.field == ReleaseAssertionField::Revision
-            && assertion.value == "Version 2.0"
+        assertion.field == ReleaseAssertionField::Revision && assertion.value == "Version 2.0"
     }));
 }
 
