@@ -412,6 +412,8 @@ impl CatalogPort for SqliteCatalog {
                 &transaction,
                 existing.imported.asset_id,
                 existing.imported.release_edition_id,
+                source_id,
+                &record.source_location,
                 record.match_decision.as_ref(),
             )?;
             transaction.commit().map_err(sql_error)?;
@@ -510,6 +512,8 @@ impl CatalogPort for SqliteCatalog {
             &transaction,
             asset_id,
             release_edition_id,
+            source_id,
+            &record.source_location,
             record.match_decision.as_ref(),
         )?;
         transaction.commit().map_err(sql_error)?;
@@ -540,7 +544,10 @@ impl CatalogPort for SqliteCatalog {
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
                      LEFT JOIN asset_provenance p ON p.asset_id = a.id
-                     LEFT JOIN asset_match_decisions m ON m.asset_id = a.id
+                     LEFT JOIN asset_match_decisions m
+                       ON m.asset_id = p.asset_id
+                      AND m.source_kind = p.source_kind
+                      AND m.source_location = p.source_location
                      ORDER BY g.title, r.id, a.id, p.id",
                 )
                 .map_err(sql_error)?;
@@ -570,6 +577,19 @@ impl CatalogPort for SqliteCatalog {
                 let source_id: Option<String> = row.get(11).map_err(sql_error)?;
                 let source_asset_label: Option<String> = row.get(12).map_err(sql_error)?;
                 let source_location: Option<String> = row.get(13).map_err(sql_error)?;
+                let match_decision = row
+                    .get::<_, Option<String>>(14)
+                    .map_err(sql_error)?
+                    .map(|decision_json| {
+                        serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(
+                            |error| {
+                                PortError(format!(
+                                    "catalog contains invalid asset match decision: {error}"
+                                ))
+                            },
+                        )
+                    })
+                    .transpose()?;
                 let entry = entries
                     .last_mut()
                     .ok_or_else(|| PortError("library release aggregation failed".into()))?;
@@ -584,6 +604,7 @@ impl CatalogPort for SqliteCatalog {
                             source_id: SourceId::from(id),
                             source_asset_label,
                             source_location: location,
+                            match_decision,
                         });
                     }
                     continue;
@@ -613,21 +634,9 @@ impl CatalogPort for SqliteCatalog {
                         source_id: SourceId::from(id),
                         source_asset_label,
                         source_location: location,
+                        match_decision,
                     });
                 }
-                let match_decision = row
-                    .get::<_, Option<String>>(14)
-                    .map_err(sql_error)?
-                    .map(|decision_json| {
-                        serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(
-                            |error| {
-                                PortError(format!(
-                                    "catalog contains invalid asset match decision: {error}"
-                                ))
-                            },
-                        )
-                    })
-                    .transpose()?;
                 entry.assets.push(LibraryAsset {
                     asset_id,
                     asset_type: parse_asset_type(&asset_type)?,
@@ -636,7 +645,6 @@ impl CatalogPort for SqliteCatalog {
                         .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
                     original_filename,
                     provenance,
-                    match_decision,
                 });
             }
         }
@@ -859,6 +867,8 @@ fn persist_asset_match_decision(
     transaction: &Transaction<'_>,
     asset_id: i64,
     release_edition_id: i64,
+    source_id: &str,
+    source_location: &str,
     match_decision: Option<&AssetCandidateMatch>,
 ) -> Result<(), PortError> {
     let Some(match_decision) = match_decision else {
@@ -874,10 +884,12 @@ fn persist_asset_match_decision(
         .map_err(|error| PortError(format!("failed to serialize asset match decision: {error}")))?;
     transaction
         .execute(
-            "INSERT INTO asset_match_decisions (asset_id, decision_json)
-             VALUES (?1, ?2)
-             ON CONFLICT(asset_id) DO UPDATE SET decision_json = excluded.decision_json",
-            params![asset_id, decision_json],
+            "INSERT INTO asset_match_decisions (
+                asset_id, source_kind, source_location, decision_json
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(asset_id, source_kind, source_location)
+             DO UPDATE SET decision_json = excluded.decision_json",
+            params![asset_id, source_id, source_location, decision_json],
         )
         .map_err(sql_error)?;
     Ok(())
@@ -889,6 +901,29 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
         .execute_batch("BEGIN IMMEDIATE;")
         .map_err(sql_error)?;
     let migration = (|| -> Result<(), PortError> {
+        let legacy_asset_match_decisions = table_matches_columns(
+            connection,
+            "asset_match_decisions",
+            &[
+                ("asset_id", "INTEGER", false, true),
+                ("decision_json", "TEXT", true, false),
+            ],
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "asset_id",
+            "assets",
+            "id",
+        )?;
+        if legacy_asset_match_decisions {
+            connection
+                .execute_batch(
+                    "ALTER TABLE asset_match_decisions
+                     RENAME TO asset_match_decisions_legacy;",
+                )
+                .map_err(sql_error)?;
+        }
+
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS games (
@@ -934,10 +969,6 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 original_filename TEXT NOT NULL,
                 UNIQUE(release_edition_id, asset_type, object_hash)
             );
-            CREATE TABLE IF NOT EXISTS asset_match_decisions (
-                asset_id INTEGER PRIMARY KEY REFERENCES assets(id),
-                decision_json TEXT NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS asset_provenance (
                 id INTEGER PRIMARY KEY,
                 asset_id INTEGER NOT NULL REFERENCES assets(id),
@@ -945,6 +976,15 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 source_location TEXT NOT NULL,
                 source_asset_label TEXT,
                 UNIQUE(asset_id, source_kind, source_location)
+            );
+            CREATE TABLE IF NOT EXISTS asset_match_decisions (
+                asset_id INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_location TEXT NOT NULL,
+                decision_json TEXT NOT NULL,
+                PRIMARY KEY(asset_id, source_kind, source_location),
+                FOREIGN KEY(asset_id, source_kind, source_location)
+                    REFERENCES asset_provenance(asset_id, source_kind, source_location)
             );
             CREATE TABLE IF NOT EXISTS acquisition_runs (
                 id INTEGER PRIMARY KEY,
@@ -1008,6 +1048,24 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 .execute_batch(
                     "ALTER TABLE asset_provenance
                      ADD COLUMN source_asset_label TEXT;",
+                )
+                .map_err(sql_error)?;
+        }
+        if legacy_asset_match_decisions {
+            connection
+                .execute_batch(
+                    "INSERT INTO asset_match_decisions (
+                        asset_id, source_kind, source_location, decision_json
+                     )
+                     SELECT d.asset_id, p.source_kind, p.source_location, d.decision_json
+                     FROM asset_match_decisions_legacy d
+                     JOIN asset_provenance p ON p.asset_id = d.asset_id
+                     WHERE p.id = (
+                         SELECT MAX(latest.id)
+                         FROM asset_provenance latest
+                         WHERE latest.asset_id = d.asset_id
+                     );
+                     DROP TABLE asset_match_decisions_legacy;",
                 )
                 .map_err(sql_error)?;
         }
@@ -1175,23 +1233,56 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
         return Ok(false);
     }
 
-    if table_exists(connection, "asset_match_decisions")?
-        && (!table_matches_columns(
+    if table_exists(connection, "asset_match_decisions")? {
+        let legacy_match_decisions = table_matches_columns(
             connection,
             "asset_match_decisions",
             &[
                 ("asset_id", "INTEGER", false, true),
                 ("decision_json", "TEXT", true, false),
             ],
-        )? || !has_foreign_key(
+        )? && has_foreign_key(
             connection,
             "asset_match_decisions",
             "asset_id",
             "assets",
             "id",
-        )?)
-    {
-        return Ok(false);
+        )?;
+        let provenance_match_decisions = table_matches_columns(
+            connection,
+            "asset_match_decisions",
+            &[
+                ("asset_id", "INTEGER", true, true),
+                ("source_kind", "TEXT", true, true),
+                ("source_location", "TEXT", true, true),
+                ("decision_json", "TEXT", true, false),
+            ],
+        )? && has_unique_index(
+            connection,
+            "asset_match_decisions",
+            &["asset_id", "source_kind", "source_location"],
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "asset_id",
+            "asset_provenance",
+            "asset_id",
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "source_kind",
+            "asset_provenance",
+            "source_kind",
+        )? && has_foreign_key(
+            connection,
+            "asset_match_decisions",
+            "source_location",
+            "asset_provenance",
+            "source_location",
+        )?;
+        if !legacy_match_decisions && !provenance_match_decisions {
+            return Ok(false);
+        }
     }
 
     let has_runs = table_exists(connection, "acquisition_runs")?;

@@ -682,6 +682,7 @@ pub struct AssetProvenance {
     pub source_id: SourceId,
     pub source_asset_label: Option<String>,
     pub source_location: String,
+    pub match_decision: Option<AssetCandidateMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -692,7 +693,6 @@ pub struct LibraryAsset {
     pub byte_len: u64,
     pub original_filename: String,
     pub provenance: Vec<AssetProvenance>,
-    pub match_decision: Option<AssetCandidateMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
