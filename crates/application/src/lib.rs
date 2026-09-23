@@ -119,7 +119,7 @@ pub fn match_asset_candidate_to_release(
     releases: &[LibraryEntry],
     policy: MatchingPolicy,
 ) -> AssetCandidateMatch {
-    let best = releases
+    let mut scored_releases = releases
         .iter()
         .map(|release| {
             let evidence = vec![
@@ -150,9 +150,16 @@ pub fn match_asset_candidate_to_release(
                 .clamp(0, 100) as u8;
             (release.release_edition_id, score, evidence)
         })
-        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)));
+        .collect::<Vec<_>>();
 
-    let Some((release_edition_id, score, evidence)) = best else {
+    scored_releases.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let Some((release_edition_id, score, evidence)) = scored_releases.first().cloned() else {
         return AssetCandidateMatch {
             release_edition_id: None,
             score: 0,
@@ -161,7 +168,12 @@ pub fn match_asset_candidate_to_release(
         };
     };
 
-    let confidence = if score >= policy.high_confidence_threshold {
+    let ambiguous_best_score = scored_releases
+        .get(1)
+        .is_some_and(|candidate| candidate.1 == score);
+    let confidence = if ambiguous_best_score && score >= policy.medium_confidence_threshold {
+        MatchConfidence::Medium
+    } else if score >= policy.high_confidence_threshold {
         MatchConfidence::High
     } else if score >= policy.medium_confidence_threshold {
         MatchConfidence::Medium

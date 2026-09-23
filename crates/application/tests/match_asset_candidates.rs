@@ -128,3 +128,29 @@ fn missing_region_and_edition_values_do_not_increase_confidence() {
         vec![0, 0]
     );
 }
+
+#[test]
+fn equally_strong_release_matches_are_deterministic_but_not_auto_linked() {
+    let first = release();
+    let second = LibraryEntry {
+        release_edition_id: 12,
+        ..release()
+    };
+    let policy = MatchingPolicy {
+        high_confidence_threshold: 80,
+        medium_confidence_threshold: 50,
+    };
+
+    let forward = match_asset_candidate_to_release(
+        &candidate(),
+        &[first.clone(), second.clone()],
+        policy,
+    );
+    let reversed = match_asset_candidate_to_release(&candidate(), &[second, first], policy);
+
+    assert_eq!(forward, reversed);
+    assert_eq!(forward.release_edition_id, Some(11));
+    assert_eq!(forward.score, 100);
+    assert_eq!(forward.confidence, MatchConfidence::Medium);
+    assert_eq!(forward.auto_link_release_edition_id(), None);
+}
