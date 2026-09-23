@@ -442,34 +442,36 @@ pub fn acquire_run_with_connector(
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
             break;
         };
-        let reviewed_match =
-            if let Some(review_item) = catalog.find_review_item_by_candidate_identity(&work.key)? {
-                match review_item.decision {
-                    Some(ReviewDecision::Accept { release_edition_id }) => {
-                        let accepted = review_item
-                            .competing_matches
-                            .iter()
-                            .find(|candidate| candidate.release_edition_id == release_edition_id)
-                            .ok_or(ApplicationError::ReviewAcceptanceNotCompeting {
-                                review_item_id: review_item.id,
-                                release_edition_id,
-                            })?;
-                        Some(AssetCandidateMatch {
-                            release_edition_id: Some(release_edition_id),
-                            score: accepted.score,
-                            confidence: MatchConfidence::Medium,
-                            evidence: accepted.evidence.clone(),
-                        })
-                    }
-                    Some(ReviewDecision::Reject) => {
-                        complete_acquisition_work(runs, run_id, &work.key)?;
-                        continue;
-                    }
-                    Some(ReviewDecision::Defer) | None => None,
+        let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
+        let reviewed_match = if let Some(review_item) =
+            catalog.find_review_item_by_candidate_identity(&candidate_identity)?
+        {
+            match review_item.decision {
+                Some(ReviewDecision::Accept { release_edition_id }) => {
+                    let accepted = review_item
+                        .competing_matches
+                        .iter()
+                        .find(|candidate| candidate.release_edition_id == release_edition_id)
+                        .ok_or(ApplicationError::ReviewAcceptanceNotCompeting {
+                            review_item_id: review_item.id,
+                            release_edition_id,
+                        })?;
+                    Some(AssetCandidateMatch {
+                        release_edition_id: Some(release_edition_id),
+                        score: accepted.score,
+                        confidence: MatchConfidence::Medium,
+                        evidence: accepted.evidence.clone(),
+                    })
                 }
-            } else {
-                None
-            };
+                Some(ReviewDecision::Reject) => {
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                    continue;
+                }
+                Some(ReviewDecision::Defer) | None => None,
+            }
+        } else {
+            None
+        };
         let reviewed_release_edition_id = reviewed_match
             .as_ref()
             .and_then(|candidate_match| candidate_match.release_edition_id);
@@ -481,7 +483,7 @@ pub fn acquire_run_with_connector(
         {
             catalog.persist_review_item(NewReviewItem {
                 run_id,
-                candidate_identity: work.key.clone(),
+                candidate_identity,
                 candidate: candidate.clone(),
                 competing_matches: review_matches_for_asset_candidate(
                     candidate,
@@ -550,6 +552,18 @@ fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
         push_work_key_part(&mut key, part);
     }
     key
+}
+
+fn review_candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String {
+    let mut identity = "candidate".to_owned();
+    for part in [
+        source_id,
+        asset_type_work_key(candidate.asset_type),
+        candidate.source_url.as_str(),
+    ] {
+        push_work_key_part(&mut identity, part);
+    }
+    identity
 }
 
 fn push_work_key_part(key: &mut String, value: &str) {

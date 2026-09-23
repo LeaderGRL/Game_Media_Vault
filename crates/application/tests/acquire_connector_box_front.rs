@@ -542,6 +542,56 @@ fn accepted_review_decision_is_reused_for_the_same_candidate_identity() {
 }
 
 #[test]
+fn accepted_review_decision_survives_equivalent_metadata_changes() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let first_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate.clone()],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    create_review_then_set_decision(
+        &catalog,
+        &first_connector,
+        ReviewDecision::Accept {
+            release_edition_id: 402,
+        },
+    );
+
+    let equivalent_candidate = AssetCandidate {
+        game_title: format!(" {} ", candidate.game_title.to_uppercase()),
+        region: candidate.region.to_lowercase(),
+        ..candidate
+    };
+    let second_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![equivalent_candidate],
+    };
+    let second_run = FakeRuns::new(run_with_request(request()));
+
+    let imported = acquire_run_with_connector(
+        &second_run,
+        &catalog,
+        &FakeStore::default(),
+        &second_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(second_connector.downloads.borrow().len(), 1);
+    assert_eq!(catalog.review_items.borrow().len(), 1);
+    assert_eq!(
+        catalog.records.borrow()[0].existing_release_edition_id,
+        Some(402)
+    );
+}
+
+#[test]
 fn rejected_review_decision_skips_the_same_candidate_identity() {
     let (candidate, library) = ambiguous_candidate_and_releases();
     let connector = FakeConnector {
