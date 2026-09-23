@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
+  const vaultGeneration = useRef(0);
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
@@ -19,12 +20,14 @@ export function App() {
 
   async function loadVault(event?: FormEvent) {
     event?.preventDefault();
+    vaultGeneration.current += 1;
     const requestedVaultRoot = vaultRoot;
     setLoading(true);
     setError(null);
     setEntries([]);
     setReviewItems([]);
     setLoadedVaultRoot(null);
+    setResolvingId(null);
     try {
       const [library, reviews] = await Promise.all([
         invoke<LibraryEntry[]>("list_library", { vault_root: requestedVaultRoot }),
@@ -48,22 +51,27 @@ export function App() {
     setResolvingId(reviewItemId);
     setError(null);
     const resolvingVaultRoot = loadedVaultRoot;
+    const resolvingGeneration = vaultGeneration.current;
     try {
       const resolved = await invoke<ReviewItem>("resolve_review_item", {
         vault_root: resolvingVaultRoot,
         review_item_id: reviewItemId,
         decision,
       });
-      if (loadedVaultRoot !== resolvingVaultRoot) {
+      if (vaultGeneration.current !== resolvingGeneration) {
         return;
       }
       setReviewItems((current) =>
         current.map((item) => (item.id === resolved.id ? resolved : item)),
       );
     } catch (reason) {
-      setError(String(reason));
+      if (vaultGeneration.current === resolvingGeneration) {
+        setError(String(reason));
+      }
     } finally {
-      setResolvingId(null);
+      if (vaultGeneration.current === resolvingGeneration) {
+        setResolvingId(null);
+      }
     }
   }
 

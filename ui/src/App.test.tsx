@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReviewItem } from "./types";
@@ -135,5 +135,46 @@ describe("App", () => {
       review_item_id: 17,
       decision: { decision: "accept", release_edition_id: 201 },
     });
+  });
+
+  it("ignores a review resolution that returns after another vault is loaded", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    const otherReviewItem: ReviewItem = {
+      ...reviewItem,
+      candidate_identity: "connector:other-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Other Review Game",
+      },
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "other-vault" },
+    });
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([otherReviewItem]);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Other Review Game")).toBeInTheDocument();
+
+    finishResolution?.({
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Other Review Game")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Accepted · release #201")).not.toBeInTheDocument();
   });
 });
