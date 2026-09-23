@@ -47,12 +47,16 @@ export function App() {
     }
     setResolvingId(reviewItemId);
     setError(null);
+    const resolvingVaultRoot = loadedVaultRoot;
     try {
       const resolved = await invoke<ReviewItem>("resolve_review_item", {
-        vault_root: loadedVaultRoot,
+        vault_root: resolvingVaultRoot,
         review_item_id: reviewItemId,
         decision,
       });
+      if (loadedVaultRoot !== resolvingVaultRoot) {
+        return;
+      }
       setReviewItems((current) =>
         current.map((item) => (item.id === resolved.id ? resolved : item)),
       );
