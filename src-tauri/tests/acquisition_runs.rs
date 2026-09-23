@@ -1,4 +1,8 @@
-use std::io::{Cursor, Read};
+use std::{
+    io::{Cursor, Read},
+    sync::{Arc, Mutex},
+    thread,
+};
 
 use game_media_vault_application::{
     AcquisitionRequestInput, ConnectorPort, PortError,
@@ -56,6 +60,30 @@ impl ConnectorPort for FixtureConnector {
 
     fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         Ok(Box::new(Cursor::new(b"tauri connector fixture".to_vec())))
+    }
+}
+
+struct ThreadRecordingConnector {
+    worker_thread: Arc<Mutex<Option<thread::ThreadId>>>,
+}
+
+impl ConnectorPort for ThreadRecordingConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        FixtureConnector.capabilities()
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        *self.worker_thread.lock().unwrap() = Some(thread::current().id());
+        FixtureConnector.discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        *self.worker_thread.lock().unwrap() = Some(thread::current().id());
+        FixtureConnector.download(candidate)
     }
 }
 
@@ -130,4 +158,38 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
         library[0].provenance[0].source_location,
         "https://example.invalid/smb-box-front.png"
     );
+}
+
+#[test]
+fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let request = AcquisitionRequestInput {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    };
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+    let calling_thread = thread::current().id();
+    let worker_thread = Arc::new(Mutex::new(None));
+
+    let completed = tauri::async_runtime::block_on(
+        game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector_async(
+            vault,
+            started.id,
+            Box::new(ThreadRecordingConnector {
+                worker_thread: Arc::clone(&worker_thread),
+            }),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(completed.status, AcquisitionRunStatus::Completed);
+    assert_ne!(worker_thread.lock().unwrap().unwrap(), calling_thread);
 }

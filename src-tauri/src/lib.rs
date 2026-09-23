@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ConnectorPort,
@@ -61,6 +61,18 @@ pub fn execute_acquisition_run_in_vault_with_connector(
     load_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
 }
 
+pub async fn execute_acquisition_run_in_vault_with_connector_async(
+    vault_root: PathBuf,
+    run_id: i64,
+    connector: Box<dyn ConnectorPort + Send>,
+) -> Result<AcquisitionRun, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_acquisition_run_in_vault_with_connector(&vault_root, run_id, connector.as_ref())
+    })
+    .await
+    .map_err(|error| format!("acquisition worker failed: {error}"))?
+}
+
 pub fn load_acquisition_run_from_vault(
     vault_root: &Path,
     run_id: i64,
@@ -112,9 +124,16 @@ fn start_acquisition_run(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn execute_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
-    let connector = LibretroThumbnailsConnector::new();
-    execute_acquisition_run_in_vault_with_connector(Path::new(&vault_root), run_id, &connector)
+async fn execute_acquisition_run(
+    vault_root: String,
+    run_id: i64,
+) -> Result<AcquisitionRun, String> {
+    execute_acquisition_run_in_vault_with_connector_async(
+        PathBuf::from(vault_root),
+        run_id,
+        Box::new(LibretroThumbnailsConnector::new()),
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
