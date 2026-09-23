@@ -52,6 +52,13 @@ fn unlisted_region_fixture_path() -> PathBuf {
         .join("no_intro_unlisted_region.dat")
 }
 
+fn metadata_tags_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_metadata_tags.dat")
+}
+
 #[test]
 fn imports_a_bounded_no_intro_fixture_as_release_assertions() {
     let catalog = RecordingReferenceCatalog::default();
@@ -189,6 +196,47 @@ fn preserves_unlisted_region_claims() {
     assert_eq!(release.edition_name, "Rev 1");
     assert!(release.assertions.iter().any(|assertion| {
         assertion.field == ReleaseAssertionField::Region && assertion.value == "Caribbean"
+    }));
+}
+
+#[test]
+fn preserves_status_tags_as_editions_and_version_tags_as_revisions() {
+    let source = NoIntroReferenceCatalog::new();
+
+    let releases = source
+        .read_releases(&metadata_tags_fixture_path(), 4)
+        .unwrap();
+
+    assert_eq!(releases.len(), 4);
+
+    let beta = &releases[0];
+    assert_eq!(beta.game_title, "Preview Test");
+    assert_eq!(beta.region, "Unknown");
+    assert_eq!(beta.edition_name, "Beta");
+    assert!(!beta.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Region
+    }));
+
+    let proto = &releases[1];
+    assert_eq!(proto.game_title, "Prototype Test");
+    assert_eq!(proto.region, "Unknown");
+    assert_eq!(proto.edition_name, "Proto");
+
+    let version = &releases[2];
+    assert_eq!(version.region, "USA");
+    assert_eq!(version.revision.as_deref(), Some("v1.1"));
+    assert_eq!(version.edition_name, "v1.1");
+    assert!(version.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Revision && assertion.value == "v1.1"
+    }));
+
+    let long_version = &releases[3];
+    assert_eq!(long_version.region, "Europe");
+    assert_eq!(long_version.revision.as_deref(), Some("Version 2.0"));
+    assert_eq!(long_version.edition_name, "Version 2.0");
+    assert!(long_version.assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Revision
+            && assertion.value == "Version 2.0"
     }));
 }
 
