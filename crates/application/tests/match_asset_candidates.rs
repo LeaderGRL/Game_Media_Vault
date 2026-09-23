@@ -59,3 +59,33 @@ fn matching_combines_multiple_signals_and_exposes_evidence() {
         ]
     );
 }
+
+#[test]
+fn explicit_region_conflict_prevents_high_confidence_auto_link() {
+    let conflicting_release = LibraryEntry {
+        region: "Europe".to_owned(),
+        ..release()
+    };
+
+    let result = match_asset_candidate_to_release(
+        &candidate(),
+        &[conflicting_release],
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    );
+
+    assert_eq!(result.score, 70);
+    assert_eq!(result.confidence, MatchConfidence::Medium);
+    assert_eq!(result.auto_link_release_edition_id(), None);
+    assert_eq!(
+        result
+            .evidence
+            .iter()
+            .find(|evidence| evidence.signal == MatchSignal::Region)
+            .unwrap()
+            .score_delta,
+        -15
+    );
+}

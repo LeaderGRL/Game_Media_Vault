@@ -188,7 +188,7 @@ fn exact_match_evidence(
         signal,
         candidate_value: candidate_value.to_owned(),
         release_value: release_value.to_owned(),
-        score_delta: if matched { score } else { 0 },
+        score_delta: if matched { score } else { -score },
     }
 }
 
