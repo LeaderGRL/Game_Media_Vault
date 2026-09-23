@@ -9,7 +9,7 @@ use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection,
     ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
-use quick_xml::{Reader, events::Event};
+use quick_xml::{Reader, escape::resolve_xml_entity, events::Event};
 use reqwest::blocking::Client;
 use url::Url;
 
@@ -340,9 +340,9 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
     max_games: usize,
 ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
     let mut xml = Reader::from_reader(reader);
-    xml.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     let mut platform = None;
+    let mut header_name = String::new();
     let mut in_header = false;
     let mut reading_header_name = false;
     let mut current_game = None;
@@ -355,7 +355,10 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
         {
             Event::Start(element) => match element.name().as_ref() {
                 "header" => in_header = true,
-                "name" if in_header => reading_header_name = true,
+                "name" if in_header => {
+                    reading_header_name = true;
+                    header_name.clear();
+                }
                 "game" => {
                     let raw_name = attribute_value(&element, "name")?.ok_or_else(|| {
                         PortError("No-Intro game entry is missing its name".to_owned())
@@ -375,11 +378,27 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
                 }
             }
             Event::Text(text) if reading_header_name => {
-                let value = text.xml_content(quick_xml::XmlVersion::Implicit1_0);
-                platform = Some(value.into_owned());
+                header_name.push_str(text.xml10_content().as_ref());
+            }
+            Event::GeneralRef(reference) if reading_header_name => {
+                if let Some(character) = reference.resolve_char_ref().map_err(|error| {
+                    PortError(format!("invalid No-Intro XML character reference: {error}"))
+                })? {
+                    header_name.push(character);
+                } else if let Some(value) = resolve_xml_entity(reference.as_ref()) {
+                    header_name.push_str(value);
+                } else {
+                    return Err(PortError(format!(
+                        "unsupported No-Intro XML entity reference: &{};",
+                        reference.as_ref()
+                    )));
+                }
             }
             Event::End(element) => match element.name().as_ref() {
-                "name" if reading_header_name => reading_header_name = false,
+                "name" if reading_header_name => {
+                    reading_header_name = false;
+                    platform = Some(header_name.trim().to_owned());
+                }
                 "header" => in_header = false,
                 "game" => {
                     let game = current_game.take().ok_or_else(|| {
@@ -502,14 +521,15 @@ struct ParsedNoIntroTitle {
 fn parse_no_intro_title(raw: &str) -> ParsedNoIntroTitle {
     let (game_title, tags) = split_trailing_tags(raw);
     let revision = tags.iter().find(|tag| is_revision_tag(tag)).cloned();
-    let region = tags
-        .iter()
-        .find(|tag| is_region_tag(tag))
-        .cloned()
+    let region_index = tags.first().filter(|tag| !is_revision_tag(tag)).map(|_| 0);
+    let region = region_index
+        .map(|index| tags[index].clone())
         .unwrap_or_else(|| "Unknown".to_owned());
     let edition_tags = tags
         .iter()
-        .filter(|tag| !is_region_tag(tag))
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != region_index)
+        .map(|(_, tag)| tag)
         .cloned()
         .collect::<Vec<_>>();
     let edition_name = if edition_tags.is_empty() {
@@ -550,98 +570,6 @@ fn source_record_identifier(platform: &str, raw_name: &str) -> String {
 
 fn is_revision_tag(tag: &str) -> bool {
     tag.starts_with("Rev ") || tag.starts_with("Revision ")
-}
-
-fn is_region_tag(tag: &str) -> bool {
-    tag.split(',').map(str::trim).all(|part| {
-        matches!(
-            part,
-            "Albania"
-                | "Argentina"
-                | "Asia"
-                | "Australia"
-                | "Austria"
-                | "Belgium"
-                | "Benelux"
-                | "Bosnia and Herzegovina"
-                | "Brazil"
-                | "Bulgaria"
-                | "Canada"
-                | "Chile"
-                | "China"
-                | "Croatia"
-                | "Cyprus"
-                | "Czech"
-                | "Czech Republic"
-                | "Denmark"
-                | "Egypt"
-                | "Estonia"
-                | "Europe"
-                | "Finland"
-                | "France"
-                | "Germany"
-                | "Greece"
-                | "Hong Kong"
-                | "Hungary"
-                | "Iceland"
-                | "India"
-                | "Indonesia"
-                | "Iran"
-                | "Ireland"
-                | "Israel"
-                | "Italy"
-                | "Japan"
-                | "Jordan"
-                | "Korea"
-                | "Latin America"
-                | "Latvia"
-                | "Lithuania"
-                | "Luxembourg"
-                | "Macedonia"
-                | "Malaysia"
-                | "Mexico"
-                | "Middle East"
-                | "Mongolia"
-                | "Nepal"
-                | "Netherlands"
-                | "New Zealand"
-                | "North America"
-                | "Norway"
-                | "Oman"
-                | "Peru"
-                | "Philippines"
-                | "Poland"
-                | "Portugal"
-                | "Qatar"
-                | "Romania"
-                | "Russia"
-                | "Saudi Arabia"
-                | "Scandinavia"
-                | "Serbia"
-                | "Serbia and Montenegro"
-                | "Singapore"
-                | "Slovakia"
-                | "Slovenia"
-                | "South Africa"
-                | "South America"
-                | "South East Asia"
-                | "South Korea"
-                | "Spain"
-                | "Sweden"
-                | "Switzerland"
-                | "Taiwan"
-                | "Thailand"
-                | "Turkey"
-                | "UK"
-                | "Ukraine"
-                | "United Arab Emirates"
-                | "United Kingdom"
-                | "USA"
-                | "Vietnam"
-                | "World"
-                | "Yugoslavia"
-        )
-    })
 }
 
 fn assertion(
