@@ -89,3 +89,42 @@ fn explicit_region_conflict_prevents_high_confidence_auto_link() {
         -15
     );
 }
+
+#[test]
+fn missing_region_and_edition_values_do_not_increase_confidence() {
+    let sparse_candidate = AssetCandidate {
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        ..candidate()
+    };
+    let sparse_release = LibraryEntry {
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        ..release()
+    };
+
+    let result = match_asset_candidate_to_release(
+        &sparse_candidate,
+        &[sparse_release],
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    );
+
+    assert_eq!(result.score, 80);
+    assert_eq!(result.confidence, MatchConfidence::High);
+    assert_eq!(result.auto_link_release_edition_id(), Some(11));
+    assert_eq!(
+        result
+            .evidence
+            .iter()
+            .filter(|evidence| matches!(
+                evidence.signal,
+                MatchSignal::Region | MatchSignal::Edition
+            ))
+            .map(|evidence| evidence.score_delta)
+            .collect::<Vec<_>>(),
+        vec![0, 0]
+    );
+}

@@ -183,13 +183,30 @@ fn exact_match_evidence(
     release_value: &str,
     score: i16,
 ) -> MatchEvidence {
-    let matched = candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase();
+    let score_delta = if is_missing_match_value(signal, candidate_value)
+        || is_missing_match_value(signal, release_value)
+    {
+        0
+    } else if candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase() {
+        score
+    } else {
+        -score
+    };
     MatchEvidence {
         signal,
         candidate_value: candidate_value.to_owned(),
         release_value: release_value.to_owned(),
-        score_delta: if matched { score } else { -score },
+        score_delta,
     }
+}
+
+fn is_missing_match_value(signal: MatchSignal, value: &str) -> bool {
+    let normalized = value.trim().to_lowercase();
+    normalized.is_empty()
+        || matches!(
+            (signal, normalized.as_str()),
+            (MatchSignal::Region, "unknown") | (MatchSignal::Edition, "unspecified")
+        )
 }
 
 pub fn build_acquisition_request(
