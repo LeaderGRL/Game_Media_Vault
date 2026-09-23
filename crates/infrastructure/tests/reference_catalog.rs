@@ -253,3 +253,33 @@ fn opening_catalog_rejects_release_assertions_without_the_required_unique_constr
         .unwrap();
     assert_eq!(added_tables, 0);
 }
+
+#[test]
+fn opening_catalog_rejects_release_assertions_without_uniqueness_constraint() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("missing-assertion-uniqueness.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE release_assertions;
+             CREATE TABLE release_assertions (
+                 id INTEGER PRIMARY KEY,
+                 release_edition_id INTEGER NOT NULL REFERENCES release_editions(id),
+                 source_id TEXT NOT NULL,
+                 source_location TEXT NOT NULL,
+                 field TEXT NOT NULL,
+                 qualifier TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 normalized_value TEXT NOT NULL
+             );
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(SqliteCatalog::open_existing(&path).is_err());
+}
