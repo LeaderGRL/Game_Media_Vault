@@ -222,6 +222,40 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
 }
 
 #[test]
+fn tauri_adapter_rejects_invalid_matching_threshold_order() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let request = AcquisitionRequestInput {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    };
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+
+    let error = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
+        &vault,
+        started.id,
+        &FixtureConnector,
+        MatchingPolicy {
+            high_confidence_threshold: 60,
+            medium_confidence_threshold: 80,
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        "medium matching threshold cannot be higher than high matching threshold"
+    );
+}
+
+#[test]
 fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
