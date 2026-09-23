@@ -6,11 +6,12 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
-    ImportLocalBoxFrontRequest, PortError, acquire_run_with_connector, cancel_acquisition_run,
-    import_local_box_front, list_acquisition_runs, list_library, load_acquisition_run,
+    ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, PortError,
+    acquire_run_with_connector, cancel_acquisition_run, import_local_box_front,
+    import_reference_catalog, list_acquisition_runs, list_library, load_acquisition_run,
     pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
 };
-use game_media_vault_connectors::LibretroThumbnailsConnector;
+use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRun, AssetTypeSelector, GameSelection, PlatformBoundGameSelector,
     QualityRequirements, RetentionPolicy, SourceSelection,
@@ -97,6 +98,12 @@ enum Command {
         edition: String,
         #[arg(long)]
         file: PathBuf,
+    },
+    ImportNoIntro {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        max_games: usize,
     },
     Library,
 }
@@ -294,6 +301,21 @@ where
                 "Imported Box Front as asset #{} ({}, {} bytes)",
                 imported.asset_id, imported.object_hash, imported.byte_len
             ))
+        }
+        Command::ImportNoIntro { file, max_games } => {
+            let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+            let source = NoIntroReferenceCatalog::new();
+            let summary = import_reference_catalog(
+                &catalog,
+                &source,
+                ImportReferenceCatalogRequest {
+                    source_path: file,
+                    max_games,
+                },
+            )?;
+            Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "imported_releases": summary.imported_releases
+            }))?)
         }
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
