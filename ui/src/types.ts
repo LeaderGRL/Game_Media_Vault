@@ -66,6 +66,7 @@ export interface ReviewMatchCandidate {
   edition_name: string;
   score: number;
   evidence: MatchEvidence[];
+  assertions: ReleaseAssertion[];
 }
 
 export type ReviewDecision =

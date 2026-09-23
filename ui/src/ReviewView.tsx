@@ -68,6 +68,26 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
                     ))}
                   </div>
 
+                  {match.assertions.length > 0 ? (
+                    <div
+                      className="evidence-list"
+                      aria-label={`Source assertions for ${match.edition_name}`}
+                    >
+                      {match.assertions.map((assertion, index) => (
+                        <div
+                          className="evidence-row"
+                          key={`${assertion.source_id}-${assertion.field}-${assertion.value}-${index}`}
+                        >
+                          <strong>{assertion.source_id}</strong>
+                          <span>
+                            {assertion.field}: {assertion.value}
+                          </span>
+                          <code>{assertion.source_location}</code>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
                   <button
                     type="button"
                     disabled={busy}

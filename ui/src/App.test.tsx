@@ -64,6 +64,7 @@ const reviewItem: ReviewItem = {
       edition_name: "Standard",
       score: 90,
       evidence: [],
+      assertions: [],
     },
   ],
   decision: null,

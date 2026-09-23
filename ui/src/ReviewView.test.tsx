@@ -42,6 +42,15 @@ const item: ReviewItem = {
           score_delta: -5,
         },
       ],
+      assertions: [
+        {
+          source_id: "reference-catalog",
+          source_location: "fixture://reference/review-game-standard",
+          field: "identifier",
+          qualifier: "source_record",
+          value: "review-game-standard",
+        },
+      ],
     },
   ],
   decision: null,
@@ -58,6 +67,8 @@ describe("ReviewView", () => {
     expect(screen.getByText("Score 90")).toBeInTheDocument();
     expect(screen.getByText("Title: +50")).toBeInTheDocument();
     expect(screen.getByText("Edition: -5")).toBeInTheDocument();
+    expect(screen.getByText("reference-catalog")).toBeInTheDocument();
+    expect(screen.getByText("fixture://reference/review-game-standard")).toBeInTheDocument();
   });
 
   it("emits accept reject and defer decisions", () => {
