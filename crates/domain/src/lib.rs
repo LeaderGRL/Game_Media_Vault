@@ -298,7 +298,9 @@ impl AcquisitionRequest {
 
     pub fn requested_asset_types_supported_by(&self, supported: &[AssetType]) -> bool {
         self.asset_types.iter().all(|selector| match selector {
-            AssetTypeSelector::BoxFront => supported.contains(&AssetType::BoxFront),
+            AssetTypeSelector::Packaging | AssetTypeSelector::BoxFront => {
+                supported.contains(&AssetType::BoxFront)
+            }
             _ => false,
         })
     }

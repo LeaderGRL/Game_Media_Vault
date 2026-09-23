@@ -237,6 +237,34 @@ fn acquires_a_requested_box_front_through_the_connector_pipeline() {
     assert_eq!(final_run.completed_work, 1);
 }
 
+#[test]
+fn packaging_selector_acquires_the_supported_box_front() {
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::Packaging],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+    let runs = FakeRuns::new(run_with_request(request));
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: Vec::new(),
+    };
+    let store = FakeStore::default();
+    let catalog = FakeCatalog::default();
+
+    let imported = acquire_run_with_connector(&runs, &catalog, &store, &connector, 7).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+    assert_eq!(catalog.records.borrow()[0].asset_type, AssetType::BoxFront);
+}
 fn run_with_request(request: AcquisitionRequest) -> AcquisitionRun {
     AcquisitionRun {
         id: 7,
