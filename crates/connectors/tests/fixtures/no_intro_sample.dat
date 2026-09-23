@@ -34,4 +34,16 @@
       sha1="6C11D7AD4914DA5CF0D5A2E5E37D9714100C51E3"
     />
   </game>
+  <game name="Tom &amp; Jerry (Portugal)">
+    <description>Tom &amp; Jerry (Portugal)</description>
+    <rom name="Tom &amp; Jerry (Portugal).gb" size="32768" crc="11111111" />
+  </game>
+  <game name="Region Test Poland (Poland)">
+    <description>Region Test Poland (Poland)</description>
+    <rom name="Region Test Poland (Poland).gb" size="32768" crc="22222222" />
+  </game>
+  <game name="Region Test Denmark (Denmark)">
+    <description>Region Test Denmark (Denmark)</description>
+    <rom name="Region Test Denmark (Denmark).gb" size="32768" crc="33333333" />
+  </game>
 </datafile>
