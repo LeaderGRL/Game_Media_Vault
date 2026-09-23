@@ -78,7 +78,8 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
 
     let library = catalog.list_library().unwrap();
     assert_eq!(library.len(), 1);
-    let asset = &library[0];
+    assert_eq!(library[0].assets.len(), 1);
+    let asset = &library[0].assets[0];
     assert_eq!(asset.asset_type, AssetType::BoxFront);
     assert_eq!(asset.original_filename, "Super Mario Bros. (World).png");
     assert_eq!(asset.provenance.len(), 1);

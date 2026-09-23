@@ -172,13 +172,34 @@ input:focus {
   white-space: nowrap;
 }
 
-.provenance {
-  grid-column: 1 / -1;
+.release-assets {
+  display: grid;
+  gap: 16px;
+}
+
+.asset-record {
+  display: grid;
+  gap: 14px;
+}
+
+.no-assets {
+  margin: 0;
+  color: #8e98aa;
+  font-size: 14px;
+}
+
+.provenance,
+.assertions {
   border-top: 1px solid #252b35;
   padding-top: 16px;
 }
 
-.provenance code {
+.assertions {
+  grid-column: 1 / -1;
+}
+
+.provenance code,
+.assertions code {
   display: block;
   overflow-wrap: anywhere;
   color: #b7c0d0;

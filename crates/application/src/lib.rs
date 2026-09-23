@@ -6,8 +6,8 @@ use std::{
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    AssetType, ConnectorCapabilities, ImportedAsset, LibraryEntry, PersistAsset, RetentionPolicy,
-    SourceId, StoredObject,
+    AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
+    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, SourceId, StoredObject,
 };
 use thiserror::Error;
 
@@ -67,6 +67,31 @@ pub trait ConnectorPort {
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 }
 
+pub trait ReferenceCatalogSourcePort {
+    fn read_releases(
+        &self,
+        source_path: &Path,
+        max_games: usize,
+    ) -> Result<Vec<ReferenceReleaseRecord>, PortError>;
+}
+
+pub trait ReferenceCatalogRepositoryPort {
+    fn persist_reference_release(
+        &self,
+        record: ReferenceReleaseRecord,
+    ) -> Result<ImportedReleaseEdition, PortError>;
+
+    fn persist_reference_releases(
+        &self,
+        records: Vec<ReferenceReleaseRecord>,
+    ) -> Result<Vec<ImportedReleaseEdition>, PortError> {
+        records
+            .into_iter()
+            .map(|record| self.persist_reference_release(record))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportLocalBoxFrontRequest {
     pub existing_game_id: Option<i64>,
@@ -75,6 +100,17 @@ pub struct ImportLocalBoxFrontRequest {
     pub region: String,
     pub edition_name: String,
     pub source_path: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportReferenceCatalogRequest {
+    pub source_path: PathBuf,
+    pub max_games: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceImportSummary {
+    pub imported_releases: usize,
 }
 
 pub fn build_acquisition_request(
@@ -224,6 +260,8 @@ pub enum ApplicationError {
     MissingSourceFileName,
     #[error("failed to resolve source path: {0}")]
     ResolveSourcePath(String),
+    #[error("reference catalog imports require a positive game limit")]
+    InvalidReferenceImportLimit,
     #[error("{0}")]
     Port(#[from] PortError),
     #[error("{0}")]
@@ -250,6 +288,36 @@ pub enum ApplicationError {
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
 }
+
+pub fn import_reference_catalog(
+    catalog: &dyn ReferenceCatalogRepositoryPort,
+    source: &dyn ReferenceCatalogSourcePort,
+    request: ImportReferenceCatalogRequest,
+) -> Result<ReferenceImportSummary, ApplicationError> {
+    if request.max_games == 0 {
+        return Err(ApplicationError::InvalidReferenceImportLimit);
+    }
+
+    let source_path = resolve_source_path(&request.source_path)?;
+    let releases = source.read_releases(&source_path, request.max_games)?;
+    let mut imported_releases = 0;
+    let mut batch = Vec::with_capacity(REFERENCE_IMPORT_BATCH_SIZE);
+    for release in releases.into_iter().take(request.max_games) {
+        batch.push(release);
+        if batch.len() == REFERENCE_IMPORT_BATCH_SIZE {
+            imported_releases += catalog
+                .persist_reference_releases(std::mem::take(&mut batch))?
+                .len();
+        }
+    }
+    if !batch.is_empty() {
+        imported_releases += catalog.persist_reference_releases(batch)?.len();
+    }
+
+    Ok(ReferenceImportSummary { imported_releases })
+}
+
+const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
 
 pub fn acquire_run_with_connector(
     runs: &dyn RunRepositoryPort,

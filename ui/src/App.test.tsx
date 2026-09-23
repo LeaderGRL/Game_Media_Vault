@@ -20,16 +20,21 @@ const entry: LibraryEntry = {
   platform: "PlayStation",
   region: "France",
   edition_name: "Original",
-  asset_id: 3,
-  asset_type: "box_front",
-  object_hash: "abc123",
-  byte_len: 4096,
-  original_filename: "mgs-front.png",
-  provenance: [
+  assertions: [],
+  assets: [
     {
-      source_id: "local_import",
-      source_asset_label: null,
-      source_location: "C:/covers/mgs-front.png",
+      asset_id: 3,
+      asset_type: "box_front",
+      object_hash: "abc123",
+      byte_len: 4096,
+      original_filename: "mgs-front.png",
+      provenance: [
+        {
+          source_id: "local_import",
+          source_asset_label: null,
+          source_location: "C:/covers/mgs-front.png",
+        },
+      ],
     },
   ],
 };
@@ -45,6 +50,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Load library" }));
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByText("1 release")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Vault path"), {
       target: { value: "missing-vault" },

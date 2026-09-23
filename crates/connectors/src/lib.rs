@@ -1,13 +1,20 @@
-use std::io::Read;
-
-use game_media_vault_application::{ConnectorPort, PortError};
-use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+    path::Path,
 };
+
+use game_media_vault_application::{ConnectorPort, PortError, ReferenceCatalogSourcePort};
+use game_media_vault_domain::{
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection,
+    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, SourceId,
+};
+use quick_xml::{Reader, escape::resolve_xml_entity, events::Event};
 use reqwest::blocking::Client;
 use url::Url;
 
 pub const LIBRETRO_THUMBNAILS_SOURCE_ID: &str = "libretro-thumbnails";
+pub const NO_INTRO_SOURCE_ID: &str = "no-intro";
 const LIBRETRO_GITMODULES_URL: &str =
     "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
@@ -296,4 +303,385 @@ fn repository_name(url: &str) -> Result<String, PortError> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| PortError(format!("invalid Libretro repository URL: {url}")))?;
     Ok(repository.to_owned())
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoIntroReferenceCatalog;
+
+impl NoIntroReferenceCatalog {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ReferenceCatalogSourcePort for NoIntroReferenceCatalog {
+    fn read_releases(
+        &self,
+        source_path: &Path,
+        max_games: usize,
+    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+        if max_games == 0 {
+            return Ok(Vec::new());
+        }
+        let file = File::open(source_path).map_err(|error| {
+            PortError(format!(
+                "failed to open No-Intro datafile {}: {error}",
+                source_path.display()
+            ))
+        })?;
+        let source_location = source_path.to_string_lossy().into_owned();
+        parse_no_intro_datafile(BufReader::new(file), &source_location, max_games)
+    }
+}
+
+fn parse_no_intro_datafile<R: std::io::BufRead>(
+    reader: R,
+    source_location: &str,
+    max_games: usize,
+) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+    let mut xml = Reader::from_reader(reader);
+    let mut buffer = Vec::new();
+    let mut platform = None;
+    let mut header_name = String::new();
+    let mut in_header = false;
+    let mut reading_header_name = false;
+    let mut current_game = None;
+    let mut releases = Vec::with_capacity(max_games.min(256));
+
+    loop {
+        match xml
+            .read_event_into(&mut buffer)
+            .map_err(|error| PortError(format!("invalid No-Intro XML: {error}")))?
+        {
+            Event::Start(element) => match element.name().as_ref() {
+                "header" => in_header = true,
+                "name" if in_header => {
+                    reading_header_name = true;
+                    header_name.clear();
+                }
+                "game" => {
+                    let raw_name = attribute_value(&element, "name")?.ok_or_else(|| {
+                        PortError("No-Intro game entry is missing its name".to_owned())
+                    })?;
+                    current_game = Some(NoIntroGame::new(raw_name, source_location));
+                }
+                "rom" => {
+                    if let Some(game) = current_game.as_mut() {
+                        game.read_identifiers(&element)?;
+                    }
+                }
+                _ => {}
+            },
+            Event::Empty(element) if element.name().as_ref() == "rom" => {
+                if let Some(game) = current_game.as_mut() {
+                    game.read_identifiers(&element)?;
+                }
+            }
+            Event::Text(text) if reading_header_name => {
+                header_name.push_str(text.xml10_content().as_ref());
+            }
+            Event::GeneralRef(reference) if reading_header_name => {
+                if let Some(character) = reference.resolve_char_ref().map_err(|error| {
+                    PortError(format!("invalid No-Intro XML character reference: {error}"))
+                })? {
+                    header_name.push(character);
+                } else if let Some(value) = resolve_xml_entity(reference.as_ref()) {
+                    header_name.push_str(value);
+                } else {
+                    return Err(PortError(format!(
+                        "unsupported No-Intro XML entity reference: &{};",
+                        reference.as_ref()
+                    )));
+                }
+            }
+            Event::End(element) => match element.name().as_ref() {
+                "name" if reading_header_name => {
+                    reading_header_name = false;
+                    platform = Some(header_name.trim().to_owned());
+                }
+                "header" => in_header = false,
+                "game" => {
+                    let game = current_game.take().ok_or_else(|| {
+                        PortError("No-Intro game closing tag has no matching entry".to_owned())
+                    })?;
+                    let platform = platform.as_deref().ok_or_else(|| {
+                        PortError("No-Intro datafile header is missing a platform name".to_owned())
+                    })?;
+                    releases.push(game.finish(platform));
+                    if releases.len() >= max_games {
+                        break;
+                    }
+                }
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+
+    if platform.is_none() {
+        return Err(PortError(
+            "No-Intro datafile header is missing a platform name".to_owned(),
+        ));
+    }
+    Ok(releases)
+}
+
+struct NoIntroGame {
+    raw_name: String,
+    source_location: String,
+    identifiers: Vec<(String, String)>,
+}
+
+impl NoIntroGame {
+    fn new(raw_name: String, source_location: &str) -> Self {
+        Self {
+            raw_name,
+            source_location: source_location.to_owned(),
+            identifiers: Vec::new(),
+        }
+    }
+
+    fn read_identifiers(
+        &mut self,
+        element: &quick_xml::events::BytesStart<'_>,
+    ) -> Result<(), PortError> {
+        for name in ["name", "crc", "md5", "sha1", "sha256"] {
+            if let Some(value) = attribute_value(element, name)? {
+                let qualifier = if name == "name" {
+                    "rom_name".to_owned()
+                } else {
+                    name.to_owned()
+                };
+                self.identifiers.push((qualifier, value));
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, platform: &str) -> ReferenceReleaseRecord {
+        let title = parse_no_intro_title(&self.raw_name);
+        let mut assertions = Vec::with_capacity(4 + self.identifiers.len());
+        assertions.push(assertion(
+            &self.source_location,
+            ReleaseAssertionField::Title,
+            None,
+            &title.game_title,
+        ));
+        assertions.push(assertion(
+            &self.source_location,
+            ReleaseAssertionField::Identifier,
+            Some("source_record"),
+            &source_record_identifier(platform, &self.raw_name),
+        ));
+        if title.region != "Unknown" {
+            assertions.push(assertion(
+                &self.source_location,
+                ReleaseAssertionField::Region,
+                None,
+                &title.region,
+            ));
+        }
+        if let Some(revision) = title.revision.as_deref() {
+            assertions.push(assertion(
+                &self.source_location,
+                ReleaseAssertionField::Revision,
+                None,
+                revision,
+            ));
+        }
+        assertions.extend(self.identifiers.into_iter().map(|(qualifier, value)| {
+            assertion(
+                &self.source_location,
+                ReleaseAssertionField::Identifier,
+                Some(&qualifier),
+                &value,
+            )
+        }));
+
+        ReferenceReleaseRecord {
+            game_title: title.game_title,
+            platform: platform.to_owned(),
+            region: title.region,
+            revision: title.revision,
+            edition_name: title.edition_name,
+            assertions,
+        }
+    }
+}
+
+struct ParsedNoIntroTitle {
+    game_title: String,
+    region: String,
+    revision: Option<String>,
+    edition_name: String,
+}
+
+fn parse_no_intro_title(raw: &str) -> ParsedNoIntroTitle {
+    let (game_title, tags) = split_trailing_tags(raw);
+    let revision = tags.iter().find(|tag| is_revision_tag(tag)).cloned();
+    let region_index = tags
+        .first()
+        .filter(|tag| is_region_candidate(tag))
+        .map(|_| 0);
+    let region = region_index
+        .map(|index| tags[index].clone())
+        .unwrap_or_else(|| "Unknown".to_owned());
+    let edition_tags = tags
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != region_index)
+        .map(|(_, tag)| tag)
+        .cloned()
+        .collect::<Vec<_>>();
+    let edition_name = if edition_tags.is_empty() {
+        "Standard".to_owned()
+    } else {
+        edition_tags.join(" · ")
+    };
+
+    ParsedNoIntroTitle {
+        game_title,
+        region,
+        revision,
+        edition_name,
+    }
+}
+
+fn split_trailing_tags(raw: &str) -> (String, Vec<String>) {
+    let mut base = raw.trim_end();
+    let mut tags = Vec::new();
+    while base.ends_with(')') {
+        let Some(open_index) = base.rfind(" (") else {
+            break;
+        };
+        let tag = &base[open_index + 2..base.len() - 1];
+        if tag.is_empty() {
+            break;
+        }
+        tags.push(tag.to_owned());
+        base = base[..open_index].trim_end();
+    }
+    tags.reverse();
+    (base.to_owned(), tags)
+}
+
+fn source_record_identifier(platform: &str, raw_name: &str) -> String {
+    format!("{}:{platform}{raw_name}", platform.len())
+}
+
+fn is_region_candidate(tag: &str) -> bool {
+    !is_revision_tag(tag)
+        && !is_status_tag(tag)
+        && !is_language_tag(tag)
+        && !is_date_tag(tag)
+        && !is_edition_tag(tag)
+}
+
+fn is_revision_tag(tag: &str) -> bool {
+    tag.starts_with("Rev ")
+        || tag.starts_with("Revision ")
+        || tag.strip_prefix('v').is_some_and(is_version_number)
+        || tag.strip_prefix("Version ").is_some_and(is_version_number)
+}
+
+fn is_version_number(value: &str) -> bool {
+    value
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn is_status_tag(tag: &str) -> bool {
+    const STATUS_MARKERS: &[&str] = &[
+        "Alpha",
+        "Beta",
+        "Demo",
+        "Kiosk",
+        "Preview",
+        "Promo",
+        "Proto",
+        "Prototype",
+        "Sample",
+        "Test",
+        "Debug",
+        "Pre-Release",
+        "Prerelease",
+        "Unl",
+        "Unlicensed",
+        "Pirate",
+        "Aftermarket",
+        "Homebrew",
+    ];
+
+    STATUS_MARKERS.iter().any(|marker| {
+        tag == *marker
+            || tag
+                .strip_prefix(marker)
+                .is_some_and(|suffix| suffix.starts_with(' ') || suffix.starts_with('-'))
+    })
+}
+
+fn is_language_tag(tag: &str) -> bool {
+    let mut parts = tag.split(',').map(str::trim);
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    is_language_code(first) && parts.all(is_language_code)
+}
+
+fn is_language_code(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    matches!(bytes.len(), 2 | 3)
+        && bytes[0].is_ascii_uppercase()
+        && bytes[1..].iter().all(|byte| byte.is_ascii_lowercase())
+}
+
+fn is_date_tag(tag: &str) -> bool {
+    let bytes = tag.as_bytes();
+    bytes.len() >= 5 && bytes[..4].iter().all(|byte| byte.is_ascii_digit()) && bytes[4] == b'-'
+}
+
+fn is_edition_tag(tag: &str) -> bool {
+    ["Edition", "Bundle", "Pack", "Disc", "Disk", "Side", "Alt"]
+        .iter()
+        .any(|marker| tag.contains(marker))
+}
+
+fn assertion(
+    source_location: &str,
+    field: ReleaseAssertionField,
+    qualifier: Option<&str>,
+    value: &str,
+) -> ReleaseAssertion {
+    ReleaseAssertion {
+        source_id: SourceId::from(NO_INTRO_SOURCE_ID),
+        source_location: source_location.to_owned(),
+        field,
+        qualifier: qualifier.map(str::to_owned),
+        value: value.to_owned(),
+    }
+}
+
+fn attribute_value(
+    element: &quick_xml::events::BytesStart<'_>,
+    name: &str,
+) -> Result<Option<String>, PortError> {
+    for attribute in element.attributes() {
+        let attribute = attribute
+            .map_err(|error| PortError(format!("invalid No-Intro XML attribute: {error}")))?;
+        if attribute.key.as_ref() == name {
+            let value = attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|error| {
+                    PortError(format!("invalid No-Intro XML attribute value: {error}"))
+                })?;
+            return Ok(Some(value.into_owned()));
+        }
+    }
+    Ok(None)
 }

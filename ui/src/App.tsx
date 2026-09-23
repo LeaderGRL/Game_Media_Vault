@@ -35,7 +35,7 @@ export function App() {
           <p>Local preservation library</p>
         </div>
         <span className="asset-count">
-          {entries.length} {entries.length === 1 ? "asset" : "assets"}
+          {entries.length} {entries.length === 1 ? "release" : "releases"}
         </span>
       </header>
 

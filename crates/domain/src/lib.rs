@@ -378,6 +378,40 @@ impl From<String> for SourceId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseAssertionField {
+    Title,
+    Region,
+    Revision,
+    Identifier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAssertion {
+    pub source_id: SourceId,
+    pub source_location: String,
+    pub field: ReleaseAssertionField,
+    pub qualifier: Option<String>,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceReleaseRecord {
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub revision: Option<String>,
+    pub edition_name: String,
+    pub assertions: Vec<ReleaseAssertion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedReleaseEdition {
+    pub game_id: i64,
+    pub release_edition_id: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectorCapabilities {
     pub asset_types: Vec<AssetType>,
@@ -436,6 +470,16 @@ pub struct AssetProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryAsset {
+    pub asset_id: i64,
+    pub asset_type: AssetType,
+    pub object_hash: String,
+    pub byte_len: u64,
+    pub original_filename: String,
+    pub provenance: Vec<AssetProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryEntry {
     pub game_id: i64,
     pub game_title: String,
@@ -443,10 +487,6 @@ pub struct LibraryEntry {
     pub platform: String,
     pub region: String,
     pub edition_name: String,
-    pub asset_id: i64,
-    pub asset_type: AssetType,
-    pub object_hash: String,
-    pub byte_len: u64,
-    pub original_filename: String,
-    pub provenance: Vec<AssetProvenance>,
+    pub assertions: Vec<ReleaseAssertion>,
+    pub assets: Vec<LibraryAsset>,
 }

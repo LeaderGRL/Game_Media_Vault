@@ -145,8 +145,9 @@ fn cancellation_preserves_assets_accepted_before_the_run_was_cancelled() {
     assert_eq!(cancelled.status, AcquisitionRunStatus::Cancelled);
     assert!(next_acquisition_work(&reopened, run.id).unwrap().is_none());
     assert_eq!(library.len(), 1);
-    assert_eq!(library[0].asset_id, accepted.asset_id);
-    assert_eq!(library[0].object_hash, accepted.object_hash);
+    assert_eq!(library[0].assets.len(), 1);
+    assert_eq!(library[0].assets[0].asset_id, accepted.asset_id);
+    assert_eq!(library[0].assets[0].object_hash, accepted.object_hash);
     assert_eq!(
         fs::read(store.object_path(&accepted.object_hash)).unwrap(),
         source_bytes

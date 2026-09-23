@@ -210,12 +210,61 @@ fn game_id_links_a_second_import_to_an_existing_game() {
     let entries: serde_json::Value = serde_json::from_str(&library).unwrap();
     let entries = entries.as_array().unwrap();
 
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["game_id"].as_i64(), Some(game_id));
+    assert_eq!(entries[0]["assets"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn imports_a_bounded_no_intro_fixture_without_ingesting_game_content() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("connectors")
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_sample.dat");
+
+    let summary = game_media_vault_cli::run([
+        "game-media-vault".into(),
+        "--vault".into(),
+        vault.as_os_str().to_owned(),
+        "import-no-intro".into(),
+        "--file".into(),
+        fixture.as_os_str().to_owned(),
+        "--max-games".into(),
+        "2".into(),
+    ])
+    .unwrap();
+    let summary: serde_json::Value = serde_json::from_str(&summary).unwrap();
+    assert_eq!(summary["imported_releases"], 2);
+
+    let library = game_media_vault_cli::run([
+        "game-media-vault".into(),
+        "--vault".into(),
+        vault.as_os_str().to_owned(),
+        "library".into(),
+    ])
+    .unwrap();
+    let entries: serde_json::Value = serde_json::from_str(&library).unwrap();
+    let entries = entries.as_array().unwrap();
+
     assert_eq!(entries.len(), 2);
     assert!(
         entries
             .iter()
-            .all(|entry| entry["game_id"].as_i64() == Some(game_id))
+            .all(|entry| entry["assets"] == serde_json::json!([]))
     );
+    assert!(entries.iter().any(|entry| {
+        entry["game_title"] == "Tetris"
+            && entry["assertions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|assertion| assertion["field"] == "revision" && assertion["value"] == "Rev 1")
+    }));
+    assert!(!vault.join("objects").exists());
 }
 
 #[test]
