@@ -1158,6 +1158,79 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
 }
 
 #[test]
+fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
+    let first = AssetCandidate {
+        game_title: "A:B".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Collector".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/Named_Boxarts/A_B.png".to_owned(),
+        original_filename: "A_B.png".to_owned(),
+    };
+    let second = AssetCandidate {
+        game_title: "A?B".to_owned(),
+        ..first.clone()
+    };
+    let release = |candidate: &AssetCandidate, game_id, release_edition_id, edition_name: &str| {
+        LibraryEntry {
+            game_id,
+            game_title: candidate.game_title.clone(),
+            release_edition_id,
+            platform: candidate.platform.clone(),
+            region: candidate.region.clone(),
+            edition_name: edition_name.to_owned(),
+            assertions: Vec::new(),
+            assets: Vec::new(),
+        }
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library: vec![
+            release(&first, 101, 201, "Standard"),
+            release(&first, 101, 202, "Deluxe"),
+            release(&second, 102, 203, "Standard"),
+            release(&second, 102, 204, "Deluxe"),
+        ],
+    };
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first, second],
+    };
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    let review_items = catalog.review_items.borrow().clone();
+    assert_eq!(review_items.len(), 2);
+    assert_ne!(
+        review_items[0].candidate_identity,
+        review_items[1].candidate_identity
+    );
+    resolve_review_item(
+        &catalog,
+        &runs,
+        review_items[0].id,
+        ReviewDecision::Accept {
+            release_edition_id: review_items[0].competing_matches[0].release_edition_id,
+        },
+    )
+    .unwrap();
+    assert_eq!(catalog.review_items.borrow()[1].decision, None);
+}
+
+#[test]
 fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     let first = AssetCandidate {
         game_title: "C".to_owned(),
