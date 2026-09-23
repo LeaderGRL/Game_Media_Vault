@@ -38,6 +38,13 @@ fn fixture_path() -> PathBuf {
         .join("no_intro_sample.dat")
 }
 
+fn header_entity_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_header_entity.dat")
+}
+
 fn escaped_platform_fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -160,6 +167,23 @@ fn decodes_xml_entities_in_the_platform_header() {
 
     assert_eq!(releases.len(), 1);
     assert_eq!(releases[0].platform, "Nintendo - Game & Watch");
+}
+
+#[test]
+fn decodes_xml_entities_in_the_platform_header() {
+    let source = NoIntroReferenceCatalog::new();
+
+    let releases = source
+        .read_releases(&header_entity_fixture_path(), 1)
+        .unwrap();
+
+    assert_eq!(releases.len(), 1);
+    assert_eq!(releases[0].platform, "Nintendo - Game & Watch");
+    assert!(releases[0].assertions.iter().any(|assertion| {
+        assertion.field == ReleaseAssertionField::Identifier
+            && assertion.qualifier.as_deref() == Some("source_record")
+            && assertion.value.starts_with("23:Nintendo - Game & Watch")
+    }));
 }
 
 #[test]
