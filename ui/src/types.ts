@@ -35,3 +35,49 @@ export interface LibraryEntry {
   assertions: ReleaseAssertion[];
   assets: LibraryAsset[];
 }
+
+export interface AssetCandidate {
+  game_title: string;
+  platform: string;
+  region: string;
+  edition_name: string;
+  asset_type: AssetType;
+  source_id: string;
+  source_asset_label: string | null;
+  source_url: string;
+  original_filename: string;
+}
+
+export type MatchSignal = "title" | "platform" | "region" | "edition";
+
+export interface MatchEvidence {
+  signal: MatchSignal;
+  candidate_value: string;
+  release_value: string;
+  score_delta: number;
+}
+
+export interface ReviewMatchCandidate {
+  game_id: number;
+  release_edition_id: number;
+  game_title: string;
+  platform: string;
+  region: string;
+  edition_name: string;
+  score: number;
+  evidence: MatchEvidence[];
+}
+
+export type ReviewDecision =
+  | { decision: "accept"; release_edition_id: number }
+  | { decision: "reject" }
+  | { decision: "defer" };
+
+export interface ReviewItem {
+  id: number;
+  run_id: number;
+  candidate_identity: string;
+  candidate: AssetCandidate;
+  competing_matches: ReviewMatchCandidate[];
+  decision: ReviewDecision | null;
+}

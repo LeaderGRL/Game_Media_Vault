@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LibraryEntry } from "./types";
+import type { LibraryEntry, ReviewItem } from "./types";
 
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -39,26 +39,78 @@ const entry: LibraryEntry = {
   ],
 };
 
+const reviewItem: ReviewItem = {
+  id: 17,
+  run_id: 7,
+  candidate_identity: "connector:review-game",
+  candidate: {
+    game_title: "Review Game",
+    platform: "Nintendo Entertainment System",
+    region: "USA",
+    edition_name: "Collector",
+    asset_type: "box_front",
+    source_id: "fixture-provider",
+    source_asset_label: "front",
+    source_url: "fixture://review/front",
+    original_filename: "front.png",
+  },
+  competing_matches: [
+    {
+      game_id: 301,
+      release_edition_id: 201,
+      game_title: "Review Game",
+      platform: "Nintendo Entertainment System",
+      region: "USA",
+      edition_name: "Standard",
+      score: 90,
+      evidence: [],
+    },
+  ],
+  decision: null,
+};
+
 describe("App", () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {
-    invokeMock.mockResolvedValueOnce([entry]);
+    invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Load library" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    expect(screen.getByText("1 release")).toBeInTheDocument();
+    expect(screen.getByText("1 release · 0 reviews")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Vault path"), {
       target: { value: "missing-vault" },
     });
     invokeMock.mockRejectedValueOnce(new Error("catalog does not exist"));
-    fireEvent.click(screen.getByRole("button", { name: "Load library" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
 
     expect(await screen.findByText(/catalog does not exist/)).toBeInTheDocument();
     expect(screen.queryByText("Metal Gear Solid")).not.toBeInTheDocument();
+  });
+
+  it("loads review items and persists a decision through Tauri", async () => {
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    expect(await screen.findByText("Review Game")).toBeInTheDocument();
+
+    invokeMock.mockResolvedValueOnce({
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    expect(invokeMock).toHaveBeenLastCalledWith("resolve_review_item", {
+      vault_root: ".game-media-vault",
+      review_item_id: 17,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+    expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
 });
