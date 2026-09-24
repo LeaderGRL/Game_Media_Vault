@@ -168,6 +168,10 @@ struct NoDiscoveryConnector {
     downloads: RefCell<Vec<String>>,
 }
 
+struct FailingDiscoveryConnector {
+    downloads: RefCell<Vec<String>>,
+}
+
 impl ConnectorPort for FakeConnector {
     fn source_id(&self) -> &'static str {
         "libretro-thumbnails"
@@ -221,6 +225,30 @@ impl ConnectorPort for NoDiscoveryConnector {
 
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         Ok(Vec::new())
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.downloads
+            .borrow_mut()
+            .push(candidate.source_url.clone());
+        Ok(Box::new(Cursor::new(b"fixture box front".to_vec())))
+    }
+}
+
+impl ConnectorPort for FailingDiscoveryConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Err(PortError("fixture discovery unavailable".to_owned()))
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
@@ -827,6 +855,127 @@ fn accepted_review_is_not_downloaded_again_after_successful_ingestion() {
 
     assert!(second_resume.is_empty());
     assert_eq!(staged_connector.downloads.borrow().len(), 1);
+}
+
+#[test]
+fn accepted_staged_review_resumes_when_discovery_is_unavailable() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    let review_item_id = catalog.review_items.borrow()[0].id;
+    catalog
+        .set_review_decision(
+            review_item_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    let work_key = runs.work.borrow().keys().next().unwrap().clone();
+    runs.requeue_completed_work(7, &work_key).unwrap();
+
+    let connector = FailingDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+}
+
+#[test]
+fn rediscovered_provider_candidate_replaces_the_staged_url() {
+    let (mut candidate, library) = ambiguous_candidate_and_releases();
+    candidate.provider_candidate_id = Some("provider-release-42".to_owned());
+    let first_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate.clone()],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &first_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    let review_item_id = catalog.review_items.borrow()[0].id;
+    catalog
+        .set_review_decision(
+            review_item_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    let old_work_key = runs.work.borrow().keys().next().unwrap().clone();
+    runs.requeue_completed_work(7, &old_work_key).unwrap();
+
+    let rotated_url = "https://cdn.example.invalid/v2/rotated-cover.png";
+    let rotated_candidate = AssetCandidate {
+        source_url: rotated_url.to_owned(),
+        original_filename: "rotated-cover.png".to_owned(),
+        ..candidate
+    };
+    let rotated_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![rotated_candidate],
+    };
+
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &rotated_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(
+        rotated_connector.downloads.borrow().as_slice(),
+        [rotated_url]
+    );
+    assert_eq!(
+        catalog.records.borrow()[0].source_location,
+        rotated_url.to_owned()
+    );
+    assert_eq!(runs.work.borrow().len(), 1);
 }
 
 #[test]

@@ -571,30 +571,47 @@ pub fn acquire_run_with_connector(
     let releases = catalog.list_library()?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
-    for candidate in connector.discover(&run.request)? {
-        if !run.request.requests_asset_type(candidate.asset_type)
-            || !capabilities.asset_types.contains(&candidate.asset_type)
+    let mut persisted_work_key_by_identity = std::collections::HashMap::new();
+    for review_item in &review_items {
+        if review_item.run_id != run_id
+            || review_item.candidate.source_id.as_str() != connector.source_id()
         {
             continue;
         }
-
-        let work_key = connector_work_key(connector.source_id(), &candidate);
-        queue_acquisition_work(runs, run_id, work_key.clone())?;
-        candidates_by_work_key.insert(work_key, candidate);
-    }
-
-    for review_item in review_items {
-        if review_item.run_id != run_id {
-            continue;
-        }
-        if review_item.candidate.source_id.as_str() != connector.source_id() {
-            continue;
-        }
         let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
-        candidates_by_work_key
-            .entry(work_key)
-            .or_insert(review_item.candidate);
+        persisted_work_key_by_identity
+            .insert(review_item.candidate_identity.clone(), work_key.clone());
+        candidates_by_work_key.insert(work_key, review_item.candidate.clone());
     }
+    let review_only_resume = run.queued_work > 0
+        && !persisted_work_key_by_identity.is_empty()
+        && run.queued_work as usize <= persisted_work_key_by_identity.len();
+
+    let discovery_error = match connector.discover(&run.request) {
+        Ok(candidates) => {
+            for candidate in candidates {
+                if !run.request.requests_asset_type(candidate.asset_type)
+                    || !capabilities.asset_types.contains(&candidate.asset_type)
+                {
+                    continue;
+                }
+                let candidate_identity =
+                    review_candidate_identity(connector.source_id(), &candidate);
+                if review_only_resume
+                    && let Some(work_key) = persisted_work_key_by_identity.get(&candidate_identity)
+                {
+                    candidates_by_work_key.insert(work_key.clone(), candidate);
+                    continue;
+                }
+                let work_key = connector_work_key(connector.source_id(), &candidate);
+                queue_acquisition_work(runs, run_id, work_key.clone())?;
+                candidates_by_work_key.insert(work_key, candidate);
+            }
+            None
+        }
+        Err(error) if !candidates_by_work_key.is_empty() => Some(error),
+        Err(error) => return Err(error.into()),
+    };
 
     let mut imported_assets = Vec::new();
     while let Some(work) = next_acquisition_work(runs, run_id)? {
@@ -759,6 +776,11 @@ pub fn acquire_run_with_connector(
         imported_assets.push(imported);
     }
 
+    if let Some(error) = discovery_error
+        && !review_only_resume
+    {
+        return Err(error.into());
+    }
     runs.compare_and_set_run_status(
         run_id,
         AcquisitionRunStatus::Running,
