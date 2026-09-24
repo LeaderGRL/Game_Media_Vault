@@ -425,11 +425,11 @@ pub fn acquire_run_with_connector(
     matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
-    let run = load_acquisition_run(runs, run_id)?;
-    if run.status == AcquisitionRunStatus::Completed {
-        return Ok(Vec::new());
-    }
-    if run.status != AcquisitionRunStatus::Running {
+    let mut run = load_acquisition_run(runs, run_id)?;
+    if !matches!(
+        run.status,
+        AcquisitionRunStatus::Running | AcquisitionRunStatus::Completed
+    ) {
         return Err(ApplicationError::RunNotExecutable { status: run.status });
     }
     if !run.request.selects_source(connector.source_id()) {
@@ -445,6 +445,26 @@ pub fn acquire_run_with_connector(
         });
     }
     validate_connector_plan(&run.request, connector.source_id(), &capabilities)?;
+    let review_items = catalog.list_review_items()?;
+    if run.status == AcquisitionRunStatus::Completed {
+        let mut requeued = false;
+        for review_item in review_items.iter().filter(|review_item| {
+            review_item.run_id == run_id
+                && review_item.candidate.source_id.as_str() == connector.source_id()
+                && matches!(
+                    review_item.status,
+                    ReviewStatus::Pending | ReviewStatus::Deferred
+                )
+        }) {
+            let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
+            runs.requeue_completed_work(run_id, &work_key)?;
+            requeued = true;
+        }
+        if !requeued {
+            return Ok(Vec::new());
+        }
+        run = load_acquisition_run(runs, run_id)?;
+    }
     let releases = catalog.list_library()?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
@@ -460,7 +480,7 @@ pub fn acquire_run_with_connector(
         candidates_by_work_key.insert(work_key, candidate);
     }
 
-    for review_item in catalog.list_review_items()? {
+    for review_item in review_items {
         if review_item.run_id != run_id {
             continue;
         }

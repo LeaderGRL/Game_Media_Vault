@@ -888,6 +888,52 @@ fn pending_review_is_re_evaluated_when_matching_policy_changes() {
 }
 
 #[test]
+fn persisted_pending_review_is_re_evaluated_without_connector_rediscovery() {
+    let (candidate, release) = threshold_review_candidate_and_release();
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library: vec![release],
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        stricter_matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
+
+    let staged_connector = NoDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &staged_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(staged_connector.downloads.borrow().len(), 1);
+    assert_eq!(
+        catalog.review_items.borrow()[0].status,
+        ReviewStatus::AutoResolved
+    );
+}
+
+#[test]
 fn deferred_review_is_re_evaluated_when_matching_policy_changes() {
     let (candidate, release) = threshold_review_candidate_and_release();
     let connector = FakeConnector {

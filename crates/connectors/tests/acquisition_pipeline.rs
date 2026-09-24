@@ -4,13 +4,15 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ReferenceCatalogRepositoryPort, RunRepositoryPort, acquire_run_with_connector,
+    CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, RunRepositoryPort,
+    acquire_run_with_connector,
 };
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
-    AssetType, AssetTypeSelector, GameSelection, MatchingPolicy, ReferenceReleaseRecord,
-    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
+    AssetCandidate, AssetType, AssetTypeSelector, ConnectorCapabilities, GameSelection,
+    MatchingPolicy, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
+    RetentionPolicy, ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -39,6 +41,29 @@ impl HttpTransport for FixtureTransport {
         } else {
             Ok(Box::new(Cursor::new(BOX_FRONT_BYTES.to_vec())))
         }
+    }
+}
+
+struct NoDiscoveryConnector;
+
+impl ConnectorPort for NoDiscoveryConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(BOX_FRONT_BYTES.to_vec())))
     }
 }
 
@@ -141,4 +166,81 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
     let reopened_library = reopened.list_library().unwrap();
     assert_eq!(reopened_library, library);
+}
+
+#[test]
+fn resumes_a_persisted_review_candidate_after_reopening_without_rediscovery() {
+    let temp = tempdir().unwrap();
+    let catalog_path = temp.path().join("catalog.sqlite3");
+    let object_root = temp.path().join("objects");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    catalog
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "Unknown".to_owned(),
+            revision: None,
+            edition_name: "Unspecified".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
+        requested_urls: Arc::new(Mutex::new(Vec::new())),
+    });
+
+    let imported = acquire_run_with_connector(
+        &catalog,
+        &catalog,
+        &ContentAddressedStore::new(&object_root),
+        &connector,
+        run.id,
+        MatchingPolicy {
+            high_confidence_threshold: 90,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert_eq!(
+        catalog.get_run(run.id).unwrap().unwrap().status,
+        AcquisitionRunStatus::Completed
+    );
+    assert_eq!(
+        catalog.list_review_items().unwrap()[0].status,
+        ReviewStatus::Pending
+    );
+
+    drop(catalog);
+    let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
+    let imported = acquire_run_with_connector(
+        &reopened,
+        &reopened,
+        &ContentAddressedStore::new(&object_root),
+        &NoDiscoveryConnector,
+        run.id,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(
+        reopened.get_run(run.id).unwrap().unwrap().status,
+        AcquisitionRunStatus::Completed
+    );
+    assert_eq!(
+        reopened.list_review_items().unwrap()[0].status,
+        ReviewStatus::AutoResolved
+    );
+    assert_eq!(reopened.list_library().unwrap()[0].assets.len(), 1);
 }
