@@ -426,6 +426,45 @@ fn rejecting_a_processing_occurrence_does_not_reject_pending_siblings() {
 }
 
 #[test]
+fn current_run_review_occurrence_is_preferred_after_a_processing_race() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let identity = "connector:current-run-race";
+    for run_id in [7, 8] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let items = catalog.list_review_items().unwrap();
+    let first = items.iter().find(|item| item.run_id == 7).unwrap();
+    let current = items.iter().find(|item| item.run_id == 8).unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(current.id)
+        .unwrap()
+        .unwrap();
+
+    catalog
+        .set_review_decision(first.id, ReviewDecision::Reject)
+        .unwrap();
+    catalog
+        .restore_review_item_processing(current.id, &claim.lease_token, ReviewStatus::Pending)
+        .unwrap();
+
+    let selected = catalog
+        .find_review_item_for_run_by_candidate_identity(8, identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.run_id, 8);
+    assert_eq!(selected.status, ReviewStatus::Rejected);
+    assert_eq!(selected.decision, Some(ReviewDecision::Reject));
+}
+
+#[test]
 fn a_second_run_cannot_move_an_existing_pending_review() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();

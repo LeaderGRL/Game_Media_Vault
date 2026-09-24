@@ -686,8 +686,9 @@ impl CatalogPort for SqliteCatalog {
                  FROM review_items
                  WHERE candidate_identity = ?1
                    AND (run_id = ?2 OR status IN ('accepted', 'applied', 'rejected'))
-                 ORDER BY CASE WHEN status IN ('accepted', 'applied', 'rejected') THEN 0 ELSE 1 END,
-                          CASE WHEN run_id = ?2 THEN 0 ELSE 1 END, id DESC
+                 ORDER BY CASE WHEN run_id = ?2 THEN 0 ELSE 1 END,
+                          CASE WHEN status IN ('accepted', 'applied', 'rejected') THEN 0 ELSE 1 END,
+                          id DESC
                  LIMIT 1",
                 params![candidate_identity, run_id],
                 review_item_row,
@@ -1194,6 +1195,9 @@ fn update_review_processing_status(
         drop(connection);
         return review_transition_conflict(catalog, review_item_id);
     }
+    if matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+        reconcile_restored_review_with_terminal_sibling(&transaction, review_item_id, status)?;
+    }
     transaction
         .execute(
             "DELETE FROM review_processing_leases
@@ -1204,6 +1208,71 @@ fn update_review_processing_status(
     transaction.commit().map_err(sql_error)?;
     drop(connection);
     catalog.get_review_item(review_item_id)
+}
+
+fn reconcile_restored_review_with_terminal_sibling(
+    transaction: &Transaction<'_>,
+    review_item_id: i64,
+    restored_status: ReviewStatus,
+) -> Result<(), PortError> {
+    let current = transaction
+        .query_row(
+            "SELECT id, run_id, candidate_identity, candidate_json,
+                    competing_matches_json, decision_json, status
+             FROM review_items WHERE id = ?1",
+            params![review_item_id],
+            review_item_row,
+        )
+        .map_err(sql_error)
+        .and_then(decode_review_item_row)?;
+    let sibling = transaction
+        .query_row(
+            "SELECT id, run_id, candidate_identity, candidate_json,
+                    competing_matches_json, decision_json, status
+             FROM review_items
+             WHERE candidate_identity = ?1 AND id != ?2
+               AND status IN ('accepted', 'applied', 'rejected')
+             ORDER BY id DESC
+             LIMIT 1",
+            params![current.candidate_identity, review_item_id],
+            review_item_row,
+        )
+        .optional()
+        .map_err(sql_error)?
+        .map(decode_review_item_row)
+        .transpose()?;
+    let Some(decision) = sibling.and_then(|item| item.decision) else {
+        return Ok(());
+    };
+
+    let reconciled_status = match decision {
+        ReviewDecision::Reject => ReviewStatus::Rejected,
+        ReviewDecision::Accept { release_edition_id } => {
+            if current
+                .competing_matches
+                .iter()
+                .any(|candidate| candidate.release_edition_id == release_edition_id)
+            {
+                ReviewStatus::Accepted
+            } else {
+                ReviewStatus::Superseded
+            }
+        }
+        ReviewDecision::Defer => restored_status,
+    };
+    let decision_json = serde_json::to_string(&decision)
+        .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
+    transaction
+        .execute(
+            "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
+            params![
+                decision_json,
+                review_status_to_str(reconciled_status),
+                review_item_id
+            ],
+        )
+        .map_err(sql_error)?;
+    Ok(())
 }
 
 fn review_transition_conflict(
