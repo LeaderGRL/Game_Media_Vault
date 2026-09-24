@@ -346,6 +346,62 @@ impl CatalogPort for FakeCatalog {
         Ok(())
     }
 
+    fn stage_review_item_and_complete_work(
+        &self,
+        item: NewReviewItem,
+        _work_key: &str,
+    ) -> Result<bool, PortError> {
+        let mut review_items = self.review_items.borrow_mut();
+        let inherited = review_items
+            .iter()
+            .rev()
+            .find(|existing| {
+                existing.run_id != item.run_id
+                    && existing.candidate_identity == item.candidate_identity
+                    && matches!(
+                        existing.status,
+                        ReviewStatus::Accepted | ReviewStatus::Applied | ReviewStatus::Rejected
+                    )
+            })
+            .cloned();
+        let Some(inherited) = inherited else {
+            return Ok(false);
+        };
+
+        let (decision, status) = match inherited.decision {
+            Some(ReviewDecision::Accept { release_edition_id }) => {
+                let status = if item
+                    .competing_matches
+                    .iter()
+                    .any(|candidate| candidate.release_edition_id == release_edition_id)
+                {
+                    ReviewStatus::Accepted
+                } else {
+                    ReviewStatus::Superseded
+                };
+                (Some(ReviewDecision::Accept { release_edition_id }), status)
+            }
+            Some(ReviewDecision::Reject) => (Some(ReviewDecision::Reject), ReviewStatus::Rejected),
+            _ => return Ok(false),
+        };
+        let id = review_items
+            .iter()
+            .map(|review| review.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        review_items.push(ReviewItem {
+            id,
+            run_id: item.run_id,
+            candidate_identity: item.candidate_identity,
+            candidate: item.candidate,
+            competing_matches: item.competing_matches,
+            decision,
+            status,
+        });
+        Ok(true)
+    }
+
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
         Ok(self.review_items.borrow().clone())
     }
@@ -440,12 +496,12 @@ impl CatalogPort for FakeCatalog {
         _run_id: i64,
         _work_key: &str,
         record: PersistAsset,
-    ) -> Result<ImportedAsset, PortError> {
+    ) -> Result<ReviewProcessingFinalization, PortError> {
         assert_eq!(lease_token, format!("fake-lease-{review_item_id}"));
         *self.finalize_calls.borrow_mut() += 1;
         let imported = self.persist_asset(record)?;
         self.update_processing_status(review_item_id, ReviewStatus::Applied)?;
-        Ok(imported)
+        Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
     fn refresh_review_processing_and_complete_work(
@@ -813,6 +869,73 @@ fn accepted_review_decision_is_reused_for_the_same_candidate_identity() {
     assert_eq!(
         records[0].match_decision.as_ref().unwrap().confidence,
         MatchConfidence::Medium
+    );
+}
+
+#[test]
+fn inherited_acceptance_is_materialized_and_leased_before_download() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+    let mut historical_run = run_with_request(request());
+    historical_run.id = 1;
+    acquire_run_with_connector(
+        &FakeRuns::new(historical_run),
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        1,
+        matching_policy(),
+    )
+    .unwrap();
+    let historical_review_id = catalog.review_items.borrow()[0].id;
+    catalog
+        .set_review_decision(
+            historical_review_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    catalog
+        .set_review_status(historical_review_id, ReviewStatus::Applied)
+        .unwrap();
+
+    let current_runs = FakeRuns::new(run_with_request(request()));
+    let imported = acquire_run_with_connector(
+        &current_runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+    assert_eq!(*catalog.finalize_calls.borrow(), 1);
+    let current_review = catalog
+        .review_items
+        .borrow()
+        .iter()
+        .find(|item| item.run_id == 7)
+        .cloned()
+        .expect("current run should materialize the inherited acceptance");
+    assert_eq!(current_review.status, ReviewStatus::Applied);
+    assert_eq!(
+        current_review.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 402,
+        })
     );
 }
 

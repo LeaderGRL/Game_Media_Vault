@@ -572,9 +572,17 @@ impl CatalogPort for SqliteCatalog {
                         competing_matches_json, decision_json, status
                  FROM review_items
                  WHERE candidate_identity = ?1
-                   AND (run_id = ?2 OR status IN ('accepted', 'applied', 'rejected'))
+                   AND (
+                       run_id = ?2
+                       OR status IN ('accepted', 'applied', 'rejected')
+                       OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
+                   )
                  ORDER BY CASE WHEN run_id = ?2 THEN 0 ELSE 1 END,
-                          CASE WHEN status IN ('accepted', 'applied', 'rejected') THEN 0 ELSE 1 END,
+                          CASE
+                              WHEN status IN ('accepted', 'applied', 'rejected')
+                                OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
+                              THEN 0 ELSE 1
+                          END,
                           id DESC
                  LIMIT 1",
                 params![candidate_identity, run_id],
@@ -820,33 +828,103 @@ impl CatalogPort for SqliteCatalog {
         run_id: i64,
         work_key: &str,
         record: PersistAsset,
-    ) -> Result<ImportedAsset, PortError> {
+    ) -> Result<ReviewProcessingFinalization, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         let review = transaction
             .query_row(
-                "SELECT review.run_id
+                "SELECT review.id, review.run_id, review.candidate_identity, review.candidate_json,
+                        review.competing_matches_json, review.decision_json, review.status
                  FROM review_items AS review
                  INNER JOIN review_processing_leases AS lease
                     ON lease.review_item_id = review.id
                  WHERE review.id = ?1 AND review.status = 'processing'
                    AND lease.lease_token = ?2",
                 params![review_item_id, lease_token],
-                |row| row.get::<_, i64>(0),
+                review_item_row,
             )
             .optional()
-            .map_err(sql_error)?;
-        let Some(review_run_id) = review else {
+            .map_err(sql_error)?
+            .map(decode_review_item_row)
+            .transpose()?;
+        let Some(review) = review else {
             return Err(PortError(format!(
                 "review item #{review_item_id} lost its accepted processing lease"
             )));
         };
-        if review_run_id != run_id {
+        if review.run_id != run_id {
             return Err(PortError(format!(
-                "review item #{review_item_id} belongs to run #{review_run_id}, not run #{run_id}"
+                "review item #{review_item_id} belongs to run #{}, not run #{run_id}",
+                review.run_id
             )));
+        }
+
+        if let Some(sibling_decision) =
+            terminal_review_sibling(&transaction, &review)?.and_then(|item| item.decision)
+        {
+            let current_acceptance = match review.decision.as_ref() {
+                Some(ReviewDecision::Accept { release_edition_id }) => Some(*release_edition_id),
+                _ => None,
+            };
+            let same_acceptance = matches!(
+                &sibling_decision,
+                ReviewDecision::Accept { release_edition_id }
+                    if current_acceptance == Some(*release_edition_id)
+            );
+            if !same_acceptance {
+                let (status, outcome, complete_work) = match sibling_decision {
+                    ReviewDecision::Reject => (
+                        ReviewStatus::Rejected,
+                        ReviewProcessingFinalization::Discarded,
+                        true,
+                    ),
+                    ReviewDecision::Accept { release_edition_id } => {
+                        if review
+                            .competing_matches
+                            .iter()
+                            .any(|candidate| candidate.release_edition_id == release_edition_id)
+                        {
+                            (
+                                ReviewStatus::Accepted,
+                                ReviewProcessingFinalization::Requeued,
+                                false,
+                            )
+                        } else {
+                            (
+                                ReviewStatus::Superseded,
+                                ReviewProcessingFinalization::Discarded,
+                                true,
+                            )
+                        }
+                    }
+                    ReviewDecision::Defer => {
+                        unreachable!("deferred reviews are not terminal siblings")
+                    }
+                };
+                let decision_json = serde_json::to_string(&sibling_decision).map_err(|error| {
+                    PortError(format!("failed to serialize review decision: {error}"))
+                })?;
+                transaction
+                    .execute(
+                        "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
+                        params![decision_json, review_status_to_str(status), review_item_id],
+                    )
+                    .map_err(sql_error)?;
+                transaction
+                    .execute(
+                        "DELETE FROM review_processing_leases
+                     WHERE review_item_id = ?1 AND lease_token = ?2",
+                        params![review_item_id, lease_token],
+                    )
+                    .map_err(sql_error)?;
+                if complete_work {
+                    complete_work_in_transaction(&transaction, run_id, work_key)?;
+                }
+                transaction.commit().map_err(sql_error)?;
+                return Ok(outcome);
+            }
         }
 
         let imported = persist_asset_in_transaction(&transaction, record)?;
@@ -875,7 +953,7 @@ impl CatalogPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
-        Ok(imported)
+        Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
     fn refresh_review_processing_and_complete_work(
@@ -1461,7 +1539,10 @@ fn update_review_processing_status(
         drop(connection);
         return review_transition_conflict(catalog, review_item_id);
     }
-    if matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+    if matches!(
+        status,
+        ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
+    ) {
         reconcile_restored_review_with_terminal_sibling(&transaction, review_item_id, status)?;
     }
     transaction
@@ -1536,7 +1617,10 @@ fn terminal_review_sibling(
                     competing_matches_json, decision_json, status
              FROM review_items
              WHERE candidate_identity = ?1 AND id != ?2
-               AND status IN ('accepted', 'applied', 'rejected')
+               AND (
+                   status IN ('accepted', 'applied', 'rejected')
+                   OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
+               )
              ORDER BY id DESC
              LIMIT 1",
             params![current.candidate_identity, current.id],

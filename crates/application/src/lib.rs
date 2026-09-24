@@ -161,10 +161,11 @@ pub trait CatalogPort {
             .or_else(|| {
                 items.into_iter().find(|item| {
                     item.candidate_identity == candidate_identity
-                        && matches!(
+                        && (matches!(
                             item.status,
                             ReviewStatus::Accepted | ReviewStatus::Applied | ReviewStatus::Rejected
-                        )
+                        ) || (item.status == ReviewStatus::Processing
+                            && matches!(item.decision, Some(ReviewDecision::Accept { .. }))))
                 })
             }))
     }
@@ -212,7 +213,7 @@ pub trait CatalogPort {
         _run_id: i64,
         _work_key: &str,
         _record: PersistAsset,
-    ) -> Result<ImportedAsset, PortError> {
+    ) -> Result<ReviewProcessingFinalization, PortError> {
         Err(PortError(
             "catalog does not support atomic accepted review finalization".to_owned(),
         ))
@@ -769,7 +770,7 @@ pub fn acquire_run_with_connector(
             break;
         };
         let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
-        let existing_review_item =
+        let mut existing_review_item =
             catalog.find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
         if existing_review_item
             .as_ref()
@@ -786,6 +787,33 @@ pub fn acquire_run_with_connector(
         }) {
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
+        }
+        if existing_review_item.as_ref().is_some_and(|item| {
+            item.run_id != run_id
+                && matches!(item.status, ReviewStatus::Accepted | ReviewStatus::Applied)
+                && matches!(item.decision, Some(ReviewDecision::Accept { .. }))
+        }) {
+            let staged = catalog.stage_review_item_and_complete_work(
+                NewReviewItem {
+                    run_id,
+                    candidate_identity: candidate_identity.clone(),
+                    candidate: candidate.clone(),
+                    competing_matches: review_matches_for_asset_candidate(
+                        candidate,
+                        &releases,
+                        matching_policy,
+                    ),
+                },
+                &work.key,
+            )?;
+            if !staged {
+                return Err(PortError(
+                    "catalog could not materialize an inherited accepted review".to_owned(),
+                )
+                .into());
+            }
+            existing_review_item = catalog
+                .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
         }
         let review_processing = if let Some(review_item) = existing_review_item.as_ref()
             && matches!(
@@ -967,15 +995,13 @@ pub fn acquire_run_with_connector(
                 )?)
             } else if let Some((review_item_id, lease_token)) = accepted_review_processing.as_ref()
             {
-                Ok(ReviewProcessingFinalization::Imported(
-                    catalog.finalize_accepted_review_asset(
-                        *review_item_id,
-                        lease_token,
-                        run_id,
-                        &work.key,
-                        record,
-                    )?,
-                ))
+                Ok(catalog.finalize_accepted_review_asset(
+                    *review_item_id,
+                    lease_token,
+                    run_id,
+                    &work.key,
+                    record,
+                )?)
             } else {
                 Ok(ReviewProcessingFinalization::Imported(
                     catalog.persist_asset(record)?,

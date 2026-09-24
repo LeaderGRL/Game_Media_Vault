@@ -1105,7 +1105,7 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
         .unwrap()
         .unwrap();
 
-    let imported = catalog
+    let outcome = catalog
         .finalize_accepted_review_asset(
             item.id,
             &claim.lease_token,
@@ -1130,6 +1130,10 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
         )
         .unwrap();
 
+    let ReviewProcessingFinalization::Imported(imported) = outcome else {
+        panic!("expected the accepted review asset to be imported");
+    };
+
     assert_eq!(imported.object_hash, "accepted-atomic-hash");
     assert_eq!(
         catalog.get_review_item(item.id).unwrap().unwrap().status,
@@ -1139,6 +1143,92 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 1);
     assert_eq!(catalog.list_library().unwrap()[0].assets.len(), 1);
+}
+
+#[test]
+fn accepted_review_finalization_reconciles_a_late_terminal_sibling() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let processing_run = catalog.create_run(request()).unwrap();
+    let competing_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:accepted-late-terminal-sibling";
+    let work_key = "connector:accepted-late-terminal-sibling-work";
+    catalog
+        .queue_work(processing_run.id, work_key.to_owned())
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: processing_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let processing = catalog
+        .find_review_item_for_run_by_candidate_identity(processing_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            processing.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(processing.id)
+        .unwrap()
+        .unwrap();
+
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: competing_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let competing = catalog
+        .find_review_item_for_run_by_candidate_identity(competing_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(competing.id, ReviewDecision::Reject)
+        .unwrap();
+
+    catalog
+        .finalize_accepted_review_asset(
+            processing.id,
+            &claim.lease_token,
+            processing_run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: "accepted-late-terminal-hash".to_owned(),
+                byte_len: 42,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+        )
+        .unwrap();
+
+    let processing = catalog.get_review_item(processing.id).unwrap().unwrap();
+    assert_eq!(processing.status, ReviewStatus::Rejected);
+    assert_eq!(processing.decision, Some(ReviewDecision::Reject));
+    let run = catalog.get_run(processing_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    assert!(catalog.list_library().unwrap().is_empty());
 }
 
 #[test]
@@ -1218,6 +1308,54 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
         catalog
             .renew_review_item_processing(item.id, &claim.lease_token)
             .unwrap()
+    );
+}
+
+#[test]
+fn accepted_review_processing_remains_visible_to_later_runs() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_run = catalog.create_run(request()).unwrap();
+    let later_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:accepted-processing-global-visibility";
+
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: first_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog
+        .find_review_item_for_run_by_candidate_identity(first_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+
+    let visible = catalog
+        .find_review_item_for_run_by_candidate_identity(later_run.id, identity)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(visible.id, item.id);
+    assert_eq!(visible.status, ReviewStatus::Processing);
+    assert_eq!(
+        visible.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201,
+        })
     );
 }
 
