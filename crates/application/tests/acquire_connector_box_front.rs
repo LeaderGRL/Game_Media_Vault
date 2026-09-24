@@ -370,16 +370,18 @@ impl CatalogPort for FakeCatalog {
 
         let (decision, status) = match inherited.decision {
             Some(ReviewDecision::Accept { release_edition_id }) => {
-                let status = if item
+                if item
                     .competing_matches
                     .iter()
                     .any(|candidate| candidate.release_edition_id == release_edition_id)
                 {
-                    ReviewStatus::Accepted
+                    (
+                        Some(ReviewDecision::Accept { release_edition_id }),
+                        ReviewStatus::Accepted,
+                    )
                 } else {
-                    ReviewStatus::Superseded
-                };
-                (Some(ReviewDecision::Accept { release_edition_id }), status)
+                    (None, ReviewStatus::Pending)
+                }
             }
             Some(ReviewDecision::Reject) => (Some(ReviewDecision::Reject), ReviewStatus::Rejected),
             _ => return Ok(false),
@@ -936,6 +938,94 @@ fn inherited_acceptance_is_materialized_and_leased_before_download() {
         Some(ReviewDecision::Accept {
             release_edition_id: 402,
         })
+    );
+}
+
+#[test]
+fn incompatible_inherited_acceptance_returns_to_current_review_evidence() {
+    let (candidate, historical_library) = ambiguous_candidate_and_releases();
+    let historical_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate.clone()],
+    };
+    let historical_catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library: historical_library.clone(),
+    };
+    let mut historical_run = run_with_request(request());
+    historical_run.id = 1;
+    acquire_run_with_connector(
+        &FakeRuns::new(historical_run),
+        &historical_catalog,
+        &FakeStore::default(),
+        &historical_connector,
+        1,
+        matching_policy(),
+    )
+    .unwrap();
+    let historical_review_id = historical_catalog.review_items.borrow()[0].id;
+    historical_catalog
+        .set_review_decision(
+            historical_review_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    historical_catalog
+        .set_review_status(historical_review_id, ReviewStatus::Applied)
+        .unwrap();
+    let historical_review = historical_catalog.review_items.borrow()[0].clone();
+
+    let current_library = historical_library
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut release)| {
+            release.game_id = 501 + index as i64;
+            release.release_edition_id = 601 + index as i64;
+            release
+        })
+        .collect();
+    let current_catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(vec![historical_review]),
+        finalize_calls: RefCell::new(0),
+        library: current_library,
+    };
+    let current_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let current_runs = FakeRuns::new(run_with_request(request()));
+
+    let imported = acquire_run_with_connector(
+        &current_runs,
+        &current_catalog,
+        &FakeStore::default(),
+        &current_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(current_connector.downloads.borrow().is_empty());
+    let current_review = current_catalog
+        .review_items
+        .borrow()
+        .iter()
+        .find(|item| item.run_id == 7)
+        .cloned()
+        .expect("current evidence should create a fresh review occurrence");
+    assert_eq!(current_review.status, ReviewStatus::Pending);
+    assert_eq!(current_review.decision, None);
+    assert!(
+        current_review
+            .competing_matches
+            .iter()
+            .all(|candidate| matches!(candidate.release_edition_id, 601 | 602))
     );
 }
 

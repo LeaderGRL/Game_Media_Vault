@@ -359,6 +359,65 @@ fn staging_a_review_atomically_completes_its_work() {
 }
 
 #[test]
+fn staging_a_review_keeps_incompatible_historical_acceptance_reviewable() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let historical_run = catalog.create_run(request()).unwrap();
+    let current_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:stale-accepted-release";
+    let current_work_key = "connector:current-review-work";
+    catalog
+        .queue_work(current_run.id, current_work_key.to_owned())
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: historical_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let historical = catalog
+        .find_review_item_for_run_by_candidate_identity(historical_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            historical.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    catalog
+        .set_review_status(historical.id, ReviewStatus::Applied)
+        .unwrap();
+
+    catalog
+        .stage_review_item_and_complete_work(
+            NewReviewItem {
+                run_id: current_run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(202, "Deluxe")],
+            },
+            current_work_key,
+        )
+        .unwrap();
+
+    let current = catalog
+        .find_review_item_for_run_by_candidate_identity(current_run.id, identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.status, ReviewStatus::Pending);
+    assert_eq!(current.decision, None);
+    assert_eq!(current.competing_matches, vec![review_match(202, "Deluxe")]);
+    let run = catalog.get_run(current_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+}
+
+#[test]
 fn staging_a_review_reuses_a_terminal_rejection_for_the_same_candidate() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();

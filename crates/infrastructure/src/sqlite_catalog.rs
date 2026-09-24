@@ -458,7 +458,7 @@ impl CatalogPort for SqliteCatalog {
             staged.status,
             ReviewStatus::Pending | ReviewStatus::Deferred
         ) {
-            reconcile_restored_review_with_terminal_sibling(&transaction, staged.id, staged.status)?
+            reconcile_staged_review_with_terminal_sibling(&transaction, staged.id, staged.status)?
         } else {
             staged.status
         };
@@ -1591,6 +1591,56 @@ fn reconcile_restored_review_with_terminal_sibling(
             }
         }
         ReviewDecision::Defer => restored_status,
+    };
+    let decision_json = serde_json::to_string(&decision)
+        .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
+    transaction
+        .execute(
+            "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
+            params![
+                decision_json,
+                review_status_to_str(reconciled_status),
+                review_item_id
+            ],
+        )
+        .map_err(sql_error)?;
+    Ok(reconciled_status)
+}
+
+fn reconcile_staged_review_with_terminal_sibling(
+    transaction: &Transaction<'_>,
+    review_item_id: i64,
+    staged_status: ReviewStatus,
+) -> Result<ReviewStatus, PortError> {
+    let current = transaction
+        .query_row(
+            "SELECT id, run_id, candidate_identity, candidate_json,
+                    competing_matches_json, decision_json, status
+             FROM review_items WHERE id = ?1",
+            params![review_item_id],
+            review_item_row,
+        )
+        .map_err(sql_error)
+        .and_then(decode_review_item_row)?;
+    let sibling = terminal_review_sibling(transaction, &current)?;
+    let Some(decision) = sibling.and_then(|item| item.decision) else {
+        return Ok(staged_status);
+    };
+
+    let reconciled_status = match decision {
+        ReviewDecision::Reject => ReviewStatus::Rejected,
+        ReviewDecision::Accept { release_edition_id } => {
+            if current
+                .competing_matches
+                .iter()
+                .any(|candidate| candidate.release_edition_id == release_edition_id)
+            {
+                ReviewStatus::Accepted
+            } else {
+                return Ok(staged_status);
+            }
+        }
+        ReviewDecision::Defer => return Ok(staged_status),
     };
     let decision_json = serde_json::to_string(&decision)
         .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
