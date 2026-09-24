@@ -1090,6 +1090,10 @@ fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
         candidate.region.as_str(),
         candidate.edition_name.as_str(),
         asset_type_work_key(candidate.asset_type),
+        candidate
+            .source_asset_label
+            .as_deref()
+            .unwrap_or(candidate.original_filename.as_str()),
         candidate.source_url.as_str(),
     ] {
         push_work_key_part(&mut key, part);

@@ -2022,6 +2022,98 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
 }
 
 #[test]
+fn fallback_candidates_with_distinct_asset_labels_keep_distinct_work_items() {
+    let first = AssetCandidate {
+        provider_candidate_id: None,
+        game_title: "Shared Game".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/shared.png".to_owned(),
+        original_filename: "shared.png".to_owned(),
+    };
+    let second = AssetCandidate {
+        source_asset_label: Some("Alternate_Boxarts".to_owned()),
+        ..first.clone()
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library: vec![release_for_candidate(&first, 84)],
+    };
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first, second],
+    };
+
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(connector.downloads.borrow().len(), 2);
+    assert_eq!(catalog.records.borrow().len(), 2);
+    assert_eq!(runs.run.borrow().completed_work, 2);
+}
+
+#[test]
+fn fallback_candidates_without_labels_use_filename_to_keep_distinct_work_items() {
+    let first = AssetCandidate {
+        provider_candidate_id: None,
+        game_title: "Shared Game".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: None,
+        source_url: "https://example.invalid/shared.png".to_owned(),
+        original_filename: "shared-primary.png".to_owned(),
+    };
+    let second = AssetCandidate {
+        original_filename: "shared-alternate.png".to_owned(),
+        ..first.clone()
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library: vec![release_for_candidate(&first, 85)],
+    };
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first, second],
+    };
+
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(connector.downloads.borrow().len(), 2);
+    assert_eq!(catalog.records.borrow().len(), 2);
+    assert_eq!(runs.run.borrow().completed_work, 2);
+}
+
+#[test]
 fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: Some("provider-release-1".to_owned()),
