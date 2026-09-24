@@ -307,6 +307,126 @@ fn staging_a_review_atomically_completes_its_work() {
 }
 
 #[test]
+fn staging_a_review_reuses_a_terminal_rejection_for_the_same_candidate() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_run = catalog.create_run(request()).unwrap();
+    let current_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:stage-terminal-rejection";
+    let work_key = "connector:stage-terminal-rejection-work";
+    catalog
+        .queue_work(current_run.id, work_key.to_owned())
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: first_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let terminal = catalog
+        .find_review_item_for_run_by_candidate_identity(first_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(terminal.id, ReviewDecision::Reject)
+        .unwrap();
+
+    catalog
+        .stage_review_item_and_complete_work(
+            NewReviewItem {
+                run_id: current_run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            },
+            work_key,
+        )
+        .unwrap();
+
+    let staged = catalog
+        .find_review_item_for_run_by_candidate_identity(current_run.id, identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(staged.run_id, current_run.id);
+    assert_eq!(staged.status, ReviewStatus::Rejected);
+    assert_eq!(staged.decision, Some(ReviewDecision::Reject));
+    let run = catalog.get_run(current_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+}
+
+#[test]
+fn staging_a_review_reuses_a_compatible_terminal_acceptance_without_completing_work() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_run = catalog.create_run(request()).unwrap();
+    let current_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:stage-terminal-acceptance";
+    let work_key = "connector:stage-terminal-acceptance-work";
+    catalog
+        .queue_work(current_run.id, work_key.to_owned())
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: first_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let terminal = catalog
+        .find_review_item_for_run_by_candidate_identity(first_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            terminal.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+
+    catalog
+        .stage_review_item_and_complete_work(
+            NewReviewItem {
+                run_id: current_run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            },
+            work_key,
+        )
+        .unwrap();
+
+    let staged = catalog
+        .find_review_item_for_run_by_candidate_identity(current_run.id, identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(staged.run_id, current_run.id);
+    assert_eq!(staged.status, ReviewStatus::Accepted);
+    assert_eq!(
+        staged.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+    let run = catalog.get_run(current_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+    assert_eq!(
+        catalog
+            .next_queued_work(current_run.id)
+            .unwrap()
+            .unwrap()
+            .key,
+        work_key
+    );
+}
+
+#[test]
 fn failed_review_acceptance_rolls_back_the_work_requeue() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");

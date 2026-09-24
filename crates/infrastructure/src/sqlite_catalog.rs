@@ -443,7 +443,30 @@ impl CatalogPort for SqliteCatalog {
                 ],
             )
             .map_err(sql_error)?;
-        complete_work_in_transaction(&transaction, item.run_id, work_key)?;
+        let staged = transaction
+            .query_row(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json, status
+                 FROM review_items
+                 WHERE run_id = ?1 AND candidate_identity = ?2",
+                params![item.run_id, item.candidate_identity],
+                review_item_row,
+            )
+            .map_err(sql_error)
+            .and_then(decode_review_item_row)?;
+        let final_status = if matches!(
+            staged.status,
+            ReviewStatus::Pending | ReviewStatus::Deferred
+        ) {
+            reconcile_restored_review_with_terminal_sibling(&transaction, staged.id, staged.status)?
+        } else {
+            staged.status
+        };
+        if final_status == ReviewStatus::Accepted {
+            requeue_completed_work_in_transaction(&transaction, item.run_id, work_key)?;
+        } else {
+            complete_work_in_transaction(&transaction, item.run_id, work_key)?;
+        }
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -1332,7 +1355,7 @@ fn reconcile_restored_review_with_terminal_sibling(
     transaction: &Transaction<'_>,
     review_item_id: i64,
     restored_status: ReviewStatus,
-) -> Result<(), PortError> {
+) -> Result<ReviewStatus, PortError> {
     let current = transaction
         .query_row(
             "SELECT id, run_id, candidate_identity, candidate_json,
@@ -1345,7 +1368,7 @@ fn reconcile_restored_review_with_terminal_sibling(
         .and_then(decode_review_item_row)?;
     let sibling = terminal_review_sibling(transaction, &current)?;
     let Some(decision) = sibling.and_then(|item| item.decision) else {
-        return Ok(());
+        return Ok(restored_status);
     };
 
     let reconciled_status = match decision {
@@ -1375,7 +1398,7 @@ fn reconcile_restored_review_with_terminal_sibling(
             ],
         )
         .map_err(sql_error)?;
-    Ok(())
+    Ok(reconciled_status)
 }
 
 fn terminal_review_sibling(
