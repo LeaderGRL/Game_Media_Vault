@@ -867,6 +867,97 @@ impl CatalogPort for SqliteCatalog {
         Ok(imported)
     }
 
+    fn refresh_review_processing_and_complete_work(
+        &self,
+        review_item_id: i64,
+        lease_token: &str,
+        item: NewReviewItem,
+        work_key: &str,
+        status: ReviewStatus,
+    ) -> Result<ReviewItem, PortError> {
+        if !matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+            return Err(PortError(format!(
+                "invalid restored review processing status: {}",
+                review_status_to_str(status)
+            )));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let candidate_json = serde_json::to_string(&item.candidate)
+            .map_err(|error| PortError(format!("failed to serialize review candidate: {error}")))?;
+        let competing_matches_json = serde_json::to_string(&item.competing_matches)
+            .map_err(|error| PortError(format!("failed to serialize review matches: {error}")))?;
+        let changed = transaction
+            .execute(
+                "UPDATE review_items
+                 SET candidate_json = ?1, competing_matches_json = ?2
+                 WHERE id = ?3 AND run_id = ?4 AND candidate_identity = ?5
+                   AND status = 'processing'
+                   AND EXISTS (
+                       SELECT 1 FROM review_processing_leases
+                       WHERE review_item_id = ?3 AND lease_token = ?6
+                   )",
+                params![
+                    candidate_json,
+                    competing_matches_json,
+                    review_item_id,
+                    item.run_id,
+                    item.candidate_identity,
+                    lease_token,
+                ],
+            )
+            .map_err(sql_error)?;
+        if changed != 1 {
+            return Err(PortError(format!(
+                "review item #{review_item_id} lost its processing lease or no longer matches the staged candidate"
+            )));
+        }
+
+        complete_work_in_transaction(&transaction, item.run_id, work_key)?;
+        let restored = transaction
+            .execute(
+                "UPDATE review_items SET status = ?1
+                 WHERE id = ?2 AND status = 'processing'
+                   AND EXISTS (
+                       SELECT 1 FROM review_processing_leases
+                       WHERE review_item_id = ?2 AND lease_token = ?3
+                   )",
+                params![review_status_to_str(status), review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
+        if restored != 1 {
+            return Err(PortError(format!(
+                "review item #{review_item_id} could not be restored atomically"
+            )));
+        }
+        let final_status =
+            reconcile_restored_review_with_terminal_sibling(&transaction, review_item_id, status)?;
+        if final_status == ReviewStatus::Accepted {
+            requeue_completed_work_in_transaction(&transaction, item.run_id, work_key)?;
+        }
+        transaction
+            .execute(
+                "DELETE FROM review_processing_leases
+                 WHERE review_item_id = ?1 AND lease_token = ?2",
+                params![review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
+        let refreshed = transaction
+            .query_row(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json, status
+                 FROM review_items WHERE id = ?1",
+                params![review_item_id],
+                review_item_row,
+            )
+            .map_err(sql_error)
+            .and_then(decode_review_item_row)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(refreshed)
+    }
+
     fn supersede_review_processing_and_complete_work(
         &self,
         review_item_id: i64,

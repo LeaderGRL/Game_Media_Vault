@@ -217,6 +217,19 @@ pub trait CatalogPort {
         ))
     }
 
+    fn refresh_review_processing_and_complete_work(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _item: NewReviewItem,
+        _work_key: &str,
+        _status: ReviewStatus,
+    ) -> Result<ReviewItem, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review refresh finalization".to_owned(),
+        ))
+    }
+
     fn supersede_review_processing_and_complete_work(
         &self,
         _review_item_id: i64,
@@ -846,18 +859,24 @@ pub fn acquire_run_with_connector(
                     complete_acquisition_work(runs, run_id, &work.key)?;
                 }
             } else {
-                catalog.persist_review_item(item)?;
-                complete_acquisition_work(runs, run_id, &work.key)?;
-            }
-            if let Some((review_item_id, previous_status, lease_token)) = review_processing {
-                catalog.restore_review_item_processing(
-                    review_item_id,
-                    &lease_token,
-                    previous_status,
+                let (review_item_id, previous_status, lease_token) = review_processing
+                    .as_ref()
+                    .expect("processing review checked above");
+                let refreshed = catalog.refresh_review_processing_and_complete_work(
+                    *review_item_id,
+                    lease_token,
+                    item,
+                    &work.key,
+                    *previous_status,
                 )?;
-            } else if catalog
-                .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?
-                .is_some_and(|item| item.status == ReviewStatus::Accepted)
+                if refreshed.status != ReviewStatus::Accepted {
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                }
+            }
+            if review_processing.is_none()
+                && catalog
+                    .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?
+                    .is_some_and(|item| item.status == ReviewStatus::Accepted)
             {
                 runs.requeue_completed_work(run_id, &work.key)?;
             }

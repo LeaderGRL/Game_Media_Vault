@@ -908,6 +908,123 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
 }
 
 #[test]
+fn processing_review_refresh_updates_snapshot_work_and_status_together() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:processing-refresh";
+    let identity = "connector:processing-refresh-candidate";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    let mut refreshed_candidate = candidate();
+    refreshed_candidate.original_filename = "refreshed-front.png".to_owned();
+
+    let refreshed = catalog
+        .refresh_review_processing_and_complete_work(
+            item.id,
+            &claim.lease_token,
+            NewReviewItem {
+                run_id: run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: refreshed_candidate.clone(),
+                competing_matches: vec![review_match(202, "Deluxe")],
+            },
+            work_key,
+            ReviewStatus::Pending,
+        )
+        .unwrap();
+
+    assert_eq!(refreshed.status, ReviewStatus::Pending);
+    assert_eq!(refreshed.candidate, refreshed_candidate);
+    assert_eq!(
+        refreshed.competing_matches,
+        vec![review_match(202, "Deluxe")]
+    );
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+}
+
+#[test]
+fn processing_review_refresh_rolls_back_if_status_restore_fails() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:processing-refresh-rollback";
+    let identity = "connector:processing-refresh-rollback-candidate";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_processing_refresh_restore
+             BEFORE UPDATE OF status ON review_items
+             WHEN OLD.status = 'processing' AND NEW.status = 'pending'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced processing refresh restore failure');
+             END;",
+        )
+        .unwrap();
+    let mut refreshed_candidate = candidate();
+    refreshed_candidate.original_filename = "should-rollback.png".to_owned();
+
+    let result = catalog.refresh_review_processing_and_complete_work(
+        item.id,
+        &claim.lease_token,
+        NewReviewItem {
+            run_id: run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: refreshed_candidate,
+            competing_matches: vec![review_match(202, "Deluxe")],
+        },
+        work_key,
+        ReviewStatus::Pending,
+    );
+
+    assert!(result.is_err());
+    let persisted = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(persisted.status, ReviewStatus::Processing);
+    assert_eq!(persisted.candidate, candidate());
+    assert_eq!(
+        persisted.competing_matches,
+        vec![review_match(201, "Standard")]
+    );
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+    assert!(
+        catalog
+            .renew_review_item_processing(item.id, &claim.lease_token)
+            .unwrap()
+    );
+}
+
+#[test]
 fn accepted_review_finalization_persists_asset_work_and_status_together() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();

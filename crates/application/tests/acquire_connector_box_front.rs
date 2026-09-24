@@ -446,6 +446,33 @@ impl CatalogPort for FakeCatalog {
         Ok(imported)
     }
 
+    fn refresh_review_processing_and_complete_work(
+        &self,
+        review_item_id: i64,
+        lease_token: &str,
+        item: NewReviewItem,
+        _work_key: &str,
+        status: ReviewStatus,
+    ) -> Result<ReviewItem, PortError> {
+        assert_eq!(lease_token, format!("fake-lease-{review_item_id}"));
+        assert!(matches!(
+            status,
+            ReviewStatus::Pending | ReviewStatus::Deferred
+        ));
+        let mut review_items = self.review_items.borrow_mut();
+        let review_item = review_items
+            .iter_mut()
+            .find(|review_item| review_item.id == review_item_id)
+            .ok_or_else(|| PortError(format!("review item #{review_item_id} does not exist")))?;
+        assert_eq!(review_item.status, ReviewStatus::Processing);
+        assert_eq!(review_item.run_id, item.run_id);
+        assert_eq!(review_item.candidate_identity, item.candidate_identity);
+        review_item.candidate = item.candidate;
+        review_item.competing_matches = item.competing_matches;
+        review_item.status = status;
+        Ok(review_item.clone())
+    }
+
     fn supersede_review_processing_and_complete_work(
         &self,
         review_item_id: i64,
