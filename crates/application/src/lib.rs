@@ -710,13 +710,16 @@ pub fn acquire_run_with_connector(
         let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
         let existing_review_item =
             catalog.find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
+        if existing_review_item
+            .as_ref()
+            .is_some_and(|item| item.status == ReviewStatus::Processing)
+        {
+            break;
+        }
         if existing_review_item.as_ref().is_some_and(|item| {
             matches!(
                 item.status,
-                ReviewStatus::Processing
-                    | ReviewStatus::Applied
-                    | ReviewStatus::AutoResolved
-                    | ReviewStatus::Superseded
+                ReviewStatus::Applied | ReviewStatus::AutoResolved | ReviewStatus::Superseded
             )
         }) {
             complete_acquisition_work(runs, run_id, &work.key)?;

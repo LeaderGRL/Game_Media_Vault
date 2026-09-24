@@ -1181,6 +1181,54 @@ fn pending_review_is_re_evaluated_when_matching_policy_changes() {
 }
 
 #[test]
+fn concurrent_execution_does_not_complete_work_owned_by_a_processing_review() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(
+        catalog.review_items.borrow()[0].status,
+        ReviewStatus::Pending
+    );
+    let work_key = runs.work.borrow().keys().next().unwrap().clone();
+    runs.requeue_completed_work(7, &work_key).unwrap();
+    catalog.review_items.borrow_mut()[0].status = ReviewStatus::Processing;
+
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    let run = runs.run.borrow();
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+}
+
+#[test]
 fn persisted_pending_review_is_re_evaluated_without_connector_rediscovery() {
     let (candidate, release) = threshold_review_candidate_and_release();
     let discovery_connector = FakeConnector {
