@@ -685,7 +685,8 @@ impl CatalogPort for SqliteCatalog {
                  FROM review_items
                  WHERE candidate_identity = ?1
                    AND (run_id = ?2 OR status IN ('accepted', 'rejected'))
-                 ORDER BY CASE WHEN run_id = ?2 THEN 0 ELSE 1 END, id DESC
+                 ORDER BY CASE WHEN status IN ('accepted', 'rejected') THEN 0 ELSE 1 END,
+                          CASE WHEN run_id = ?2 THEN 0 ELSE 1 END, id DESC
                  LIMIT 1",
                 params![candidate_identity, run_id],
                 review_item_row,
@@ -801,11 +802,25 @@ impl CatalogPort for SqliteCatalog {
         let decision_json = serde_json::to_string(&decision)
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
         let connection = self.connect()?;
+        let candidate_identity: Option<String> = connection
+            .query_row(
+                "SELECT candidate_identity FROM review_items WHERE id = ?1",
+                params![review_item_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some(candidate_identity) = candidate_identity else {
+            return Ok(None);
+        };
+        let (predicate, key): (&str, &dyn rusqlite::ToSql) = match decision {
+            ReviewDecision::Reject => ("candidate_identity = ?3", &candidate_identity),
+            _ => ("id = ?3", &review_item_id),
+        };
         let changed = connection
             .execute(
-                "UPDATE review_items SET decision_json = ?1, status = ?2
-                 WHERE id = ?3 AND status IN ('pending', 'deferred')",
-                params![decision_json, review_status_to_str(status), review_item_id],
+                &format!("UPDATE review_items SET decision_json = ?1, status = ?2 WHERE {predicate} AND status IN ('pending', 'deferred')"),
+                params![decision_json, review_status_to_str(status), key],
             )
             .map_err(sql_error)?;
         if changed == 0 {
@@ -862,8 +877,8 @@ impl CatalogPort for SqliteCatalog {
         transaction
             .execute(
                 "UPDATE review_items SET decision_json = ?1, status = 'accepted'
-                 WHERE id = ?2 AND status IN ('pending', 'deferred')",
-                params![decision_json, review_item_id],
+                 WHERE candidate_identity = ?2 AND status IN ('pending', 'deferred')",
+                params![decision_json, item.candidate_identity],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
@@ -1667,6 +1682,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                      SELECT id, run_id, candidate_identity, candidate_json,
                             competing_matches_json, decision_json, status
                      FROM review_items_legacy_identity;
+                     UPDATE review_items
+                     SET status = CASE
+                         WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
+                         ELSE 'pending'
+                     END
+                     WHERE status = 'processing';
                      DROP TABLE review_items_legacy_identity;
                      CREATE INDEX idx_review_items_run ON review_items(run_id, id);
                      CREATE TABLE review_processing_leases (

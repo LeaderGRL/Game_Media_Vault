@@ -553,7 +553,7 @@ pub fn acquire_run_with_connector(
                 && review_item.candidate.source_id.as_str() == connector.source_id()
                 && matches!(
                     review_item.status,
-                    ReviewStatus::Pending | ReviewStatus::Deferred
+                    ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
                 )
         }) {
             let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
