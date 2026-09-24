@@ -379,7 +379,7 @@ describe("App", () => {
     });
   });
 
-  it("uses an older successful review refresh when a newer refresh fails", async () => {
+  it("does not let an older stale review refresh overwrite a newer resolved item when the newer refresh fails", async () => {
     let finishFirstResolution: ((item: ReviewItem) => void) | undefined;
     let finishSecondResolution: ((item: ReviewItem) => void) | undefined;
     let finishFirstRefresh: ((items: ReviewItem[]) => void) | undefined;
@@ -448,12 +448,46 @@ describe("App", () => {
     finishSecondResolution?.(acceptedSecond);
     await screen.findByText("Error: newer refresh failed");
 
-    finishFirstRefresh?.([acceptedFirst, acceptedSecond]);
+    finishFirstRefresh?.([acceptedFirst, secondReviewItem]);
 
     await waitFor(() => {
       expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
       expect(screen.getByText("Accepted · release #202")).toBeInTheDocument();
     });
+  });
+
+  it("refreshes a completed resolution after reloading the same vault", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    const acceptedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    invokeMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([reviewItem])
+      .mockResolvedValueOnce([acceptedReviewItem]);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled();
+    });
+
+    finishResolution?.(acceptedReviewItem);
+
+    expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
 
 });

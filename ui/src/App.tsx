@@ -6,9 +6,8 @@ import { ReviewView } from "./ReviewView";
 import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
-  const vaultGeneration = useRef(0);
+  const activeVaultRoot = useRef<string | null>(null);
   const reviewRefreshRequestGeneration = useRef(0);
-  const reviewRefreshAppliedGeneration = useRef(0);
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
@@ -22,8 +21,8 @@ export function App() {
 
   async function loadVault(event?: FormEvent) {
     event?.preventDefault();
-    vaultGeneration.current += 1;
     const requestedVaultRoot = vaultRoot;
+    activeVaultRoot.current = requestedVaultRoot;
     setLoading(true);
     setError(null);
     setEntries([]);
@@ -35,13 +34,20 @@ export function App() {
         invoke<LibraryEntry[]>("list_library", { vault_root: requestedVaultRoot }),
         invoke<ReviewItem[]>("list_review_items", { vault_root: requestedVaultRoot }),
       ]);
+      if (activeVaultRoot.current !== requestedVaultRoot) {
+        return;
+      }
       setEntries(library);
       setReviewItems(reviews);
       setLoadedVaultRoot(requestedVaultRoot);
     } catch (reason) {
-      setError(String(reason));
+      if (activeVaultRoot.current === requestedVaultRoot) {
+        setError(String(reason));
+      }
     } finally {
-      setLoading(false);
+      if (activeVaultRoot.current === requestedVaultRoot) {
+        setLoading(false);
+      }
     }
   }
 
@@ -57,35 +63,36 @@ export function App() {
     });
     setError(null);
     const resolvingVaultRoot = loadedVaultRoot;
-    const resolvingGeneration = vaultGeneration.current;
     try {
-      await invoke<ReviewItem>("resolve_review_item", {
+      const resolvedReviewItem = await invoke<ReviewItem>("resolve_review_item", {
         vault_root: resolvingVaultRoot,
         review_item_id: reviewItemId,
         decision,
       });
-      if (vaultGeneration.current !== resolvingGeneration) {
+      if (activeVaultRoot.current !== resolvingVaultRoot) {
         return;
       }
+      setReviewItems((current) =>
+        current.map((item) => (item.id === reviewItemId ? resolvedReviewItem : item)),
+      );
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
       const reviews = await invoke<ReviewItem[]>("list_review_items", {
         vault_root: resolvingVaultRoot,
       });
       if (
-        vaultGeneration.current !== resolvingGeneration ||
-        resolvingRefreshGeneration < reviewRefreshAppliedGeneration.current
+        activeVaultRoot.current !== resolvingVaultRoot ||
+        resolvingRefreshGeneration !== reviewRefreshRequestGeneration.current
       ) {
         return;
       }
-      reviewRefreshAppliedGeneration.current = resolvingRefreshGeneration;
       setReviewItems(reviews);
     } catch (reason) {
-      if (vaultGeneration.current === resolvingGeneration) {
+      if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(String(reason));
       }
     } finally {
-      if (vaultGeneration.current === resolvingGeneration) {
+      if (activeVaultRoot.current === resolvingVaultRoot) {
         setResolvingIds((current) => {
           const next = new Set(current);
           next.delete(reviewItemId);
