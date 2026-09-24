@@ -720,10 +720,11 @@ pub fn acquire_run_with_connector(
             break;
         }
         if existing_review_item.as_ref().is_some_and(|item| {
-            matches!(
-                item.status,
-                ReviewStatus::Applied | ReviewStatus::AutoResolved | ReviewStatus::Superseded
-            )
+            item.run_id == run_id
+                && matches!(
+                    item.status,
+                    ReviewStatus::Applied | ReviewStatus::AutoResolved | ReviewStatus::Superseded
+                )
         }) {
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;

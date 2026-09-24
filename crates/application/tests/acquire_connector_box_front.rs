@@ -871,6 +871,65 @@ fn accepted_review_is_not_downloaded_again_after_successful_ingestion() {
 }
 
 #[test]
+fn applied_review_decision_downloads_the_candidate_again_in_a_new_run() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let first_runs = FakeRuns::new(run_with_request(request()));
+    acquire_run_with_connector(
+        &first_runs,
+        &catalog,
+        &FakeStore::default(),
+        &FakeConnector {
+            downloads: RefCell::new(Vec::new()),
+            candidates: vec![candidate.clone()],
+        },
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    {
+        let mut items = catalog.review_items.borrow_mut();
+        items[0].decision = Some(ReviewDecision::Accept {
+            release_edition_id: 402,
+        });
+        items[0].status = ReviewStatus::Applied;
+    }
+
+    let mut second_run = run_with_request(request());
+    second_run.id = 8;
+    let second_runs = FakeRuns::new(second_run);
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let imported = acquire_run_with_connector(
+        &second_runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        8,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+    assert_eq!(
+        catalog
+            .records
+            .borrow()
+            .last()
+            .unwrap()
+            .existing_release_edition_id,
+        Some(402)
+    );
+}
+
+#[test]
 fn accepted_staged_review_resumes_when_discovery_is_unavailable() {
     let (candidate, library) = ambiguous_candidate_and_releases();
     let discovery_connector = FakeConnector {
