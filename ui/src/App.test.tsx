@@ -490,4 +490,48 @@ describe("App", () => {
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
 
+  it("does not let a late same-vault reload overwrite a completed resolution", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    let finishReloadReviews: ((items: ReviewItem[]) => void) | undefined;
+    const acceptedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    invokeMock.mockResolvedValueOnce([]).mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem[]>((resolve) => {
+          finishReloadReviews = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    finishResolution?.(acceptedReviewItem);
+    invokeMock.mockResolvedValueOnce([acceptedReviewItem]);
+    expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
+
+    finishReloadReviews?.([reviewItem]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled();
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Accept Standard" })).toBeDisabled();
+    });
+  });
+
 });

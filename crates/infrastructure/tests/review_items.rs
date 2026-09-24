@@ -418,6 +418,83 @@ fn staging_a_review_keeps_incompatible_historical_acceptance_reviewable() {
 }
 
 #[test]
+fn refreshing_a_review_keeps_incompatible_historical_acceptance_reviewable() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let historical_run = catalog.create_run(request()).unwrap();
+    let current_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:stale-accepted-refresh";
+    let current_work_key = "connector:stale-accepted-refresh-work";
+    catalog
+        .queue_work(current_run.id, current_work_key.to_owned())
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: historical_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let historical = catalog
+        .find_review_item_for_run_by_candidate_identity(historical_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            historical.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    catalog
+        .set_review_status(historical.id, ReviewStatus::Applied)
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: current_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(202, "Deluxe")],
+        })
+        .unwrap();
+    let current = catalog
+        .find_review_item_for_run_by_candidate_identity(current_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(current.id)
+        .unwrap()
+        .unwrap();
+
+    let refreshed = catalog
+        .refresh_review_processing_and_complete_work(
+            current.id,
+            &claim.lease_token,
+            NewReviewItem {
+                run_id: current_run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(202, "Deluxe")],
+            },
+            current_work_key,
+            ReviewStatus::Pending,
+        )
+        .unwrap();
+
+    assert_eq!(refreshed.status, ReviewStatus::Pending);
+    assert_eq!(refreshed.decision, None);
+    assert_eq!(
+        refreshed.competing_matches,
+        vec![review_match(202, "Deluxe")]
+    );
+    let run = catalog.get_run(current_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+}
+
+#[test]
 fn staging_a_review_reuses_a_terminal_rejection_for_the_same_candidate() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
@@ -1508,6 +1585,127 @@ fn processing_review_supersession_completes_work_and_status_together() {
     let run = catalog.get_run(run.id).unwrap().unwrap();
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 1);
+}
+
+#[test]
+fn terminal_rejection_wins_over_processing_supersession() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let terminal_run = catalog.create_run(request()).unwrap();
+    let processing_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:terminal-rejection-supersede-race";
+    let work_key = "connector:terminal-rejection-supersede-work";
+    catalog
+        .queue_work(processing_run.id, work_key.to_owned())
+        .unwrap();
+    for run_id in [terminal_run.id, processing_run.id] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let terminal = catalog
+        .find_review_item_for_run_by_candidate_identity(terminal_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let processing = catalog
+        .find_review_item_for_run_by_candidate_identity(processing_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(processing.id)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(terminal.id, ReviewDecision::Reject)
+        .unwrap();
+
+    let finalized = catalog
+        .supersede_review_processing_and_complete_work(
+            processing.id,
+            &claim.lease_token,
+            processing_run.id,
+            work_key,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(finalized.status, ReviewStatus::Rejected);
+    assert_eq!(finalized.decision, Some(ReviewDecision::Reject));
+    let run = catalog.get_run(processing_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+}
+
+#[test]
+fn compatible_terminal_acceptance_wins_over_processing_supersession() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let terminal_run = catalog.create_run(request()).unwrap();
+    let processing_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:terminal-acceptance-supersede-race";
+    let work_key = "connector:terminal-acceptance-supersede-work";
+    catalog
+        .queue_work(processing_run.id, work_key.to_owned())
+        .unwrap();
+    for run_id in [terminal_run.id, processing_run.id] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let terminal = catalog
+        .find_review_item_for_run_by_candidate_identity(terminal_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let processing = catalog
+        .find_review_item_for_run_by_candidate_identity(processing_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(processing.id)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            terminal.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    catalog
+        .set_review_status(terminal.id, ReviewStatus::Applied)
+        .unwrap();
+
+    let finalized = catalog
+        .supersede_review_processing_and_complete_work(
+            processing.id,
+            &claim.lease_token,
+            processing_run.id,
+            work_key,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(finalized.status, ReviewStatus::Accepted);
+    assert_eq!(
+        finalized.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+    let run = catalog.get_run(processing_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
 }
 
 #[test]

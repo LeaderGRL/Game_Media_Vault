@@ -7,6 +7,8 @@ import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
+  const vaultLoadRequestGeneration = useRef(0);
+  const reviewMutationGeneration = useRef(0);
   const reviewRefreshRequestGeneration = useRef(0);
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
@@ -23,6 +25,10 @@ export function App() {
     event?.preventDefault();
     const requestedVaultRoot = vaultRoot;
     activeVaultRoot.current = requestedVaultRoot;
+    vaultLoadRequestGeneration.current += 1;
+    const loadGeneration = vaultLoadRequestGeneration.current;
+    const reviewGenerationAtLoadStart = reviewMutationGeneration.current;
+    reviewRefreshRequestGeneration.current += 1;
     setLoading(true);
     setError(null);
     setEntries([]);
@@ -34,18 +40,29 @@ export function App() {
         invoke<LibraryEntry[]>("list_library", { vault_root: requestedVaultRoot }),
         invoke<ReviewItem[]>("list_review_items", { vault_root: requestedVaultRoot }),
       ]);
-      if (activeVaultRoot.current !== requestedVaultRoot) {
+      if (
+        activeVaultRoot.current !== requestedVaultRoot ||
+        loadGeneration !== vaultLoadRequestGeneration.current
+      ) {
         return;
       }
       setEntries(library);
-      setReviewItems(reviews);
+      if (reviewMutationGeneration.current === reviewGenerationAtLoadStart) {
+        setReviewItems(reviews);
+      }
       setLoadedVaultRoot(requestedVaultRoot);
     } catch (reason) {
-      if (activeVaultRoot.current === requestedVaultRoot) {
+      if (
+        activeVaultRoot.current === requestedVaultRoot &&
+        loadGeneration === vaultLoadRequestGeneration.current
+      ) {
         setError(String(reason));
       }
     } finally {
-      if (activeVaultRoot.current === requestedVaultRoot) {
+      if (
+        activeVaultRoot.current === requestedVaultRoot &&
+        loadGeneration === vaultLoadRequestGeneration.current
+      ) {
         setLoading(false);
       }
     }
@@ -72,9 +89,14 @@ export function App() {
       if (activeVaultRoot.current !== resolvingVaultRoot) {
         return;
       }
-      setReviewItems((current) =>
-        current.map((item) => (item.id === reviewItemId ? resolvedReviewItem : item)),
-      );
+      reviewMutationGeneration.current += 1;
+      setReviewItems((current) => {
+        const existingIndex = current.findIndex((item) => item.id === reviewItemId);
+        if (existingIndex < 0) {
+          return [...current, resolvedReviewItem];
+        }
+        return current.map((item) => (item.id === reviewItemId ? resolvedReviewItem : item));
+      });
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
       const reviews = await invoke<ReviewItem[]>("list_review_items", {

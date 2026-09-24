@@ -913,12 +913,15 @@ pub fn acquire_run_with_connector(
             reviewed_release_edition_id.or_else(|| candidate_match.auto_link_release_edition_id())
         else {
             if let Some((review_item_id, _, lease_token)) = review_processing {
-                catalog.supersede_review_processing_and_complete_work(
+                let finalized = catalog.supersede_review_processing_and_complete_work(
                     review_item_id,
                     &lease_token,
                     run_id,
                     &work.key,
                 )?;
+                if finalized.is_some_and(|item| item.status == ReviewStatus::Accepted) {
+                    continue;
+                }
             }
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
@@ -928,12 +931,15 @@ pub fn acquire_run_with_connector(
             .find(|release| release.release_edition_id == release_edition_id)
         else {
             if let Some((review_item_id, _, lease_token)) = review_processing {
-                catalog.supersede_review_processing_and_complete_work(
+                let finalized = catalog.supersede_review_processing_and_complete_work(
                     review_item_id,
                     &lease_token,
                     run_id,
                     &work.key,
                 )?;
+                if finalized.is_some_and(|item| item.status == ReviewStatus::Accepted) {
+                    continue;
+                }
             }
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;

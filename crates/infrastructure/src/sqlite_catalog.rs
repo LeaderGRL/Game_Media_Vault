@@ -1058,26 +1058,82 @@ impl CatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let claimed_run_id = transaction
+        let current = transaction
             .query_row(
-                "SELECT review.run_id
+                "SELECT review.id, review.run_id, review.candidate_identity, review.candidate_json,
+                        review.competing_matches_json, review.decision_json, review.status
                  FROM review_items AS review
                  INNER JOIN review_processing_leases AS lease ON lease.review_item_id = review.id
                  WHERE review.id = ?1 AND review.status = 'processing' AND lease.lease_token = ?2",
                 params![review_item_id, lease_token],
-                |row| row.get::<_, i64>(0),
+                review_item_row,
             )
             .optional()
-            .map_err(sql_error)?;
-        let Some(claimed_run_id) = claimed_run_id else {
+            .map_err(sql_error)?
+            .map(decode_review_item_row)
+            .transpose()?;
+        let Some(current) = current else {
             return Err(PortError(format!(
                 "review item #{review_item_id} lost its processing lease"
             )));
         };
-        if claimed_run_id != run_id {
+        if current.run_id != run_id {
             return Err(PortError(format!(
-                "review item #{review_item_id} belongs to run #{claimed_run_id}, not run #{run_id}"
+                "review item #{review_item_id} belongs to run #{}, not run #{run_id}",
+                current.run_id
             )));
+        }
+
+        if let Some(decision) =
+            terminal_review_sibling(&transaction, &current)?.and_then(|item| item.decision)
+        {
+            let (status, complete_work) = match decision {
+                ReviewDecision::Reject => (ReviewStatus::Rejected, true),
+                ReviewDecision::Accept { release_edition_id } => {
+                    if current
+                        .competing_matches
+                        .iter()
+                        .any(|candidate| candidate.release_edition_id == release_edition_id)
+                    {
+                        (ReviewStatus::Accepted, false)
+                    } else {
+                        (ReviewStatus::Superseded, true)
+                    }
+                }
+                ReviewDecision::Defer => (ReviewStatus::Superseded, true),
+            };
+            if complete_work {
+                complete_work_in_transaction(&transaction, run_id, work_key)?;
+            }
+            let decision_json = serde_json::to_string(&decision).map_err(|error| {
+                PortError(format!("failed to serialize review decision: {error}"))
+            })?;
+            transaction
+                .execute(
+                    "UPDATE review_items SET decision_json = ?1, status = ?2
+                     WHERE id = ?3 AND status = 'processing'
+                       AND EXISTS (
+                           SELECT 1 FROM review_processing_leases
+                           WHERE review_item_id = ?3 AND lease_token = ?4
+                       )",
+                    params![
+                        decision_json,
+                        review_status_to_str(status),
+                        review_item_id,
+                        lease_token
+                    ],
+                )
+                .map_err(sql_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM review_processing_leases
+                     WHERE review_item_id = ?1 AND lease_token = ?2",
+                    params![review_item_id, lease_token],
+                )
+                .map_err(sql_error)?;
+            transaction.commit().map_err(sql_error)?;
+            drop(connection);
+            return self.get_review_item(review_item_id);
         }
 
         complete_work_in_transaction(&transaction, run_id, work_key)?;
@@ -1587,10 +1643,10 @@ fn reconcile_restored_review_with_terminal_sibling(
             {
                 ReviewStatus::Accepted
             } else {
-                ReviewStatus::Superseded
+                return Ok(restored_status);
             }
         }
-        ReviewDecision::Defer => restored_status,
+        ReviewDecision::Defer => return Ok(restored_status),
     };
     let decision_json = serde_json::to_string(&decision)
         .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
