@@ -375,7 +375,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Accepted · release #202")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Accept Deluxe" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Accept Deluxe" })).toBeDisabled();
     });
   });
 
