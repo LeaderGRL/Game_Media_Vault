@@ -205,6 +205,58 @@ fn accepting_a_review_atomically_requeues_its_completed_work() {
 }
 
 #[test]
+fn accepting_a_review_from_cancelled_run_persists_without_requeueing_work() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let identity = "connector:cancelled-review-acceptance";
+    let work_key = "connector:cancelled-review-work";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .stage_review_item_and_complete_work(
+            NewReviewItem {
+                run_id: run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            },
+            work_key,
+        )
+        .unwrap();
+    assert!(
+        catalog
+            .compare_and_set_run_status(
+                run.id,
+                AcquisitionRunStatus::Running,
+                AcquisitionRunStatus::Cancelled,
+            )
+            .unwrap()
+    );
+    let item = catalog
+        .find_review_item_for_run_by_candidate_identity(run.id, identity)
+        .unwrap()
+        .unwrap();
+
+    let accepted = catalog
+        .accept_review_item_and_requeue(item.id, 201, work_key)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(accepted.status, ReviewStatus::Accepted);
+    assert_eq!(
+        accepted.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.status, AcquisitionRunStatus::Cancelled);
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    assert!(catalog.next_queued_work(run.id).unwrap().is_none());
+}
+
+#[test]
 fn accepting_a_review_supersedes_incompatible_occurrences_of_the_same_candidate() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
