@@ -67,6 +67,17 @@ pub trait CatalogPort {
         ))
     }
 
+    fn accept_review_item_and_requeue(
+        &self,
+        _review_item_id: i64,
+        _release_edition_id: i64,
+        _work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review acceptance".to_owned(),
+        ))
+    }
+
     fn set_review_status(
         &self,
         _review_item_id: i64,
@@ -356,7 +367,6 @@ pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, A
 
 pub fn resolve_review_item(
     catalog: &dyn CatalogPort,
-    runs: &dyn RunRepositoryPort,
     review_item_id: i64,
     decision: ReviewDecision,
 ) -> Result<ReviewItem, ApplicationError> {
@@ -375,15 +385,17 @@ pub fn resolve_review_item(
         });
     }
 
-    let should_requeue = matches!(decision, ReviewDecision::Accept { .. });
-    let work_key = should_requeue
-        .then(|| connector_work_key(item.candidate.source_id.as_str(), &item.candidate));
-    if let Some(work_key) = work_key {
-        runs.requeue_completed_work(item.run_id, &work_key)?;
+    match decision {
+        ReviewDecision::Accept { release_edition_id } => {
+            let work_key = connector_work_key(item.candidate.source_id.as_str(), &item.candidate);
+            catalog
+                .accept_review_item_and_requeue(review_item_id, release_edition_id, &work_key)?
+                .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
+        }
+        decision => catalog
+            .set_review_decision(review_item_id, decision)?
+            .ok_or(ApplicationError::ReviewItemNotFound(review_item_id)),
     }
-    catalog
-        .set_review_decision(review_item_id, decision)?
-        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
 }
 
 pub fn import_reference_catalog(

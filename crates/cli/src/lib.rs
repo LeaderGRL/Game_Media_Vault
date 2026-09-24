@@ -334,15 +334,14 @@ where
                     release_edition_id,
                 } => Ok(serde_json::to_string_pretty(&resolve_review_item(
                     &catalog,
-                    &catalog,
                     id,
                     ReviewDecision::Accept { release_edition_id },
                 )?)?),
                 ReviewCommand::Reject { id } => Ok(serde_json::to_string_pretty(
-                    &resolve_review_item(&catalog, &catalog, id, ReviewDecision::Reject)?,
+                    &resolve_review_item(&catalog, id, ReviewDecision::Reject)?,
                 )?),
                 ReviewCommand::Defer { id } => Ok(serde_json::to_string_pretty(
-                    &resolve_review_item(&catalog, &catalog, id, ReviewDecision::Defer)?,
+                    &resolve_review_item(&catalog, id, ReviewDecision::Defer)?,
                 )?),
             }
         }

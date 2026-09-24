@@ -1,82 +1,30 @@
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    CatalogPort, PortError, RunRepositoryPort, list_review_items, resolve_review_item,
+    CatalogPort, PortError, list_review_items, resolve_review_item,
 };
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    AssetType, ImportedAsset, LibraryEntry, MatchEvidence, MatchSignal, NewReviewItem,
-    PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
+    AssetCandidate, AssetType, ImportedAsset, LibraryEntry, MatchEvidence, MatchSignal,
+    NewReviewItem, PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus,
+    SourceId,
 };
 
 struct FakeCatalog {
     items: RefCell<Vec<ReviewItem>>,
-}
-
-#[derive(Default)]
-struct FakeRuns {
-    requeued: RefCell<Vec<(i64, String)>>,
-    fail_requeue: bool,
-}
-
-impl RunRepositoryPort for FakeRuns {
-    fn create_run(&self, _request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
-        unreachable!()
-    }
-
-    fn get_run(&self, _run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
-        Ok(None)
-    }
-
-    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
-        Ok(Vec::new())
-    }
-
-    fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
-        unreachable!()
-    }
-
-    fn requeue_completed_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        if self.fail_requeue {
-            return Err(PortError("failed to requeue review work".to_owned()));
-        }
-        self.requeued
-            .borrow_mut()
-            .push((run_id, work_key.to_owned()));
-        Ok(())
-    }
-
-    fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
-        Ok(None)
-    }
-
-    fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
-        Ok(())
-    }
-
-    fn compare_and_set_run_status(
-        &self,
-        _run_id: i64,
-        _expected: AcquisitionRunStatus,
-        _target: AcquisitionRunStatus,
-    ) -> Result<bool, PortError> {
-        Ok(false)
-    }
+    accepted_work: RefCell<Vec<(i64, i64, String)>>,
+    fail_atomic_accept: bool,
 }
 
 #[test]
-fn failed_requeue_does_not_persist_an_accept_decision() {
+fn failed_atomic_accept_does_not_persist_an_accept_decision() {
     let catalog = FakeCatalog {
         items: RefCell::new(vec![review_item()]),
-    };
-    let runs = FakeRuns {
-        fail_requeue: true,
-        ..FakeRuns::default()
+        accepted_work: RefCell::new(Vec::new()),
+        fail_atomic_accept: true,
     };
 
     let error = resolve_review_item(
         &catalog,
-        &runs,
         17,
         ReviewDecision::Accept {
             release_edition_id: 201,
@@ -84,7 +32,7 @@ fn failed_requeue_does_not_persist_an_accept_decision() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("failed to requeue"));
+    assert!(error.to_string().contains("atomic accept failed"));
     assert_eq!(catalog.items.borrow()[0].decision, None);
 }
 
@@ -111,6 +59,29 @@ impl CatalogPort for FakeCatalog {
             return Ok(None);
         };
         item.decision = Some(decision);
+        Ok(Some(item.clone()))
+    }
+
+    fn accept_review_item_and_requeue(
+        &self,
+        review_item_id: i64,
+        release_edition_id: i64,
+        work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        if self.fail_atomic_accept {
+            return Err(PortError("atomic accept failed".to_owned()));
+        }
+        let mut items = self.items.borrow_mut();
+        let Some(item) = items.iter_mut().find(|item| item.id == review_item_id) else {
+            return Ok(None);
+        };
+        item.decision = Some(ReviewDecision::Accept { release_edition_id });
+        item.status = ReviewStatus::Accepted;
+        self.accepted_work.borrow_mut().push((
+            item.run_id,
+            release_edition_id,
+            work_key.to_owned(),
+        ));
         Ok(Some(item.clone()))
     }
 
@@ -161,12 +132,12 @@ fn review_item() -> ReviewItem {
 fn resolves_and_lists_a_review_decision_through_the_application_seam() {
     let catalog = FakeCatalog {
         items: RefCell::new(vec![review_item()]),
+        accepted_work: RefCell::new(Vec::new()),
+        fail_atomic_accept: false,
     };
-    let runs = FakeRuns::default();
 
     let resolved = resolve_review_item(
         &catalog,
-        &runs,
         17,
         ReviewDecision::Accept {
             release_edition_id: 201,
@@ -181,22 +152,23 @@ fn resolves_and_lists_a_review_decision_through_the_application_seam() {
         })
     );
     assert_eq!(list_review_items(&catalog).unwrap(), vec![resolved]);
-    let requeued = runs.requeued.borrow();
-    assert_eq!(requeued.len(), 1);
-    assert_eq!(requeued[0].0, 7);
-    assert!(requeued[0].1.contains("fixture://candidate/front"));
+    let accepted_work = catalog.accepted_work.borrow();
+    assert_eq!(accepted_work.len(), 1);
+    assert_eq!(accepted_work[0].0, 7);
+    assert_eq!(accepted_work[0].1, 201);
+    assert!(accepted_work[0].2.contains("fixture://candidate/front"));
 }
 
 #[test]
 fn rejects_an_accept_decision_for_an_edition_not_offered_by_the_review_item() {
     let catalog = FakeCatalog {
         items: RefCell::new(vec![review_item()]),
+        accepted_work: RefCell::new(Vec::new()),
+        fail_atomic_accept: false,
     };
-    let runs = FakeRuns::default();
 
     let error = resolve_review_item(
         &catalog,
-        &runs,
         17,
         ReviewDecision::Accept {
             release_edition_id: 999,
@@ -206,5 +178,5 @@ fn rejects_an_accept_decision_for_an_edition_not_offered_by_the_review_item() {
 
     assert!(error.to_string().contains("not a competing release"));
     assert_eq!(catalog.items.borrow()[0].decision, None);
-    assert!(runs.requeued.borrow().is_empty());
+    assert!(catalog.accepted_work.borrow().is_empty());
 }

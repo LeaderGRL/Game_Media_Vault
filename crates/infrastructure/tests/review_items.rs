@@ -1,7 +1,9 @@
-use game_media_vault_application::CatalogPort;
+use game_media_vault_application::{CatalogPort, RunRepositoryPort};
 use game_media_vault_domain::{
-    AssetCandidate, AssetType, MatchEvidence, MatchSignal, NewReviewItem, ReleaseAssertion,
-    ReleaseAssertionField, ReviewDecision, ReviewMatchCandidate, ReviewStatus, SourceId,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
+    AssetCandidate, AssetType, AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal,
+    NewReviewItem, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, ReviewDecision,
+    ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use rusqlite::Connection;
@@ -53,6 +55,45 @@ fn review_match(release_edition_id: i64, edition_name: &str) -> ReviewMatchCandi
             value: format!("release-{release_edition_id}"),
         }],
     }
+}
+
+fn request() -> AcquisitionRequest {
+    AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["fixture-provider".to_owned()]),
+        platforms: vec!["Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Target Game".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap()
+}
+
+fn completed_review_work(catalog: &SqliteCatalog, work_key: &str) -> i64 {
+    let run = catalog.create_run(request()).unwrap();
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog.complete_work(run.id, work_key).unwrap();
+    assert!(
+        catalog
+            .compare_and_set_run_status(
+                run.id,
+                AcquisitionRunStatus::Running,
+                AcquisitionRunStatus::Completed,
+            )
+            .unwrap()
+    );
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: format!("connector:fixture-review:{}", run.id),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    run.id
 }
 
 #[test]
@@ -127,6 +168,72 @@ fn review_decision_round_trips_and_can_be_found_by_candidate_identity() {
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
     let persisted = reopened.get_review_item(item.id).unwrap().unwrap();
     assert_eq!(persisted, resolved);
+}
+
+#[test]
+fn accepting_a_review_atomically_requeues_its_completed_work() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let work_key = "connector:fixture-review-work";
+    let run_id = completed_review_work(&catalog, work_key);
+    let item = catalog.list_review_items().unwrap().remove(0);
+
+    let accepted = catalog
+        .accept_review_item_and_requeue(item.id, 201, work_key)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(accepted.status, ReviewStatus::Accepted);
+    assert_eq!(
+        accepted.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+    let run = catalog.get_run(run_id).unwrap().unwrap();
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+    assert_eq!(
+        catalog.next_queued_work(run_id).unwrap().unwrap().key,
+        work_key
+    );
+}
+
+#[test]
+fn failed_review_acceptance_rolls_back_the_work_requeue() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let work_key = "connector:fixture-review-work";
+    let run_id = completed_review_work(&catalog, work_key);
+    let item = catalog.list_review_items().unwrap().remove(0);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_review_accept
+             BEFORE UPDATE OF decision_json ON review_items
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced review write failure');
+             END;",
+        )
+        .unwrap();
+
+    assert!(
+        catalog
+            .accept_review_item_and_requeue(item.id, 201, work_key)
+            .is_err()
+    );
+
+    let run = catalog.get_run(run_id).unwrap().unwrap();
+    assert_eq!(run.status, AcquisitionRunStatus::Completed);
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    assert!(catalog.next_queued_work(run_id).unwrap().is_none());
+    let persisted = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(persisted.status, ReviewStatus::Pending);
+    assert_eq!(persisted.decision, None);
 }
 
 #[test]

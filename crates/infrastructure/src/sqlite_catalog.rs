@@ -290,56 +290,7 @@ impl RunRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let state: Option<(String, i64)> = transaction
-            .query_row(
-                "SELECT run.status, work.completed
-                 FROM acquisition_run_work AS work
-                 INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-                 WHERE work.run_id = ?1 AND work.work_key = ?2",
-                params![run_id, work_key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(sql_error)?;
-        let Some((status, completed)) = state else {
-            return Err(PortError(format!(
-                "acquisition work {work_key:?} does not exist for run #{run_id}"
-            )));
-        };
-        if status == "cancelled" {
-            return Err(PortError(format!(
-                "acquisition run #{run_id} cannot requeue review work while cancelled"
-            )));
-        }
-        if completed == 0 {
-            return transaction.commit().map_err(sql_error);
-        }
-
-        let changed = transaction
-            .execute(
-                "UPDATE acquisition_run_work
-                 SET completed = 0
-                 WHERE run_id = ?1 AND work_key = ?2 AND completed = 1",
-                params![run_id, work_key],
-            )
-            .map_err(sql_error)?;
-        if changed == 1 {
-            let updated = transaction
-                .execute(
-                    "UPDATE acquisition_runs
-                     SET queued_work = queued_work + 1,
-                         completed_work = completed_work - 1,
-                         status = CASE WHEN status = 'completed' THEN 'running' ELSE status END
-                     WHERE id = ?1 AND completed_work > 0",
-                    params![run_id],
-                )
-                .map_err(sql_error)?;
-            if updated != 1 {
-                return Err(PortError(format!(
-                    "acquisition run #{run_id} has inconsistent completed work state"
-                )));
-            }
-        }
+        requeue_completed_work_in_transaction(&transaction, run_id, work_key)?;
         transaction.commit().map_err(sql_error)
     }
 
@@ -708,6 +659,57 @@ impl CatalogPort for SqliteCatalog {
         self.get_review_item(review_item_id)
     }
 
+    fn accept_review_item_and_requeue(
+        &self,
+        review_item_id: i64,
+        release_edition_id: i64,
+        work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let row = transaction
+            .query_row(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json, status
+                 FROM review_items
+                 WHERE id = ?1",
+                params![review_item_id],
+                review_item_row,
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some(mut item) = row.map(decode_review_item_row).transpose()? else {
+            return Ok(None);
+        };
+        if !item
+            .competing_matches
+            .iter()
+            .any(|candidate| candidate.release_edition_id == release_edition_id)
+        {
+            return Err(PortError(format!(
+                "release edition #{release_edition_id} is not a competing release for review item #{review_item_id}"
+            )));
+        }
+
+        requeue_completed_work_in_transaction(&transaction, item.run_id, work_key)?;
+        let decision = ReviewDecision::Accept { release_edition_id };
+        let decision_json = serde_json::to_string(&decision)
+            .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
+        transaction
+            .execute(
+                "UPDATE review_items SET decision_json = ?1, status = 'accepted' WHERE id = ?2",
+                params![decision_json, review_item_id],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
+
+        item.decision = Some(decision);
+        item.status = ReviewStatus::Accepted;
+        Ok(Some(item))
+    }
+
     fn set_review_status(
         &self,
         review_item_id: i64,
@@ -882,6 +884,64 @@ impl CatalogPort for SqliteCatalog {
 }
 
 type ReviewItemRow = (i64, i64, String, String, String, Option<String>, String);
+
+fn requeue_completed_work_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: i64,
+    work_key: &str,
+) -> Result<(), PortError> {
+    let state: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT run.status, work.completed
+             FROM acquisition_run_work AS work
+             INNER JOIN acquisition_runs AS run ON run.id = work.run_id
+             WHERE work.run_id = ?1 AND work.work_key = ?2",
+            params![run_id, work_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let Some((status, completed)) = state else {
+        return Err(PortError(format!(
+            "acquisition work {work_key:?} does not exist for run #{run_id}"
+        )));
+    };
+    if status == "cancelled" {
+        return Err(PortError(format!(
+            "acquisition run #{run_id} cannot requeue review work while cancelled"
+        )));
+    }
+    if completed == 0 {
+        return Ok(());
+    }
+
+    let changed = transaction
+        .execute(
+            "UPDATE acquisition_run_work
+             SET completed = 0
+             WHERE run_id = ?1 AND work_key = ?2 AND completed = 1",
+            params![run_id, work_key],
+        )
+        .map_err(sql_error)?;
+    if changed == 1 {
+        let updated = transaction
+            .execute(
+                "UPDATE acquisition_runs
+                 SET queued_work = queued_work + 1,
+                     completed_work = completed_work - 1,
+                     status = CASE WHEN status = 'completed' THEN 'running' ELSE status END
+                 WHERE id = ?1 AND completed_work > 0",
+                params![run_id],
+            )
+            .map_err(sql_error)?;
+        if updated != 1 {
+            return Err(PortError(format!(
+                "acquisition run #{run_id} has inconsistent completed work state"
+            )));
+        }
+    }
+    Ok(())
+}
 
 fn review_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewItemRow> {
     Ok((

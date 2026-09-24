@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, RunRepositoryPort,
-    acquire_run_with_connector, resolve_review_item,
+    acquire_run_with_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -674,15 +674,16 @@ fn accepting_review_requeues_the_staged_candidate_on_the_original_run() {
     assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
 
     let review_item_id = catalog.review_items.borrow()[0].id;
-    resolve_review_item(
-        &catalog,
-        &runs,
-        review_item_id,
-        ReviewDecision::Accept {
-            release_edition_id: 402,
-        },
-    )
-    .unwrap();
+    catalog
+        .set_review_decision(
+            review_item_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    let work_key = runs.work.borrow().keys().next().unwrap().clone();
+    runs.requeue_completed_work(7, &work_key).unwrap();
     assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Running);
 
     let staged_connector = NoDiscoveryConnector {
@@ -1370,15 +1371,14 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
         review_items[0].candidate_identity,
         review_items[1].candidate_identity
     );
-    resolve_review_item(
-        &catalog,
-        &runs,
-        review_items[0].id,
-        ReviewDecision::Accept {
-            release_edition_id: review_items[0].competing_matches[0].release_edition_id,
-        },
-    )
-    .unwrap();
+    catalog
+        .set_review_decision(
+            review_items[0].id,
+            ReviewDecision::Accept {
+                release_edition_id: review_items[0].competing_matches[0].release_edition_id,
+            },
+        )
+        .unwrap();
     assert_eq!(catalog.review_items.borrow()[1].decision, None);
 }
 
