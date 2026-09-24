@@ -102,19 +102,55 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     expect(await screen.findByText("Review Game")).toBeInTheDocument();
 
-    invokeMock.mockResolvedValueOnce({
+    const acceptedReviewItem: ReviewItem = {
       ...reviewItem,
       decision: { decision: "accept", release_edition_id: 201 },
       status: "accepted",
-    });
+    };
+    invokeMock.mockResolvedValueOnce(acceptedReviewItem).mockResolvedValueOnce([acceptedReviewItem]);
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 
-    expect(invokeMock).toHaveBeenLastCalledWith("resolve_review_item", {
+    expect(invokeMock).toHaveBeenCalledWith("resolve_review_item", {
       vault_root: ".game-media-vault",
       review_item_id: 17,
       decision: { decision: "accept", release_edition_id: 201 },
     });
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
+  });
+
+  it("refreshes every review occurrence changed by a terminal decision", async () => {
+    const siblingReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      run_id: 8,
+    };
+    const rejectedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    const rejectedSibling: ReviewItem = {
+      ...siblingReviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, siblingReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock.mockResolvedValueOnce(rejectedReviewItem).mockResolvedValueOnce([
+      rejectedReviewItem,
+      rejectedSibling,
+    ]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Reject candidate" })[0]);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenLastCalledWith("list_review_items", {
+        vault_root: ".game-media-vault",
+      });
+    });
+    expect(await screen.findAllByText("Rejected")).toHaveLength(2);
   });
 
   it("resolves review items against the vault that was actually loaded", async () => {
@@ -127,14 +163,15 @@ describe("App", () => {
       target: { value: "another-vault" },
     });
 
-    invokeMock.mockResolvedValueOnce({
+    const acceptedReviewItem: ReviewItem = {
       ...reviewItem,
       decision: { decision: "accept", release_edition_id: 201 },
       status: "accepted",
-    });
+    };
+    invokeMock.mockResolvedValueOnce(acceptedReviewItem).mockResolvedValueOnce([acceptedReviewItem]);
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 
-    expect(invokeMock).toHaveBeenLastCalledWith("resolve_review_item", {
+    expect(invokeMock).toHaveBeenCalledWith("resolve_review_item", {
       vault_root: ".game-media-vault",
       review_item_id: 17,
       decision: { decision: "accept", release_edition_id: 201 },
@@ -233,9 +270,29 @@ describe("App", () => {
       decision: { decision: "accept", release_edition_id: 201 },
       status: "accepted",
     });
+    invokeMock.mockResolvedValueOnce([
+      {
+        ...reviewItem,
+        decision: { decision: "accept", release_edition_id: 201 },
+        status: "accepted",
+      },
+      secondReviewItem,
+    ]);
     await waitFor(() => expect(firstAccept).toBeDisabled());
     expect(secondAccept).toBeDisabled();
 
+    invokeMock.mockResolvedValueOnce([
+      {
+        ...reviewItem,
+        decision: { decision: "accept", release_edition_id: 201 },
+        status: "accepted",
+      },
+      {
+        ...secondReviewItem,
+        decision: { decision: "accept", release_edition_id: 202 },
+        status: "accepted",
+      },
+    ]);
     finishSecond?.({
       ...secondReviewItem,
       decision: { decision: "accept", release_edition_id: 202 },

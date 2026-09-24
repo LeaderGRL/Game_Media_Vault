@@ -57,7 +57,7 @@ export function App() {
     const resolvingVaultRoot = loadedVaultRoot;
     const resolvingGeneration = vaultGeneration.current;
     try {
-      const resolved = await invoke<ReviewItem>("resolve_review_item", {
+      await invoke<ReviewItem>("resolve_review_item", {
         vault_root: resolvingVaultRoot,
         review_item_id: reviewItemId,
         decision,
@@ -65,9 +65,13 @@ export function App() {
       if (vaultGeneration.current !== resolvingGeneration) {
         return;
       }
-      setReviewItems((current) =>
-        current.map((item) => (item.id === resolved.id ? resolved : item)),
-      );
+      const reviews = await invoke<ReviewItem[]>("list_review_items", {
+        vault_root: resolvingVaultRoot,
+      });
+      if (vaultGeneration.current !== resolvingGeneration) {
+        return;
+      }
+      setReviewItems(reviews);
     } catch (reason) {
       if (vaultGeneration.current === resolvingGeneration) {
         setError(String(reason));
