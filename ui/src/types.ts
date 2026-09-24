@@ -78,6 +78,7 @@ export type ReviewDecision =
 export type ReviewStatus =
   | "pending"
   | "deferred"
+  | "processing"
   | "accepted"
   | "rejected"
   | "auto_resolved"

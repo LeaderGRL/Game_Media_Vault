@@ -180,3 +180,24 @@ fn rejects_an_accept_decision_for_an_edition_not_offered_by_the_review_item() {
     assert_eq!(catalog.items.borrow()[0].decision, None);
     assert!(catalog.accepted_work.borrow().is_empty());
 }
+
+#[test]
+fn terminal_review_items_cannot_be_resolved_again() {
+    let mut item = review_item();
+    item.decision = Some(ReviewDecision::Reject);
+    item.status = ReviewStatus::Rejected;
+    let catalog = FakeCatalog {
+        items: RefCell::new(vec![item]),
+        accepted_work: RefCell::new(Vec::new()),
+        fail_atomic_accept: false,
+    };
+
+    let error = resolve_review_item(&catalog, 17, ReviewDecision::Defer).unwrap_err();
+
+    assert!(error.to_string().contains("cannot be resolved"));
+    assert_eq!(catalog.items.borrow()[0].status, ReviewStatus::Rejected);
+    assert_eq!(
+        catalog.items.borrow()[0].decision,
+        Some(ReviewDecision::Reject)
+    );
+}

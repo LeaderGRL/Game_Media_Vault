@@ -20,7 +20,7 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
     <section className="review-list" aria-label="Review items">
       {items.map((item) => {
         const busy = resolvingId === item.id;
-        const closed = ["accepted", "rejected", "auto_resolved", "superseded"].includes(
+        const closed = ["processing", "accepted", "rejected", "auto_resolved", "superseded"].includes(
           item.status,
         );
         return (
@@ -148,6 +148,9 @@ function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | n
   }
   if (status === "auto_resolved") {
     return "Auto-resolved";
+  }
+  if (status === "processing") {
+    return "Processing";
   }
   if (status === "superseded") {
     return "Superseded";

@@ -237,6 +237,114 @@ fn failed_review_acceptance_rolls_back_the_work_requeue() {
 }
 
 #[test]
+fn terminal_review_decisions_cannot_be_overwritten_or_reopened() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:terminal-review".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .set_review_decision(item.id, ReviewDecision::Reject)
+        .unwrap();
+
+    assert!(
+        catalog
+            .set_review_decision(item.id, ReviewDecision::Defer)
+            .is_err()
+    );
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 8,
+            candidate_identity: "connector:terminal-review".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(202, "Deluxe")],
+        })
+        .unwrap();
+
+    let persisted = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(persisted.run_id, 7);
+    assert_eq!(persisted.status, ReviewStatus::Rejected);
+    assert_eq!(persisted.decision, Some(ReviewDecision::Reject));
+    assert_eq!(
+        persisted.competing_matches,
+        vec![review_match(201, "Standard")]
+    );
+}
+
+#[test]
+fn a_second_run_cannot_move_an_existing_pending_review() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first = NewReviewItem {
+        run_id: 7,
+        candidate_identity: "connector:shared-review".to_owned(),
+        candidate: candidate(),
+        competing_matches: vec![review_match(201, "Standard")],
+    };
+    catalog.persist_review_item(first.clone()).unwrap();
+
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 8,
+            candidate_identity: first.candidate_identity.clone(),
+            candidate: AssetCandidate {
+                source_url: "fixture://candidate/rotated-front".to_owned(),
+                ..candidate()
+            },
+            competing_matches: vec![review_match(202, "Deluxe")],
+        })
+        .unwrap();
+
+    let items = catalog.list_review_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].run_id, 7);
+    assert_eq!(items[0].candidate, first.candidate);
+    assert_eq!(items[0].competing_matches, first.competing_matches);
+    assert_eq!(items[0].status, ReviewStatus::Pending);
+}
+
+#[test]
+fn processing_claim_blocks_human_resolution_and_recovers_after_reopen() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:processing-review".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+
+    let claimed = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.status, ReviewStatus::Processing);
+    assert!(
+        catalog
+            .set_review_decision(item.id, ReviewDecision::Reject)
+            .is_err()
+    );
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    assert_eq!(
+        reopened.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Pending
+    );
+}
+
+#[test]
 fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
@@ -259,6 +367,7 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
     connection
         .execute_batch(
             "DROP INDEX IF EXISTS idx_review_items_status;
+             DROP INDEX IF EXISTS idx_review_items_run_status;
              ALTER TABLE review_items DROP COLUMN status;",
         )
         .unwrap();
@@ -274,7 +383,7 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
     let status_index_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'index' AND name = 'idx_review_items_status'",
+             WHERE type = 'index' AND name = 'idx_review_items_run_status'",
             [],
             |row| row.get(0),
         )

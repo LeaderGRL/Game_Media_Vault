@@ -292,14 +292,15 @@ impl CatalogPort for FakeCatalog {
             .iter_mut()
             .find(|existing| existing.candidate_identity == item.candidate_identity)
         {
-            existing.run_id = item.run_id;
-            existing.candidate = item.candidate;
-            existing.competing_matches = item.competing_matches;
-            existing.status = if existing.decision == Some(ReviewDecision::Defer) {
-                ReviewStatus::Deferred
-            } else {
-                ReviewStatus::Pending
-            };
+            if existing.run_id == item.run_id
+                && matches!(
+                    existing.status,
+                    ReviewStatus::Pending | ReviewStatus::Deferred
+                )
+            {
+                existing.candidate = item.candidate;
+                existing.competing_matches = item.competing_matches;
+            }
             return Ok(());
         }
         let id = review_items.len() as i64 + 1;
@@ -352,6 +353,62 @@ impl CatalogPort for FakeCatalog {
         else {
             return Ok(None);
         };
+        review_item.status = status;
+        Ok(Some(review_item.clone()))
+    }
+
+    fn claim_review_item_for_processing(
+        &self,
+        review_item_id: i64,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let mut review_items = self.review_items.borrow_mut();
+        let Some(review_item) = review_items
+            .iter_mut()
+            .find(|review_item| review_item.id == review_item_id)
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            review_item.status,
+            ReviewStatus::Pending | ReviewStatus::Deferred
+        ) {
+            return Ok(None);
+        }
+        review_item.status = ReviewStatus::Processing;
+        Ok(Some(review_item.clone()))
+    }
+
+    fn finish_review_item_processing(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        self.update_processing_status(review_item_id, status)
+    }
+
+    fn restore_review_item_processing(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        self.update_processing_status(review_item_id, status)
+    }
+}
+
+impl FakeCatalog {
+    fn update_processing_status(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let mut review_items = self.review_items.borrow_mut();
+        let Some(review_item) = review_items
+            .iter_mut()
+            .find(|review_item| review_item.id == review_item_id)
+        else {
+            return Ok(None);
+        };
+        assert_eq!(review_item.status, ReviewStatus::Processing);
         review_item.status = status;
         Ok(Some(review_item.clone()))
     }

@@ -468,6 +468,7 @@ pub enum ReviewDecision {
 pub enum ReviewStatus {
     Pending,
     Deferred,
+    Processing,
     Accepted,
     Rejected,
     AutoResolved,

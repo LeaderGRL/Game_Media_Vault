@@ -150,12 +150,15 @@ fn seed_review_item(vault: &Path) -> i64 {
 #[test]
 fn review_commands_show_evidence_and_persist_accept_reject_and_defer() {
     let temp = tempdir().unwrap();
-    let vault = temp.path().join("vault");
-    let review_item_id = seed_review_item(&vault);
-    let id = review_item_id.to_string();
+    let accept_vault = temp.path().join("accept-vault");
+    let reject_vault = temp.path().join("reject-vault");
+    let defer_vault = temp.path().join("defer-vault");
+    let accepted_review_item_id = seed_review_item(&accept_vault);
+    let rejected_review_item_id = seed_review_item(&reject_vault);
+    let deferred_review_item_id = seed_review_item(&defer_vault);
 
     let listed: serde_json::Value =
-        serde_json::from_str(&run_in_vault(&vault, &["review", "list"]).unwrap()).unwrap();
+        serde_json::from_str(&run_in_vault(&accept_vault, &["review", "list"]).unwrap()).unwrap();
     assert_eq!(
         listed[0]["candidate"]["source_url"],
         "fixture://review/front"
@@ -168,8 +171,14 @@ fn review_commands_show_evidence_and_persist_accept_reject_and_defer() {
 
     let accepted: serde_json::Value = serde_json::from_str(
         &run_in_vault(
-            &vault,
-            &["review", "accept", &id, "--release-edition-id", "201"],
+            &accept_vault,
+            &[
+                "review",
+                "accept",
+                &accepted_review_item_id.to_string(),
+                "--release-edition-id",
+                "201",
+            ],
         )
         .unwrap(),
     )
@@ -177,18 +186,30 @@ fn review_commands_show_evidence_and_persist_accept_reject_and_defer() {
     assert_eq!(accepted["decision"]["decision"], "accept");
     assert_eq!(accepted["decision"]["release_edition_id"], 201);
 
-    let rejected: serde_json::Value =
-        serde_json::from_str(&run_in_vault(&vault, &["review", "reject", &id]).unwrap()).unwrap();
+    let rejected: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &reject_vault,
+            &["review", "reject", &rejected_review_item_id.to_string()],
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(rejected["decision"]["decision"], "reject");
 
-    let deferred: serde_json::Value =
-        serde_json::from_str(&run_in_vault(&vault, &["review", "defer", &id]).unwrap()).unwrap();
+    let deferred: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &defer_vault,
+            &["review", "defer", &deferred_review_item_id.to_string()],
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(deferred["decision"]["decision"], "defer");
 
-    let reopened = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
+    let reopened = SqliteCatalog::open_existing(defer_vault.join("catalog.sqlite3")).unwrap();
     assert_eq!(
         reopened
-            .get_review_item(review_item_id)
+            .get_review_item(deferred_review_item_id)
             .unwrap()
             .unwrap()
             .decision,

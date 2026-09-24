@@ -111,5 +111,15 @@ describe("ReviewView", () => {
       />,
     );
     expect(screen.getByText("Superseded")).toBeInTheDocument();
+
+    rerender(
+      <ReviewView
+        items={[{ ...item, status: "processing" }]}
+        resolvingId={null}
+        onResolve={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Processing")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject candidate" })).toBeDisabled();
   });
 });

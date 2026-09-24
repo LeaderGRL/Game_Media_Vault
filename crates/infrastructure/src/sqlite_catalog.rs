@@ -550,13 +550,10 @@ impl CatalogPort for SqliteCatalog {
                     run_id, candidate_identity, candidate_json, competing_matches_json
                  ) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(candidate_identity) DO UPDATE SET
-                    run_id = excluded.run_id,
                     candidate_json = excluded.candidate_json,
-                    competing_matches_json = excluded.competing_matches_json,
-                    status = CASE
-                        WHEN review_items.decision_json LIKE '%\"defer\"%' THEN 'deferred'
-                        ELSE 'pending'
-                    END",
+                    competing_matches_json = excluded.competing_matches_json
+                 WHERE review_items.run_id = excluded.run_id
+                   AND review_items.status IN ('pending', 'deferred')",
                 params![
                     item.run_id,
                     item.candidate_identity,
@@ -590,6 +587,30 @@ impl CatalogPort for SqliteCatalog {
                     row.get::<_, String>(6)?,
                 ))
             })
+            .map_err(sql_error)?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(decode_review_item_row(row.map_err(sql_error)?)?);
+        }
+        Ok(items)
+    }
+
+    fn list_processable_review_items_for_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json, status
+                 FROM review_items
+                 WHERE run_id = ?1 AND status IN ('pending', 'deferred', 'accepted')
+                 ORDER BY id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map(params![run_id], review_item_row)
             .map_err(sql_error)?;
         let mut items = Vec::new();
         for row in rows {
@@ -633,6 +654,79 @@ impl CatalogPort for SqliteCatalog {
         row.map(decode_review_item_row).transpose()
     }
 
+    fn find_review_item_for_run_by_candidate_identity(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let row = connection
+            .query_row(
+                "SELECT id, run_id, candidate_identity, candidate_json,
+                        competing_matches_json, decision_json, status
+                 FROM review_items
+                 WHERE candidate_identity = ?1
+                   AND (run_id = ?2 OR status IN ('accepted', 'rejected'))
+                 ORDER BY CASE WHEN run_id = ?2 THEN 0 ELSE 1 END, id DESC
+                 LIMIT 1",
+                params![candidate_identity, run_id],
+                review_item_row,
+            )
+            .optional()
+            .map_err(sql_error)?;
+        row.map(decode_review_item_row).transpose()
+    }
+
+    fn claim_review_item_for_processing(
+        &self,
+        review_item_id: i64,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let changed = connection
+            .execute(
+                "UPDATE review_items SET status = 'processing'
+                 WHERE id = ?1 AND status IN ('pending', 'deferred')",
+                params![review_item_id],
+            )
+            .map_err(sql_error)?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        drop(connection);
+        self.get_review_item(review_item_id)
+    }
+
+    fn finish_review_item_processing(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        if !matches!(
+            status,
+            ReviewStatus::AutoResolved | ReviewStatus::Superseded
+        ) {
+            return Err(PortError(format!(
+                "invalid completed review processing status: {}",
+                review_status_to_str(status)
+            )));
+        }
+        update_review_processing_status(self, review_item_id, status)
+    }
+
+    fn restore_review_item_processing(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        if !matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+            return Err(PortError(format!(
+                "invalid restored review processing status: {}",
+                review_status_to_str(status)
+            )));
+        }
+        update_review_processing_status(self, review_item_id, status)
+    }
+
     fn set_review_decision(
         &self,
         review_item_id: i64,
@@ -648,12 +742,13 @@ impl CatalogPort for SqliteCatalog {
         let connection = self.connect()?;
         let changed = connection
             .execute(
-                "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
+                "UPDATE review_items SET decision_json = ?1, status = ?2
+                 WHERE id = ?3 AND status IN ('pending', 'deferred')",
                 params![decision_json, review_status_to_str(status), review_item_id],
             )
             .map_err(sql_error)?;
         if changed == 0 {
-            return Ok(None);
+            return review_transition_conflict(self, review_item_id);
         }
         drop(connection);
         self.get_review_item(review_item_id)
@@ -683,6 +778,12 @@ impl CatalogPort for SqliteCatalog {
         let Some(mut item) = row.map(decode_review_item_row).transpose()? else {
             return Ok(None);
         };
+        if !matches!(item.status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+            return Err(PortError(format!(
+                "review item #{review_item_id} cannot be resolved while {}",
+                review_status_to_str(item.status)
+            )));
+        }
         if !item
             .competing_matches
             .iter()
@@ -699,7 +800,8 @@ impl CatalogPort for SqliteCatalog {
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
         transaction
             .execute(
-                "UPDATE review_items SET decision_json = ?1, status = 'accepted' WHERE id = ?2",
+                "UPDATE review_items SET decision_json = ?1, status = 'accepted'
+                 WHERE id = ?2 AND status IN ('pending', 'deferred')",
                 params![decision_json, review_item_id],
             )
             .map_err(sql_error)?;
@@ -718,12 +820,13 @@ impl CatalogPort for SqliteCatalog {
         let connection = self.connect()?;
         let changed = connection
             .execute(
-                "UPDATE review_items SET status = ?1 WHERE id = ?2",
+                "UPDATE review_items SET status = ?1
+                 WHERE id = ?2 AND status IN ('pending', 'deferred')",
                 params![review_status_to_str(status), review_item_id],
             )
             .map_err(sql_error)?;
         if changed == 0 {
-            return Ok(None);
+            return review_transition_conflict(self, review_item_id);
         }
         drop(connection);
         self.get_review_item(review_item_id)
@@ -884,6 +987,38 @@ impl CatalogPort for SqliteCatalog {
 }
 
 type ReviewItemRow = (i64, i64, String, String, String, Option<String>, String);
+
+fn update_review_processing_status(
+    catalog: &SqliteCatalog,
+    review_item_id: i64,
+    status: ReviewStatus,
+) -> Result<Option<ReviewItem>, PortError> {
+    let connection = catalog.connect()?;
+    let changed = connection
+        .execute(
+            "UPDATE review_items SET status = ?1 WHERE id = ?2 AND status = 'processing'",
+            params![review_status_to_str(status), review_item_id],
+        )
+        .map_err(sql_error)?;
+    if changed == 0 {
+        return review_transition_conflict(catalog, review_item_id);
+    }
+    drop(connection);
+    catalog.get_review_item(review_item_id)
+}
+
+fn review_transition_conflict(
+    catalog: &SqliteCatalog,
+    review_item_id: i64,
+) -> Result<Option<ReviewItem>, PortError> {
+    match catalog.get_review_item(review_item_id)? {
+        None => Ok(None),
+        Some(item) => Err(PortError(format!(
+            "review item #{review_item_id} cannot transition while {}",
+            review_status_to_str(item.status)
+        ))),
+    }
+}
 
 fn requeue_completed_work_in_transaction(
     transaction: &Transaction<'_>,
@@ -1399,8 +1534,15 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
         }
         connection
             .execute_batch(
-                "CREATE INDEX IF NOT EXISTS idx_review_items_status
-                 ON review_items(status, id);",
+                "UPDATE review_items
+                 SET status = CASE
+                     WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
+                     ELSE 'pending'
+                 END
+                 WHERE status = 'processing';
+                 DROP INDEX IF EXISTS idx_review_items_status;
+                 CREATE INDEX IF NOT EXISTS idx_review_items_run_status
+                 ON review_items(run_id, status, id);",
             )
             .map_err(sql_error)?;
         if legacy_asset_match_decisions {
@@ -2096,6 +2238,7 @@ fn review_status_to_str(status: ReviewStatus) -> &'static str {
     match status {
         ReviewStatus::Pending => "pending",
         ReviewStatus::Deferred => "deferred",
+        ReviewStatus::Processing => "processing",
         ReviewStatus::Accepted => "accepted",
         ReviewStatus::Rejected => "rejected",
         ReviewStatus::AutoResolved => "auto_resolved",
@@ -2107,6 +2250,7 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
     match value {
         "pending" => Ok(ReviewStatus::Pending),
         "deferred" => Ok(ReviewStatus::Deferred),
+        "processing" => Ok(ReviewStatus::Processing),
         "accepted" => Ok(ReviewStatus::Accepted),
         "rejected" => Ok(ReviewStatus::Rejected),
         "auto_resolved" => Ok(ReviewStatus::AutoResolved),
