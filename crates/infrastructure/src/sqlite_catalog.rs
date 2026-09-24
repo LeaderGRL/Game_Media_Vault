@@ -789,6 +789,123 @@ impl CatalogPort for SqliteCatalog {
         Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
+    fn finalize_accepted_review_asset(
+        &self,
+        review_item_id: i64,
+        run_id: i64,
+        work_key: &str,
+        record: PersistAsset,
+    ) -> Result<ImportedAsset, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let review = transaction
+            .query_row(
+                "SELECT run_id, status FROM review_items WHERE id = ?1",
+                params![review_item_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some((review_run_id, status)) = review else {
+            return Err(PortError(format!(
+                "review item #{review_item_id} does not exist"
+            )));
+        };
+        if review_run_id != run_id {
+            return Err(PortError(format!(
+                "review item #{review_item_id} belongs to run #{review_run_id}, not run #{run_id}"
+            )));
+        }
+        let status = parse_review_status(&status)?;
+        if status != ReviewStatus::Accepted {
+            return Err(PortError(format!(
+                "review item #{review_item_id} cannot be applied while {}",
+                review_status_to_str(status)
+            )));
+        }
+
+        let imported = persist_asset_in_transaction(&transaction, record)?;
+        complete_work_in_transaction(&transaction, run_id, work_key)?;
+        let changed = transaction
+            .execute(
+                "UPDATE review_items SET status = 'applied'
+                 WHERE id = ?1 AND run_id = ?2 AND status = 'accepted'",
+                params![review_item_id, run_id],
+            )
+            .map_err(sql_error)?;
+        if changed != 1 {
+            return Err(PortError(format!(
+                "review item #{review_item_id} could not be applied atomically"
+            )));
+        }
+        transaction.commit().map_err(sql_error)?;
+        Ok(imported)
+    }
+
+    fn supersede_review_processing_and_complete_work(
+        &self,
+        review_item_id: i64,
+        lease_token: &str,
+        run_id: i64,
+        work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let claimed_run_id = transaction
+            .query_row(
+                "SELECT review.run_id
+                 FROM review_items AS review
+                 INNER JOIN review_processing_leases AS lease ON lease.review_item_id = review.id
+                 WHERE review.id = ?1 AND review.status = 'processing' AND lease.lease_token = ?2",
+                params![review_item_id, lease_token],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some(claimed_run_id) = claimed_run_id else {
+            return Err(PortError(format!(
+                "review item #{review_item_id} lost its processing lease"
+            )));
+        };
+        if claimed_run_id != run_id {
+            return Err(PortError(format!(
+                "review item #{review_item_id} belongs to run #{claimed_run_id}, not run #{run_id}"
+            )));
+        }
+
+        complete_work_in_transaction(&transaction, run_id, work_key)?;
+        let changed = transaction
+            .execute(
+                "UPDATE review_items SET status = 'superseded'
+                 WHERE id = ?1 AND status = 'processing'
+                   AND EXISTS (
+                       SELECT 1 FROM review_processing_leases
+                       WHERE review_item_id = ?1 AND lease_token = ?2
+                   )",
+                params![review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
+        if changed != 1 {
+            return Err(PortError(format!(
+                "review item #{review_item_id} could not be superseded atomically"
+            )));
+        }
+        transaction
+            .execute(
+                "DELETE FROM review_processing_leases
+                 WHERE review_item_id = ?1 AND lease_token = ?2",
+                params![review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
+        drop(connection);
+        self.get_review_item(review_item_id)
+    }
+
     fn finish_review_item_processing(
         &self,
         review_item_id: i64,

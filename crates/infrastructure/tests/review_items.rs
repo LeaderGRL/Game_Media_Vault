@@ -788,6 +788,223 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
 }
 
 #[test]
+fn accepted_review_finalization_persists_asset_work_and_status_together() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:accepted-atomic-finalization";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:accepted-atomic-finalization".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .set_review_decision(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+
+    let imported = catalog
+        .finalize_accepted_review_asset(
+            item.id,
+            run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: "accepted-atomic-hash".to_owned(),
+                byte_len: 42,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(imported.object_hash, "accepted-atomic-hash");
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Applied
+    );
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    assert_eq!(catalog.list_library().unwrap()[0].assets.len(), 1);
+}
+
+#[test]
+fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:accepted-atomic-rollback";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:accepted-atomic-rollback".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .set_review_decision(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_applied
+             BEFORE UPDATE OF status ON review_items
+             WHEN NEW.status = 'applied'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced applied transition failure');
+             END;",
+        )
+        .unwrap();
+
+    let result = catalog.finalize_accepted_review_asset(
+        item.id,
+        run.id,
+        work_key,
+        PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: None,
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Collector".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "accepted-rollback-hash".to_owned(),
+            byte_len: 42,
+            original_filename: "front.png".to_owned(),
+            source_id: SourceId::from("fixture-provider"),
+            source_asset_label: Some("front".to_owned()),
+            source_location: "fixture://candidate/front".to_owned(),
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Accepted
+    );
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+    assert!(catalog.list_library().unwrap().is_empty());
+}
+
+#[test]
+fn processing_review_supersession_completes_work_and_status_together() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:processing-supersede";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:processing-supersede".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+
+    let finalized = catalog
+        .supersede_review_processing_and_complete_work(
+            item.id,
+            &claim.lease_token,
+            run.id,
+            work_key,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(finalized.status, ReviewStatus::Superseded);
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+}
+
+#[test]
+fn processing_review_supersession_rolls_back_if_status_transition_fails() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:processing-supersede-rollback";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:processing-supersede-rollback".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_superseded
+             BEFORE UPDATE OF status ON review_items
+             WHEN NEW.status = 'superseded'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced superseded transition failure');
+             END;",
+        )
+        .unwrap();
+
+    let result = catalog.supersede_review_processing_and_complete_work(
+        item.id,
+        &claim.lease_token,
+        run.id,
+        work_key,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Processing
+    );
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+}
+
+#[test]
 fn a_second_run_cannot_move_an_existing_pending_review() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();

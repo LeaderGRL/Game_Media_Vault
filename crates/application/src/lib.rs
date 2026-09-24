@@ -205,6 +205,30 @@ pub trait CatalogPort {
         ))
     }
 
+    fn finalize_accepted_review_asset(
+        &self,
+        _review_item_id: i64,
+        _run_id: i64,
+        _work_key: &str,
+        _record: PersistAsset,
+    ) -> Result<ImportedAsset, PortError> {
+        Err(PortError(
+            "catalog does not support atomic accepted review finalization".to_owned(),
+        ))
+    }
+
+    fn supersede_review_processing_and_complete_work(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review supersession".to_owned(),
+        ))
+    }
+
     fn finish_review_item_processing(
         &self,
         _review_item_id: i64,
@@ -842,28 +866,30 @@ pub fn acquire_run_with_connector(
         let Some(release_edition_id) =
             reviewed_release_edition_id.or_else(|| candidate_match.auto_link_release_edition_id())
         else {
-            complete_acquisition_work(runs, run_id, &work.key)?;
             if let Some((review_item_id, _, lease_token)) = review_processing {
-                catalog.finish_review_item_processing(
+                catalog.supersede_review_processing_and_complete_work(
                     review_item_id,
                     &lease_token,
-                    ReviewStatus::Superseded,
+                    run_id,
+                    &work.key,
                 )?;
             }
+            complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };
         let Some(release) = releases
             .iter()
             .find(|release| release.release_edition_id == release_edition_id)
         else {
-            complete_acquisition_work(runs, run_id, &work.key)?;
             if let Some((review_item_id, _, lease_token)) = review_processing {
-                catalog.finish_review_item_processing(
+                catalog.supersede_review_processing_and_complete_work(
                     review_item_id,
                     &lease_token,
-                    ReviewStatus::Superseded,
+                    run_id,
+                    &work.key,
                 )?;
             }
+            complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };
         let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
@@ -904,6 +930,15 @@ pub fn acquire_run_with_connector(
                     &work.key,
                     record,
                 )?)
+            } else if let Some(review_item_id) = accepted_review_item_id {
+                Ok(ReviewProcessingFinalization::Imported(
+                    catalog.finalize_accepted_review_asset(
+                        review_item_id,
+                        run_id,
+                        &work.key,
+                        record,
+                    )?,
+                ))
             } else {
                 Ok(ReviewProcessingFinalization::Imported(
                     catalog.persist_asset(record)?,
@@ -926,9 +961,6 @@ pub fn acquire_run_with_connector(
         match finalization {
             ReviewProcessingFinalization::Imported(imported) => {
                 complete_acquisition_work(runs, run_id, &work.key)?;
-                if let Some(review_item_id) = accepted_review_item_id {
-                    catalog.set_review_status(review_item_id, ReviewStatus::Applied)?;
-                }
                 imported_assets.push(imported);
             }
             ReviewProcessingFinalization::Requeued => continue,

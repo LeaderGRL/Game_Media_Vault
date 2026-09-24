@@ -433,6 +433,30 @@ impl CatalogPort for FakeCatalog {
         Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
+    fn finalize_accepted_review_asset(
+        &self,
+        review_item_id: i64,
+        _run_id: i64,
+        _work_key: &str,
+        record: PersistAsset,
+    ) -> Result<ImportedAsset, PortError> {
+        *self.finalize_calls.borrow_mut() += 1;
+        let imported = self.persist_asset(record)?;
+        self.set_review_status(review_item_id, ReviewStatus::Applied)?;
+        Ok(imported)
+    }
+
+    fn supersede_review_processing_and_complete_work(
+        &self,
+        review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        *self.finalize_calls.borrow_mut() += 1;
+        self.update_processing_status(review_item_id, ReviewStatus::Superseded)
+    }
+
     fn finish_review_item_processing(
         &self,
         review_item_id: i64,
@@ -875,6 +899,7 @@ fn accepted_review_is_not_downloaded_again_after_successful_ingestion() {
     .unwrap();
     assert_eq!(first_resume.len(), 1);
     assert_eq!(staged_connector.downloads.borrow().len(), 1);
+    assert_eq!(*catalog.finalize_calls.borrow(), 1);
 
     let second_resume = acquire_run_with_connector(
         &runs,
@@ -1566,6 +1591,7 @@ fn pending_review_is_superseded_when_re_evaluation_becomes_low_confidence() {
         catalog.review_items.borrow()[0].status,
         ReviewStatus::Superseded
     );
+    assert_eq!(*catalog.finalize_calls.borrow(), 1);
 }
 
 #[test]
