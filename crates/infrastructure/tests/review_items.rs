@@ -202,6 +202,80 @@ fn accepting_a_review_atomically_requeues_its_completed_work() {
 }
 
 #[test]
+fn accepting_a_review_supersedes_incompatible_occurrences_of_the_same_candidate() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_run = catalog.create_run(request()).unwrap();
+    let second_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:shared-acceptance";
+    let first_work_key = "connector:first-shared-review";
+
+    catalog
+        .queue_work(first_run.id, first_work_key.to_owned())
+        .unwrap();
+    catalog.complete_work(first_run.id, first_work_key).unwrap();
+    assert!(
+        catalog
+            .compare_and_set_run_status(
+                first_run.id,
+                AcquisitionRunStatus::Running,
+                AcquisitionRunStatus::Completed,
+            )
+            .unwrap()
+    );
+
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: first_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: second_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(202, "Deluxe")],
+        })
+        .unwrap();
+
+    let first_item = catalog
+        .list_review_items()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.run_id == first_run.id)
+        .unwrap();
+    catalog
+        .accept_review_item_and_requeue(first_item.id, 201, first_work_key)
+        .unwrap()
+        .unwrap();
+
+    let items = catalog.list_review_items().unwrap();
+    let accepted = items
+        .iter()
+        .find(|item| item.run_id == first_run.id)
+        .unwrap();
+    let incompatible = items
+        .iter()
+        .find(|item| item.run_id == second_run.id)
+        .unwrap();
+    assert_eq!(accepted.status, ReviewStatus::Accepted);
+    assert_eq!(incompatible.status, ReviewStatus::Superseded);
+    assert_eq!(
+        catalog
+            .find_review_item_for_run_by_candidate_identity(second_run.id, identity)
+            .unwrap()
+            .unwrap()
+            .decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+}
+
+#[test]
 fn staging_a_review_atomically_completes_its_work() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();

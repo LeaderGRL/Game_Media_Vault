@@ -874,13 +874,42 @@ impl CatalogPort for SqliteCatalog {
         let decision = ReviewDecision::Accept { release_edition_id };
         let decision_json = serde_json::to_string(&decision)
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
-        transaction
-            .execute(
-                "UPDATE review_items SET decision_json = ?1, status = 'accepted'
-                 WHERE candidate_identity = ?2 AND status IN ('pending', 'deferred')",
-                params![decision_json, item.candidate_identity],
-            )
-            .map_err(sql_error)?;
+        let related_items = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT id, run_id, candidate_identity, candidate_json,
+                            competing_matches_json, decision_json, status
+                     FROM review_items
+                     WHERE candidate_identity = ?1 AND status IN ('pending', 'deferred')",
+                )
+                .map_err(sql_error)?;
+            let rows = statement
+                .query_map(params![item.candidate_identity], review_item_row)
+                .map_err(sql_error)?;
+            let mut related_items = Vec::new();
+            for row in rows {
+                related_items.push(decode_review_item_row(row.map_err(sql_error)?)?);
+            }
+            related_items
+        };
+        for related_item in related_items {
+            let status = if related_item
+                .competing_matches
+                .iter()
+                .any(|candidate| candidate.release_edition_id == release_edition_id)
+            {
+                ReviewStatus::Accepted
+            } else {
+                ReviewStatus::Superseded
+            };
+            transaction
+                .execute(
+                    "UPDATE review_items SET decision_json = ?1, status = ?2
+                     WHERE id = ?3 AND status IN ('pending', 'deferred')",
+                    params![decision_json, review_status_to_str(status), related_item.id],
+                )
+                .map_err(sql_error)?;
+        }
         transaction.commit().map_err(sql_error)?;
 
         item.decision = Some(decision);
