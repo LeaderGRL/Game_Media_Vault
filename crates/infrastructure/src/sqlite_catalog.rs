@@ -825,33 +825,70 @@ impl CatalogPort for SqliteCatalog {
         review_item_id: i64,
         decision: ReviewDecision,
     ) -> Result<Option<ReviewItem>, PortError> {
-        let status = match decision {
+        let status = match &decision {
             ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
             ReviewDecision::Reject => ReviewStatus::Rejected,
             ReviewDecision::Defer => ReviewStatus::Deferred,
         };
         let decision_json = serde_json::to_string(&decision)
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
+        if decision == ReviewDecision::Reject {
+            let mut connection = self.connect()?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(sql_error)?;
+            let target: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT candidate_identity, status FROM review_items WHERE id = ?1",
+                    params![review_item_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(sql_error)?;
+            let Some((candidate_identity, current_status)) = target else {
+                return Ok(None);
+            };
+            let current_status = parse_review_status(&current_status)?;
+            if !matches!(
+                current_status,
+                ReviewStatus::Pending | ReviewStatus::Deferred
+            ) {
+                return Err(PortError(format!(
+                    "review item #{review_item_id} cannot transition while {}",
+                    review_status_to_str(current_status)
+                )));
+            }
+            let changed_target = transaction
+                .execute(
+                    "UPDATE review_items SET decision_json = ?1, status = 'rejected'
+                     WHERE id = ?2 AND status IN ('pending', 'deferred')",
+                    params![decision_json, review_item_id],
+                )
+                .map_err(sql_error)?;
+            if changed_target != 1 {
+                return Err(PortError(format!(
+                    "review item #{review_item_id} could not be rejected atomically"
+                )));
+            }
+            transaction
+                .execute(
+                    "UPDATE review_items SET decision_json = ?1, status = 'rejected'
+                     WHERE candidate_identity = ?2 AND id != ?3
+                       AND status IN ('pending', 'deferred')",
+                    params![decision_json, candidate_identity, review_item_id],
+                )
+                .map_err(sql_error)?;
+            transaction.commit().map_err(sql_error)?;
+            drop(connection);
+            return self.get_review_item(review_item_id);
+        }
+
         let connection = self.connect()?;
-        let candidate_identity: Option<String> = connection
-            .query_row(
-                "SELECT candidate_identity FROM review_items WHERE id = ?1",
-                params![review_item_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql_error)?;
-        let Some(candidate_identity) = candidate_identity else {
-            return Ok(None);
-        };
-        let (predicate, key): (&str, &dyn rusqlite::ToSql) = match decision {
-            ReviewDecision::Reject => ("candidate_identity = ?3", &candidate_identity),
-            _ => ("id = ?3", &review_item_id),
-        };
         let changed = connection
             .execute(
-                &format!("UPDATE review_items SET decision_json = ?1, status = ?2 WHERE {predicate} AND status IN ('pending', 'deferred')"),
-                params![decision_json, review_status_to_str(status), key],
+                "UPDATE review_items SET decision_json = ?1, status = ?2
+                 WHERE id = ?3 AND status IN ('pending', 'deferred')",
+                params![decision_json, review_status_to_str(status), review_item_id],
             )
             .map_err(sql_error)?;
         if changed == 0 {

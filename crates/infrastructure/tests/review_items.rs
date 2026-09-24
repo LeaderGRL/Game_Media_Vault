@@ -384,6 +384,48 @@ fn terminal_review_decisions_cannot_be_overwritten_or_reopened() {
 }
 
 #[test]
+fn rejecting_a_processing_occurrence_does_not_reject_pending_siblings() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let identity = "connector:reject-race";
+    for run_id in [7, 8] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let items = catalog.list_review_items().unwrap();
+    let processing = items.iter().find(|item| item.run_id == 7).unwrap();
+    let sibling = items.iter().find(|item| item.run_id == 8).unwrap();
+    catalog
+        .claim_review_item_for_processing(processing.id)
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        catalog
+            .set_review_decision(processing.id, ReviewDecision::Reject)
+            .is_err()
+    );
+
+    assert_eq!(
+        catalog
+            .get_review_item(processing.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        ReviewStatus::Processing
+    );
+    let sibling = catalog.get_review_item(sibling.id).unwrap().unwrap();
+    assert_eq!(sibling.status, ReviewStatus::Pending);
+    assert_eq!(sibling.decision, None);
+}
+
+#[test]
 fn a_second_run_cannot_move_an_existing_pending_review() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
