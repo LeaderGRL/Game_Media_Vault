@@ -923,6 +923,56 @@ fn accepted_staged_review_resumes_when_discovery_is_unavailable() {
 }
 
 #[test]
+fn unrelated_queued_work_does_not_suppress_a_discovery_failure() {
+    let (mut first_candidate, library) = ambiguous_candidate_and_releases();
+    first_candidate.provider_candidate_id = Some("review-a".to_owned());
+    let second_candidate = AssetCandidate {
+        provider_candidate_id: Some("review-b".to_owned()),
+        ..first_candidate.clone()
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first_candidate, second_candidate],
+    };
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(catalog.review_items.borrow().len(), 2);
+    runs.run.borrow_mut().status = AcquisitionRunStatus::Running;
+    runs.queue_work(7, "connector:unrelated-work".to_owned())
+        .unwrap();
+
+    let connector = FailingDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+    let error = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("fixture discovery unavailable"));
+    assert_eq!(runs.run.borrow().queued_work, 1);
+}
+
+#[test]
 fn rediscovered_provider_candidate_replaces_the_staged_url() {
     let (mut candidate, library) = ambiguous_candidate_and_releases();
     candidate.provider_candidate_id = Some("provider-release-42".to_owned());

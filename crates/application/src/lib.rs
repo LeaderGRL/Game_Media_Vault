@@ -705,6 +705,9 @@ pub fn acquire_run_with_connector(
     let mut imported_assets = Vec::new();
     while let Some(work) = next_acquisition_work(runs, run_id)? {
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
+            if let Some(error) = discovery_error.as_ref() {
+                return Err(error.clone().into());
+            }
             break;
         };
         let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
