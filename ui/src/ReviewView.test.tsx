@@ -59,7 +59,7 @@ const item: ReviewItem = {
 
 describe("ReviewView", () => {
   it("shows source evidence, competing scores and score explanation", () => {
-    render(<ReviewView items={[item]} resolvingId={null} onResolve={vi.fn()} />);
+    render(<ReviewView items={[item]} resolvingIds={new Set()} onResolve={vi.fn()} />);
 
     expect(screen.getByRole("heading", { name: "Review Game" })).toBeInTheDocument();
     expect(screen.getByText("fixture-provider · front")).toBeInTheDocument();
@@ -78,7 +78,7 @@ describe("ReviewView", () => {
 
   it("emits accept reject and defer decisions", () => {
     const onResolve = vi.fn();
-    render(<ReviewView items={[item]} resolvingId={null} onResolve={onResolve} />);
+    render(<ReviewView items={[item]} resolvingIds={new Set()} onResolve={onResolve} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
     expect(onResolve).toHaveBeenLastCalledWith(17, {
@@ -97,7 +97,7 @@ describe("ReviewView", () => {
     const { rerender } = render(
       <ReviewView
         items={[{ ...item, status: "auto_resolved" }]}
-        resolvingId={null}
+        resolvingIds={new Set()}
         onResolve={vi.fn()}
       />,
     );
@@ -106,7 +106,7 @@ describe("ReviewView", () => {
     rerender(
       <ReviewView
         items={[{ ...item, status: "superseded" }]}
-        resolvingId={null}
+        resolvingIds={new Set()}
         onResolve={vi.fn()}
       />,
     );
@@ -115,7 +115,7 @@ describe("ReviewView", () => {
     rerender(
       <ReviewView
         items={[{ ...item, status: "processing" }]}
-        resolvingId={null}
+        resolvingIds={new Set()}
         onResolve={vi.fn()}
       />,
     );

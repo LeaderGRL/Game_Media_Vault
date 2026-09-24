@@ -181,4 +181,66 @@ describe("App", () => {
     });
     expect(screen.queryByText("Accepted · release #201")).not.toBeInTheDocument();
   });
+
+  it("keeps every in-flight review action disabled until its own request settles", async () => {
+    let finishFirst: ((item: ReviewItem) => void) | undefined;
+    let finishSecond: ((item: ReviewItem) => void) | undefined;
+    const secondReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      candidate_identity: "connector:second-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Second Review Game",
+      },
+      competing_matches: [
+        {
+          ...reviewItem.competing_matches[0],
+          release_edition_id: 202,
+          edition_name: "Deluxe",
+        },
+      ],
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<ReviewItem>((resolve) => {
+            finishFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<ReviewItem>((resolve) => {
+            finishSecond = resolve;
+          }),
+      );
+
+    const firstAccept = screen.getByRole("button", { name: "Accept Standard" });
+    const secondAccept = screen.getByRole("button", { name: "Accept Deluxe" });
+    fireEvent.click(firstAccept);
+    fireEvent.click(secondAccept);
+
+    expect(firstAccept).toBeDisabled();
+    expect(secondAccept).toBeDisabled();
+
+    finishFirst?.({
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    });
+    await waitFor(() => expect(firstAccept).toBeDisabled());
+    expect(secondAccept).toBeDisabled();
+
+    finishSecond?.({
+      ...secondReviewItem,
+      decision: { decision: "accept", release_edition_id: 202 },
+      status: "accepted",
+    });
+    expect(await screen.findByText("Accepted · release #202")).toBeInTheDocument();
+  });
 });

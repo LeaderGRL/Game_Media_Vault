@@ -13,7 +13,7 @@ export function App() {
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<"library" | "review">("library");
   const [loading, setLoading] = useState(false);
-  const [resolvingId, setResolvingId] = useState<number | null>(null);
+  const [resolvingIds, setResolvingIds] = useState<Set<number>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${entries.length} ${entries.length === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -27,7 +27,7 @@ export function App() {
     setEntries([]);
     setReviewItems([]);
     setLoadedVaultRoot(null);
-    setResolvingId(null);
+    setResolvingIds(new Set());
     try {
       const [library, reviews] = await Promise.all([
         invoke<LibraryEntry[]>("list_library", { vault_root: requestedVaultRoot }),
@@ -48,7 +48,11 @@ export function App() {
       setError("Load a vault before resolving review items.");
       return;
     }
-    setResolvingId(reviewItemId);
+    setResolvingIds((current) => {
+      const next = new Set(current);
+      next.add(reviewItemId);
+      return next;
+    });
     setError(null);
     const resolvingVaultRoot = loadedVaultRoot;
     const resolvingGeneration = vaultGeneration.current;
@@ -70,7 +74,11 @@ export function App() {
       }
     } finally {
       if (vaultGeneration.current === resolvingGeneration) {
-        setResolvingId(null);
+        setResolvingIds((current) => {
+          const next = new Set(current);
+          next.delete(reviewItemId);
+          return next;
+        });
       }
     }
   }
@@ -126,7 +134,7 @@ export function App() {
       ) : (
         <ReviewView
           items={reviewItems}
-          resolvingId={resolvingId}
+          resolvingIds={resolvingIds}
           onResolve={resolveReviewItem}
         />
       )}

@@ -2,11 +2,11 @@ import type { ReviewDecision, ReviewItem } from "./types";
 
 interface ReviewViewProps {
   items: ReviewItem[];
-  resolvingId: number | null;
+  resolvingIds: ReadonlySet<number>;
   onResolve: (reviewItemId: number, decision: ReviewDecision) => void;
 }
 
-export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
+export function ReviewView({ items, resolvingIds, onResolve }: ReviewViewProps) {
   if (items.length === 0) {
     return (
       <section className="empty-state" aria-live="polite">
@@ -19,7 +19,7 @@ export function ReviewView({ items, resolvingId, onResolve }: ReviewViewProps) {
   return (
     <section className="review-list" aria-label="Review items">
       {items.map((item) => {
-        const busy = resolvingId === item.id;
+        const busy = resolvingIds.has(item.id);
         const closed = [
           "processing",
           "accepted",
