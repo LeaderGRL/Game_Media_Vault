@@ -853,15 +853,8 @@ pub fn acquire_run_with_connector(
                     matching_policy,
                 ),
             };
-            if review_processing.is_none() {
-                if !catalog.stage_review_item_and_complete_work(item.clone(), &work.key)? {
-                    catalog.persist_review_item(item)?;
-                    complete_acquisition_work(runs, run_id, &work.key)?;
-                }
-            } else {
-                let (review_item_id, previous_status, lease_token) = review_processing
-                    .as_ref()
-                    .expect("processing review checked above");
+            if let Some((review_item_id, previous_status, lease_token)) = review_processing.as_ref()
+            {
                 let refreshed = catalog.refresh_review_processing_and_complete_work(
                     *review_item_id,
                     lease_token,
@@ -870,6 +863,11 @@ pub fn acquire_run_with_connector(
                     *previous_status,
                 )?;
                 if refreshed.status != ReviewStatus::Accepted {
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                }
+            } else {
+                if !catalog.stage_review_item_and_complete_work(item.clone(), &work.key)? {
+                    catalog.persist_review_item(item)?;
                     complete_acquisition_work(runs, run_id, &work.key)?;
                 }
             }
