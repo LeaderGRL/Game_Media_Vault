@@ -927,6 +927,17 @@ fn ensure_review_processing_lease(
 
 fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut key = "connector".to_owned();
+    if let Some(provider_candidate_id) = candidate.provider_candidate_id.as_deref() {
+        for part in [
+            source_id,
+            "provider_candidate_id",
+            provider_candidate_id,
+            asset_type_work_key(candidate.asset_type),
+        ] {
+            push_work_key_part(&mut key, part);
+        }
+        return key;
+    }
     for part in [
         source_id,
         candidate.platform.as_str(),
