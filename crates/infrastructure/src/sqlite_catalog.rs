@@ -596,7 +596,7 @@ impl CatalogPort for SqliteCatalog {
         let changed = transaction
             .execute(
                 "UPDATE review_items SET status = 'processing'
-                 WHERE id = ?1 AND status IN ('pending', 'deferred')",
+                 WHERE id = ?1 AND status IN ('pending', 'deferred', 'accepted')",
                 params![review_item_id],
             )
             .map_err(sql_error)?;
@@ -654,6 +654,7 @@ impl CatalogPort for SqliteCatalog {
                 .prepare(
                     "SELECT review.id,
                             CASE
+                                WHEN review.decision_json LIKE '%\"accept\"%' THEN 'accepted'
                                 WHEN review.decision_json LIKE '%\"defer\"%' THEN 'deferred'
                                 ELSE 'pending'
                             END
@@ -815,6 +816,7 @@ impl CatalogPort for SqliteCatalog {
     fn finalize_accepted_review_asset(
         &self,
         review_item_id: i64,
+        lease_token: &str,
         run_id: i64,
         work_key: &str,
         record: PersistAsset,
@@ -825,27 +827,25 @@ impl CatalogPort for SqliteCatalog {
             .map_err(sql_error)?;
         let review = transaction
             .query_row(
-                "SELECT run_id, status FROM review_items WHERE id = ?1",
-                params![review_item_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                "SELECT review.run_id
+                 FROM review_items AS review
+                 INNER JOIN review_processing_leases AS lease
+                    ON lease.review_item_id = review.id
+                 WHERE review.id = ?1 AND review.status = 'processing'
+                   AND lease.lease_token = ?2",
+                params![review_item_id, lease_token],
+                |row| row.get::<_, i64>(0),
             )
             .optional()
             .map_err(sql_error)?;
-        let Some((review_run_id, status)) = review else {
+        let Some(review_run_id) = review else {
             return Err(PortError(format!(
-                "review item #{review_item_id} does not exist"
+                "review item #{review_item_id} lost its accepted processing lease"
             )));
         };
         if review_run_id != run_id {
             return Err(PortError(format!(
                 "review item #{review_item_id} belongs to run #{review_run_id}, not run #{run_id}"
-            )));
-        }
-        let status = parse_review_status(&status)?;
-        if status != ReviewStatus::Accepted {
-            return Err(PortError(format!(
-                "review item #{review_item_id} cannot be applied while {}",
-                review_status_to_str(status)
             )));
         }
 
@@ -854,8 +854,12 @@ impl CatalogPort for SqliteCatalog {
         let changed = transaction
             .execute(
                 "UPDATE review_items SET status = 'applied'
-                 WHERE id = ?1 AND run_id = ?2 AND status = 'accepted'",
-                params![review_item_id, run_id],
+                 WHERE id = ?1 AND run_id = ?2 AND status = 'processing'
+                   AND EXISTS (
+                       SELECT 1 FROM review_processing_leases
+                       WHERE review_item_id = ?1 AND lease_token = ?3
+                   )",
+                params![review_item_id, run_id, lease_token],
             )
             .map_err(sql_error)?;
         if changed != 1 {
@@ -863,6 +867,13 @@ impl CatalogPort for SqliteCatalog {
                 "review item #{review_item_id} could not be applied atomically"
             )));
         }
+        transaction
+            .execute(
+                "DELETE FROM review_processing_leases
+                 WHERE review_item_id = ?1 AND lease_token = ?2",
+                params![review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
         Ok(imported)
     }
@@ -1044,7 +1055,10 @@ impl CatalogPort for SqliteCatalog {
         lease_token: &str,
         status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
-        if !matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+        if !matches!(
+            status,
+            ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
+        ) {
             return Err(PortError(format!(
                 "invalid restored review processing status: {}",
                 review_status_to_str(status)

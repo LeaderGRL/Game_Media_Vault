@@ -1100,10 +1100,15 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
             },
         )
         .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
 
     let imported = catalog
         .finalize_accepted_review_asset(
             item.id,
+            &claim.lease_token,
             run.id,
             work_key,
             PersistAsset {
@@ -1161,6 +1166,10 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
             },
         )
         .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -1175,6 +1184,7 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
 
     let result = catalog.finalize_accepted_review_asset(
         item.id,
+        &claim.lease_token,
         run.id,
         work_key,
         PersistAsset {
@@ -1198,12 +1208,72 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
     assert!(result.is_err());
     assert_eq!(
         catalog.get_review_item(item.id).unwrap().unwrap().status,
-        ReviewStatus::Accepted
+        ReviewStatus::Processing
     );
     let run = catalog.get_run(run.id).unwrap().unwrap();
     assert_eq!(run.queued_work, 1);
     assert_eq!(run.completed_work, 0);
     assert!(catalog.list_library().unwrap().is_empty());
+    assert!(
+        catalog
+            .renew_review_item_processing(item.id, &claim.lease_token)
+            .unwrap()
+    );
+}
+
+#[test]
+fn accepted_review_claim_is_exclusive_and_recovers_to_accepted_after_expiry() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:accepted-exclusive-claim".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .set_review_decision(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+
+    let first = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.item.status, ReviewStatus::Processing);
+    assert!(
+        catalog
+            .claim_review_item_for_processing(item.id)
+            .unwrap()
+            .is_none()
+    );
+
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601 WHERE review_item_id = ?1",
+            [item.id],
+        )
+        .unwrap();
+    catalog.recover_expired_review_processing(run.id).unwrap();
+
+    let recovered = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(recovered.status, ReviewStatus::Accepted);
+    assert_eq!(
+        recovered.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
 }
 
 #[test]

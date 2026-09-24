@@ -208,6 +208,7 @@ pub trait CatalogPort {
     fn finalize_accepted_review_asset(
         &self,
         _review_item_id: i64,
+        _lease_token: &str,
         _run_id: i64,
         _work_key: &str,
         _record: PersistAsset,
@@ -909,15 +910,32 @@ pub fn acquire_run_with_connector(
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };
+        let accepted_review_processing = if let Some(review_item_id) = accepted_review_item_id {
+            let Some(claimed) = catalog.claim_review_item_for_processing(review_item_id)? else {
+                continue;
+            };
+            Some((review_item_id, claimed.lease_token))
+        } else {
+            None
+        };
         let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
             let stream = connector.download(candidate)?;
-            let stored = if let Some((review_item_id, _, lease_token)) = review_processing.as_ref()
-            {
-                ensure_review_processing_lease(catalog, *review_item_id, lease_token)?;
+            let processing_lease = review_processing
+                .as_ref()
+                .map(|(review_item_id, _, lease_token)| (*review_item_id, lease_token.as_str()))
+                .or_else(|| {
+                    accepted_review_processing
+                        .as_ref()
+                        .map(|(review_item_id, lease_token)| {
+                            (*review_item_id, lease_token.as_str())
+                        })
+                });
+            let stored = if let Some((review_item_id, lease_token)) = processing_lease {
+                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
                 let mut stream =
-                    ReviewLeaseReader::new(stream, catalog, *review_item_id, lease_token);
+                    ReviewLeaseReader::new(stream, catalog, review_item_id, lease_token);
                 let stored = object_store.store_original_reader(&mut stream)?;
-                ensure_review_processing_lease(catalog, *review_item_id, lease_token)?;
+                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
                 stored
             } else {
                 let mut stream = stream;
@@ -947,10 +965,12 @@ pub fn acquire_run_with_connector(
                     &work.key,
                     record,
                 )?)
-            } else if let Some(review_item_id) = accepted_review_item_id {
+            } else if let Some((review_item_id, lease_token)) = accepted_review_processing.as_ref()
+            {
                 Ok(ReviewProcessingFinalization::Imported(
                     catalog.finalize_accepted_review_asset(
-                        review_item_id,
+                        *review_item_id,
+                        lease_token,
                         run_id,
                         &work.key,
                         record,
@@ -970,6 +990,13 @@ pub fn acquire_run_with_connector(
                         review_item_id,
                         &lease_token,
                         previous_status,
+                    )?;
+                }
+                if let Some((review_item_id, lease_token)) = accepted_review_processing {
+                    catalog.restore_review_item_processing(
+                        review_item_id,
+                        &lease_token,
+                        ReviewStatus::Accepted,
                     )?;
                 }
                 return Err(error);

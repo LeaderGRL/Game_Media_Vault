@@ -400,7 +400,7 @@ impl CatalogPort for FakeCatalog {
         };
         if !matches!(
             review_item.status,
-            ReviewStatus::Pending | ReviewStatus::Deferred
+            ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
         ) {
             return Ok(None);
         }
@@ -436,13 +436,15 @@ impl CatalogPort for FakeCatalog {
     fn finalize_accepted_review_asset(
         &self,
         review_item_id: i64,
+        lease_token: &str,
         _run_id: i64,
         _work_key: &str,
         record: PersistAsset,
     ) -> Result<ImportedAsset, PortError> {
+        assert_eq!(lease_token, format!("fake-lease-{review_item_id}"));
         *self.finalize_calls.borrow_mut() += 1;
         let imported = self.persist_asset(record)?;
-        self.set_review_status(review_item_id, ReviewStatus::Applied)?;
+        self.update_processing_status(review_item_id, ReviewStatus::Applied)?;
         Ok(imported)
     }
 
