@@ -1903,7 +1903,9 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             .execute_batch(
                 "DROP INDEX IF EXISTS idx_review_items_status;
                  CREATE INDEX IF NOT EXISTS idx_review_items_run_status
-                 ON review_items(run_id, status, id);",
+                 ON review_items(run_id, status, id);
+                 CREATE INDEX IF NOT EXISTS idx_review_items_candidate_identity
+                 ON review_items(candidate_identity, run_id, id);",
             )
             .map_err(sql_error)?;
         if legacy_asset_match_decisions {

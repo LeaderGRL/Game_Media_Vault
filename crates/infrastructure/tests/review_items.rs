@@ -717,3 +717,22 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
         .unwrap();
     assert_eq!(status_index_count, 1);
 }
+
+#[test]
+fn review_candidate_identity_lookups_are_indexed_across_runs() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    let leading_identity_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_index_info('idx_review_items_candidate_identity')
+             WHERE seqno = 0 AND name = 'candidate_identity'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(leading_identity_columns, 1);
+}
