@@ -379,4 +379,81 @@ describe("App", () => {
     });
   });
 
+  it("uses an older successful review refresh when a newer refresh fails", async () => {
+    let finishFirstResolution: ((item: ReviewItem) => void) | undefined;
+    let finishSecondResolution: ((item: ReviewItem) => void) | undefined;
+    let finishFirstRefresh: ((items: ReviewItem[]) => void) | undefined;
+    let refreshCount = 0;
+    const secondReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      candidate_identity: "connector:second-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Second Review Game",
+      },
+      competing_matches: [
+        {
+          ...reviewItem.competing_matches[0],
+          release_edition_id: 202,
+          edition_name: "Deluxe",
+        },
+      ],
+    };
+    const acceptedFirst: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    const acceptedSecond: ReviewItem = {
+      ...secondReviewItem,
+      decision: { decision: "accept", release_edition_id: 202 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "resolve_review_item") {
+        if (args?.review_item_id === 17) {
+          return new Promise<ReviewItem>((resolve) => {
+            finishFirstResolution = resolve;
+          });
+        }
+        if (args?.review_item_id === 18) {
+          return new Promise<ReviewItem>((resolve) => {
+            finishSecondResolution = resolve;
+          });
+        }
+      }
+      if (command === "list_review_items") {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          return new Promise<ReviewItem[]>((resolve) => {
+            finishFirstRefresh = resolve;
+          });
+        }
+        return Promise.reject(new Error("newer refresh failed"));
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept Deluxe" }));
+
+    finishFirstResolution?.(acceptedFirst);
+    await waitFor(() => expect(refreshCount).toBe(1));
+    finishSecondResolution?.(acceptedSecond);
+    await screen.findByText("Error: newer refresh failed");
+
+    finishFirstRefresh?.([acceptedFirst, acceptedSecond]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
+      expect(screen.getByText("Accepted · release #202")).toBeInTheDocument();
+    });
+  });
+
 });

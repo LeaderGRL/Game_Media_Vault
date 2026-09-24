@@ -7,7 +7,8 @@ import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
   const vaultGeneration = useRef(0);
-  const reviewRefreshGeneration = useRef(0);
+  const reviewRefreshRequestGeneration = useRef(0);
+  const reviewRefreshAppliedGeneration = useRef(0);
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
@@ -66,17 +67,18 @@ export function App() {
       if (vaultGeneration.current !== resolvingGeneration) {
         return;
       }
-      reviewRefreshGeneration.current += 1;
-      const resolvingRefreshGeneration = reviewRefreshGeneration.current;
+      reviewRefreshRequestGeneration.current += 1;
+      const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
       const reviews = await invoke<ReviewItem[]>("list_review_items", {
         vault_root: resolvingVaultRoot,
       });
       if (
         vaultGeneration.current !== resolvingGeneration ||
-        reviewRefreshGeneration.current !== resolvingRefreshGeneration
+        resolvingRefreshGeneration < reviewRefreshAppliedGeneration.current
       ) {
         return;
       }
+      reviewRefreshAppliedGeneration.current = resolvingRefreshGeneration;
       setReviewItems(reviews);
     } catch (reason) {
       if (vaultGeneration.current === resolvingGeneration) {
