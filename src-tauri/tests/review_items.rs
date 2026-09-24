@@ -19,6 +19,10 @@ fn review_work_key(candidate: &AssetCandidate) -> String {
         candidate.region.as_str(),
         candidate.edition_name.as_str(),
         "box_front",
+        candidate
+            .source_asset_label
+            .as_deref()
+            .unwrap_or(candidate.original_filename.as_str()),
         candidate.source_url.as_str(),
     ] {
         key.push(':');
