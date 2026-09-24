@@ -1,4 +1,7 @@
-use game_media_vault_application::{CatalogPort, RunRepositoryPort};
+use game_media_vault_application::{
+    CatalogPort, RunRepositoryPort, list_review_items as list_review_items_use_case,
+    resolve_review_item,
+};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetType, AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal,
@@ -433,7 +436,7 @@ fn processing_claim_blocks_human_resolution_and_only_recovers_after_lease_expiry
         .claim_review_item_for_processing(item.id)
         .unwrap()
         .unwrap();
-    assert_eq!(claimed.status, ReviewStatus::Processing);
+    assert_eq!(claimed.item.status, ReviewStatus::Processing);
     assert!(
         catalog
             .set_review_decision(item.id, ReviewDecision::Reject)
@@ -460,6 +463,131 @@ fn processing_claim_blocks_human_resolution_and_only_recovers_after_lease_expiry
         reopened.get_review_item(item.id).unwrap().unwrap().status,
         ReviewStatus::Pending
     );
+}
+
+#[test]
+fn stale_processing_claim_cannot_finalize_a_reclaimed_lease() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:reclaimed-review".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let first_claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601",
+            [],
+        )
+        .unwrap();
+    catalog.recover_expired_review_processing(7).unwrap();
+    let second_claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(first_claim.lease_token, second_claim.lease_token);
+    assert!(
+        !catalog
+            .renew_review_item_processing(item.id, &first_claim.lease_token)
+            .unwrap()
+    );
+    assert!(
+        catalog
+            .finish_review_item_processing(
+                item.id,
+                &first_claim.lease_token,
+                ReviewStatus::AutoResolved,
+            )
+            .is_err()
+    );
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Processing
+    );
+
+    let completed = catalog
+        .finish_review_item_processing(
+            item.id,
+            &second_claim.lease_token,
+            ReviewStatus::AutoResolved,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.status, ReviewStatus::AutoResolved);
+}
+
+#[test]
+fn listing_reviews_recovers_expired_processing_claims() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:list-recovery".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601",
+            [],
+        )
+        .unwrap();
+
+    let items = list_review_items_use_case(&catalog).unwrap();
+
+    assert_eq!(items[0].status, ReviewStatus::Pending);
+}
+
+#[test]
+fn resolving_a_review_recovers_its_expired_processing_claim() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:resolve-recovery".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601",
+            [],
+        )
+        .unwrap();
+
+    let resolved = resolve_review_item(&catalog, item.id, ReviewDecision::Reject).unwrap();
+
+    assert_eq!(resolved.status, ReviewStatus::Rejected);
 }
 
 #[test]

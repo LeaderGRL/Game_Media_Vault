@@ -5,8 +5,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ConnectorPort, ObjectStorePort, PortError, RunRepositoryPort,
-    acquire_run_with_connector,
+    CatalogPort, ConnectorPort, ObjectStorePort, PortError, ReviewProcessingClaim,
+    RunRepositoryPort, acquire_run_with_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -388,7 +388,7 @@ impl CatalogPort for FakeCatalog {
     fn claim_review_item_for_processing(
         &self,
         review_item_id: i64,
-    ) -> Result<Option<ReviewItem>, PortError> {
+    ) -> Result<Option<ReviewProcessingClaim>, PortError> {
         let mut review_items = self.review_items.borrow_mut();
         let Some(review_item) = review_items
             .iter_mut()
@@ -403,12 +403,24 @@ impl CatalogPort for FakeCatalog {
             return Ok(None);
         }
         review_item.status = ReviewStatus::Processing;
-        Ok(Some(review_item.clone()))
+        Ok(Some(ReviewProcessingClaim {
+            item: review_item.clone(),
+            lease_token: format!("fake-lease-{review_item_id}"),
+        }))
+    }
+
+    fn renew_review_item_processing(
+        &self,
+        review_item_id: i64,
+        lease_token: &str,
+    ) -> Result<bool, PortError> {
+        Ok(lease_token == format!("fake-lease-{review_item_id}"))
     }
 
     fn finish_review_item_processing(
         &self,
         review_item_id: i64,
+        _lease_token: &str,
         status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         self.update_processing_status(review_item_id, status)
@@ -417,6 +429,7 @@ impl CatalogPort for FakeCatalog {
     fn restore_review_item_processing(
         &self,
         review_item_id: i64,
+        _lease_token: &str,
         status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         self.update_processing_status(review_item_id, status)

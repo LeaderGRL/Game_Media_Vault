@@ -5,7 +5,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, PortError, ReferenceCatalogRepositoryPort, RunRepositoryPort,
+    CatalogPort, PortError, ReferenceCatalogRepositoryPort, ReviewProcessingClaim,
+    RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -699,7 +700,7 @@ impl CatalogPort for SqliteCatalog {
     fn claim_review_item_for_processing(
         &self,
         review_item_id: i64,
-    ) -> Result<Option<ReviewItem>, PortError> {
+    ) -> Result<Option<ReviewProcessingClaim>, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -714,17 +715,45 @@ impl CatalogPort for SqliteCatalog {
         if changed == 0 {
             return Ok(None);
         }
+        let lease_token: String = transaction
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+            .map_err(sql_error)?;
         transaction
             .execute(
-                "INSERT INTO review_processing_leases (review_item_id, acquired_at)
-                 VALUES (?1, unixepoch())
-                 ON CONFLICT(review_item_id) DO UPDATE SET acquired_at = excluded.acquired_at",
-                params![review_item_id],
+                "INSERT INTO review_processing_leases (review_item_id, lease_token, acquired_at)
+                 VALUES (?1, ?2, unixepoch())
+                 ON CONFLICT(review_item_id) DO UPDATE SET
+                    lease_token = excluded.lease_token,
+                    acquired_at = excluded.acquired_at",
+                params![review_item_id, lease_token],
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
         drop(connection);
-        self.get_review_item(review_item_id)
+        Ok(self
+            .get_review_item(review_item_id)?
+            .map(|item| ReviewProcessingClaim { item, lease_token }))
+    }
+
+    fn renew_review_item_processing(
+        &self,
+        review_item_id: i64,
+        lease_token: &str,
+    ) -> Result<bool, PortError> {
+        let connection = self.connect()?;
+        let changed = connection
+            .execute(
+                "UPDATE review_processing_leases
+                 SET acquired_at = unixepoch()
+                 WHERE review_item_id = ?1 AND lease_token = ?2
+                   AND EXISTS (
+                       SELECT 1 FROM review_items
+                       WHERE id = ?1 AND status = 'processing'
+                   )",
+                params![review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
+        Ok(changed == 1)
     }
 
     fn recover_expired_review_processing(&self, run_id: i64) -> Result<(), PortError> {
@@ -761,6 +790,7 @@ impl CatalogPort for SqliteCatalog {
     fn finish_review_item_processing(
         &self,
         review_item_id: i64,
+        lease_token: &str,
         status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         if !matches!(
@@ -772,12 +802,13 @@ impl CatalogPort for SqliteCatalog {
                 review_status_to_str(status)
             )));
         }
-        update_review_processing_status(self, review_item_id, status)
+        update_review_processing_status(self, review_item_id, lease_token, status)
     }
 
     fn restore_review_item_processing(
         &self,
         review_item_id: i64,
+        lease_token: &str,
         status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         if !matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
@@ -786,7 +817,7 @@ impl CatalogPort for SqliteCatalog {
                 review_status_to_str(status)
             )));
         }
-        update_review_processing_status(self, review_item_id, status)
+        update_review_processing_status(self, review_item_id, lease_token, status)
     }
 
     fn set_review_decision(
@@ -1103,6 +1134,7 @@ type ReviewItemRow = (i64, i64, String, String, String, Option<String>, String);
 fn update_review_processing_status(
     catalog: &SqliteCatalog,
     review_item_id: i64,
+    lease_token: &str,
     status: ReviewStatus,
 ) -> Result<Option<ReviewItem>, PortError> {
     let mut connection = catalog.connect()?;
@@ -1111,8 +1143,13 @@ fn update_review_processing_status(
         .map_err(sql_error)?;
     let changed = transaction
         .execute(
-            "UPDATE review_items SET status = ?1 WHERE id = ?2 AND status = 'processing'",
-            params![review_status_to_str(status), review_item_id],
+            "UPDATE review_items SET status = ?1
+             WHERE id = ?2 AND status = 'processing'
+               AND EXISTS (
+                   SELECT 1 FROM review_processing_leases
+                   WHERE review_item_id = ?2 AND lease_token = ?3
+               )",
+            params![review_status_to_str(status), review_item_id, lease_token],
         )
         .map_err(sql_error)?;
     if changed == 0 {
@@ -1122,8 +1159,9 @@ fn update_review_processing_status(
     }
     transaction
         .execute(
-            "DELETE FROM review_processing_leases WHERE review_item_id = ?1",
-            params![review_item_id],
+            "DELETE FROM review_processing_leases
+             WHERE review_item_id = ?1 AND lease_token = ?2",
+            params![review_item_id, lease_token],
         )
         .map_err(sql_error)?;
     transaction.commit().map_err(sql_error)?;
@@ -1611,6 +1649,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             );
             CREATE TABLE IF NOT EXISTS review_processing_leases (
                 review_item_id INTEGER PRIMARY KEY REFERENCES review_items(id) ON DELETE CASCADE,
+                lease_token TEXT NOT NULL,
                 acquired_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
@@ -1729,8 +1768,28 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                      CREATE TABLE review_processing_leases (
                          review_item_id INTEGER PRIMARY KEY
                              REFERENCES review_items(id) ON DELETE CASCADE,
+                         lease_token TEXT NOT NULL,
                          acquired_at INTEGER NOT NULL
                      );",
+                )
+                .map_err(sql_error)?;
+        }
+        let lease_token_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('review_processing_leases')
+                 WHERE name = 'lease_token'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if lease_token_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE review_processing_leases
+                     ADD COLUMN lease_token TEXT NOT NULL DEFAULT '';
+                     UPDATE review_processing_leases
+                     SET lease_token = lower(hex(randomblob(16)))
+                     WHERE lease_token = '';",
                 )
                 .map_err(sql_error)?;
         }

@@ -1,7 +1,8 @@
 use std::{
     fs,
-    io::{Cursor, Read},
+    io::{self, Cursor, Read},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use game_media_vault_domain::{
@@ -21,6 +22,64 @@ pub use game_media_vault_domain::{
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{0}")]
 pub struct PortError(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewProcessingClaim {
+    pub item: ReviewItem,
+    pub lease_token: String,
+}
+
+const REVIEW_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+
+struct ReviewLeaseReader<'a> {
+    inner: Box<dyn Read + Send>,
+    catalog: &'a dyn CatalogPort,
+    review_item_id: i64,
+    lease_token: &'a str,
+    last_renewed: Instant,
+}
+
+impl<'a> ReviewLeaseReader<'a> {
+    fn new(
+        inner: Box<dyn Read + Send>,
+        catalog: &'a dyn CatalogPort,
+        review_item_id: i64,
+        lease_token: &'a str,
+    ) -> Self {
+        Self {
+            inner,
+            catalog,
+            review_item_id,
+            lease_token,
+            last_renewed: Instant::now(),
+        }
+    }
+
+    fn renew_if_needed(&mut self) -> io::Result<()> {
+        if self.last_renewed.elapsed() < REVIEW_LEASE_HEARTBEAT_INTERVAL {
+            return Ok(());
+        }
+        if !self
+            .catalog
+            .renew_review_item_processing(self.review_item_id, self.lease_token)
+            .map_err(|error| io::Error::other(error.to_string()))?
+        {
+            return Err(io::Error::other(format!(
+                "review item #{} lost its processing lease",
+                self.review_item_id
+            )));
+        }
+        self.last_renewed = Instant::now();
+        Ok(())
+    }
+}
+
+impl Read for ReviewLeaseReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.renew_if_needed()?;
+        self.inner.read(buffer)
+    }
+}
 
 pub trait ObjectStorePort {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError>;
@@ -106,9 +165,19 @@ pub trait CatalogPort {
     fn claim_review_item_for_processing(
         &self,
         _review_item_id: i64,
-    ) -> Result<Option<ReviewItem>, PortError> {
+    ) -> Result<Option<ReviewProcessingClaim>, PortError> {
         Err(PortError(
             "catalog does not support review processing claims".to_owned(),
+        ))
+    }
+
+    fn renew_review_item_processing(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+    ) -> Result<bool, PortError> {
+        Err(PortError(
+            "catalog does not support renewing review processing claims".to_owned(),
         ))
     }
 
@@ -119,6 +188,7 @@ pub trait CatalogPort {
     fn finish_review_item_processing(
         &self,
         _review_item_id: i64,
+        _lease_token: &str,
         _status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         Err(PortError(
@@ -129,6 +199,7 @@ pub trait CatalogPort {
     fn restore_review_item_processing(
         &self,
         _review_item_id: i64,
+        _lease_token: &str,
         _status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         Err(PortError(
@@ -446,6 +517,18 @@ pub enum ApplicationError {
 }
 
 pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, ApplicationError> {
+    let items = catalog.list_review_items()?;
+    let processing_run_ids = items
+        .iter()
+        .filter(|item| item.status == ReviewStatus::Processing)
+        .map(|item| item.run_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if processing_run_ids.is_empty() {
+        return Ok(items);
+    }
+    for run_id in processing_run_ids {
+        catalog.recover_expired_review_processing(run_id)?;
+    }
     Ok(catalog.list_review_items()?)
 }
 
@@ -454,9 +537,15 @@ pub fn resolve_review_item(
     review_item_id: i64,
     decision: ReviewDecision,
 ) -> Result<ReviewItem, ApplicationError> {
-    let item = catalog
+    let mut item = catalog
         .get_review_item(review_item_id)?
         .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    if item.status == ReviewStatus::Processing {
+        catalog.recover_expired_review_processing(item.run_id)?;
+        item = catalog
+            .get_review_item(review_item_id)?
+            .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    }
     if !matches!(item.status, ReviewStatus::Pending | ReviewStatus::Deferred) {
         return Err(ApplicationError::ReviewItemNotActionable {
             review_item_id,
@@ -641,12 +730,12 @@ pub fn acquire_run_with_connector(
             let Some(claimed) = catalog.claim_review_item_for_processing(review_item.id)? else {
                 continue;
             };
-            let previous_status = if claimed.decision == Some(ReviewDecision::Defer) {
+            let previous_status = if claimed.item.decision == Some(ReviewDecision::Defer) {
                 ReviewStatus::Deferred
             } else {
                 ReviewStatus::Pending
             };
-            Some((review_item.id, previous_status))
+            Some((review_item.id, previous_status, claimed.lease_token))
         } else {
             None
         };
@@ -709,8 +798,12 @@ pub fn acquire_run_with_connector(
                 catalog.persist_review_item(item)?;
                 complete_acquisition_work(runs, run_id, &work.key)?;
             }
-            if let Some((review_item_id, previous_status)) = review_processing {
-                catalog.restore_review_item_processing(review_item_id, previous_status)?;
+            if let Some((review_item_id, previous_status, lease_token)) = review_processing {
+                catalog.restore_review_item_processing(
+                    review_item_id,
+                    &lease_token,
+                    previous_status,
+                )?;
             } else if catalog
                 .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?
                 .is_some_and(|item| item.status == ReviewStatus::Accepted)
@@ -723,8 +816,12 @@ pub fn acquire_run_with_connector(
             reviewed_release_edition_id.or_else(|| candidate_match.auto_link_release_edition_id())
         else {
             complete_acquisition_work(runs, run_id, &work.key)?;
-            if let Some((review_item_id, _)) = review_processing {
-                catalog.finish_review_item_processing(review_item_id, ReviewStatus::Superseded)?;
+            if let Some((review_item_id, _, lease_token)) = review_processing {
+                catalog.finish_review_item_processing(
+                    review_item_id,
+                    &lease_token,
+                    ReviewStatus::Superseded,
+                )?;
             }
             continue;
         };
@@ -733,14 +830,29 @@ pub fn acquire_run_with_connector(
             .find(|release| release.release_edition_id == release_edition_id)
         else {
             complete_acquisition_work(runs, run_id, &work.key)?;
-            if let Some((review_item_id, _)) = review_processing {
-                catalog.finish_review_item_processing(review_item_id, ReviewStatus::Superseded)?;
+            if let Some((review_item_id, _, lease_token)) = review_processing {
+                catalog.finish_review_item_processing(
+                    review_item_id,
+                    &lease_token,
+                    ReviewStatus::Superseded,
+                )?;
             }
             continue;
         };
         let import_result = (|| -> Result<ImportedAsset, ApplicationError> {
-            let mut stream = connector.download(candidate)?;
-            let stored = object_store.store_original_reader(stream.as_mut())?;
+            let stream = connector.download(candidate)?;
+            let stored = if let Some((review_item_id, _, lease_token)) = review_processing.as_ref()
+            {
+                ensure_review_processing_lease(catalog, *review_item_id, lease_token)?;
+                let mut stream =
+                    ReviewLeaseReader::new(stream, catalog, *review_item_id, lease_token);
+                let stored = object_store.store_original_reader(&mut stream)?;
+                ensure_review_processing_lease(catalog, *review_item_id, lease_token)?;
+                stored
+            } else {
+                let mut stream = stream;
+                object_store.store_original_reader(stream.as_mut())?
+            };
             Ok(catalog.persist_asset(PersistAsset {
                 existing_game_id: Some(release.game_id),
                 existing_release_edition_id: Some(release.release_edition_id),
@@ -761,15 +873,23 @@ pub fn acquire_run_with_connector(
         let imported = match import_result {
             Ok(imported) => imported,
             Err(error) => {
-                if let Some((review_item_id, previous_status)) = review_processing {
-                    catalog.restore_review_item_processing(review_item_id, previous_status)?;
+                if let Some((review_item_id, previous_status, lease_token)) = review_processing {
+                    catalog.restore_review_item_processing(
+                        review_item_id,
+                        &lease_token,
+                        previous_status,
+                    )?;
                 }
                 return Err(error);
             }
         };
         complete_acquisition_work(runs, run_id, &work.key)?;
-        if let Some((review_item_id, _)) = review_processing {
-            catalog.finish_review_item_processing(review_item_id, ReviewStatus::AutoResolved)?;
+        if let Some((review_item_id, _, lease_token)) = review_processing {
+            catalog.finish_review_item_processing(
+                review_item_id,
+                &lease_token,
+                ReviewStatus::AutoResolved,
+            )?;
         } else if let Some(review_item_id) = accepted_review_item_id {
             catalog.set_review_status(review_item_id, ReviewStatus::Applied)?;
         }
@@ -788,6 +908,21 @@ pub fn acquire_run_with_connector(
     )?;
 
     Ok(imported_assets)
+}
+
+fn ensure_review_processing_lease(
+    catalog: &dyn CatalogPort,
+    review_item_id: i64,
+    lease_token: &str,
+) -> Result<(), ApplicationError> {
+    if catalog.renew_review_item_processing(review_item_id, lease_token)? {
+        Ok(())
+    } else {
+        Err(PortError(format!(
+            "review item #{review_item_id} lost its processing lease"
+        ))
+        .into())
+    }
 }
 
 fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
