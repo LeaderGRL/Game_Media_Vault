@@ -1397,6 +1397,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 )
                 .map_err(sql_error)?;
         }
+        connection
+            .execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_review_items_status
+                 ON review_items(status, id);",
+            )
+            .map_err(sql_error)?;
         if legacy_asset_match_decisions {
             connection
                 .execute_batch(

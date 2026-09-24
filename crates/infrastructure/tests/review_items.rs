@@ -257,7 +257,10 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
 
     let connection = Connection::open(&path).unwrap();
     connection
-        .execute_batch("ALTER TABLE review_items DROP COLUMN status;")
+        .execute_batch(
+            "DROP INDEX IF EXISTS idx_review_items_status;
+             ALTER TABLE review_items DROP COLUMN status;",
+        )
         .unwrap();
     drop(connection);
 
@@ -265,4 +268,16 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
     let migrated = reopened.get_review_item(item.id).unwrap().unwrap();
     assert_eq!(migrated.status, ReviewStatus::Deferred);
     assert_eq!(migrated.decision, Some(ReviewDecision::Defer));
+    drop(reopened);
+
+    let connection = Connection::open(&path).unwrap();
+    let status_index_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_review_items_status'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status_index_count, 1);
 }
