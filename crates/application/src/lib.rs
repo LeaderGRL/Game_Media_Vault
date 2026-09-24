@@ -622,6 +622,16 @@ fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
 
 fn review_candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut identity = "candidate".to_owned();
+    if let Some(provider_candidate_id) = candidate.provider_candidate_id.as_deref() {
+        for part in [
+            source_id,
+            provider_candidate_id,
+            asset_type_work_key(candidate.asset_type),
+        ] {
+            push_work_key_part(&mut identity, part);
+        }
+        return identity;
+    }
     for part in [
         source_id,
         normalize_review_identity_part(candidate.platform.as_str()).as_str(),

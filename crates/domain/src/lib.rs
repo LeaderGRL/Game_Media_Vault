@@ -420,6 +420,8 @@ pub struct ConnectorCapabilities {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetCandidate {
+    #[serde(default)]
+    pub provider_candidate_id: Option<String>,
     pub game_title: String,
     pub platform: String,
     pub region: String,

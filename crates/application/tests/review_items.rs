@@ -125,6 +125,7 @@ fn review_item() -> ReviewItem {
         run_id: 7,
         candidate_identity: "connector:fixture-review".to_owned(),
         candidate: AssetCandidate {
+            provider_candidate_id: None,
             game_title: "Target Game".to_owned(),
             platform: "Nintendo Entertainment System".to_owned(),
             region: "USA".to_owned(),

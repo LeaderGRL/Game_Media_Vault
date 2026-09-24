@@ -9,6 +9,7 @@ use tempfile::tempdir;
 
 fn candidate() -> AssetCandidate {
     AssetCandidate {
+        provider_candidate_id: None,
         game_title: "Target Game".to_owned(),
         platform: "Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
