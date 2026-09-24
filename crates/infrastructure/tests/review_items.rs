@@ -465,6 +465,47 @@ fn current_run_review_occurrence_is_preferred_after_a_processing_race() {
 }
 
 #[test]
+fn expired_processing_occurrence_reconciles_a_terminal_sibling_decision() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let identity = "connector:expired-terminal-race";
+    for run_id in [7, 8] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let items = catalog.list_review_items().unwrap();
+    let first = items.iter().find(|item| item.run_id == 7).unwrap();
+    let current = items.iter().find(|item| item.run_id == 8).unwrap();
+    catalog
+        .claim_review_item_for_processing(current.id)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(first.id, ReviewDecision::Reject)
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601 WHERE review_item_id = ?1",
+            [current.id],
+        )
+        .unwrap();
+
+    catalog.recover_expired_review_processing(8).unwrap();
+
+    let recovered = catalog.get_review_item(current.id).unwrap().unwrap();
+    assert_eq!(recovered.status, ReviewStatus::Rejected);
+    assert_eq!(recovered.decision, Some(ReviewDecision::Reject));
+}
+
+#[test]
 fn a_second_run_cannot_move_an_existing_pending_review() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();

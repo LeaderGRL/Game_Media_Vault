@@ -762,21 +762,47 @@ impl CatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        transaction
-            .execute(
-                "UPDATE review_items
-                 SET status = CASE
-                     WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
-                     ELSE 'pending'
-                 END
-                 WHERE run_id = ?1 AND status = 'processing'
-                   AND id IN (
-                       SELECT review_item_id FROM review_processing_leases
-                       WHERE acquired_at <= unixepoch() - 3600
-                   )",
-                params![run_id],
-            )
-            .map_err(sql_error)?;
+        let expired = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT review.id,
+                            CASE
+                                WHEN review.decision_json LIKE '%\"defer\"%' THEN 'deferred'
+                                ELSE 'pending'
+                            END
+                     FROM review_items AS review
+                     INNER JOIN review_processing_leases AS lease
+                        ON lease.review_item_id = review.id
+                     WHERE review.run_id = ?1
+                       AND review.status = 'processing'
+                       AND lease.acquired_at <= unixepoch() - 3600",
+                )
+                .map_err(sql_error)?;
+            let rows = statement
+                .query_map(params![run_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sql_error)?;
+            let mut expired = Vec::new();
+            for row in rows {
+                let (review_item_id, status) = row.map_err(sql_error)?;
+                expired.push((review_item_id, parse_review_status(&status)?));
+            }
+            expired
+        };
+        for (review_item_id, restored_status) in expired {
+            transaction
+                .execute(
+                    "UPDATE review_items SET status = ?1 WHERE id = ?2 AND status = 'processing'",
+                    params![review_status_to_str(restored_status), review_item_id],
+                )
+                .map_err(sql_error)?;
+            reconcile_restored_review_with_terminal_sibling(
+                &transaction,
+                review_item_id,
+                restored_status,
+            )?;
+        }
         transaction
             .execute(
                 "DELETE FROM review_processing_leases
