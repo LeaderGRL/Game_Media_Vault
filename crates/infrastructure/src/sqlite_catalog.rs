@@ -684,8 +684,8 @@ impl CatalogPort for SqliteCatalog {
                         competing_matches_json, decision_json, status
                  FROM review_items
                  WHERE candidate_identity = ?1
-                   AND (run_id = ?2 OR status IN ('accepted', 'rejected'))
-                 ORDER BY CASE WHEN status IN ('accepted', 'rejected') THEN 0 ELSE 1 END,
+                   AND (run_id = ?2 OR status IN ('accepted', 'applied', 'rejected'))
+                 ORDER BY CASE WHEN status IN ('accepted', 'applied', 'rejected') THEN 0 ELSE 1 END,
                           CASE WHEN run_id = ?2 THEN 0 ELSE 1 END, id DESC
                  LIMIT 1",
                 params![candidate_identity, run_id],
@@ -923,10 +923,17 @@ impl CatalogPort for SqliteCatalog {
         status: ReviewStatus,
     ) -> Result<Option<ReviewItem>, PortError> {
         let connection = self.connect()?;
+        let allowed_source_statuses = if status == ReviewStatus::Applied {
+            "'accepted'"
+        } else {
+            "'pending', 'deferred'"
+        };
         let changed = connection
             .execute(
-                "UPDATE review_items SET status = ?1
-                 WHERE id = ?2 AND status IN ('pending', 'deferred')",
+                &format!(
+                    "UPDATE review_items SET status = ?1
+                     WHERE id = ?2 AND status IN ({allowed_source_statuses})"
+                ),
                 params![review_status_to_str(status), review_item_id],
             )
             .map_err(sql_error)?;
@@ -2434,6 +2441,7 @@ fn review_status_to_str(status: ReviewStatus) -> &'static str {
         ReviewStatus::Deferred => "deferred",
         ReviewStatus::Processing => "processing",
         ReviewStatus::Accepted => "accepted",
+        ReviewStatus::Applied => "applied",
         ReviewStatus::Rejected => "rejected",
         ReviewStatus::AutoResolved => "auto_resolved",
         ReviewStatus::Superseded => "superseded",
@@ -2446,6 +2454,7 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
         "deferred" => Ok(ReviewStatus::Deferred),
         "processing" => Ok(ReviewStatus::Processing),
         "accepted" => Ok(ReviewStatus::Accepted),
+        "applied" => Ok(ReviewStatus::Applied),
         "rejected" => Ok(ReviewStatus::Rejected),
         "auto_resolved" => Ok(ReviewStatus::AutoResolved),
         "superseded" => Ok(ReviewStatus::Superseded),

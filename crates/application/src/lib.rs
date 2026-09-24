@@ -95,7 +95,10 @@ pub trait CatalogPort {
             .or_else(|| {
                 items.into_iter().find(|item| {
                     item.candidate_identity == candidate_identity
-                        && matches!(item.status, ReviewStatus::Accepted | ReviewStatus::Rejected)
+                        && matches!(
+                            item.status,
+                            ReviewStatus::Accepted | ReviewStatus::Applied | ReviewStatus::Rejected
+                        )
                 })
             }))
     }
@@ -604,7 +607,10 @@ pub fn acquire_run_with_connector(
         if existing_review_item.as_ref().is_some_and(|item| {
             matches!(
                 item.status,
-                ReviewStatus::Processing | ReviewStatus::AutoResolved | ReviewStatus::Superseded
+                ReviewStatus::Processing
+                    | ReviewStatus::Applied
+                    | ReviewStatus::AutoResolved
+                    | ReviewStatus::Superseded
             )
         }) {
             complete_acquisition_work(runs, run_id, &work.key)?;
@@ -627,6 +633,10 @@ pub fn acquire_run_with_connector(
         } else {
             None
         };
+        let accepted_review_item_id = existing_review_item
+            .as_ref()
+            .filter(|item| item.run_id == run_id && item.status == ReviewStatus::Accepted)
+            .map(|item| item.id);
         let reviewed_match = if let Some(review_item) = existing_review_item {
             match review_item.decision {
                 Some(ReviewDecision::Accept { release_edition_id }) => {
@@ -742,6 +752,8 @@ pub fn acquire_run_with_connector(
         complete_acquisition_work(runs, run_id, &work.key)?;
         if let Some((review_item_id, _)) = review_processing {
             catalog.finish_review_item_processing(review_item_id, ReviewStatus::AutoResolved)?;
+        } else if let Some(review_item_id) = accepted_review_item_id {
+            catalog.set_review_status(review_item_id, ReviewStatus::Applied)?;
         }
         imported_assets.push(imported);
     }

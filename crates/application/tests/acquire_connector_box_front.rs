@@ -766,6 +766,70 @@ fn accepting_review_requeues_the_staged_candidate_on_the_original_run() {
 }
 
 #[test]
+fn accepted_review_is_not_downloaded_again_after_successful_ingestion() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    let review_item_id = catalog.review_items.borrow()[0].id;
+    catalog
+        .set_review_decision(
+            review_item_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    let work_key = runs.work.borrow().keys().next().unwrap().clone();
+    runs.requeue_completed_work(7, &work_key).unwrap();
+
+    let staged_connector = NoDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+    let first_resume = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &staged_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(first_resume.len(), 1);
+    assert_eq!(staged_connector.downloads.borrow().len(), 1);
+
+    let second_resume = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &staged_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert!(second_resume.is_empty());
+    assert_eq!(staged_connector.downloads.borrow().len(), 1);
+}
+
+#[test]
 fn accepted_review_decision_survives_mutable_provider_metadata_changes() {
     let (mut candidate, library) = ambiguous_candidate_and_releases();
     candidate.provider_candidate_id = Some("provider-release-42".to_owned());

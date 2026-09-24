@@ -470,6 +470,7 @@ pub enum ReviewStatus {
     Deferred,
     Processing,
     Accepted,
+    Applied,
     Rejected,
     AutoResolved,
     Superseded,

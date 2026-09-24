@@ -80,6 +80,7 @@ export type ReviewStatus =
   | "deferred"
   | "processing"
   | "accepted"
+  | "applied"
   | "rejected"
   | "auto_resolved"
   | "superseded";
