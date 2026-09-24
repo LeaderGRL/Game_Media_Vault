@@ -38,6 +38,14 @@ pub trait CatalogPort {
 
     fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError>;
 
+    fn stage_review_item_and_complete_work(
+        &self,
+        _item: NewReviewItem,
+        _work_key: &str,
+    ) -> Result<bool, PortError> {
+        Ok(false)
+    }
+
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
 
     fn list_processable_review_items_for_run(
@@ -99,6 +107,10 @@ pub trait CatalogPort {
         Err(PortError(
             "catalog does not support review processing claims".to_owned(),
         ))
+    }
+
+    fn recover_expired_review_processing(&self, _run_id: i64) -> Result<(), PortError> {
+        Ok(())
     }
 
     fn finish_review_item_processing(
@@ -532,6 +544,7 @@ pub fn acquire_run_with_connector(
         });
     }
     validate_connector_plan(&run.request, connector.source_id(), &capabilities)?;
+    catalog.recover_expired_review_processing(run_id)?;
     let review_items = catalog.list_processable_review_items_for_run(run_id)?;
     if run.status == AcquisitionRunStatus::Completed {
         let mut requeued = false;
@@ -602,10 +615,15 @@ pub fn acquire_run_with_connector(
                 review_item.status,
                 ReviewStatus::Pending | ReviewStatus::Deferred
             ) {
-            let Some(_) = catalog.claim_review_item_for_processing(review_item.id)? else {
+            let Some(claimed) = catalog.claim_review_item_for_processing(review_item.id)? else {
                 continue;
             };
-            Some((review_item.id, review_item.status))
+            let previous_status = if claimed.decision == Some(ReviewDecision::Defer) {
+                ReviewStatus::Deferred
+            } else {
+                ReviewStatus::Pending
+            };
+            Some((review_item.id, previous_status))
         } else {
             None
         };
@@ -646,7 +664,7 @@ pub fn acquire_run_with_connector(
             && reviewed_release_edition_id.is_none()
         {
             if review_processing.is_none() {
-                catalog.persist_review_item(NewReviewItem {
+                let item = NewReviewItem {
                     run_id,
                     candidate_identity: candidate_identity.clone(),
                     candidate: candidate.clone(),
@@ -655,9 +673,14 @@ pub fn acquire_run_with_connector(
                         &releases,
                         matching_policy,
                     ),
-                })?;
+                };
+                if !catalog.stage_review_item_and_complete_work(item.clone(), &work.key)? {
+                    catalog.persist_review_item(item)?;
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                }
+            } else {
+                complete_acquisition_work(runs, run_id, &work.key)?;
             }
-            complete_acquisition_work(runs, run_id, &work.key)?;
             if let Some((review_item_id, previous_status)) = review_processing {
                 catalog.restore_review_item_processing(review_item_id, previous_status)?;
             } else if catalog

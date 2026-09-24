@@ -317,24 +317,7 @@ impl RunRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let completed = transaction
-            .execute(
-                "UPDATE acquisition_run_work SET completed = 1
-                 WHERE run_id = ?1 AND work_key = ?2 AND completed = 0",
-                params![run_id, work_key],
-            )
-            .map_err(sql_error)?;
-        if completed == 1 {
-            transaction
-                .execute(
-                    "UPDATE acquisition_runs
-                     SET queued_work = queued_work - 1,
-                         completed_work = completed_work + 1
-                     WHERE id = ?1",
-                    params![run_id],
-                )
-                .map_err(sql_error)?;
-        }
+        complete_work_in_transaction(&transaction, run_id, work_key)?;
         transaction.commit().map_err(sql_error)
     }
 
@@ -549,7 +532,7 @@ impl CatalogPort for SqliteCatalog {
                 "INSERT INTO review_items (
                     run_id, candidate_identity, candidate_json, competing_matches_json
                  ) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(candidate_identity) DO UPDATE SET
+                 ON CONFLICT(run_id, candidate_identity) DO UPDATE SET
                     candidate_json = excluded.candidate_json,
                     competing_matches_json = excluded.competing_matches_json
                  WHERE review_items.run_id = excluded.run_id
@@ -563,6 +546,41 @@ impl CatalogPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
         Ok(())
+    }
+
+    fn stage_review_item_and_complete_work(
+        &self,
+        item: NewReviewItem,
+        work_key: &str,
+    ) -> Result<bool, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let candidate_json = serde_json::to_string(&item.candidate)
+            .map_err(|error| PortError(format!("failed to serialize review candidate: {error}")))?;
+        let competing_matches_json = serde_json::to_string(&item.competing_matches)
+            .map_err(|error| PortError(format!("failed to serialize review matches: {error}")))?;
+        transaction
+            .execute(
+                "INSERT INTO review_items (
+                    run_id, candidate_identity, candidate_json, competing_matches_json
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(run_id, candidate_identity) DO UPDATE SET
+                    candidate_json = excluded.candidate_json,
+                    competing_matches_json = excluded.competing_matches_json
+                 WHERE review_items.status IN ('pending', 'deferred')",
+                params![
+                    item.run_id,
+                    item.candidate_identity,
+                    candidate_json,
+                    competing_matches_json,
+                ],
+            )
+            .map_err(sql_error)?;
+        complete_work_in_transaction(&transaction, item.run_id, work_key)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(true)
     }
 
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
@@ -681,8 +699,11 @@ impl CatalogPort for SqliteCatalog {
         &self,
         review_item_id: i64,
     ) -> Result<Option<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let changed = connection
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let changed = transaction
             .execute(
                 "UPDATE review_items SET status = 'processing'
                  WHERE id = ?1 AND status IN ('pending', 'deferred')",
@@ -692,8 +713,48 @@ impl CatalogPort for SqliteCatalog {
         if changed == 0 {
             return Ok(None);
         }
+        transaction
+            .execute(
+                "INSERT INTO review_processing_leases (review_item_id, acquired_at)
+                 VALUES (?1, unixepoch())
+                 ON CONFLICT(review_item_id) DO UPDATE SET acquired_at = excluded.acquired_at",
+                params![review_item_id],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
         drop(connection);
         self.get_review_item(review_item_id)
+    }
+
+    fn recover_expired_review_processing(&self, run_id: i64) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "UPDATE review_items
+                 SET status = CASE
+                     WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
+                     ELSE 'pending'
+                 END
+                 WHERE run_id = ?1 AND status = 'processing'
+                   AND id IN (
+                       SELECT review_item_id FROM review_processing_leases
+                       WHERE acquired_at <= unixepoch() - 3600
+                   )",
+                params![run_id],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM review_processing_leases
+                 WHERE acquired_at <= unixepoch() - 3600
+                   AND review_item_id IN (SELECT id FROM review_items WHERE run_id = ?1)",
+                params![run_id],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)
     }
 
     fn finish_review_item_processing(
@@ -993,16 +1054,28 @@ fn update_review_processing_status(
     review_item_id: i64,
     status: ReviewStatus,
 ) -> Result<Option<ReviewItem>, PortError> {
-    let connection = catalog.connect()?;
-    let changed = connection
+    let mut connection = catalog.connect()?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
+    let changed = transaction
         .execute(
             "UPDATE review_items SET status = ?1 WHERE id = ?2 AND status = 'processing'",
             params![review_status_to_str(status), review_item_id],
         )
         .map_err(sql_error)?;
     if changed == 0 {
+        drop(transaction);
+        drop(connection);
         return review_transition_conflict(catalog, review_item_id);
     }
+    transaction
+        .execute(
+            "DELETE FROM review_processing_leases WHERE review_item_id = ?1",
+            params![review_item_id],
+        )
+        .map_err(sql_error)?;
+    transaction.commit().map_err(sql_error)?;
     drop(connection);
     catalog.get_review_item(review_item_id)
 }
@@ -1074,6 +1147,32 @@ fn requeue_completed_work_in_transaction(
                 "acquisition run #{run_id} has inconsistent completed work state"
             )));
         }
+    }
+    Ok(())
+}
+
+fn complete_work_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: i64,
+    work_key: &str,
+) -> Result<(), PortError> {
+    let completed = transaction
+        .execute(
+            "UPDATE acquisition_run_work SET completed = 1
+             WHERE run_id = ?1 AND work_key = ?2 AND completed = 0",
+            params![run_id, work_key],
+        )
+        .map_err(sql_error)?;
+    if completed == 1 {
+        transaction
+            .execute(
+                "UPDATE acquisition_runs
+                 SET queued_work = queued_work - 1,
+                     completed_work = completed_work + 1
+                 WHERE id = ?1",
+                params![run_id],
+            )
+            .map_err(sql_error)?;
     }
     Ok(())
 }
@@ -1452,11 +1551,16 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             CREATE TABLE IF NOT EXISTS review_items (
                 id INTEGER PRIMARY KEY,
                 run_id INTEGER NOT NULL,
-                candidate_identity TEXT NOT NULL UNIQUE,
+                candidate_identity TEXT NOT NULL,
                 candidate_json TEXT NOT NULL,
                 competing_matches_json TEXT NOT NULL,
                 decision_json TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
+                status TEXT NOT NULL DEFAULT 'pending',
+                UNIQUE(run_id, candidate_identity)
+            );
+            CREATE TABLE IF NOT EXISTS review_processing_leases (
+                review_item_id INTEGER PRIMARY KEY REFERENCES review_items(id) ON DELETE CASCADE,
+                acquired_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
             CREATE INDEX IF NOT EXISTS idx_release_assertion_release
@@ -1532,15 +1636,50 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 )
                 .map_err(sql_error)?;
         }
+        if has_unique_index(connection, "review_items", &["candidate_identity"])?
+            && !has_unique_index(
+                connection,
+                "review_items",
+                &["run_id", "candidate_identity"],
+            )?
+        {
+            connection
+                .execute_batch(
+                    "DROP INDEX IF EXISTS idx_review_items_run;
+                     DROP INDEX IF EXISTS idx_review_items_status;
+                     DROP INDEX IF EXISTS idx_review_items_run_status;
+                     DROP TABLE IF EXISTS review_processing_leases;
+                     ALTER TABLE review_items RENAME TO review_items_legacy_identity;
+                     CREATE TABLE review_items (
+                         id INTEGER PRIMARY KEY,
+                         run_id INTEGER NOT NULL,
+                         candidate_identity TEXT NOT NULL,
+                         candidate_json TEXT NOT NULL,
+                         competing_matches_json TEXT NOT NULL,
+                         decision_json TEXT,
+                         status TEXT NOT NULL DEFAULT 'pending',
+                         UNIQUE(run_id, candidate_identity)
+                     );
+                     INSERT INTO review_items (
+                         id, run_id, candidate_identity, candidate_json,
+                         competing_matches_json, decision_json, status
+                     )
+                     SELECT id, run_id, candidate_identity, candidate_json,
+                            competing_matches_json, decision_json, status
+                     FROM review_items_legacy_identity;
+                     DROP TABLE review_items_legacy_identity;
+                     CREATE INDEX idx_review_items_run ON review_items(run_id, id);
+                     CREATE TABLE review_processing_leases (
+                         review_item_id INTEGER PRIMARY KEY
+                             REFERENCES review_items(id) ON DELETE CASCADE,
+                         acquired_at INTEGER NOT NULL
+                     );",
+                )
+                .map_err(sql_error)?;
+        }
         connection
             .execute_batch(
-                "UPDATE review_items
-                 SET status = CASE
-                     WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
-                     ELSE 'pending'
-                 END
-                 WHERE status = 'processing';
-                 DROP INDEX IF EXISTS idx_review_items_status;
+                "DROP INDEX IF EXISTS idx_review_items_status;
                  CREATE INDEX IF NOT EXISTS idx_review_items_run_status
                  ON review_items(run_id, status, id);",
             )
@@ -1806,7 +1945,12 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
             ],
         )?;
         if (!legacy_review_items && !status_review_items)
-            || !has_unique_index(connection, "review_items", &["candidate_identity"])?
+            || (!has_unique_index(connection, "review_items", &["candidate_identity"])?
+                && !has_unique_index(
+                    connection,
+                    "review_items",
+                    &["run_id", "candidate_identity"],
+                )?)
         {
             return Ok(false);
         }

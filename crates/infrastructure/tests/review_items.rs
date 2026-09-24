@@ -202,6 +202,34 @@ fn accepting_a_review_atomically_requeues_its_completed_work() {
 }
 
 #[test]
+fn staging_a_review_atomically_completes_its_work() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:atomic-stage";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+
+    assert!(
+        catalog
+            .stage_review_item_and_complete_work(
+                NewReviewItem {
+                    run_id: run.id,
+                    candidate_identity: "connector:atomic-stage".to_owned(),
+                    candidate: candidate(),
+                    competing_matches: vec![review_match(201, "Standard")],
+                },
+                work_key,
+            )
+            .unwrap()
+    );
+
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    assert_eq!(catalog.list_review_items().unwrap().len(), 1);
+}
+
+#[test]
 fn failed_review_acceptance_rolls_back_the_work_requeue() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
@@ -303,15 +331,17 @@ fn a_second_run_cannot_move_an_existing_pending_review() {
         .unwrap();
 
     let items = catalog.list_review_items().unwrap();
-    assert_eq!(items.len(), 1);
+    assert_eq!(items.len(), 2);
     assert_eq!(items[0].run_id, 7);
     assert_eq!(items[0].candidate, first.candidate);
     assert_eq!(items[0].competing_matches, first.competing_matches);
     assert_eq!(items[0].status, ReviewStatus::Pending);
+    assert_eq!(items[1].run_id, 8);
+    assert_eq!(items[1].status, ReviewStatus::Pending);
 }
 
 #[test]
-fn processing_claim_blocks_human_resolution_and_recovers_after_reopen() {
+fn processing_claim_blocks_human_resolution_and_only_recovers_after_lease_expiry() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&path).unwrap();
@@ -338,6 +368,20 @@ fn processing_claim_blocks_human_resolution_and_recovers_after_reopen() {
     drop(catalog);
 
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    assert_eq!(
+        reopened.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Processing
+    );
+    drop(reopened);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601",
+            [],
+        )
+        .unwrap();
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    reopened.recover_expired_review_processing(7).unwrap();
     assert_eq!(
         reopened.get_review_item(item.id).unwrap().unwrap().status,
         ReviewStatus::Pending
