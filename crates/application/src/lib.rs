@@ -673,22 +673,23 @@ pub fn acquire_run_with_connector(
         if candidate_match.confidence == MatchConfidence::Medium
             && reviewed_release_edition_id.is_none()
         {
+            let item = NewReviewItem {
+                run_id,
+                candidate_identity: candidate_identity.clone(),
+                candidate: candidate.clone(),
+                competing_matches: review_matches_for_asset_candidate(
+                    candidate,
+                    &releases,
+                    matching_policy,
+                ),
+            };
             if review_processing.is_none() {
-                let item = NewReviewItem {
-                    run_id,
-                    candidate_identity: candidate_identity.clone(),
-                    candidate: candidate.clone(),
-                    competing_matches: review_matches_for_asset_candidate(
-                        candidate,
-                        &releases,
-                        matching_policy,
-                    ),
-                };
                 if !catalog.stage_review_item_and_complete_work(item.clone(), &work.key)? {
                     catalog.persist_review_item(item)?;
                     complete_acquisition_work(runs, run_id, &work.key)?;
                 }
             } else {
+                catalog.persist_review_item(item)?;
                 complete_acquisition_work(runs, run_id, &work.key)?;
             }
             if let Some((review_item_id, previous_status)) = review_processing {

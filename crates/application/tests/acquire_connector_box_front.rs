@@ -295,7 +295,7 @@ impl CatalogPort for FakeCatalog {
             if existing.run_id == item.run_id
                 && matches!(
                     existing.status,
-                    ReviewStatus::Pending | ReviewStatus::Deferred
+                    ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Processing
                 )
             {
                 existing.candidate = item.candidate;
@@ -1061,6 +1061,66 @@ fn persisted_pending_review_is_re_evaluated_without_connector_rediscovery() {
     assert_eq!(
         catalog.review_items.borrow()[0].status,
         ReviewStatus::AutoResolved
+    );
+}
+
+#[test]
+fn medium_review_refreshes_competing_matches_when_catalog_changes() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate.clone()],
+    };
+    let mut catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(catalog.review_items.borrow()[0].competing_matches.len(), 2);
+
+    let new_release = LibraryEntry {
+        game_id: 303,
+        game_title: candidate.game_title.clone(),
+        release_edition_id: 403,
+        platform: candidate.platform.clone(),
+        region: candidate.region.clone(),
+        edition_name: "Limited".to_owned(),
+        assertions: Vec::new(),
+        assets: Vec::new(),
+    };
+    catalog.library.push(new_release);
+    let staged_connector = NoDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &staged_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    let review_items = catalog.review_items.borrow();
+    assert_eq!(review_items[0].status, ReviewStatus::Pending);
+    assert!(
+        review_items[0]
+            .competing_matches
+            .iter()
+            .any(|candidate_match| candidate_match.release_edition_id == 403)
     );
 }
 

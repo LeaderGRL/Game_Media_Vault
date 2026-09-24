@@ -536,7 +536,7 @@ impl CatalogPort for SqliteCatalog {
                     candidate_json = excluded.candidate_json,
                     competing_matches_json = excluded.competing_matches_json
                  WHERE review_items.run_id = excluded.run_id
-                   AND review_items.status IN ('pending', 'deferred')",
+                   AND review_items.status IN ('pending', 'deferred', 'processing')",
                 params![
                     item.run_id,
                     item.candidate_identity,
