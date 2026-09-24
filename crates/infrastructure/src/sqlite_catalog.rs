@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, PortError, ReferenceCatalogRepositoryPort, ReviewProcessingClaim,
-    RunRepositoryPort,
+    ReviewProcessingFinalization, RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -378,148 +378,12 @@ impl ReferenceCatalogRepositoryPort for SqliteCatalog {
 impl CatalogPort for SqliteCatalog {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError> {
         let mut connection = self.connect()?;
-        let normalized_title = normalize(&record.game_title);
-        let normalized_platform = normalize(&record.platform);
-        let normalized_region = normalize(&record.region);
-        let normalized_edition = normalize(&record.edition_name);
-        let asset_type = asset_type_to_str(record.asset_type);
-        let source_id = record.source_id.as_str();
-        let byte_len = i64::try_from(record.byte_len)
-            .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
-
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let explicit_target = resolve_existing_release_target(&transaction, &record)?;
-        let lookup = ExistingImportLookup {
-            normalized_title: &normalized_title,
-            normalized_platform: &normalized_platform,
-            normalized_region: &normalized_region,
-            normalized_edition: &normalized_edition,
-            asset_type,
-            source_id,
-            byte_len,
-            release_edition_id: explicit_target.map(|(_, release_edition_id)| release_edition_id),
-        };
-        if let Some(existing) = find_existing_import(&transaction, &record, &lookup)? {
-            normalize_existing_provenance(&transaction, &record, source_id, &existing)?;
-            persist_asset_match_decision(
-                &transaction,
-                existing.imported.asset_id,
-                existing.imported.release_edition_id,
-                source_id,
-                &record.source_location,
-                record.match_decision.as_ref(),
-            )?;
-            transaction.commit().map_err(sql_error)?;
-            return Ok(existing.imported);
-        }
-
-        let game_id = match explicit_target {
-            Some((game_id, _)) => game_id,
-            None => resolve_game_id(&transaction, &record, &normalized_title)?,
-        };
-
-        let release_edition_id = if let Some((_, release_edition_id)) = explicit_target {
-            release_edition_id
-        } else {
-            transaction
-                .execute(
-                    "INSERT INTO release_editions (
-                        game_id, platform, normalized_platform, region, normalized_region,
-                        edition_name, normalized_edition_name
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                     ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
-                    params![
-                        game_id,
-                        record.platform,
-                        normalized_platform,
-                        record.region,
-                        normalized_region,
-                        record.edition_name,
-                        normalized_edition,
-                    ],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .query_row(
-                    "SELECT id FROM release_editions
-                     WHERE game_id = ?1
-                       AND normalized_platform = ?2
-                       AND normalized_region = ?3
-                       AND normalized_edition_name = ?4",
-                    params![
-                        game_id,
-                        normalized_platform,
-                        normalized_region,
-                        normalized_edition
-                    ],
-                    |row| row.get(0),
-                )
-                .map_err(sql_error)?
-        };
-
-        transaction
-            .execute(
-                "INSERT INTO assets (
-                    release_edition_id, asset_type, object_hash, byte_len, original_filename
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(release_edition_id, asset_type, object_hash) DO NOTHING",
-                params![
-                    release_edition_id,
-                    asset_type,
-                    record.object_hash,
-                    byte_len,
-                    record.original_filename,
-                ],
-            )
-            .map_err(sql_error)?;
-        let asset_id: i64 = transaction
-            .query_row(
-                "SELECT id FROM assets
-                 WHERE release_edition_id = ?1
-                   AND asset_type = ?2
-                   AND object_hash = ?3",
-                params![release_edition_id, asset_type, record.object_hash],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
-
-        transaction
-            .execute(
-                "INSERT INTO asset_provenance (
-                    asset_id, source_kind, source_asset_label, source_location
-                 ) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
-                    source_asset_label = COALESCE(
-                        excluded.source_asset_label,
-                        asset_provenance.source_asset_label
-                    )",
-                params![
-                    asset_id,
-                    source_id,
-                    record.source_asset_label,
-                    record.source_location,
-                ],
-            )
-            .map_err(sql_error)?;
-        persist_asset_match_decision(
-            &transaction,
-            asset_id,
-            release_edition_id,
-            source_id,
-            &record.source_location,
-            record.match_decision.as_ref(),
-        )?;
+        let imported = persist_asset_in_transaction(&transaction, record)?;
         transaction.commit().map_err(sql_error)?;
-
-        Ok(ImportedAsset {
-            game_id,
-            release_edition_id,
-            asset_id,
-            object_hash: record.object_hash,
-            byte_len: record.byte_len,
-        })
+        Ok(imported)
     }
 
     fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError> {
@@ -812,6 +676,117 @@ impl CatalogPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)
+    }
+
+    fn finalize_review_processing_asset(
+        &self,
+        review_item_id: i64,
+        lease_token: &str,
+        run_id: i64,
+        work_key: &str,
+        record: PersistAsset,
+    ) -> Result<ReviewProcessingFinalization, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let current = transaction
+            .query_row(
+                "SELECT review.id, review.run_id, review.candidate_identity, review.candidate_json,
+                        review.competing_matches_json, review.decision_json, review.status
+                 FROM review_items AS review
+                 INNER JOIN review_processing_leases AS lease ON lease.review_item_id = review.id
+                 WHERE review.id = ?1 AND review.status = 'processing' AND lease.lease_token = ?2",
+                params![review_item_id, lease_token],
+                review_item_row,
+            )
+            .optional()
+            .map_err(sql_error)?
+            .map(decode_review_item_row)
+            .transpose()?;
+        let Some(current) = current else {
+            drop(transaction);
+            drop(connection);
+            return review_transition_conflict(self, review_item_id).and_then(|_| {
+                Err(PortError(format!(
+                    "review item #{review_item_id} lost its processing lease"
+                )))
+            });
+        };
+        if current.run_id != run_id {
+            return Err(PortError(format!(
+                "review item #{review_item_id} belongs to run #{}, not run #{run_id}",
+                current.run_id
+            )));
+        }
+        let sibling = terminal_review_sibling(&transaction, &current)?;
+        if let Some(decision) = sibling.and_then(|item| item.decision) {
+            let (status, outcome, complete_work) = match decision {
+                ReviewDecision::Reject => (
+                    ReviewStatus::Rejected,
+                    ReviewProcessingFinalization::Discarded,
+                    true,
+                ),
+                ReviewDecision::Accept { release_edition_id } => {
+                    if current
+                        .competing_matches
+                        .iter()
+                        .any(|candidate| candidate.release_edition_id == release_edition_id)
+                    {
+                        (
+                            ReviewStatus::Accepted,
+                            ReviewProcessingFinalization::Requeued,
+                            false,
+                        )
+                    } else {
+                        (
+                            ReviewStatus::Superseded,
+                            ReviewProcessingFinalization::Discarded,
+                            true,
+                        )
+                    }
+                }
+                ReviewDecision::Defer => unreachable!("deferred reviews are not terminal siblings"),
+            };
+            let decision_json = serde_json::to_string(&decision).map_err(|error| {
+                PortError(format!("failed to serialize review decision: {error}"))
+            })?;
+            transaction
+                .execute(
+                    "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
+                    params![decision_json, review_status_to_str(status), review_item_id],
+                )
+                .map_err(sql_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM review_processing_leases WHERE review_item_id = ?1 AND lease_token = ?2",
+                    params![review_item_id, lease_token],
+                )
+                .map_err(sql_error)?;
+            if complete_work {
+                complete_work_in_transaction(&transaction, run_id, work_key)?;
+            }
+            transaction.commit().map_err(sql_error)?;
+            return Ok(outcome);
+        }
+
+        let imported = persist_asset_in_transaction(&transaction, record)?;
+        complete_work_in_transaction(&transaction, run_id, work_key)?;
+        transaction
+            .execute(
+                "UPDATE review_items SET status = 'auto_resolved'
+                 WHERE id = ?1 AND status = 'processing'",
+                params![review_item_id],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM review_processing_leases WHERE review_item_id = ?1 AND lease_token = ?2",
+                params![review_item_id, lease_token],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
     fn finish_review_item_processing(
@@ -1251,22 +1226,7 @@ fn reconcile_restored_review_with_terminal_sibling(
         )
         .map_err(sql_error)
         .and_then(decode_review_item_row)?;
-    let sibling = transaction
-        .query_row(
-            "SELECT id, run_id, candidate_identity, candidate_json,
-                    competing_matches_json, decision_json, status
-             FROM review_items
-             WHERE candidate_identity = ?1 AND id != ?2
-               AND status IN ('accepted', 'applied', 'rejected')
-             ORDER BY id DESC
-             LIMIT 1",
-            params![current.candidate_identity, review_item_id],
-            review_item_row,
-        )
-        .optional()
-        .map_err(sql_error)?
-        .map(decode_review_item_row)
-        .transpose()?;
+    let sibling = terminal_review_sibling(transaction, &current)?;
     let Some(decision) = sibling.and_then(|item| item.decision) else {
         return Ok(());
     };
@@ -1299,6 +1259,28 @@ fn reconcile_restored_review_with_terminal_sibling(
         )
         .map_err(sql_error)?;
     Ok(())
+}
+
+fn terminal_review_sibling(
+    transaction: &Transaction<'_>,
+    current: &ReviewItem,
+) -> Result<Option<ReviewItem>, PortError> {
+    transaction
+        .query_row(
+            "SELECT id, run_id, candidate_identity, candidate_json,
+                    competing_matches_json, decision_json, status
+             FROM review_items
+             WHERE candidate_identity = ?1 AND id != ?2
+               AND status IN ('accepted', 'applied', 'rejected')
+             ORDER BY id DESC
+             LIMIT 1",
+            params![current.candidate_identity, current.id],
+            review_item_row,
+        )
+        .optional()
+        .map_err(sql_error)?
+        .map(decode_review_item_row)
+        .transpose()
 }
 
 fn review_transition_conflict(
@@ -1461,6 +1443,191 @@ struct ExistingImportLookup<'a> {
 
 struct ExistingImportMatch {
     imported: ImportedAsset,
+}
+
+fn persist_asset_in_transaction(
+    transaction: &Transaction<'_>,
+    record: PersistAsset,
+) -> Result<ImportedAsset, PortError> {
+    let normalized_title = normalize(&record.game_title);
+    let normalized_platform = normalize(&record.platform);
+    let normalized_region = normalize(&record.region);
+    let normalized_edition = normalize(&record.edition_name);
+    let asset_type = asset_type_to_str(record.asset_type);
+    let source_id = record.source_id.as_str();
+    let byte_len = i64::try_from(record.byte_len)
+        .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
+    let explicit_target = resolve_existing_release_target(transaction, &record)?;
+    let lookup = ExistingImportLookup {
+        normalized_title: &normalized_title,
+        normalized_platform: &normalized_platform,
+        normalized_region: &normalized_region,
+        normalized_edition: &normalized_edition,
+        asset_type,
+        source_id,
+        byte_len,
+        release_edition_id: explicit_target.map(|(_, release_edition_id)| release_edition_id),
+    };
+    if let Some(existing) = find_existing_import(transaction, &record, &lookup)? {
+        normalize_existing_provenance(transaction, &record, source_id, &existing)?;
+        persist_asset_match_decision(
+            transaction,
+            existing.imported.asset_id,
+            existing.imported.release_edition_id,
+            source_id,
+            &record.source_location,
+            record.match_decision.as_ref(),
+        )?;
+        return Ok(existing.imported);
+    }
+
+    persist_new_asset_in_transaction(
+        transaction,
+        record,
+        normalized_title,
+        normalized_platform,
+        normalized_region,
+        normalized_edition,
+        asset_type,
+        byte_len,
+        explicit_target,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_new_asset_in_transaction(
+    transaction: &Transaction<'_>,
+    record: PersistAsset,
+    normalized_title: String,
+    normalized_platform: String,
+    normalized_region: String,
+    normalized_edition: String,
+    asset_type: &str,
+    byte_len: i64,
+    explicit_target: Option<(i64, i64)>,
+) -> Result<ImportedAsset, PortError> {
+    let game_id = match explicit_target {
+        Some((game_id, _)) => game_id,
+        None => resolve_game_id(transaction, &record, &normalized_title)?,
+    };
+    let release_edition_id = if let Some((_, release_edition_id)) = explicit_target {
+        release_edition_id
+    } else {
+        transaction
+            .execute(
+                "INSERT INTO release_editions (
+                    game_id, platform, normalized_platform, region, normalized_region,
+                    edition_name, normalized_edition_name
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(game_id, normalized_platform, normalized_region, normalized_edition_name) DO NOTHING",
+                params![
+                    game_id,
+                    record.platform,
+                    normalized_platform,
+                    record.region,
+                    normalized_region,
+                    record.edition_name,
+                    normalized_edition,
+                ],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .query_row(
+                "SELECT id FROM release_editions
+                 WHERE game_id = ?1
+                   AND normalized_platform = ?2
+                   AND normalized_region = ?3
+                   AND normalized_edition_name = ?4",
+                params![
+                    game_id,
+                    normalized_platform,
+                    normalized_region,
+                    normalized_edition
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?
+    };
+
+    persist_new_asset_row(
+        transaction,
+        record,
+        game_id,
+        release_edition_id,
+        asset_type,
+        byte_len,
+    )
+}
+
+fn persist_new_asset_row(
+    transaction: &Transaction<'_>,
+    record: PersistAsset,
+    game_id: i64,
+    release_edition_id: i64,
+    asset_type: &str,
+    byte_len: i64,
+) -> Result<ImportedAsset, PortError> {
+    transaction
+        .execute(
+            "INSERT INTO assets (
+                release_edition_id, asset_type, object_hash, byte_len, original_filename
+             ) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(release_edition_id, asset_type, object_hash) DO NOTHING",
+            params![
+                release_edition_id,
+                asset_type,
+                record.object_hash,
+                byte_len,
+                record.original_filename,
+            ],
+        )
+        .map_err(sql_error)?;
+    let asset_id: i64 = transaction
+        .query_row(
+            "SELECT id FROM assets
+             WHERE release_edition_id = ?1
+               AND asset_type = ?2
+               AND object_hash = ?3",
+            params![release_edition_id, asset_type, record.object_hash],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+
+    let source_id = record.source_id.as_str();
+    transaction
+        .execute(
+            "INSERT INTO asset_provenance (
+                asset_id, source_kind, source_asset_label, source_location
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                source_asset_label = COALESCE(
+                    excluded.source_asset_label,
+                    asset_provenance.source_asset_label
+                )",
+            params![
+                asset_id,
+                source_id,
+                record.source_asset_label,
+                record.source_location,
+            ],
+        )
+        .map_err(sql_error)?;
+    persist_asset_match_decision(
+        transaction,
+        asset_id,
+        release_edition_id,
+        source_id,
+        &record.source_location,
+        record.match_decision.as_ref(),
+    )?;
+
+    Ok(ImportedAsset {
+        game_id,
+        release_edition_id,
+        asset_id,
+        object_hash: record.object_hash,
+        byte_len: record.byte_len,
+    })
 }
 
 fn resolve_game_id(

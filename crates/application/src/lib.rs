@@ -29,6 +29,13 @@ pub struct ReviewProcessingClaim {
     pub lease_token: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewProcessingFinalization {
+    Imported(ImportedAsset),
+    Requeued,
+    Discarded,
+}
+
 const REVIEW_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
 
 struct ReviewLeaseReader<'a> {
@@ -183,6 +190,19 @@ pub trait CatalogPort {
 
     fn recover_expired_review_processing(&self, _run_id: i64) -> Result<(), PortError> {
         Ok(())
+    }
+
+    fn finalize_review_processing_asset(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+        _record: PersistAsset,
+    ) -> Result<ReviewProcessingFinalization, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review processing finalization".to_owned(),
+        ))
     }
 
     fn finish_review_item_processing(
@@ -846,7 +866,7 @@ pub fn acquire_run_with_connector(
             }
             continue;
         };
-        let import_result = (|| -> Result<ImportedAsset, ApplicationError> {
+        let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
             let stream = connector.download(candidate)?;
             let stored = if let Some((review_item_id, _, lease_token)) = review_processing.as_ref()
             {
@@ -860,7 +880,7 @@ pub fn acquire_run_with_connector(
                 let mut stream = stream;
                 object_store.store_original_reader(stream.as_mut())?
             };
-            Ok(catalog.persist_asset(PersistAsset {
+            let record = PersistAsset {
                 existing_game_id: Some(release.game_id),
                 existing_release_edition_id: Some(release.release_edition_id),
                 match_decision: Some(candidate_match),
@@ -875,10 +895,23 @@ pub fn acquire_run_with_connector(
                 source_id: candidate.source_id.clone(),
                 source_asset_label: candidate.source_asset_label.clone(),
                 source_location: candidate.source_url.clone(),
-            })?)
+            };
+            if let Some((review_item_id, _, lease_token)) = review_processing.as_ref() {
+                Ok(catalog.finalize_review_processing_asset(
+                    *review_item_id,
+                    lease_token,
+                    run_id,
+                    &work.key,
+                    record,
+                )?)
+            } else {
+                Ok(ReviewProcessingFinalization::Imported(
+                    catalog.persist_asset(record)?,
+                ))
+            }
         })();
-        let imported = match import_result {
-            Ok(imported) => imported,
+        let finalization = match import_result {
+            Ok(finalization) => finalization,
             Err(error) => {
                 if let Some((review_item_id, previous_status, lease_token)) = review_processing {
                     catalog.restore_review_item_processing(
@@ -890,17 +923,20 @@ pub fn acquire_run_with_connector(
                 return Err(error);
             }
         };
-        complete_acquisition_work(runs, run_id, &work.key)?;
-        if let Some((review_item_id, _, lease_token)) = review_processing {
-            catalog.finish_review_item_processing(
-                review_item_id,
-                &lease_token,
-                ReviewStatus::AutoResolved,
-            )?;
-        } else if let Some(review_item_id) = accepted_review_item_id {
-            catalog.set_review_status(review_item_id, ReviewStatus::Applied)?;
+        match finalization {
+            ReviewProcessingFinalization::Imported(imported) => {
+                complete_acquisition_work(runs, run_id, &work.key)?;
+                if let Some(review_item_id) = accepted_review_item_id {
+                    catalog.set_review_status(review_item_id, ReviewStatus::Applied)?;
+                }
+                imported_assets.push(imported);
+            }
+            ReviewProcessingFinalization::Requeued => continue,
+            ReviewProcessingFinalization::Discarded => {
+                complete_acquisition_work(runs, run_id, &work.key)?;
+                continue;
+            }
         }
-        imported_assets.push(imported);
     }
 
     if let Some(error) = discovery_error

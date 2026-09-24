@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, ReviewProcessingClaim,
-    RunRepositoryPort, acquire_run_with_connector,
+    ReviewProcessingFinalization, RunRepositoryPort, acquire_run_with_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -285,6 +285,7 @@ impl ObjectStorePort for FakeStore {
 struct FakeCatalog {
     records: RefCell<Vec<PersistAsset>>,
     review_items: RefCell<Vec<ReviewItem>>,
+    finalize_calls: RefCell<u32>,
     library: Vec<LibraryEntry>,
 }
 
@@ -293,6 +294,7 @@ impl Default for FakeCatalog {
         Self {
             records: RefCell::new(Vec::new()),
             review_items: RefCell::new(Vec::new()),
+            finalize_calls: RefCell::new(0),
             library: vec![matching_release()],
         }
     }
@@ -415,6 +417,20 @@ impl CatalogPort for FakeCatalog {
         lease_token: &str,
     ) -> Result<bool, PortError> {
         Ok(lease_token == format!("fake-lease-{review_item_id}"))
+    }
+
+    fn finalize_review_processing_asset(
+        &self,
+        review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+        record: PersistAsset,
+    ) -> Result<ReviewProcessingFinalization, PortError> {
+        *self.finalize_calls.borrow_mut() += 1;
+        let imported = self.persist_asset(record)?;
+        self.update_processing_status(review_item_id, ReviewStatus::AutoResolved)?;
+        Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
     fn finish_review_item_processing(
@@ -609,6 +625,7 @@ fn medium_confidence_candidate_creates_review_item_with_competing_release_eviden
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![first_release, second_release],
     };
 
@@ -712,6 +729,7 @@ fn accepted_review_decision_is_reused_for_the_same_candidate_identity() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     create_review_then_set_decision(
@@ -755,6 +773,7 @@ fn accepting_review_requeues_the_staged_candidate_on_the_original_run() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -816,6 +835,7 @@ fn accepted_review_is_not_downloaded_again_after_successful_ingestion() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -876,6 +896,7 @@ fn applied_review_decision_downloads_the_candidate_again_in_a_new_run() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let first_runs = FakeRuns::new(run_with_request(request()));
@@ -939,6 +960,7 @@ fn accepted_staged_review_resumes_when_discovery_is_unavailable() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -992,6 +1014,7 @@ fn unrelated_queued_work_does_not_suppress_a_discovery_failure() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -1042,6 +1065,7 @@ fn rediscovered_provider_candidate_replaces_the_staged_url() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -1111,6 +1135,7 @@ fn accepted_review_decision_survives_mutable_provider_metadata_changes() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     create_review_then_set_decision(
@@ -1164,6 +1189,7 @@ fn rejected_review_decision_skips_the_same_candidate_identity() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     create_review_then_set_decision(&catalog, &connector, ReviewDecision::Reject);
@@ -1195,6 +1221,7 @@ fn deferred_review_decision_keeps_the_same_candidate_staged() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     create_review_then_set_decision(&catalog, &connector, ReviewDecision::Defer);
@@ -1254,6 +1281,7 @@ fn pending_review_is_re_evaluated_when_matching_policy_changes() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![release],
     };
     let first_run = FakeRuns::new(run_with_request(request()));
@@ -1287,6 +1315,7 @@ fn pending_review_is_re_evaluated_when_matching_policy_changes() {
         catalog.review_items.borrow()[0].status,
         ReviewStatus::AutoResolved
     );
+    assert_eq!(*catalog.finalize_calls.borrow(), 1);
 }
 
 #[test]
@@ -1299,6 +1328,7 @@ fn concurrent_execution_does_not_complete_work_owned_by_a_processing_review() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -1347,6 +1377,7 @@ fn persisted_pending_review_is_re_evaluated_without_connector_rediscovery() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![release],
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -1393,6 +1424,7 @@ fn medium_review_refreshes_competing_matches_when_catalog_changes() {
     let mut catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library,
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -1453,6 +1485,7 @@ fn deferred_review_is_re_evaluated_when_matching_policy_changes() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![release],
     };
     let first_run = FakeRuns::new(run_with_request(request()));
@@ -1497,6 +1530,7 @@ fn pending_review_is_superseded_when_re_evaluation_becomes_low_confidence() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![release],
     };
     let first_run = FakeRuns::new(run_with_request(request()));
@@ -1783,6 +1817,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![
             release_for_candidate(&first, 81),
             release_for_candidate(&second, 82),
@@ -1830,6 +1865,7 @@ fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![release_for_candidate(&first, 83)],
     };
     let connector = FakeConnector {
@@ -1888,6 +1924,7 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![
             release(&first, 101, 201, "Standard"),
             release(&first, 101, 202, "Deluxe"),
@@ -1951,6 +1988,7 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     let catalog = FakeCatalog {
         records: RefCell::new(Vec::new()),
         review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
         library: vec![
             release_for_candidate(&first, 91),
             release_for_candidate(&second, 92),

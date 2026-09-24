@@ -1,12 +1,12 @@
 use game_media_vault_application::{
-    CatalogPort, RunRepositoryPort, list_review_items as list_review_items_use_case,
-    resolve_review_item,
+    CatalogPort, ReviewProcessingFinalization, RunRepositoryPort,
+    list_review_items as list_review_items_use_case, resolve_review_item,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetType, AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal,
-    NewReviewItem, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, ReviewDecision,
-    ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
+    NewReviewItem, PersistAsset, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy,
+    ReviewDecision, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use rusqlite::Connection;
@@ -503,6 +503,288 @@ fn expired_processing_occurrence_reconciles_a_terminal_sibling_decision() {
     let recovered = catalog.get_review_item(current.id).unwrap().unwrap();
     assert_eq!(recovered.status, ReviewStatus::Rejected);
     assert_eq!(recovered.decision, Some(ReviewDecision::Reject));
+}
+
+#[test]
+fn terminal_rejection_wins_before_processing_asset_is_persisted() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let identity = "connector:terminal-rejection-processing-race";
+    let first_run = catalog.create_run(request()).unwrap();
+    let processing_run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:processing-race";
+    catalog
+        .queue_work(processing_run.id, work_key.to_owned())
+        .unwrap();
+    for run_id in [first_run.id, processing_run.id] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let items = catalog.list_review_items().unwrap();
+    let first = items
+        .iter()
+        .find(|item| item.run_id == first_run.id)
+        .unwrap();
+    let processing = items
+        .iter()
+        .find(|item| item.run_id == processing_run.id)
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(processing.id)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(first.id, ReviewDecision::Reject)
+        .unwrap();
+
+    let outcome = catalog
+        .finalize_review_processing_asset(
+            processing.id,
+            &claim.lease_token,
+            processing_run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: "should-not-be-persisted".to_owned(),
+                byte_len: 42,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(outcome, ReviewProcessingFinalization::Discarded);
+    let processing = catalog.get_review_item(processing.id).unwrap().unwrap();
+    assert_eq!(processing.status, ReviewStatus::Rejected);
+    assert_eq!(processing.decision, Some(ReviewDecision::Reject));
+    let run = catalog.get_run(processing_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    assert!(catalog.list_library().unwrap().is_empty());
+}
+
+#[test]
+fn terminal_acceptance_requeues_processing_occurrence_before_persisting() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let identity = "connector:terminal-acceptance-processing-race";
+    let first_run = catalog.create_run(request()).unwrap();
+    let processing_run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:processing-acceptance-race";
+    catalog
+        .queue_work(processing_run.id, work_key.to_owned())
+        .unwrap();
+    for run_id in [first_run.id, processing_run.id] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let items = catalog.list_review_items().unwrap();
+    let first = items
+        .iter()
+        .find(|item| item.run_id == first_run.id)
+        .unwrap();
+    let processing = items
+        .iter()
+        .find(|item| item.run_id == processing_run.id)
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(processing.id)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            first.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+
+    let outcome = catalog
+        .finalize_review_processing_asset(
+            processing.id,
+            &claim.lease_token,
+            processing_run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: "should-not-be-persisted".to_owned(),
+                byte_len: 42,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(outcome, ReviewProcessingFinalization::Requeued);
+    let processing = catalog.get_review_item(processing.id).unwrap().unwrap();
+    assert_eq!(processing.status, ReviewStatus::Accepted);
+    assert_eq!(
+        processing.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201,
+        })
+    );
+    let run = catalog.get_run(processing_run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+    assert!(catalog.list_library().unwrap().is_empty());
+}
+
+#[test]
+fn processing_asset_finalization_persists_asset_work_and_review_together() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:atomic-finalization";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:atomic-finalization".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+
+    let outcome = catalog
+        .finalize_review_processing_asset(
+            item.id,
+            &claim.lease_token,
+            run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: "atomic-finalization-hash".to_owned(),
+                byte_len: 42,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+        )
+        .unwrap();
+
+    let ReviewProcessingFinalization::Imported(imported) = outcome else {
+        panic!("expected the processing asset to be imported");
+    };
+    assert_eq!(imported.object_hash, "atomic-finalization-hash");
+    let review = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(review.status, ReviewStatus::AutoResolved);
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    let library = catalog.list_library().unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].assets.len(), 1);
+    assert_eq!(library[0].assets[0].object_hash, "atomic-finalization-hash");
+}
+
+#[test]
+fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:atomic-finalization-rollback";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:atomic-finalization-rollback".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_auto_resolve
+             BEFORE UPDATE OF status ON review_items
+             WHEN NEW.status = 'auto_resolved'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced review transition failure');
+             END;",
+        )
+        .unwrap();
+
+    let result = catalog.finalize_review_processing_asset(
+        item.id,
+        &claim.lease_token,
+        run.id,
+        work_key,
+        PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: None,
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Collector".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "rollback-finalization-hash".to_owned(),
+            byte_len: 42,
+            original_filename: "front.png".to_owned(),
+            source_id: SourceId::from("fixture-provider"),
+            source_asset_label: Some("front".to_owned()),
+            source_location: "fixture://candidate/front".to_owned(),
+        },
+    );
+
+    assert!(result.is_err());
+    let review = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(review.status, ReviewStatus::Processing);
+    let run = catalog.get_run(run.id).unwrap().unwrap();
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 0);
+    assert!(catalog.list_library().unwrap().is_empty());
 }
 
 #[test]
