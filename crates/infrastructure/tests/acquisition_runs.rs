@@ -68,6 +68,30 @@ fn completed_work_is_not_returned_after_restart() {
 }
 
 #[test]
+fn accepted_review_work_can_be_requeued_from_a_completed_run() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    let work_key = "connector:review-work";
+
+    queue_acquisition_work(&catalog, run.id, work_key.to_owned()).unwrap();
+    complete_acquisition_work(&catalog, run.id, work_key).unwrap();
+    let completed = complete_acquisition_run(&catalog, run.id).unwrap();
+    assert_eq!(completed.status, AcquisitionRunStatus::Completed);
+
+    catalog.requeue_completed_work(run.id, work_key).unwrap();
+    catalog.requeue_completed_work(run.id, work_key).unwrap();
+
+    let reopened = load_acquisition_run(&catalog, run.id).unwrap();
+    let next = next_acquisition_work(&catalog, run.id).unwrap().unwrap();
+    assert_eq!(reopened.status, AcquisitionRunStatus::Running);
+    assert_eq!(reopened.queued_work, 1);
+    assert_eq!(reopened.completed_work, 0);
+    assert_eq!(next.key, work_key);
+}
+
+#[test]
 fn pause_and_resume_preserve_queued_work_across_restart() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");

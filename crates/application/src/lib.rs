@@ -1,25 +1,92 @@
 use std::{
     fs,
-    io::{Cursor, Read},
+    io::{self, Cursor, Read},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry,
-    MatchingPolicy, MatchingPolicyValidationError, PersistAsset, ReferenceReleaseRecord,
-    RetentionPolicy, SourceId, StoredObject,
+    AssetCandidateMatch, AssetType, ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition,
+    LibraryEntry, MatchConfidence, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
+    PersistAsset, ReferenceReleaseRecord, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceId, StoredObject,
 };
 use thiserror::Error;
 
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
-    match_asset_candidate_to_release,
+    match_asset_candidate_to_release, review_matches_for_asset_candidate,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{0}")]
 pub struct PortError(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewProcessingClaim {
+    pub item: ReviewItem,
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewProcessingFinalization {
+    Imported(ImportedAsset),
+    Requeued,
+    Discarded,
+}
+
+const REVIEW_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+
+struct ReviewLeaseReader<'a> {
+    inner: Box<dyn Read + Send>,
+    catalog: &'a dyn CatalogPort,
+    review_item_id: i64,
+    lease_token: &'a str,
+    last_renewed: Instant,
+}
+
+impl<'a> ReviewLeaseReader<'a> {
+    fn new(
+        inner: Box<dyn Read + Send>,
+        catalog: &'a dyn CatalogPort,
+        review_item_id: i64,
+        lease_token: &'a str,
+    ) -> Self {
+        Self {
+            inner,
+            catalog,
+            review_item_id,
+            lease_token,
+            last_renewed: Instant::now(),
+        }
+    }
+
+    fn renew_if_needed(&mut self) -> io::Result<()> {
+        if self.last_renewed.elapsed() < REVIEW_LEASE_HEARTBEAT_INTERVAL {
+            return Ok(());
+        }
+        if !self
+            .catalog
+            .renew_review_item_processing(self.review_item_id, self.lease_token)
+            .map_err(|error| io::Error::other(error.to_string()))?
+        {
+            return Err(io::Error::other(format!(
+                "review item #{} lost its processing lease",
+                self.review_item_id
+            )));
+        }
+        self.last_renewed = Instant::now();
+        Ok(())
+    }
+}
+
+impl Read for ReviewLeaseReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.renew_if_needed()?;
+        self.inner.read(buffer)
+    }
+}
 
 pub trait ObjectStorePort {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError>;
@@ -35,6 +102,201 @@ pub trait ObjectStorePort {
 pub trait CatalogPort {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError>;
 
+    fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError>;
+
+    fn stage_review_item_and_complete_work(
+        &self,
+        _item: NewReviewItem,
+        _work_key: &str,
+    ) -> Result<bool, PortError> {
+        Ok(false)
+    }
+
+    fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
+
+    fn list_processable_review_items_for_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<ReviewItem>, PortError> {
+        Ok(self
+            .list_review_items()?
+            .into_iter()
+            .filter(|item| {
+                item.run_id == run_id
+                    && matches!(
+                        item.status,
+                        ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
+                    )
+            })
+            .collect())
+    }
+
+    fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError> {
+        Ok(self
+            .list_review_items()?
+            .into_iter()
+            .find(|item| item.id == review_item_id))
+    }
+
+    fn find_review_item_by_candidate_identity(
+        &self,
+        candidate_identity: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Ok(self
+            .list_review_items()?
+            .into_iter()
+            .find(|item| item.candidate_identity == candidate_identity))
+    }
+
+    fn find_review_item_for_run_by_candidate_identity(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let items = self.list_review_items()?;
+        Ok(items
+            .iter()
+            .find(|item| item.run_id == run_id && item.candidate_identity == candidate_identity)
+            .cloned()
+            .or_else(|| {
+                items.into_iter().find(|item| {
+                    item.candidate_identity == candidate_identity
+                        && (matches!(
+                            item.status,
+                            ReviewStatus::Accepted | ReviewStatus::Applied | ReviewStatus::Rejected
+                        ) || (item.status == ReviewStatus::Processing
+                            && matches!(item.decision, Some(ReviewDecision::Accept { .. }))))
+                })
+            }))
+    }
+
+    fn claim_review_item_for_processing(
+        &self,
+        _review_item_id: i64,
+    ) -> Result<Option<ReviewProcessingClaim>, PortError> {
+        Err(PortError(
+            "catalog does not support review processing claims".to_owned(),
+        ))
+    }
+
+    fn renew_review_item_processing(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+    ) -> Result<bool, PortError> {
+        Err(PortError(
+            "catalog does not support renewing review processing claims".to_owned(),
+        ))
+    }
+
+    fn recover_expired_review_processing(&self, _run_id: i64) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn finalize_review_processing_asset(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+        _record: PersistAsset,
+    ) -> Result<ReviewProcessingFinalization, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review processing finalization".to_owned(),
+        ))
+    }
+
+    fn finalize_accepted_review_asset(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+        _record: PersistAsset,
+    ) -> Result<ReviewProcessingFinalization, PortError> {
+        Err(PortError(
+            "catalog does not support atomic accepted review finalization".to_owned(),
+        ))
+    }
+
+    fn refresh_review_processing_and_complete_work(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _item: NewReviewItem,
+        _work_key: &str,
+        _status: ReviewStatus,
+    ) -> Result<ReviewItem, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review refresh finalization".to_owned(),
+        ))
+    }
+
+    fn supersede_review_processing_and_complete_work(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _run_id: i64,
+        _work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review supersession".to_owned(),
+        ))
+    }
+
+    fn finish_review_item_processing(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support completing review processing".to_owned(),
+        ))
+    }
+
+    fn restore_review_item_processing(
+        &self,
+        _review_item_id: i64,
+        _lease_token: &str,
+        _status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support restoring review processing".to_owned(),
+        ))
+    }
+
+    fn set_review_decision(
+        &self,
+        _review_item_id: i64,
+        _decision: ReviewDecision,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support review decision persistence".to_owned(),
+        ))
+    }
+
+    fn accept_review_item_and_requeue(
+        &self,
+        _review_item_id: i64,
+        _release_edition_id: i64,
+        _work_key: &str,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support atomic review acceptance".to_owned(),
+        ))
+    }
+
+    fn set_review_status(
+        &self,
+        _review_item_id: i64,
+        _status: ReviewStatus,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        Err(PortError(
+            "catalog does not support review status persistence".to_owned(),
+        ))
+    }
+
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
 
@@ -46,6 +308,12 @@ pub trait RunRepositoryPort {
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError>;
 
     fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError>;
+
+    fn requeue_completed_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Err(PortError(
+            "run repository does not support requeuing completed work".to_owned(),
+        ))
+    }
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
@@ -291,6 +559,81 @@ pub enum ApplicationError {
     RunNotExecutable { status: AcquisitionRunStatus },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
+    #[error("review item #{0} does not exist")]
+    ReviewItemNotFound(i64),
+    #[error(
+        "release edition #{release_edition_id} is not a competing release for review item #{review_item_id}"
+    )]
+    ReviewAcceptanceNotCompeting {
+        review_item_id: i64,
+        release_edition_id: i64,
+    },
+    #[error("review item #{review_item_id} cannot be resolved while {status:?}")]
+    ReviewItemNotActionable {
+        review_item_id: i64,
+        status: ReviewStatus,
+    },
+}
+
+pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, ApplicationError> {
+    let items = catalog.list_review_items()?;
+    let processing_run_ids = items
+        .iter()
+        .filter(|item| item.status == ReviewStatus::Processing)
+        .map(|item| item.run_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if processing_run_ids.is_empty() {
+        return Ok(items);
+    }
+    for run_id in processing_run_ids {
+        catalog.recover_expired_review_processing(run_id)?;
+    }
+    Ok(catalog.list_review_items()?)
+}
+
+pub fn resolve_review_item(
+    catalog: &dyn CatalogPort,
+    review_item_id: i64,
+    decision: ReviewDecision,
+) -> Result<ReviewItem, ApplicationError> {
+    let mut item = catalog
+        .get_review_item(review_item_id)?
+        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    if item.status == ReviewStatus::Processing {
+        catalog.recover_expired_review_processing(item.run_id)?;
+        item = catalog
+            .get_review_item(review_item_id)?
+            .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    }
+    if !matches!(item.status, ReviewStatus::Pending | ReviewStatus::Deferred) {
+        return Err(ApplicationError::ReviewItemNotActionable {
+            review_item_id,
+            status: item.status,
+        });
+    }
+    if let ReviewDecision::Accept { release_edition_id } = decision
+        && !item
+            .competing_matches
+            .iter()
+            .any(|candidate| candidate.release_edition_id == release_edition_id)
+    {
+        return Err(ApplicationError::ReviewAcceptanceNotCompeting {
+            review_item_id,
+            release_edition_id,
+        });
+    }
+
+    match decision {
+        ReviewDecision::Accept { release_edition_id } => {
+            let work_key = connector_work_key(item.candidate.source_id.as_str(), &item.candidate);
+            catalog
+                .accept_review_item_and_requeue(review_item_id, release_edition_id, &work_key)?
+                .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
+        }
+        decision => catalog
+            .set_review_decision(review_item_id, decision)?
+            .ok_or(ApplicationError::ReviewItemNotFound(review_item_id)),
+    }
 }
 
 pub fn import_reference_catalog(
@@ -332,11 +675,11 @@ pub fn acquire_run_with_connector(
     matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
-    let run = load_acquisition_run(runs, run_id)?;
-    if run.status == AcquisitionRunStatus::Completed {
-        return Ok(Vec::new());
-    }
-    if run.status != AcquisitionRunStatus::Running {
+    let mut run = load_acquisition_run(runs, run_id)?;
+    if !matches!(
+        run.status,
+        AcquisitionRunStatus::Running | AcquisitionRunStatus::Completed
+    ) {
         return Err(ApplicationError::RunNotExecutable { status: run.status });
     }
     if !run.request.selects_source(connector.source_id()) {
@@ -352,29 +695,234 @@ pub fn acquire_run_with_connector(
         });
     }
     validate_connector_plan(&run.request, connector.source_id(), &capabilities)?;
+    catalog.recover_expired_review_processing(run_id)?;
+    let review_items = catalog.list_processable_review_items_for_run(run_id)?;
+    if run.status == AcquisitionRunStatus::Completed {
+        let mut requeued = false;
+        for review_item in review_items.iter().filter(|review_item| {
+            review_item.run_id == run_id
+                && review_item.candidate.source_id.as_str() == connector.source_id()
+                && matches!(
+                    review_item.status,
+                    ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
+                )
+        }) {
+            let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
+            runs.requeue_completed_work(run_id, &work_key)?;
+            requeued = true;
+        }
+        if !requeued {
+            return Ok(Vec::new());
+        }
+        run = load_acquisition_run(runs, run_id)?;
+    }
     let releases = catalog.list_library()?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
-    for candidate in connector.discover(&run.request)? {
-        if !run.request.requests_asset_type(candidate.asset_type)
-            || !capabilities.asset_types.contains(&candidate.asset_type)
+    let mut persisted_work_key_by_identity = std::collections::HashMap::new();
+    for review_item in &review_items {
+        if review_item.run_id != run_id
+            || review_item.candidate.source_id.as_str() != connector.source_id()
         {
             continue;
         }
-
-        let work_key = connector_work_key(connector.source_id(), &candidate);
-        queue_acquisition_work(runs, run_id, work_key.clone())?;
-        candidates_by_work_key.insert(work_key, candidate);
+        let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
+        persisted_work_key_by_identity
+            .insert(review_item.candidate_identity.clone(), work_key.clone());
+        candidates_by_work_key.insert(work_key, review_item.candidate.clone());
     }
+    let review_only_resume = run.queued_work > 0
+        && !persisted_work_key_by_identity.is_empty()
+        && run.queued_work as usize <= persisted_work_key_by_identity.len();
+
+    let discovery_error = match connector.discover(&run.request) {
+        Ok(candidates) => {
+            for candidate in candidates {
+                if !run.request.requests_asset_type(candidate.asset_type)
+                    || !capabilities.asset_types.contains(&candidate.asset_type)
+                {
+                    continue;
+                }
+                let candidate_identity =
+                    review_candidate_identity(connector.source_id(), &candidate);
+                if review_only_resume
+                    && let Some(work_key) = persisted_work_key_by_identity.get(&candidate_identity)
+                {
+                    candidates_by_work_key.insert(work_key.clone(), candidate);
+                    continue;
+                }
+                let work_key = connector_work_key(connector.source_id(), &candidate);
+                queue_acquisition_work(runs, run_id, work_key.clone())?;
+                candidates_by_work_key.insert(work_key, candidate);
+            }
+            None
+        }
+        Err(error) if !candidates_by_work_key.is_empty() => Some(error),
+        Err(error) => return Err(error.into()),
+    };
 
     let mut imported_assets = Vec::new();
     while let Some(work) = next_acquisition_work(runs, run_id)? {
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
+            if let Some(error) = discovery_error.as_ref() {
+                return Err(error.clone().into());
+            }
             break;
         };
-        let candidate_match =
-            match_asset_candidate_to_release(candidate, &releases, matching_policy);
-        let Some(release_edition_id) = candidate_match.auto_link_release_edition_id() else {
+        let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
+        let mut existing_review_item =
+            catalog.find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
+        if existing_review_item
+            .as_ref()
+            .is_some_and(|item| item.status == ReviewStatus::Processing)
+        {
+            break;
+        }
+        if existing_review_item.as_ref().is_some_and(|item| {
+            item.run_id == run_id
+                && matches!(
+                    item.status,
+                    ReviewStatus::Applied | ReviewStatus::AutoResolved | ReviewStatus::Superseded
+                )
+        }) {
+            complete_acquisition_work(runs, run_id, &work.key)?;
+            continue;
+        }
+        if existing_review_item.as_ref().is_some_and(|item| {
+            item.run_id != run_id
+                && matches!(item.status, ReviewStatus::Accepted | ReviewStatus::Applied)
+                && matches!(item.decision, Some(ReviewDecision::Accept { .. }))
+        }) {
+            let staged = catalog.stage_review_item_and_complete_work(
+                NewReviewItem {
+                    run_id,
+                    candidate_identity: candidate_identity.clone(),
+                    candidate: candidate.clone(),
+                    competing_matches: review_matches_for_asset_candidate(
+                        candidate,
+                        &releases,
+                        matching_policy,
+                    ),
+                },
+                &work.key,
+            )?;
+            if !staged {
+                return Err(PortError(
+                    "catalog could not materialize an inherited accepted review".to_owned(),
+                )
+                .into());
+            }
+            existing_review_item = catalog
+                .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
+        }
+        let review_processing = if let Some(review_item) = existing_review_item.as_ref()
+            && matches!(
+                review_item.status,
+                ReviewStatus::Pending | ReviewStatus::Deferred
+            ) {
+            let Some(claimed) = catalog.claim_review_item_for_processing(review_item.id)? else {
+                continue;
+            };
+            let previous_status = if claimed.item.decision == Some(ReviewDecision::Defer) {
+                ReviewStatus::Deferred
+            } else {
+                ReviewStatus::Pending
+            };
+            Some((review_item.id, previous_status, claimed.lease_token))
+        } else {
+            None
+        };
+        let accepted_review_item_id = existing_review_item
+            .as_ref()
+            .filter(|item| item.run_id == run_id && item.status == ReviewStatus::Accepted)
+            .map(|item| item.id);
+        let reviewed_match = if let Some(review_item) = existing_review_item {
+            match review_item.decision {
+                Some(ReviewDecision::Accept { release_edition_id }) => {
+                    let accepted = review_item
+                        .competing_matches
+                        .iter()
+                        .find(|candidate| candidate.release_edition_id == release_edition_id)
+                        .ok_or(ApplicationError::ReviewAcceptanceNotCompeting {
+                            review_item_id: review_item.id,
+                            release_edition_id,
+                        })?;
+                    Some(AssetCandidateMatch {
+                        release_edition_id: Some(release_edition_id),
+                        score: accepted.score,
+                        confidence: MatchConfidence::Medium,
+                        evidence: accepted.evidence.clone(),
+                    })
+                }
+                Some(ReviewDecision::Reject) => {
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                    continue;
+                }
+                Some(ReviewDecision::Defer) | None => None,
+            }
+        } else {
+            None
+        };
+        let reviewed_release_edition_id = reviewed_match
+            .as_ref()
+            .and_then(|candidate_match| candidate_match.release_edition_id);
+        let candidate_match = reviewed_match.unwrap_or_else(|| {
+            match_asset_candidate_to_release(candidate, &releases, matching_policy)
+        });
+        if candidate_match.confidence == MatchConfidence::Medium
+            && reviewed_release_edition_id.is_none()
+        {
+            let item = NewReviewItem {
+                run_id,
+                candidate_identity: candidate_identity.clone(),
+                candidate: candidate.clone(),
+                competing_matches: review_matches_for_asset_candidate(
+                    candidate,
+                    &releases,
+                    matching_policy,
+                ),
+            };
+            if let Some((review_item_id, previous_status, lease_token)) = review_processing.as_ref()
+            {
+                let refreshed = catalog.refresh_review_processing_and_complete_work(
+                    *review_item_id,
+                    lease_token,
+                    item,
+                    &work.key,
+                    *previous_status,
+                )?;
+                if refreshed.status != ReviewStatus::Accepted {
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                }
+            } else {
+                if !catalog.stage_review_item_and_complete_work(item.clone(), &work.key)? {
+                    catalog.persist_review_item(item)?;
+                    complete_acquisition_work(runs, run_id, &work.key)?;
+                }
+            }
+            if review_processing.is_none()
+                && catalog
+                    .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?
+                    .is_some_and(|item| item.status == ReviewStatus::Accepted)
+            {
+                runs.requeue_completed_work(run_id, &work.key)?;
+            }
+            continue;
+        }
+        let Some(release_edition_id) =
+            reviewed_release_edition_id.or_else(|| candidate_match.auto_link_release_edition_id())
+        else {
+            if let Some((review_item_id, _, lease_token)) = review_processing {
+                let finalized = catalog.supersede_review_processing_and_complete_work(
+                    review_item_id,
+                    &lease_token,
+                    run_id,
+                    &work.key,
+                )?;
+                if finalized.is_some_and(|item| item.status == ReviewStatus::Accepted) {
+                    continue;
+                }
+            }
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };
@@ -382,31 +930,128 @@ pub fn acquire_run_with_connector(
             .iter()
             .find(|release| release.release_edition_id == release_edition_id)
         else {
+            if let Some((review_item_id, _, lease_token)) = review_processing {
+                let finalized = catalog.supersede_review_processing_and_complete_work(
+                    review_item_id,
+                    &lease_token,
+                    run_id,
+                    &work.key,
+                )?;
+                if finalized.is_some_and(|item| item.status == ReviewStatus::Accepted) {
+                    continue;
+                }
+            }
             complete_acquisition_work(runs, run_id, &work.key)?;
             continue;
         };
-        let mut stream = connector.download(candidate)?;
-        let stored = object_store.store_original_reader(stream.as_mut())?;
-        let imported = catalog.persist_asset(PersistAsset {
-            existing_game_id: Some(release.game_id),
-            existing_release_edition_id: Some(release.release_edition_id),
-            match_decision: Some(candidate_match),
-            game_title: candidate.game_title.clone(),
-            platform: candidate.platform.clone(),
-            region: candidate.region.clone(),
-            edition_name: candidate.edition_name.clone(),
-            asset_type: candidate.asset_type,
-            object_hash: stored.hash,
-            byte_len: stored.byte_len,
-            original_filename: candidate.original_filename.clone(),
-            source_id: candidate.source_id.clone(),
-            source_asset_label: candidate.source_asset_label.clone(),
-            source_location: candidate.source_url.clone(),
-        })?;
-        complete_acquisition_work(runs, run_id, &work.key)?;
-        imported_assets.push(imported);
+        let accepted_review_processing = if let Some(review_item_id) = accepted_review_item_id {
+            let Some(claimed) = catalog.claim_review_item_for_processing(review_item_id)? else {
+                continue;
+            };
+            Some((review_item_id, claimed.lease_token))
+        } else {
+            None
+        };
+        let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
+            let stream = connector.download(candidate)?;
+            let processing_lease = review_processing
+                .as_ref()
+                .map(|(review_item_id, _, lease_token)| (*review_item_id, lease_token.as_str()))
+                .or_else(|| {
+                    accepted_review_processing
+                        .as_ref()
+                        .map(|(review_item_id, lease_token)| {
+                            (*review_item_id, lease_token.as_str())
+                        })
+                });
+            let stored = if let Some((review_item_id, lease_token)) = processing_lease {
+                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
+                let mut stream =
+                    ReviewLeaseReader::new(stream, catalog, review_item_id, lease_token);
+                let stored = object_store.store_original_reader(&mut stream)?;
+                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
+                stored
+            } else {
+                let mut stream = stream;
+                object_store.store_original_reader(stream.as_mut())?
+            };
+            let record = PersistAsset {
+                existing_game_id: Some(release.game_id),
+                existing_release_edition_id: Some(release.release_edition_id),
+                match_decision: Some(candidate_match),
+                game_title: candidate.game_title.clone(),
+                platform: candidate.platform.clone(),
+                region: candidate.region.clone(),
+                edition_name: candidate.edition_name.clone(),
+                asset_type: candidate.asset_type,
+                object_hash: stored.hash,
+                byte_len: stored.byte_len,
+                original_filename: candidate.original_filename.clone(),
+                source_id: candidate.source_id.clone(),
+                source_asset_label: candidate.source_asset_label.clone(),
+                source_location: candidate.source_url.clone(),
+            };
+            if let Some((review_item_id, _, lease_token)) = review_processing.as_ref() {
+                Ok(catalog.finalize_review_processing_asset(
+                    *review_item_id,
+                    lease_token,
+                    run_id,
+                    &work.key,
+                    record,
+                )?)
+            } else if let Some((review_item_id, lease_token)) = accepted_review_processing.as_ref()
+            {
+                Ok(catalog.finalize_accepted_review_asset(
+                    *review_item_id,
+                    lease_token,
+                    run_id,
+                    &work.key,
+                    record,
+                )?)
+            } else {
+                Ok(ReviewProcessingFinalization::Imported(
+                    catalog.persist_asset(record)?,
+                ))
+            }
+        })();
+        let finalization = match import_result {
+            Ok(finalization) => finalization,
+            Err(error) => {
+                if let Some((review_item_id, previous_status, lease_token)) = review_processing {
+                    catalog.restore_review_item_processing(
+                        review_item_id,
+                        &lease_token,
+                        previous_status,
+                    )?;
+                }
+                if let Some((review_item_id, lease_token)) = accepted_review_processing {
+                    catalog.restore_review_item_processing(
+                        review_item_id,
+                        &lease_token,
+                        ReviewStatus::Accepted,
+                    )?;
+                }
+                return Err(error);
+            }
+        };
+        match finalization {
+            ReviewProcessingFinalization::Imported(imported) => {
+                complete_acquisition_work(runs, run_id, &work.key)?;
+                imported_assets.push(imported);
+            }
+            ReviewProcessingFinalization::Requeued => continue,
+            ReviewProcessingFinalization::Discarded => {
+                complete_acquisition_work(runs, run_id, &work.key)?;
+                continue;
+            }
+        }
     }
 
+    if let Some(error) = discovery_error
+        && !review_only_resume
+    {
+        return Err(error.into());
+    }
     runs.compare_and_set_run_status(
         run_id,
         AcquisitionRunStatus::Running,
@@ -416,8 +1061,34 @@ pub fn acquire_run_with_connector(
     Ok(imported_assets)
 }
 
+fn ensure_review_processing_lease(
+    catalog: &dyn CatalogPort,
+    review_item_id: i64,
+    lease_token: &str,
+) -> Result<(), ApplicationError> {
+    if catalog.renew_review_item_processing(review_item_id, lease_token)? {
+        Ok(())
+    } else {
+        Err(PortError(format!(
+            "review item #{review_item_id} lost its processing lease"
+        ))
+        .into())
+    }
+}
+
 fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut key = "connector".to_owned();
+    if let Some(provider_candidate_id) = candidate.provider_candidate_id.as_deref() {
+        for part in [
+            source_id,
+            "provider_candidate_id",
+            provider_candidate_id,
+            asset_type_work_key(candidate.asset_type),
+        ] {
+            push_work_key_part(&mut key, part);
+        }
+        return key;
+    }
     for part in [
         source_id,
         candidate.platform.as_str(),
@@ -425,11 +1096,49 @@ fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
         candidate.region.as_str(),
         candidate.edition_name.as_str(),
         asset_type_work_key(candidate.asset_type),
+        candidate
+            .source_asset_label
+            .as_deref()
+            .unwrap_or(candidate.original_filename.as_str()),
         candidate.source_url.as_str(),
     ] {
         push_work_key_part(&mut key, part);
     }
     key
+}
+
+fn review_candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String {
+    let mut identity = "candidate".to_owned();
+    if let Some(provider_candidate_id) = candidate.provider_candidate_id.as_deref() {
+        for part in [
+            source_id,
+            provider_candidate_id,
+            asset_type_work_key(candidate.asset_type),
+        ] {
+            push_work_key_part(&mut identity, part);
+        }
+        return identity;
+    }
+    for part in [
+        source_id,
+        normalize_review_identity_part(candidate.platform.as_str()).as_str(),
+        normalize_review_identity_part(candidate.game_title.as_str()).as_str(),
+        normalize_review_identity_part(candidate.region.as_str()).as_str(),
+        normalize_review_identity_part(candidate.edition_name.as_str()).as_str(),
+        asset_type_work_key(candidate.asset_type),
+        candidate
+            .source_asset_label
+            .as_deref()
+            .unwrap_or(candidate.original_filename.as_str()),
+        candidate.source_url.as_str(),
+    ] {
+        push_work_key_part(&mut identity, part);
+    }
+    identity
+}
+
+fn normalize_review_identity_part(value: &str) -> String {
+    value.trim().to_lowercase()
 }
 
 fn push_work_key_part(key: &mut String, value: &str) {

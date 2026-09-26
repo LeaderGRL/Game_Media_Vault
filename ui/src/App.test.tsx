@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LibraryEntry } from "./types";
+import type { LibraryEntry, ReviewItem } from "./types";
 
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -39,26 +39,499 @@ const entry: LibraryEntry = {
   ],
 };
 
+const reviewItem: ReviewItem = {
+  id: 17,
+  run_id: 7,
+  candidate_identity: "connector:review-game",
+  candidate: {
+    game_title: "Review Game",
+    platform: "Nintendo Entertainment System",
+    region: "USA",
+    edition_name: "Collector",
+    asset_type: "box_front",
+    source_id: "fixture-provider",
+    source_asset_label: "front",
+    source_url: "fixture://review/front",
+    original_filename: "front.png",
+  },
+  competing_matches: [
+    {
+      game_id: 301,
+      release_edition_id: 201,
+      game_title: "Review Game",
+      platform: "Nintendo Entertainment System",
+      region: "USA",
+      edition_name: "Standard",
+      score: 90,
+      evidence: [],
+      assertions: [],
+    },
+  ],
+  decision: null,
+  status: "pending",
+};
+
 describe("App", () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {
-    invokeMock.mockResolvedValueOnce([entry]);
+    invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Load library" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    expect(screen.getByText("1 release")).toBeInTheDocument();
+    expect(screen.getByText("1 release · 0 reviews")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Vault path"), {
       target: { value: "missing-vault" },
     });
     invokeMock.mockRejectedValueOnce(new Error("catalog does not exist"));
-    fireEvent.click(screen.getByRole("button", { name: "Load library" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
 
     expect(await screen.findByText(/catalog does not exist/)).toBeInTheDocument();
     expect(screen.queryByText("Metal Gear Solid")).not.toBeInTheDocument();
   });
+
+  it("loads review items and persists a decision through Tauri", async () => {
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    expect(await screen.findByText("Review Game")).toBeInTheDocument();
+
+    const acceptedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce(acceptedReviewItem).mockResolvedValueOnce([acceptedReviewItem]);
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    expect(invokeMock).toHaveBeenCalledWith("resolve_review_item", {
+      vault_root: ".game-media-vault",
+      review_item_id: 17,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+    expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
+  });
+
+  it("refreshes every review occurrence changed by a terminal decision", async () => {
+    const siblingReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      run_id: 8,
+    };
+    const rejectedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    const rejectedSibling: ReviewItem = {
+      ...siblingReviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, siblingReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock.mockResolvedValueOnce(rejectedReviewItem).mockResolvedValueOnce([
+      rejectedReviewItem,
+      rejectedSibling,
+    ]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Reject candidate" })[0]);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenLastCalledWith("list_review_items", {
+        vault_root: ".game-media-vault",
+      });
+    });
+    expect(await screen.findAllByText("Rejected")).toHaveLength(2);
+  });
+
+  it("resolves review items against the vault that was actually loaded", async () => {
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "another-vault" },
+    });
+
+    const acceptedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce(acceptedReviewItem).mockResolvedValueOnce([acceptedReviewItem]);
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    expect(invokeMock).toHaveBeenCalledWith("resolve_review_item", {
+      vault_root: ".game-media-vault",
+      review_item_id: 17,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+  });
+
+  it("ignores a review resolution that returns after another vault is loaded", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    const otherReviewItem: ReviewItem = {
+      ...reviewItem,
+      candidate_identity: "connector:other-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Other Review Game",
+      },
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "other-vault" },
+    });
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([otherReviewItem]);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Other Review Game")).toBeInTheDocument();
+
+    finishResolution?.({
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Other Review Game")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Accepted · release #201")).not.toBeInTheDocument();
+  });
+
+  it("keeps every in-flight review action disabled until its own request settles", async () => {
+    let finishFirst: ((item: ReviewItem) => void) | undefined;
+    let finishSecond: ((item: ReviewItem) => void) | undefined;
+    const secondReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      candidate_identity: "connector:second-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Second Review Game",
+      },
+      competing_matches: [
+        {
+          ...reviewItem.competing_matches[0],
+          release_edition_id: 202,
+          edition_name: "Deluxe",
+        },
+      ],
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<ReviewItem>((resolve) => {
+            finishFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<ReviewItem>((resolve) => {
+            finishSecond = resolve;
+          }),
+      );
+
+    const firstAccept = screen.getByRole("button", { name: "Accept Standard" });
+    const secondAccept = screen.getByRole("button", { name: "Accept Deluxe" });
+    fireEvent.click(firstAccept);
+    fireEvent.click(secondAccept);
+
+    expect(firstAccept).toBeDisabled();
+    expect(secondAccept).toBeDisabled();
+
+    finishFirst?.({
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    });
+    invokeMock.mockResolvedValueOnce([
+      {
+        ...reviewItem,
+        decision: { decision: "accept", release_edition_id: 201 },
+        status: "accepted",
+      },
+      secondReviewItem,
+    ]);
+    await waitFor(() => expect(firstAccept).toBeDisabled());
+    expect(secondAccept).toBeDisabled();
+
+    invokeMock.mockResolvedValueOnce([
+      {
+        ...reviewItem,
+        decision: { decision: "accept", release_edition_id: 201 },
+        status: "accepted",
+      },
+      {
+        ...secondReviewItem,
+        decision: { decision: "accept", release_edition_id: 202 },
+        status: "accepted",
+      },
+    ]);
+    finishSecond?.({
+      ...secondReviewItem,
+      decision: { decision: "accept", release_edition_id: 202 },
+      status: "accepted",
+    });
+    expect(await screen.findByText("Accepted · release #202")).toBeInTheDocument();
+  });
+
+  it("ignores stale review refresh responses from older concurrent resolutions", async () => {
+    let finishFirstResolution: ((item: ReviewItem) => void) | undefined;
+    let finishSecondResolution: ((item: ReviewItem) => void) | undefined;
+    let finishFirstRefresh: ((items: ReviewItem[]) => void) | undefined;
+    let refreshCount = 0;
+    const secondReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      candidate_identity: "connector:second-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Second Review Game",
+      },
+      competing_matches: [
+        {
+          ...reviewItem.competing_matches[0],
+          release_edition_id: 202,
+          edition_name: "Deluxe",
+        },
+      ],
+    };
+    const acceptedFirst: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    const acceptedSecond: ReviewItem = {
+      ...secondReviewItem,
+      decision: { decision: "accept", release_edition_id: 202 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "resolve_review_item") {
+        if (args?.review_item_id === 17) {
+          return new Promise<ReviewItem>((resolve) => {
+            finishFirstResolution = resolve;
+          });
+        }
+        if (args?.review_item_id === 18) {
+          return new Promise<ReviewItem>((resolve) => {
+            finishSecondResolution = resolve;
+          });
+        }
+      }
+      if (command === "list_review_items") {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          return new Promise<ReviewItem[]>((resolve) => {
+            finishFirstRefresh = resolve;
+          });
+        }
+        return Promise.resolve([acceptedFirst, acceptedSecond]);
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept Deluxe" }));
+
+    finishFirstResolution?.(acceptedFirst);
+    await waitFor(() => expect(refreshCount).toBe(1));
+    finishSecondResolution?.(acceptedSecond);
+    expect(await screen.findByText("Accepted · release #202")).toBeInTheDocument();
+    expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
+
+    finishFirstRefresh?.([acceptedFirst, secondReviewItem]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Accepted · release #202")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Accept Deluxe" })).toBeDisabled();
+    });
+  });
+
+  it("does not let an older stale review refresh overwrite a newer resolved item when the newer refresh fails", async () => {
+    let finishFirstResolution: ((item: ReviewItem) => void) | undefined;
+    let finishSecondResolution: ((item: ReviewItem) => void) | undefined;
+    let finishFirstRefresh: ((items: ReviewItem[]) => void) | undefined;
+    let refreshCount = 0;
+    const secondReviewItem: ReviewItem = {
+      ...reviewItem,
+      id: 18,
+      candidate_identity: "connector:second-review-game",
+      candidate: {
+        ...reviewItem.candidate,
+        game_title: "Second Review Game",
+      },
+      competing_matches: [
+        {
+          ...reviewItem.competing_matches[0],
+          release_edition_id: 202,
+          edition_name: "Deluxe",
+        },
+      ],
+    };
+    const acceptedFirst: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    const acceptedSecond: ReviewItem = {
+      ...secondReviewItem,
+      decision: { decision: "accept", release_edition_id: 202 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+    invokeMock.mockImplementation((command, args) => {
+      if (command === "resolve_review_item") {
+        if (args?.review_item_id === 17) {
+          return new Promise<ReviewItem>((resolve) => {
+            finishFirstResolution = resolve;
+          });
+        }
+        if (args?.review_item_id === 18) {
+          return new Promise<ReviewItem>((resolve) => {
+            finishSecondResolution = resolve;
+          });
+        }
+      }
+      if (command === "list_review_items") {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          return new Promise<ReviewItem[]>((resolve) => {
+            finishFirstRefresh = resolve;
+          });
+        }
+        return Promise.reject(new Error("newer refresh failed"));
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Accept Deluxe" }));
+
+    finishFirstResolution?.(acceptedFirst);
+    await waitFor(() => expect(refreshCount).toBe(1));
+    finishSecondResolution?.(acceptedSecond);
+    await screen.findByText("Error: newer refresh failed");
+
+    finishFirstRefresh?.([acceptedFirst, secondReviewItem]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
+      expect(screen.getByText("Accepted · release #202")).toBeInTheDocument();
+    });
+  });
+
+  it("refreshes a completed resolution after reloading the same vault", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    const acceptedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    invokeMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([reviewItem])
+      .mockResolvedValueOnce([acceptedReviewItem]);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled();
+    });
+
+    finishResolution?.(acceptedReviewItem);
+
+    expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
+  });
+
+  it("does not let a late same-vault reload overwrite a completed resolution", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    let finishReloadReviews: ((items: ReviewItem[]) => void) | undefined;
+    const acceptedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "accept", release_edition_id: 201 },
+      status: "accepted",
+    };
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
+
+    invokeMock.mockResolvedValueOnce([]).mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem[]>((resolve) => {
+          finishReloadReviews = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    finishResolution?.(acceptedReviewItem);
+    invokeMock.mockResolvedValueOnce([acceptedReviewItem]);
+    expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
+
+    finishReloadReviews?.([reviewItem]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled();
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Accept Standard" })).toBeDisabled();
+    });
+  });
+
 });
