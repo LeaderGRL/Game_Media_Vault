@@ -944,9 +944,24 @@ fn terminal_rejection_wins_before_processing_asset_is_persisted() {
 }
 
 #[test]
-fn terminal_acceptance_requeues_processing_occurrence_before_persisting() {
+fn terminal_acceptance_reuses_processing_bytes_without_requeueing() {
     let temp = tempdir().unwrap();
-    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO games (id, title, normalized_title)
+             VALUES (301, 'Target Game', 'target game');
+             INSERT INTO release_editions (
+                 id, game_id, platform, normalized_platform, region, normalized_region,
+                 edition_name, normalized_edition_name
+             ) VALUES (
+                 201, 301, 'Nintendo Entertainment System', 'nintendo entertainment system',
+                 'USA', 'usa', 'Standard', 'standard'
+             );",
+        )
+        .unwrap();
     let identity = "connector:terminal-acceptance-processing-race";
     let first_run = catalog.create_run(request()).unwrap();
     let processing_run = catalog.create_run(request()).unwrap();
@@ -1001,7 +1016,7 @@ fn terminal_acceptance_requeues_processing_occurrence_before_persisting() {
                 region: "USA".to_owned(),
                 edition_name: "Collector".to_owned(),
                 asset_type: AssetType::BoxFront,
-                object_hash: "should-not-be-persisted".to_owned(),
+                object_hash: "late-accepted-hash".to_owned(),
                 byte_len: 42,
                 original_filename: "front.png".to_owned(),
                 source_id: SourceId::from("fixture-provider"),
@@ -1011,9 +1026,13 @@ fn terminal_acceptance_requeues_processing_occurrence_before_persisting() {
         )
         .unwrap();
 
-    assert_eq!(outcome, ReviewProcessingFinalization::Requeued);
+    let ReviewProcessingFinalization::Imported(imported) = outcome else {
+        panic!("expected the already stored bytes to be imported");
+    };
+    assert_eq!(imported.release_edition_id, 201);
+    assert_eq!(imported.object_hash, "late-accepted-hash");
     let processing = catalog.get_review_item(processing.id).unwrap().unwrap();
-    assert_eq!(processing.status, ReviewStatus::Accepted);
+    assert_eq!(processing.status, ReviewStatus::Applied);
     assert_eq!(
         processing.decision,
         Some(ReviewDecision::Accept {
@@ -1021,9 +1040,12 @@ fn terminal_acceptance_requeues_processing_occurrence_before_persisting() {
         })
     );
     let run = catalog.get_run(processing_run.id).unwrap().unwrap();
-    assert_eq!(run.queued_work, 1);
-    assert_eq!(run.completed_work, 0);
-    assert!(catalog.list_library().unwrap().is_empty());
+    assert_eq!(run.queued_work, 0);
+    assert_eq!(run.completed_work, 1);
+    let library = catalog.list_library().unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].release_edition_id, 201);
+    assert_eq!(library[0].assets.len(), 1);
 }
 
 #[test]

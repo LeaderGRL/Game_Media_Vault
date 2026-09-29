@@ -11,9 +11,9 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
-    ImportedReleaseEdition, LibraryAsset, LibraryEntry, NewReviewItem, PersistAsset,
-    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewDecision, ReviewItem,
-    ReviewMatchCandidate, ReviewStatus, SourceId,
+    ImportedReleaseEdition, LibraryAsset, LibraryEntry, MatchConfidence, NewReviewItem,
+    PersistAsset, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewDecision,
+    ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -716,7 +716,7 @@ impl CatalogPort for SqliteCatalog {
         lease_token: &str,
         run_id: i64,
         work_key: &str,
-        record: PersistAsset,
+        mut record: PersistAsset,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -760,23 +760,44 @@ impl CatalogPort for SqliteCatalog {
                     true,
                 ),
                 ReviewDecision::Accept { release_edition_id } => {
-                    if current
+                    if let Some(accepted_match) = current
                         .competing_matches
                         .iter()
-                        .any(|candidate| candidate.release_edition_id == release_edition_id)
+                        .find(|candidate| candidate.release_edition_id == release_edition_id)
                     {
-                        (
-                            ReviewStatus::Accepted,
-                            ReviewProcessingFinalization::Requeued,
-                            false,
-                        )
-                    } else {
-                        (
-                            ReviewStatus::Superseded,
-                            ReviewProcessingFinalization::Discarded,
-                            true,
-                        )
+                        record.existing_game_id = None;
+                        record.existing_release_edition_id = Some(release_edition_id);
+                        record.match_decision = Some(AssetCandidateMatch {
+                            release_edition_id: Some(release_edition_id),
+                            score: accepted_match.score,
+                            confidence: MatchConfidence::Medium,
+                            evidence: accepted_match.evidence.clone(),
+                        });
+                        let imported = persist_asset_in_transaction(&transaction, record)?;
+                        complete_work_in_transaction(&transaction, run_id, work_key)?;
+                        let decision_json = serde_json::to_string(&decision).map_err(|error| {
+                            PortError(format!("failed to serialize review decision: {error}"))
+                        })?;
+                        transaction
+                            .execute(
+                                "UPDATE review_items SET decision_json = ?1, status = 'applied' WHERE id = ?2",
+                                params![decision_json, review_item_id],
+                            )
+                            .map_err(sql_error)?;
+                        transaction
+                            .execute(
+                                "DELETE FROM review_processing_leases WHERE review_item_id = ?1 AND lease_token = ?2",
+                                params![review_item_id, lease_token],
+                            )
+                            .map_err(sql_error)?;
+                        transaction.commit().map_err(sql_error)?;
+                        return Ok(ReviewProcessingFinalization::Imported(imported));
                     }
+                    (
+                        ReviewStatus::Superseded,
+                        ReviewProcessingFinalization::Discarded,
+                        true,
+                    )
                 }
                 ReviewDecision::Defer => unreachable!("deferred reviews are not terminal siblings"),
             };
