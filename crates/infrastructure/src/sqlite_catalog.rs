@@ -2625,6 +2625,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                      FROM review_items_legacy_identity;
                      UPDATE review_items
                      SET status = CASE
+                         WHEN decision_json LIKE '%\"accept\"%' THEN 'accepted'
                          WHEN decision_json LIKE '%\"defer\"%' THEN 'deferred'
                          ELSE 'pending'
                      END
