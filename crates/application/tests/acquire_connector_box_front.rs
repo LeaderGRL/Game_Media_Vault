@@ -289,6 +289,10 @@ struct FakeCatalog {
     library: Vec<LibraryEntry>,
 }
 
+thread_local! {
+    static EXPIRED_PROCESSING_RUNS: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+}
+
 impl Default for FakeCatalog {
     fn default() -> Self {
         Self {
@@ -475,6 +479,35 @@ impl CatalogPort for FakeCatalog {
         lease_token: &str,
     ) -> Result<bool, PortError> {
         Ok(lease_token == format!("fake-lease-{review_item_id}"))
+    }
+
+    fn recover_expired_review_processing(&self, run_id: i64) -> Result<(), PortError> {
+        let expired = EXPIRED_PROCESSING_RUNS.with(|runs| {
+            let mut runs = runs.borrow_mut();
+            runs.iter()
+                .position(|expired_run_id| *expired_run_id == run_id)
+                .map(|position| runs.remove(position))
+                .is_some()
+        });
+        if !expired {
+            return Ok(());
+        }
+
+        for review_item in self
+            .review_items
+            .borrow_mut()
+            .iter_mut()
+            .filter(|review_item| {
+                review_item.run_id == run_id && review_item.status == ReviewStatus::Processing
+            })
+        {
+            review_item.status = match review_item.decision {
+                Some(ReviewDecision::Accept { .. }) => ReviewStatus::Accepted,
+                Some(ReviewDecision::Defer) => ReviewStatus::Deferred,
+                _ => ReviewStatus::Pending,
+            };
+        }
+        Ok(())
     }
 
     fn finalize_review_processing_asset(
@@ -1632,6 +1665,56 @@ fn concurrent_execution_does_not_complete_work_owned_by_a_processing_review() {
     assert_eq!(run.status, AcquisitionRunStatus::Running);
     assert_eq!(run.queued_work, 1);
     assert_eq!(run.completed_work, 0);
+}
+
+#[test]
+fn recovers_expired_processing_review_from_an_older_run_before_reusing_it() {
+    let (candidate, library) = ambiguous_candidate_and_releases();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+
+    acquire_run_with_connector(
+        &FakeRuns::new(run_with_request(request())),
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        stricter_matching_policy(),
+    )
+    .unwrap();
+
+    let accepted_release = catalog.review_items.borrow()[0].competing_matches[0].release_edition_id;
+    {
+        let mut review_items = catalog.review_items.borrow_mut();
+        review_items[0].run_id = 6;
+        review_items[0].decision = Some(ReviewDecision::Accept {
+            release_edition_id: accepted_release,
+        });
+        review_items[0].status = ReviewStatus::Processing;
+    }
+    EXPIRED_PROCESSING_RUNS.with(|runs| runs.borrow_mut().push(6));
+
+    let imported = acquire_run_with_connector(
+        &FakeRuns::new(run_with_request(request())),
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    EXPIRED_PROCESSING_RUNS.with(|runs| runs.borrow_mut().clear());
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
 }
 
 #[test]

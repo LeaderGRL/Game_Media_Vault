@@ -772,6 +772,14 @@ pub fn acquire_run_with_connector(
         let candidate_identity = review_candidate_identity(connector.source_id(), candidate);
         let mut existing_review_item =
             catalog.find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
+        if let Some(processing_run_id) = existing_review_item.as_ref().and_then(|item| {
+            (item.status == ReviewStatus::Processing && item.run_id != run_id)
+                .then_some(item.run_id)
+        }) {
+            catalog.recover_expired_review_processing(processing_run_id)?;
+            existing_review_item = catalog
+                .find_review_item_for_run_by_candidate_identity(run_id, &candidate_identity)?;
+        }
         if existing_review_item
             .as_ref()
             .is_some_and(|item| item.status == ReviewStatus::Processing)
