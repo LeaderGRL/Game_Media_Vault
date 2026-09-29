@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, PortError, ReferenceCatalogRepositoryPort, ReviewProcessingClaim,
-    ReviewProcessingFinalization, RunRepositoryPort, acquisition_work_key,
+    ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal, acquisition_work_key,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -717,6 +717,7 @@ impl CatalogPort for SqliteCatalog {
         run_id: i64,
         work_key: &str,
         mut record: PersistAsset,
+        mut staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -783,6 +784,11 @@ impl CatalogPort for SqliteCatalog {
                                 params![review_item_id, lease_token],
                             )
                             .map_err(sql_error)?;
+                        publish_staged_original(
+                            &mut staged_original,
+                            &imported.object_hash,
+                            imported.byte_len,
+                        )?;
                         transaction.commit().map_err(sql_error)?;
                         return Ok(ReviewProcessingFinalization::Imported(imported));
                     }
@@ -831,6 +837,11 @@ impl CatalogPort for SqliteCatalog {
                 params![review_item_id, lease_token],
             )
             .map_err(sql_error)?;
+        publish_staged_original(
+            &mut staged_original,
+            &imported.object_hash,
+            imported.byte_len,
+        )?;
         transaction.commit().map_err(sql_error)?;
         Ok(ReviewProcessingFinalization::Imported(imported))
     }
@@ -842,6 +853,7 @@ impl CatalogPort for SqliteCatalog {
         run_id: i64,
         work_key: &str,
         mut record: PersistAsset,
+        mut staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -922,6 +934,11 @@ impl CatalogPort for SqliteCatalog {
                                     params![review_item_id, lease_token],
                                 )
                                 .map_err(sql_error)?;
+                            publish_staged_original(
+                                &mut staged_original,
+                                &imported.object_hash,
+                                imported.byte_len,
+                            )?;
                             transaction.commit().map_err(sql_error)?;
                             return Ok(ReviewProcessingFinalization::Imported(imported));
                         }
@@ -984,6 +1001,11 @@ impl CatalogPort for SqliteCatalog {
                 params![review_item_id, lease_token],
             )
             .map_err(sql_error)?;
+        publish_staged_original(
+            &mut staged_original,
+            &imported.object_hash,
+            imported.byte_len,
+        )?;
         transaction.commit().map_err(sql_error)?;
         Ok(ReviewProcessingFinalization::Imported(imported))
     }
@@ -1816,6 +1838,29 @@ fn retarget_asset_for_review_acceptance(
         confidence: MatchConfidence::Medium,
         evidence: accepted_match.evidence.clone(),
     });
+}
+
+fn publish_staged_original(
+    staged_original: &mut Option<Box<dyn StagedOriginal>>,
+    expected_hash: &str,
+    expected_byte_len: u64,
+) -> Result<(), PortError> {
+    let Some(staged_original) = staged_original.take() else {
+        return Ok(());
+    };
+    let expected = staged_original.stored_object().clone();
+    if expected.hash != expected_hash || expected.byte_len != expected_byte_len {
+        return Err(PortError(
+            "staged original metadata does not match the asset record".to_owned(),
+        ));
+    }
+    let published = staged_original.publish()?;
+    if published != expected {
+        return Err(PortError(
+            "published original metadata changed after staging".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn requeue_completed_work_in_transaction(

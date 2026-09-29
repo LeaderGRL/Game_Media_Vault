@@ -1,7 +1,8 @@
 use std::{cell::RefCell, fs, path::Path};
 
 use game_media_vault_application::{
-    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, import_local_box_front,
+    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, StagedOriginal,
+    import_local_box_front,
 };
 use game_media_vault_domain::{
     AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceId, StoredObject,
@@ -25,6 +26,13 @@ impl ObjectStorePort for FakeObjectStore {
         &self,
         _reader: &mut dyn std::io::Read,
     ) -> Result<StoredObject, PortError> {
+        unreachable!()
+    }
+
+    fn stage_original_reader(
+        &self,
+        _reader: &mut dyn std::io::Read,
+    ) -> Result<Box<dyn StagedOriginal>, PortError> {
         unreachable!()
     }
 }

@@ -2,11 +2,12 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     io::{Cursor, Read},
+    rc::Rc,
 };
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, ReviewProcessingClaim,
-    ReviewProcessingFinalization, RunRepositoryPort, acquire_run_with_connector,
+    ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal, acquire_run_with_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -261,7 +262,24 @@ impl ConnectorPort for FailingDiscoveryConnector {
 
 #[derive(Default)]
 struct FakeStore {
-    bytes: RefCell<Vec<Vec<u8>>>,
+    bytes: Rc<RefCell<Vec<Vec<u8>>>>,
+}
+
+struct FakeStagedOriginal {
+    bytes: Vec<u8>,
+    stored: StoredObject,
+    sink: Rc<RefCell<Vec<Vec<u8>>>>,
+}
+
+impl StagedOriginal for FakeStagedOriginal {
+    fn stored_object(&self) -> &StoredObject {
+        &self.stored
+    }
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
+        self.sink.borrow_mut().push(self.bytes.clone());
+        Ok(self.stored.clone())
+    }
 }
 
 impl ObjectStorePort for FakeStore {
@@ -279,6 +297,24 @@ impl ObjectStorePort for FakeStore {
             hash: "fixture-hash".to_owned(),
             byte_len: bytes.len() as u64,
         })
+    }
+
+    fn stage_original_reader(
+        &self,
+        reader: &mut dyn Read,
+    ) -> Result<Box<dyn StagedOriginal>, PortError> {
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| PortError(error.to_string()))?;
+        Ok(Box::new(FakeStagedOriginal {
+            stored: StoredObject {
+                hash: "fixture-hash".to_owned(),
+                byte_len: bytes.len() as u64,
+            },
+            bytes,
+            sink: Rc::clone(&self.bytes),
+        }))
     }
 }
 
@@ -517,7 +553,11 @@ impl CatalogPort for FakeCatalog {
         _run_id: i64,
         _work_key: &str,
         record: PersistAsset,
+        staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
+        if let Some(staged_original) = staged_original {
+            staged_original.publish()?;
+        }
         *self.finalize_calls.borrow_mut() += 1;
         let imported = self.persist_asset(record)?;
         self.update_processing_status(review_item_id, ReviewStatus::AutoResolved)?;
@@ -531,7 +571,11 @@ impl CatalogPort for FakeCatalog {
         _run_id: i64,
         _work_key: &str,
         record: PersistAsset,
+        staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
+        if let Some(staged_original) = staged_original {
+            staged_original.publish()?;
+        }
         assert_eq!(lease_token, format!("fake-lease-{review_item_id}"));
         *self.finalize_calls.borrow_mut() += 1;
         let imported = self.persist_asset(record)?;

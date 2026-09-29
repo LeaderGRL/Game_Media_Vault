@@ -1,6 +1,6 @@
 use game_media_vault_application::{
-    CatalogPort, ReviewProcessingFinalization, RunRepositoryPort, acquisition_work_key,
-    list_review_items as list_review_items_use_case, resolve_review_item,
+    CatalogPort, ObjectStorePort, ReviewProcessingFinalization, RunRepositoryPort,
+    acquisition_work_key, list_review_items as list_review_items_use_case, resolve_review_item,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
@@ -8,7 +8,7 @@ use game_media_vault_domain::{
     NewReviewItem, PersistAsset, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy,
     ReviewDecision, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
 };
-use game_media_vault_infrastructure::SqliteCatalog;
+use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::Connection;
 use tempfile::tempdir;
 
@@ -874,6 +874,7 @@ fn expired_processing_occurrence_reconciles_a_terminal_sibling_decision() {
 fn terminal_rejection_wins_before_processing_asset_is_persisted() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(temp.path());
     let identity = "connector:terminal-rejection-processing-race";
     let first_run = catalog.create_run(request()).unwrap();
     let processing_run = catalog.create_run(request()).unwrap();
@@ -908,6 +909,11 @@ fn terminal_rejection_wins_before_processing_asset_is_persisted() {
         .set_review_decision(first.id, ReviewDecision::Reject)
         .unwrap();
 
+    let staged = store.stage_original_bytes(b"late rejected bytes").unwrap();
+    let stored = staged.stored_object().clone();
+    let object_path = store.object_path(&stored.hash);
+    assert!(!object_path.exists());
+
     let outcome = catalog
         .finalize_review_processing_asset(
             processing.id,
@@ -923,13 +929,14 @@ fn terminal_rejection_wins_before_processing_asset_is_persisted() {
                 region: "USA".to_owned(),
                 edition_name: "Collector".to_owned(),
                 asset_type: AssetType::BoxFront,
-                object_hash: "should-not-be-persisted".to_owned(),
-                byte_len: 42,
+                object_hash: stored.hash.clone(),
+                byte_len: stored.byte_len,
                 original_filename: "front.png".to_owned(),
                 source_id: SourceId::from("fixture-provider"),
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
+            Some(staged),
         )
         .unwrap();
 
@@ -941,6 +948,7 @@ fn terminal_rejection_wins_before_processing_asset_is_persisted() {
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 1);
     assert!(catalog.list_library().unwrap().is_empty());
+    assert!(!object_path.exists());
 }
 
 #[test]
@@ -1023,6 +1031,7 @@ fn terminal_acceptance_reuses_processing_bytes_without_requeueing() {
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
+            None,
         )
         .unwrap();
 
@@ -1091,6 +1100,7 @@ fn processing_asset_finalization_persists_asset_work_and_review_together() {
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
+            None,
         )
         .unwrap();
 
@@ -1114,6 +1124,7 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&path).unwrap();
+    let store = ContentAddressedStore::new(temp.path());
     let run = catalog.create_run(request()).unwrap();
     let work_key = "connector:atomic-finalization-rollback";
     catalog.queue_work(run.id, work_key.to_owned()).unwrap();
@@ -1142,6 +1153,12 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
         )
         .unwrap();
 
+    let staged = store
+        .stage_original_bytes(b"processing rollback bytes")
+        .unwrap();
+    let stored = staged.stored_object().clone();
+    let object_path = store.object_path(&stored.hash);
+
     let result = catalog.finalize_review_processing_asset(
         item.id,
         &claim.lease_token,
@@ -1156,13 +1173,14 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
             region: "USA".to_owned(),
             edition_name: "Collector".to_owned(),
             asset_type: AssetType::BoxFront,
-            object_hash: "rollback-finalization-hash".to_owned(),
-            byte_len: 42,
+            object_hash: stored.hash,
+            byte_len: stored.byte_len,
             original_filename: "front.png".to_owned(),
             source_id: SourceId::from("fixture-provider"),
             source_asset_label: Some("front".to_owned()),
             source_location: "fixture://candidate/front".to_owned(),
         },
+        Some(staged),
     );
 
     assert!(result.is_err());
@@ -1172,6 +1190,7 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
     assert_eq!(run.queued_work, 1);
     assert_eq!(run.completed_work, 0);
     assert!(catalog.list_library().unwrap().is_empty());
+    assert!(!object_path.exists());
 }
 
 #[test]
@@ -1342,6 +1361,7 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
+            None,
         )
         .unwrap();
 
@@ -1364,6 +1384,7 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
 fn accepted_review_finalization_reconciles_a_late_terminal_sibling() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(temp.path());
     let processing_run = catalog.create_run(request()).unwrap();
     let competing_run = catalog.create_run(request()).unwrap();
     let identity = "connector:accepted-late-terminal-sibling";
@@ -1412,6 +1433,12 @@ fn accepted_review_finalization_reconciles_a_late_terminal_sibling() {
         .set_review_decision(competing.id, ReviewDecision::Reject)
         .unwrap();
 
+    let staged = store
+        .stage_original_bytes(b"late rejected accepted-review bytes")
+        .unwrap();
+    let stored = staged.stored_object().clone();
+    let object_path = store.object_path(&stored.hash);
+
     catalog
         .finalize_accepted_review_asset(
             processing.id,
@@ -1427,13 +1454,14 @@ fn accepted_review_finalization_reconciles_a_late_terminal_sibling() {
                 region: "USA".to_owned(),
                 edition_name: "Collector".to_owned(),
                 asset_type: AssetType::BoxFront,
-                object_hash: "accepted-late-terminal-hash".to_owned(),
-                byte_len: 42,
+                object_hash: stored.hash,
+                byte_len: stored.byte_len,
                 original_filename: "front.png".to_owned(),
                 source_id: SourceId::from("fixture-provider"),
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
+            Some(staged),
         )
         .unwrap();
 
@@ -1444,6 +1472,7 @@ fn accepted_review_finalization_reconciles_a_late_terminal_sibling() {
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 1);
     assert!(catalog.list_library().unwrap().is_empty());
+    assert!(!object_path.exists());
 }
 
 #[test]
@@ -1539,6 +1568,7 @@ fn accepted_review_finalization_reuses_bytes_for_changed_compatible_acceptance()
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
+            None,
         )
         .unwrap();
 
@@ -1566,6 +1596,7 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&path).unwrap();
+    let store = ContentAddressedStore::new(temp.path());
     let run = catalog.create_run(request()).unwrap();
     let work_key = "connector:accepted-atomic-rollback";
     catalog.queue_work(run.id, work_key.to_owned()).unwrap();
@@ -1602,6 +1633,12 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
         )
         .unwrap();
 
+    let staged = store
+        .stage_original_bytes(b"accepted rollback bytes")
+        .unwrap();
+    let stored = staged.stored_object().clone();
+    let object_path = store.object_path(&stored.hash);
+
     let result = catalog.finalize_accepted_review_asset(
         item.id,
         &claim.lease_token,
@@ -1616,13 +1653,14 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
             region: "USA".to_owned(),
             edition_name: "Collector".to_owned(),
             asset_type: AssetType::BoxFront,
-            object_hash: "accepted-rollback-hash".to_owned(),
-            byte_len: 42,
+            object_hash: stored.hash,
+            byte_len: stored.byte_len,
             original_filename: "front.png".to_owned(),
             source_id: SourceId::from("fixture-provider"),
             source_asset_label: Some("front".to_owned()),
             source_location: "fixture://candidate/front".to_owned(),
         },
+        Some(staged),
     );
 
     assert!(result.is_err());
@@ -1634,6 +1672,7 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
     assert_eq!(run.queued_work, 1);
     assert_eq!(run.completed_work, 0);
     assert!(catalog.list_library().unwrap().is_empty());
+    assert!(!object_path.exists());
     assert!(
         catalog
             .renew_review_item_processing(item.id, &claim.lease_token)

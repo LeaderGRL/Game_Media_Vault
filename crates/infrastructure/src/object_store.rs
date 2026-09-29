@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use game_media_vault_application::{ObjectStorePort, PortError};
+use game_media_vault_application::{ObjectStorePort, PortError, StagedOriginal};
 use game_media_vault_domain::StoredObject;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -29,12 +29,11 @@ impl ContentAddressedStore {
             .join(hash)
     }
 
-    fn store_reader(&self, mut input: impl Read) -> Result<StoredObject, PortError> {
+    fn stage_reader(&self, mut input: impl Read) -> Result<Box<dyn StagedOriginal>, PortError> {
         let staging_dir = self.root.join("staging");
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
 
         let (staging_path, mut output) = create_staging_file(&staging_dir)?;
-        let _staging_cleanup = StagingCleanup(staging_path.clone());
         let mut hasher = blake3::Hasher::new();
         let mut byte_len = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
@@ -55,27 +54,18 @@ impl ContentAddressedStore {
         let target = self.object_path(&hash);
         let parent = target
             .parent()
-            .ok_or_else(|| PortError("object path has no parent directory".into()))?;
-        fs::create_dir_all(parent).map_err(io_error)?;
+            .ok_or_else(|| PortError("object path has no parent directory".into()))?
+            .to_path_buf();
+        Ok(Box::new(ContentAddressedStagedOriginal {
+            staging_path,
+            target,
+            parent,
+            stored: StoredObject { hash, byte_len },
+        }))
+    }
 
-        if target.exists() {
-            verify_existing_object(&target, &hash, byte_len)?;
-            sync_object_parent(parent).map_err(io_error)?;
-        } else {
-            match publish_staged_object(&staging_path, &target, parent) {
-                Ok(()) => {}
-                Err(PublishError::NotPublished(error)) => {
-                    if !target.exists() {
-                        return Err(io_error(error));
-                    }
-                    verify_existing_object(&target, &hash, byte_len)?;
-                    sync_object_parent(parent).map_err(io_error)?;
-                }
-                Err(PublishError::Durability(error)) => return Err(io_error(error)),
-            }
-        }
-
-        Ok(StoredObject { hash, byte_len })
+    fn store_reader(&self, input: impl Read) -> Result<StoredObject, PortError> {
+        self.stage_reader(input)?.publish()
     }
 }
 
@@ -87,6 +77,53 @@ impl ObjectStorePort for ContentAddressedStore {
 
     fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         self.store_reader(reader)
+    }
+
+    fn stage_original_reader(
+        &self,
+        reader: &mut dyn Read,
+    ) -> Result<Box<dyn StagedOriginal>, PortError> {
+        self.stage_reader(reader)
+    }
+}
+
+struct ContentAddressedStagedOriginal {
+    staging_path: PathBuf,
+    target: PathBuf,
+    parent: PathBuf,
+    stored: StoredObject,
+}
+
+impl StagedOriginal for ContentAddressedStagedOriginal {
+    fn stored_object(&self) -> &StoredObject {
+        &self.stored
+    }
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
+        fs::create_dir_all(&self.parent).map_err(io_error)?;
+        if self.target.exists() {
+            verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
+            sync_object_parent(&self.parent).map_err(io_error)?;
+        } else {
+            match publish_staged_object(&self.staging_path, &self.target, &self.parent) {
+                Ok(()) => {}
+                Err(PublishError::NotPublished(error)) => {
+                    if !self.target.exists() {
+                        return Err(io_error(error));
+                    }
+                    verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
+                    sync_object_parent(&self.parent).map_err(io_error)?;
+                }
+                Err(PublishError::Durability(error)) => return Err(io_error(error)),
+            }
+        }
+        Ok(self.stored.clone())
+    }
+}
+
+impl Drop for ContentAddressedStagedOriginal {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.staging_path);
     }
 }
 
@@ -197,14 +234,6 @@ fn move_object(staging: &Path, target: &Path) -> std::io::Result<()> {
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())
-    }
-}
-
-struct StagingCleanup(PathBuf);
-
-impl Drop for StagingCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
     }
 }
 

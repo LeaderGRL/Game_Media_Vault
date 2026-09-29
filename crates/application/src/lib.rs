@@ -88,14 +88,30 @@ impl Read for ReviewLeaseReader<'_> {
     }
 }
 
+pub trait StagedOriginal {
+    fn stored_object(&self) -> &StoredObject;
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError>;
+}
+
 pub trait ObjectStorePort {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError>;
 
     fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError>;
 
+    fn stage_original_reader(
+        &self,
+        reader: &mut dyn Read,
+    ) -> Result<Box<dyn StagedOriginal>, PortError>;
+
     fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
         let mut reader = Cursor::new(bytes);
         self.store_original_reader(&mut reader)
+    }
+
+    fn stage_original_bytes(&self, bytes: &[u8]) -> Result<Box<dyn StagedOriginal>, PortError> {
+        let mut reader = Cursor::new(bytes);
+        self.stage_original_reader(&mut reader)
     }
 }
 
@@ -200,6 +216,7 @@ pub trait CatalogPort {
         _run_id: i64,
         _work_key: &str,
         _record: PersistAsset,
+        _staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         Err(PortError(
             "catalog does not support atomic review processing finalization".to_owned(),
@@ -213,6 +230,7 @@ pub trait CatalogPort {
         _run_id: i64,
         _work_key: &str,
         _record: PersistAsset,
+        _staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         Err(PortError(
             "catalog does not support atomic accepted review finalization".to_owned(),
@@ -972,17 +990,21 @@ pub fn acquire_run_with_connector(
                             (*review_item_id, lease_token.as_str())
                         })
                 });
-            let stored = if let Some((review_item_id, lease_token)) = processing_lease {
-                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
-                let mut stream =
-                    ReviewLeaseReader::new(stream, catalog, review_item_id, lease_token);
-                let stored = object_store.store_original_reader(&mut stream)?;
-                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
-                stored
-            } else {
-                let mut stream = stream;
-                object_store.store_original_reader(stream.as_mut())?
-            };
+            let (stored, staged_original) =
+                if let Some((review_item_id, lease_token)) = processing_lease {
+                    ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
+                    let mut stream =
+                        ReviewLeaseReader::new(stream, catalog, review_item_id, lease_token);
+                    let staged_original = object_store.stage_original_reader(&mut stream)?;
+                    ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
+                    (
+                        staged_original.stored_object().clone(),
+                        Some(staged_original),
+                    )
+                } else {
+                    let mut stream = stream;
+                    (object_store.store_original_reader(stream.as_mut())?, None)
+                };
             let record = PersistAsset {
                 existing_game_id: Some(release.game_id),
                 existing_release_edition_id: Some(release.release_edition_id),
@@ -1000,21 +1022,31 @@ pub fn acquire_run_with_connector(
                 source_location: candidate.source_url.clone(),
             };
             if let Some((review_item_id, _, lease_token)) = review_processing.as_ref() {
+                let staged_original = staged_original.ok_or_else(|| {
+                    PortError(
+                        "review processing asset was not staged before finalization".to_owned(),
+                    )
+                })?;
                 Ok(catalog.finalize_review_processing_asset(
                     *review_item_id,
                     lease_token,
                     run_id,
                     &work.key,
                     record,
+                    Some(staged_original),
                 )?)
             } else if let Some((review_item_id, lease_token)) = accepted_review_processing.as_ref()
             {
+                let staged_original = staged_original.ok_or_else(|| {
+                    PortError("accepted review asset was not staged before finalization".to_owned())
+                })?;
                 Ok(catalog.finalize_accepted_review_asset(
                     *review_item_id,
                     lease_token,
                     run_id,
                     &work.key,
                     record,
+                    Some(staged_original),
                 )?)
             } else {
                 Ok(ReviewProcessingFinalization::Imported(
