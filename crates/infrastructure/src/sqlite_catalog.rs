@@ -765,14 +765,7 @@ impl CatalogPort for SqliteCatalog {
                         .iter()
                         .find(|candidate| candidate.release_edition_id == release_edition_id)
                     {
-                        record.existing_game_id = None;
-                        record.existing_release_edition_id = Some(release_edition_id);
-                        record.match_decision = Some(AssetCandidateMatch {
-                            release_edition_id: Some(release_edition_id),
-                            score: accepted_match.score,
-                            confidence: MatchConfidence::Medium,
-                            evidence: accepted_match.evidence.clone(),
-                        });
+                        retarget_asset_for_review_acceptance(&mut record, accepted_match);
                         let imported = persist_asset_in_transaction(&transaction, record)?;
                         complete_work_in_transaction(&transaction, run_id, work_key)?;
                         let decision_json = serde_json::to_string(&decision).map_err(|error| {
@@ -848,7 +841,7 @@ impl CatalogPort for SqliteCatalog {
         lease_token: &str,
         run_id: i64,
         work_key: &str,
-        record: PersistAsset,
+        mut record: PersistAsset,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -902,23 +895,41 @@ impl CatalogPort for SqliteCatalog {
                         true,
                     ),
                     ReviewDecision::Accept { release_edition_id } => {
-                        if review
+                        if let Some(accepted_match) = review
                             .competing_matches
                             .iter()
-                            .any(|candidate| candidate.release_edition_id == release_edition_id)
+                            .find(|candidate| candidate.release_edition_id == release_edition_id)
                         {
-                            (
-                                ReviewStatus::Accepted,
-                                ReviewProcessingFinalization::Requeued,
-                                false,
-                            )
-                        } else {
-                            (
-                                ReviewStatus::Superseded,
-                                ReviewProcessingFinalization::Discarded,
-                                true,
-                            )
+                            retarget_asset_for_review_acceptance(&mut record, accepted_match);
+                            let imported = persist_asset_in_transaction(&transaction, record)?;
+                            complete_work_in_transaction(&transaction, run_id, work_key)?;
+                            let decision_json =
+                                serde_json::to_string(&sibling_decision).map_err(|error| {
+                                    PortError(format!(
+                                        "failed to serialize review decision: {error}"
+                                    ))
+                                })?;
+                            transaction
+                                .execute(
+                                    "UPDATE review_items SET decision_json = ?1, status = 'applied' WHERE id = ?2",
+                                    params![decision_json, review_item_id],
+                                )
+                                .map_err(sql_error)?;
+                            transaction
+                                .execute(
+                                    "DELETE FROM review_processing_leases
+                                     WHERE review_item_id = ?1 AND lease_token = ?2",
+                                    params![review_item_id, lease_token],
+                                )
+                                .map_err(sql_error)?;
+                            transaction.commit().map_err(sql_error)?;
+                            return Ok(ReviewProcessingFinalization::Imported(imported));
                         }
+                        (
+                            ReviewStatus::Superseded,
+                            ReviewProcessingFinalization::Discarded,
+                            true,
+                        )
                     }
                     ReviewDecision::Defer => {
                         unreachable!("deferred reviews are not terminal siblings")
@@ -1791,6 +1802,20 @@ fn review_transition_conflict(
             review_status_to_str(item.status)
         ))),
     }
+}
+
+fn retarget_asset_for_review_acceptance(
+    record: &mut PersistAsset,
+    accepted_match: &ReviewMatchCandidate,
+) {
+    record.existing_game_id = None;
+    record.existing_release_edition_id = Some(accepted_match.release_edition_id);
+    record.match_decision = Some(AssetCandidateMatch {
+        release_edition_id: Some(accepted_match.release_edition_id),
+        score: accepted_match.score,
+        confidence: MatchConfidence::Medium,
+        evidence: accepted_match.evidence.clone(),
+    });
 }
 
 fn requeue_completed_work_in_transaction(
