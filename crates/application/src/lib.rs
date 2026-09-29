@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use url::Url;
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
@@ -737,6 +738,7 @@ pub fn acquire_run_with_connector(
     let releases = catalog.list_library()?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
+    let mut transient_source_url_by_work_key = std::collections::HashMap::new();
     let mut persisted_work_key_by_identity = std::collections::HashMap::new();
     for review_item in &review_items {
         if review_item.run_id != run_id
@@ -761,16 +763,23 @@ pub fn acquire_run_with_connector(
                 {
                     continue;
                 }
+                let (candidate, transient_source_url) = catalog_safe_candidate(candidate)?;
                 let candidate_identity =
                     review_candidate_identity(connector.source_id(), &candidate);
                 if review_only_resume
                     && let Some(work_key) = persisted_work_key_by_identity.get(&candidate_identity)
                 {
+                    if let Some(source_url) = transient_source_url {
+                        transient_source_url_by_work_key.insert(work_key.clone(), source_url);
+                    }
                     candidates_by_work_key.insert(work_key.clone(), candidate);
                     continue;
                 }
                 let work_key = acquisition_work_key(connector.source_id(), &candidate);
                 queue_acquisition_work(runs, run_id, work_key.clone())?;
+                if let Some(source_url) = transient_source_url {
+                    transient_source_url_by_work_key.insert(work_key.clone(), source_url);
+                }
                 candidates_by_work_key.insert(work_key, candidate);
             }
             None
@@ -979,7 +988,11 @@ pub fn acquire_run_with_connector(
             None
         };
         let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
-            let stream = connector.download(candidate)?;
+            let mut download_candidate = candidate.clone();
+            if let Some(source_url) = transient_source_url_by_work_key.get(&work.key) {
+                download_candidate.source_url.clone_from(source_url);
+            }
+            let stream = connector.download(&download_candidate)?;
             let processing_lease = review_processing
                 .as_ref()
                 .map(|(review_item_id, _, lease_token)| (*review_item_id, lease_token.as_str()))
@@ -1179,6 +1192,39 @@ fn review_candidate_identity(source_id: &str, candidate: &AssetCandidate) -> Str
 
 fn normalize_review_identity_part(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+fn catalog_safe_candidate(
+    mut candidate: AssetCandidate,
+) -> Result<(AssetCandidate, Option<String>), PortError> {
+    let Ok(mut source_url) = Url::parse(&candidate.source_url) else {
+        return Ok((candidate, None));
+    };
+    let contains_transient_transport_data = !source_url.username().is_empty()
+        || source_url.password().is_some()
+        || source_url.query().is_some()
+        || source_url.fragment().is_some();
+    if !contains_transient_transport_data {
+        return Ok((candidate, None));
+    }
+    if candidate.provider_candidate_id.is_none() {
+        return Err(PortError(
+            "connector candidates with credential-bearing or transient URLs require a stable provider candidate ID"
+                .to_owned(),
+        ));
+    }
+
+    let transient_source_url = candidate.source_url.clone();
+    source_url.set_username("").map_err(|_| {
+        PortError("candidate source URL cannot remove embedded username".to_owned())
+    })?;
+    source_url.set_password(None).map_err(|_| {
+        PortError("candidate source URL cannot remove embedded password".to_owned())
+    })?;
+    source_url.set_query(None);
+    source_url.set_fragment(None);
+    candidate.source_url = source_url.into();
+    Ok((candidate, Some(transient_source_url)))
 }
 
 fn push_work_key_part(key: &mut String, value: &str) {
