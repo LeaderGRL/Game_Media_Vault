@@ -2246,6 +2246,65 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
 }
 
 #[test]
+fn migrating_legacy_review_identity_preserves_processing_acceptance() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: 7,
+            candidate_identity: "connector:legacy-processing-accept".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP INDEX IF EXISTS idx_review_items_run;
+             DROP INDEX IF EXISTS idx_review_items_status;
+             DROP INDEX IF EXISTS idx_review_items_run_status;
+             DROP INDEX IF EXISTS idx_review_items_candidate_identity;
+             DROP TABLE review_processing_leases;
+             ALTER TABLE review_items RENAME TO review_items_current;
+             CREATE TABLE review_items (
+                 id INTEGER PRIMARY KEY,
+                 run_id INTEGER NOT NULL,
+                 candidate_identity TEXT NOT NULL UNIQUE,
+                 candidate_json TEXT NOT NULL,
+                 competing_matches_json TEXT NOT NULL,
+                 decision_json TEXT,
+                 status TEXT NOT NULL DEFAULT 'pending'
+             );
+             INSERT INTO review_items (
+                 id, run_id, candidate_identity, candidate_json,
+                 competing_matches_json, decision_json, status
+             )
+             SELECT id, run_id, candidate_identity, candidate_json,
+                    competing_matches_json,
+                    '{\"decision\":\"accept\",\"release_edition_id\":201}',
+                    'processing'
+             FROM review_items_current;
+             DROP TABLE review_items_current;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let migrated = reopened.list_review_items().unwrap().remove(0);
+
+    assert_eq!(migrated.status, ReviewStatus::Accepted);
+    assert_eq!(
+        migrated.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 201
+        })
+    );
+}
+
+#[test]
 fn review_candidate_identity_lookups_are_indexed_across_runs() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
