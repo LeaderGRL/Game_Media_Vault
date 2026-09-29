@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, PortError, ReferenceCatalogRepositoryPort, ReviewProcessingClaim,
-    ReviewProcessingFinalization, RunRepositoryPort,
+    ReviewProcessingFinalization, RunRepositoryPort, acquisition_work_key,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -1378,6 +1378,27 @@ impl CatalogPort for SqliteCatalog {
                     params![decision_json, review_status_to_str(status), related_item.id],
                 )
                 .map_err(sql_error)?;
+            if status == ReviewStatus::Accepted && related_item.id != review_item_id {
+                let related_work_key = acquisition_work_key(
+                    related_item.candidate.source_id.as_str(),
+                    &related_item.candidate,
+                );
+                let related_run_status: Option<String> = transaction
+                    .query_row(
+                        "SELECT status FROM acquisition_runs WHERE id = ?1",
+                        params![related_item.run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(sql_error)?;
+                if related_run_status.as_deref() != Some("cancelled") {
+                    requeue_completed_work_in_transaction(
+                        &transaction,
+                        related_item.run_id,
+                        &related_work_key,
+                    )?;
+                }
+            }
         }
         transaction.commit().map_err(sql_error)?;
 

@@ -1,5 +1,5 @@
 use game_media_vault_application::{
-    CatalogPort, ReviewProcessingFinalization, RunRepositoryPort,
+    CatalogPort, ReviewProcessingFinalization, RunRepositoryPort, acquisition_work_key,
     list_review_items as list_review_items_use_case, resolve_review_item,
 };
 use game_media_vault_domain::{
@@ -328,6 +328,63 @@ fn accepting_a_review_supersedes_incompatible_occurrences_of_the_same_candidate(
             release_edition_id: 201
         })
     );
+}
+
+#[test]
+fn accepting_a_review_requeues_compatible_occurrences_of_the_same_candidate() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let first_run = catalog.create_run(request()).unwrap();
+    let second_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:shared-compatible-acceptance";
+    let staged_candidate = candidate();
+    let work_key = acquisition_work_key(staged_candidate.source_id.as_str(), &staged_candidate);
+
+    for run_id in [first_run.id, second_run.id] {
+        catalog.queue_work(run_id, work_key.clone()).unwrap();
+        catalog
+            .stage_review_item_and_complete_work(
+                NewReviewItem {
+                    run_id,
+                    candidate_identity: identity.to_owned(),
+                    candidate: staged_candidate.clone(),
+                    competing_matches: vec![review_match(201, "Standard")],
+                },
+                &work_key,
+            )
+            .unwrap();
+    }
+
+    let first_item = catalog
+        .find_review_item_for_run_by_candidate_identity(first_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .accept_review_item_and_requeue(first_item.id, 201, &work_key)
+        .unwrap()
+        .unwrap();
+
+    for run_id in [first_run.id, second_run.id] {
+        let item = catalog
+            .find_review_item_for_run_by_candidate_identity(run_id, identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.status, ReviewStatus::Accepted);
+        assert_eq!(
+            item.decision,
+            Some(ReviewDecision::Accept {
+                release_edition_id: 201,
+            })
+        );
+        let run = catalog.get_run(run_id).unwrap().unwrap();
+        assert_eq!(run.status, AcquisitionRunStatus::Running);
+        assert_eq!(run.queued_work, 1);
+        assert_eq!(run.completed_work, 0);
+        assert_eq!(
+            catalog.next_queued_work(run_id).unwrap().unwrap().key,
+            work_key
+        );
+    }
 }
 
 #[test]

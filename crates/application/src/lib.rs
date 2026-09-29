@@ -625,7 +625,7 @@ pub fn resolve_review_item(
 
     match decision {
         ReviewDecision::Accept { release_edition_id } => {
-            let work_key = connector_work_key(item.candidate.source_id.as_str(), &item.candidate);
+            let work_key = acquisition_work_key(item.candidate.source_id.as_str(), &item.candidate);
             catalog
                 .accept_review_item_and_requeue(review_item_id, release_edition_id, &work_key)?
                 .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
@@ -707,7 +707,7 @@ pub fn acquire_run_with_connector(
                     ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
                 )
         }) {
-            let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
+            let work_key = acquisition_work_key(connector.source_id(), &review_item.candidate);
             runs.requeue_completed_work(run_id, &work_key)?;
             requeued = true;
         }
@@ -726,7 +726,7 @@ pub fn acquire_run_with_connector(
         {
             continue;
         }
-        let work_key = connector_work_key(connector.source_id(), &review_item.candidate);
+        let work_key = acquisition_work_key(connector.source_id(), &review_item.candidate);
         persisted_work_key_by_identity
             .insert(review_item.candidate_identity.clone(), work_key.clone());
         candidates_by_work_key.insert(work_key, review_item.candidate.clone());
@@ -751,7 +751,7 @@ pub fn acquire_run_with_connector(
                     candidates_by_work_key.insert(work_key.clone(), candidate);
                     continue;
                 }
-                let work_key = connector_work_key(connector.source_id(), &candidate);
+                let work_key = acquisition_work_key(connector.source_id(), &candidate);
                 queue_acquisition_work(runs, run_id, work_key.clone())?;
                 candidates_by_work_key.insert(work_key, candidate);
             }
@@ -1076,7 +1076,7 @@ fn ensure_review_processing_lease(
     }
 }
 
-fn connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
+pub fn acquisition_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut key = "connector".to_owned();
     if let Some(provider_candidate_id) = candidate.provider_candidate_id.as_deref() {
         for part in [
