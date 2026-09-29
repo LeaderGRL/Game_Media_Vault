@@ -1131,10 +1131,10 @@ pub fn acquisition_work_key(source_id: &str, candidate: &AssetCandidate) -> Stri
     }
     for part in [
         source_id,
-        candidate.platform.as_str(),
-        candidate.game_title.as_str(),
-        candidate.region.as_str(),
-        candidate.edition_name.as_str(),
+        normalize_review_identity_part(candidate.platform.as_str()).as_str(),
+        normalize_review_identity_part(candidate.game_title.as_str()).as_str(),
+        normalize_review_identity_part(candidate.region.as_str()).as_str(),
+        normalize_review_identity_part(candidate.edition_name.as_str()).as_str(),
         asset_type_work_key(candidate.asset_type),
         candidate
             .source_asset_label

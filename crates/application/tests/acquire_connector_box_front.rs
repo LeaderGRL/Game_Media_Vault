@@ -8,6 +8,7 @@ use std::{
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, ReviewProcessingClaim,
     ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal, acquire_run_with_connector,
+    acquisition_work_key,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -2328,6 +2329,34 @@ fn fallback_candidates_without_labels_use_filename_to_keep_distinct_work_items()
     assert_eq!(connector.downloads.borrow().len(), 2);
     assert_eq!(catalog.records.borrow().len(), 2);
     assert_eq!(runs.run.borrow().completed_work, 2);
+}
+
+#[test]
+fn fallback_work_key_matches_review_identity_normalization() {
+    let candidate = AssetCandidate {
+        provider_candidate_id: None,
+        game_title: "Shared Game".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/shared.png".to_owned(),
+        original_filename: "shared.png".to_owned(),
+    };
+    let rediscovered = AssetCandidate {
+        game_title: " shared GAME ".to_owned(),
+        platform: " NINTENDO - NINTENDO ENTERTAINMENT SYSTEM ".to_owned(),
+        region: " usa ".to_owned(),
+        edition_name: " STANDARD ".to_owned(),
+        ..candidate.clone()
+    };
+
+    assert_eq!(
+        acquisition_work_key("libretro-thumbnails", &candidate),
+        acquisition_work_key("libretro-thumbnails", &rediscovered)
+    );
 }
 
 #[test]
