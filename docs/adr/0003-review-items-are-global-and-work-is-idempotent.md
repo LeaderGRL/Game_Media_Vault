@@ -1,0 +1,16 @@
+# Review Items are global and acquisition work is idempotent
+
+Acquisition keeps one Review Item per candidate identity instead of one per run. A human decision (`accepted`, `rejected`) is final and is reused as matching evidence by every later run that meets the same candidate identity. Undecided items (`pending`, `deferred`) can still be re-evaluated by the engine, which closes them as `auto_resolved` (the candidate became a high-confidence match) or `superseded` (it became a low-confidence match). The engine reopens an automatically closed item if the candidate becomes uncertain again.
+
+Each acquisition work item persists the candidate snapshot captured when its Source finished discovery. Work is `queued`, `done`, or `parked` on a Review Item. Recording a human decision moves the parked work in the same transaction: accepting requeues it (and reopens a completed run; cancelled runs stay untouched), rejecting completes it, deferring keeps it parked. Resuming a run therefore never needs connector rediscovery.
+
+Connectors own transport credentials. Candidates carry a stable, credential-free locator (no URL userinfo); `ConnectorPort::download` adds API keys or requests signed URLs itself. Review previews download from the persisted candidate through the connector, so the application never stores or forwards transient URLs.
+
+Races are resolved with conditional state transitions instead of processing leases. The engine only closes a Review Item if it is still undecided, and a human decision is only recorded if the item is still undecided; whoever commits first wins and the other side re-reads the item. Importing an Asset is idempotent (content-addressed objects, unique catalog rows), so two concurrent executions of the same run can waste a download but cannot corrupt the catalog. Work claiming for concurrent workers belongs to the scheduler (#20).
+
+Original bytes are published to the content-addressed store before the catalog transaction that references them. An interrupted import can therefore leave an unreferenced object but never a catalog row pointing to a missing object; vault verification (#24) garbage-collects unreferenced objects older than a grace period.
+
+## Considered options
+
+- Per-run Review Items with processing leases, cross-run reconciliation and a publication journal (the first implementation of #8). It handled every race it was reviewed against, but every fix added state, and the resulting model was too large to reason about or extend.
+- A run-level executor lock. Rejected for now: idempotent imports make concurrent executions safe, and a lock needs heartbeats and expiry that the scheduler work (#20) will design properly.
