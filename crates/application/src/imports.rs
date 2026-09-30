@@ -99,22 +99,31 @@ pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, Appl
     Ok(catalog.list_library()?)
 }
 
+/// Canonical absolute path of a user-provided source, without Windows verbatim prefixes, so
+/// recorded source locations stay readable and identical across import kinds.
 fn resolve_source_path(path: &Path) -> Result<PathBuf, ApplicationError> {
-    fs::canonicalize(path).map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))?;
+    Ok(without_verbatim_prefix(canonical))
+}
+
+#[cfg(windows)]
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let location = path.to_string_lossy();
+    if let Some(network_path) = location.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{network_path}"));
+    }
+    if let Some(local_path) = location.strip_prefix(r"\\?\") {
+        return PathBuf::from(local_path);
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn source_location(path: &Path) -> String {
-    let location = path.to_string_lossy();
-
-    #[cfg(windows)]
-    {
-        if let Some(network_path) = location.strip_prefix(r"\\?\UNC\") {
-            return format!(r"\\{network_path}");
-        }
-        if let Some(local_path) = location.strip_prefix(r"\\?\") {
-            return local_path.to_owned();
-        }
-    }
-
-    location.into_owned()
+    path.to_string_lossy().into_owned()
 }

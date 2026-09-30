@@ -97,3 +97,44 @@ fn reference_release(index: usize) -> ReferenceReleaseRecord {
         ],
     }
 }
+
+#[derive(Default)]
+struct PathRecordingSource {
+    source_paths: RefCell<Vec<PathBuf>>,
+}
+
+impl ReferenceCatalogSourcePort for PathRecordingSource {
+    fn read_releases(
+        &self,
+        source_path: &Path,
+        _max_games: usize,
+    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+        self.source_paths
+            .borrow_mut()
+            .push(source_path.to_path_buf());
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn reference_sources_receive_a_plain_absolute_source_path() {
+    let source = PathRecordingSource::default();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    import_reference_catalog(
+        &BatchRecordingCatalog::default(),
+        &source,
+        ImportReferenceCatalogRequest {
+            source_path: manifest_dir.join("src").join("..").join("Cargo.toml"),
+            max_games: 1,
+        },
+    )
+    .unwrap();
+
+    let source_paths = source.source_paths.borrow();
+    let recorded = source_paths[0].to_string_lossy();
+    assert!(source_paths[0].is_absolute());
+    assert!(!recorded.starts_with(r"\\?\"), "{recorded}");
+    assert!(!recorded.contains(".."), "{recorded}");
+    assert!(recorded.ends_with("Cargo.toml"), "{recorded}");
+}
