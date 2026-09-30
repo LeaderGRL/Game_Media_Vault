@@ -137,3 +137,29 @@ fn is_edition_tag(tag: &str) -> bool {
         .iter()
         .any(|marker| tag.contains(marker))
 }
+
+/// Qualifiers that describe how a DAT stores dumps rather than which platform it covers.
+const DAT_VARIANT_QUALIFIERS: &[&str] = &[
+    "Headered",
+    "Headerless",
+    "Decrypted",
+    "Encrypted",
+    "BigEndian",
+    "ByteSwapped",
+    "LittleEndian",
+    "Parent-Clone",
+];
+
+/// Platform name without DAT variant qualifiers, e.g.
+/// `Nintendo - Nintendo Entertainment System (Headered)` becomes
+/// `Nintendo - Nintendo Entertainment System`, as Libretro names it.
+pub(crate) fn platform_name(dat_name: &str) -> String {
+    let mut name = dat_name.trim();
+    while let Some(stripped) = DAT_VARIANT_QUALIFIERS
+        .iter()
+        .find_map(|qualifier| name.strip_suffix(&format!(" ({qualifier})")))
+    {
+        name = stripped.trim_end();
+    }
+    name.to_owned()
+}

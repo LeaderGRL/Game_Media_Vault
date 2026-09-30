@@ -13,7 +13,7 @@ use quick_xml::{Reader, escape::resolve_xml_entity, events::Event};
 
 mod naming;
 
-use naming::parse_release_name;
+use naming::{parse_release_name, platform_name};
 use reqwest::blocking::Client;
 use url::Url;
 
@@ -408,7 +408,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
             Event::End(element) => match element.name().as_ref() {
                 "name" if reading_header_name => {
                     reading_header_name = false;
-                    platform = Some(header_name.trim().to_owned());
+                    platform = Some(platform_name(&header_name));
                 }
                 "header" => in_header = false,
                 "game" => {
