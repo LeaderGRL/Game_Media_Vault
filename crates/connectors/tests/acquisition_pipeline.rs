@@ -91,11 +91,11 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
     catalog
         .persist_reference_release(ReferenceReleaseRecord {
-            game_title: "Super Mario Bros. (World)".to_owned(),
+            game_title: "Super Mario Bros.".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
-            region: "Unknown".to_owned(),
+            region: "World".to_owned(),
             revision: None,
-            edition_name: "Unspecified".to_owned(),
+            edition_name: "Standard".to_owned(),
             assertions: vec![ReleaseAssertion {
                 source_id: SourceId::from("fixture-reference"),
                 source_location: "fixture://reference".to_owned(),
@@ -178,11 +178,11 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
     let release = catalog
         .persist_reference_release(ReferenceReleaseRecord {
-            game_title: "Super Mario Bros. (World)".to_owned(),
+            game_title: "Super Mario Bros.".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
-            region: "Unknown".to_owned(),
+            region: "World".to_owned(),
             revision: None,
-            edition_name: "Unspecified".to_owned(),
+            edition_name: "Rev 1".to_owned(),
             assertions: vec![ReleaseAssertion {
                 source_id: SourceId::from("fixture-reference"),
                 source_location: "fixture://reference".to_owned(),
@@ -196,8 +196,9 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
         requested_urls: Arc::new(Mutex::new(Vec::new())),
     });
-    let stricter_policy = MatchingPolicy {
-        high_confidence_threshold: 90,
+    // The release is a different revision, so the edition conflict makes the match uncertain.
+    let policy = MatchingPolicy {
+        high_confidence_threshold: 80,
         medium_confidence_threshold: 50,
     };
 
@@ -208,7 +209,7 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
         &ContentAddressedStore::new(&object_root),
         &connector,
         run.id,
-        stricter_policy,
+        policy,
     )
     .unwrap();
     assert!(imported.is_empty());
@@ -239,7 +240,7 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
         &ContentAddressedStore::new(&object_root),
         &NoDiscoveryConnector,
         run.id,
-        stricter_policy,
+        policy,
     )
     .unwrap();
 
