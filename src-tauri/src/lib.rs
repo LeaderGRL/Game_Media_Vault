@@ -8,6 +8,7 @@ use game_media_vault_application::{
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
+    load_review_preview as load_review_preview_use_case,
     pause_acquisition_run as pause_acquisition_run_use_case,
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
@@ -18,6 +19,13 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, LibraryEntry, MatchingPolicy, ReviewDecision, ReviewItem,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewPreviewPayload {
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
 
 pub fn validate_acquisition_request(
     request: AcquisitionRequestInput,
@@ -55,6 +63,33 @@ pub fn resolve_review_item_in_vault(
         .map_err(|error| error.to_string())
 }
 
+pub fn load_review_preview_in_vault_with_connector(
+    vault_root: &Path,
+    review_item_id: i64,
+    connector: &dyn ConnectorPort,
+) -> Result<ReviewPreviewPayload, String> {
+    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
+        .map_err(|error| error.to_string())?;
+    let preview = load_review_preview_use_case(&catalog, &catalog, connector, review_item_id)
+        .map_err(|error| error.to_string())?;
+    Ok(ReviewPreviewPayload {
+        media_type: preview_media_type(&preview.original_filename).to_owned(),
+        bytes: preview.bytes,
+    })
+}
+
+pub async fn load_review_preview_in_vault_with_connector_async(
+    vault_root: PathBuf,
+    review_item_id: i64,
+    connector: Box<dyn ConnectorPort + Send>,
+) -> Result<ReviewPreviewPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_review_preview_in_vault_with_connector(&vault_root, review_item_id, connector.as_ref())
+    })
+    .await
+    .map_err(|error| format!("review preview worker failed: {error}"))?
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn list_library(vault_root: String) -> Result<Vec<LibraryEntry>, String> {
     load_library(Path::new(&vault_root))
@@ -72,6 +107,19 @@ fn resolve_review_item(
     decision: ReviewDecision,
 ) -> Result<ReviewItem, String> {
     resolve_review_item_in_vault(Path::new(&vault_root), review_item_id, decision)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn load_review_preview(
+    vault_root: String,
+    review_item_id: i64,
+) -> Result<ReviewPreviewPayload, String> {
+    load_review_preview_in_vault_with_connector_async(
+        PathBuf::from(vault_root),
+        review_item_id,
+        Box::new(LibretroThumbnailsConnector::new()),
+    )
+    .await
 }
 
 pub fn start_acquisition_run_in_vault(
@@ -218,6 +266,7 @@ pub fn run() {
             list_library,
             list_review_items,
             resolve_review_item,
+            load_review_preview,
             build_acquisition_request,
             start_acquisition_run,
             execute_acquisition_run,
@@ -229,4 +278,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Game Media Vault");
+}
+
+fn preview_media_type(filename: &str) -> &'static str {
+    match Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        Some("avif") => "image/avif",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
 }

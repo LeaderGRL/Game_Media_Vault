@@ -1,14 +1,51 @@
+use std::{
+    cell::RefCell,
+    io::{Cursor, Read},
+};
+
 use game_media_vault_application::{
-    AcquisitionRequestInput, CatalogPort, acquisition_work_key, complete_acquisition_run,
-    complete_acquisition_work, load_acquisition_run, queue_acquisition_work, start_acquisition_run,
+    AcquisitionRequestInput, CatalogPort, ConnectorPort, PortError, acquisition_work_key,
+    complete_acquisition_run, complete_acquisition_work, load_acquisition_run,
+    queue_acquisition_work, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AssetCandidate, AssetType, AssetTypeSelector,
-    GameSelection, MatchEvidence, MatchSignal, NewReviewItem, RetentionPolicy, ReviewDecision,
-    ReviewMatchCandidate, SourceId, SourceSelection,
+    ConnectorCapabilities, GameSelection, MatchEvidence, MatchSignal, NewReviewItem,
+    RetentionPolicy, ReviewDecision, ReviewMatchCandidate, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
+
+struct PreviewConnector {
+    downloads: RefCell<Vec<String>>,
+}
+
+impl ConnectorPort for PreviewConnector {
+    fn source_id(&self) -> &'static str {
+        "fixture-provider"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(
+        &self,
+        _request: &game_media_vault_domain::AcquisitionRequest,
+    ) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.downloads
+            .borrow_mut()
+            .push(candidate.source_url.clone());
+        Ok(Box::new(Cursor::new(b"preview bytes".to_vec())))
+    }
+}
 
 #[test]
 fn tauri_lists_review_evidence_and_persists_resolution() {
@@ -105,4 +142,65 @@ fn tauri_lists_review_evidence_and_persists_resolution() {
 
     let reloaded = game_media_vault_tauri::load_review_items(&vault).unwrap();
     assert_eq!(reloaded[0], resolved);
+}
+
+#[test]
+fn tauri_review_preview_returns_backend_media_bytes() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(
+        &catalog,
+        AcquisitionRequestInput {
+            sources: SourceSelection::Explicit(vec!["fixture-provider".to_owned()]),
+            platforms: vec!["Nintendo Entertainment System".to_owned()],
+            games: GameSelection::Explicit(vec!["Preview Game".to_owned()]),
+            regions: Vec::new(),
+            languages: Vec::new(),
+            asset_types: vec![AssetTypeSelector::BoxFront],
+            quality: None,
+            retention: RetentionPolicy::KeepEverything,
+            limits: AcquisitionLimits::default(),
+        },
+    )
+    .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "candidate:fixture-preview".to_owned(),
+            candidate: AssetCandidate {
+                provider_candidate_id: Some("fixture-preview".to_owned()),
+                source_url_requires_rediscovery: false,
+                game_title: "Preview Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Standard".to_owned(),
+                asset_type: AssetType::BoxFront,
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_url: "https://example.invalid/preview.png".to_owned(),
+                original_filename: "preview.png".to_owned(),
+            },
+            competing_matches: Vec::new(),
+        })
+        .unwrap();
+    let review_item_id = catalog.list_review_items().unwrap()[0].id;
+    drop(catalog);
+    let connector = PreviewConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+
+    let preview = game_media_vault_tauri::load_review_preview_in_vault_with_connector(
+        &vault,
+        review_item_id,
+        &connector,
+    )
+    .unwrap();
+
+    assert_eq!(preview.media_type, "image/png");
+    assert_eq!(preview.bytes, b"preview bytes");
+    assert_eq!(
+        connector.downloads.borrow().as_slice(),
+        &["https://example.invalid/preview.png".to_owned()]
+    );
 }
