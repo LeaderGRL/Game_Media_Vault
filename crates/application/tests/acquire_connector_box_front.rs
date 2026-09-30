@@ -236,6 +236,11 @@ impl ConnectorPort for FakeConnector {
         {
             return Ok(Some("https://example.invalid/review/401".to_owned()));
         }
+        if candidate.provider_candidate_id.as_deref() == Some("provider-review-relative-401") {
+            return Ok(Some(
+                "https://example.invalid/review/relative-401".to_owned(),
+            ));
+        }
         Ok(Some(candidate.source_url.clone()))
     }
 
@@ -940,6 +945,47 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
     );
     assert!(!review_items[0].candidate_identity.contains("secret"));
     assert!(!review_items[0].candidate_identity.contains("password"));
+}
+
+#[test]
+fn medium_confidence_relative_candidate_does_not_stage_transport_credentials() {
+    let (mut candidate, library) = ambiguous_candidate_and_releases();
+    candidate.provider_candidate_id = Some("provider-review-relative-401".to_owned());
+    candidate.source_url = "/download/401?token=relative-secret#download".to_owned();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    let review_items = catalog.review_items.borrow();
+    assert_eq!(review_items.len(), 1);
+    assert_eq!(
+        review_items[0].candidate.source_url,
+        "https://example.invalid/review/relative-401"
+    );
+    assert!(review_items[0].candidate.source_url_requires_rediscovery);
+    assert!(
+        !review_items[0]
+            .candidate_identity
+            .contains("relative-secret")
+    );
 }
 
 #[test]

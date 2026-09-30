@@ -1266,13 +1266,15 @@ fn catalog_safe_candidate(
     mut candidate: AssetCandidate,
     stable_source_location: Option<String>,
 ) -> Result<(AssetCandidate, Option<String>), PortError> {
-    let Ok(source_url) = Url::parse(&candidate.source_url) else {
-        return Ok((candidate, None));
+    let contains_transient_transport_data = match Url::parse(&candidate.source_url) {
+        Ok(source_url) => {
+            !source_url.username().is_empty()
+                || source_url.password().is_some()
+                || source_url.query().is_some()
+                || source_url.fragment().is_some()
+        }
+        Err(_) => true,
     };
-    let contains_transient_transport_data = !source_url.username().is_empty()
-        || source_url.password().is_some()
-        || source_url.query().is_some()
-        || source_url.fragment().is_some();
     if !contains_transient_transport_data {
         return Ok((candidate, None));
     }
