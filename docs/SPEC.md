@@ -533,6 +533,18 @@ game-media-vault source ...
 
 Requests should also be serializable to a declarative file so large acquisitions can be reproduced on another machine.
 
+Errors are classified into stable kinds shared by every frontend. The desktop shell returns them as `{ kind, message }`; the CLI prints the message on stderr and exits with a kind-specific code:
+
+| Exit code | Kind | Meaning |
+| --- | --- | --- |
+| 0 | — | success |
+| 1 | `external` | storage, network or another port failed |
+| 2 | `invalid_request` | invalid arguments or request (also command-line usage errors) |
+| 3 | `not_found` | unknown run, Review Item or Release Edition |
+| 4 | `conflict` | the current state forbids the operation |
+| 5 | `unsupported` | valid but not supported for this Source or plan yet |
+| 6 | `source_failure` | a Source broke the connector contract |
+
 ## 22. Performance Principles
 
 - Streaming downloads; avoid loading large media into memory unnecessarily.

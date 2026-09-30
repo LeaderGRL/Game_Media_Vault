@@ -5,7 +5,7 @@ fn main() {
         Err(game_media_vault_cli::CliError::Parse(error)) => error.exit(),
         Err(error) => {
             eprintln!("{error}");
-            std::process::exit(1);
+            std::process::exit(error.exit_code());
         }
     }
 }

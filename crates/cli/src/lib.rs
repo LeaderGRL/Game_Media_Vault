@@ -6,7 +6,7 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
-    ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, PortError,
+    ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, PortError,
     acquire_run_with_connector, cancel_acquisition_run, import_local_box_front,
     import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
     load_acquisition_run, pause_acquisition_run, resolve_review_item, resume_acquisition_run,
@@ -33,6 +33,27 @@ pub enum CliError {
     Serialization(#[from] serde_json::Error),
     #[error("{0}")]
     Validation(#[from] AcquisitionRequestValidationError),
+}
+
+impl CliError {
+    /// Process exit code for this error: 2 invalid request, 3 not found, 4 conflict,
+    /// 5 unsupported, 6 source failure, 1 anything else.
+    pub fn exit_code(&self) -> i32 {
+        let kind = match self {
+            Self::Parse(error) => return error.exit_code(),
+            Self::Validation(_) => ErrorKind::InvalidRequest,
+            Self::Application(error) => error.kind(),
+            Self::Port(_) | Self::Serialization(_) => ErrorKind::External,
+        };
+        match kind {
+            ErrorKind::InvalidRequest => 2,
+            ErrorKind::NotFound => 3,
+            ErrorKind::Conflict => 4,
+            ErrorKind::Unsupported => 5,
+            ErrorKind::SourceFailure => 6,
+            ErrorKind::External => 1,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
