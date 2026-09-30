@@ -23,14 +23,7 @@ export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: Re
     <section className="review-list" aria-label="Review items">
       {items.map((item) => {
         const busy = resolvingIds.has(item.id);
-        const closed = [
-          "processing",
-          "accepted",
-          "applied",
-          "rejected",
-          "auto_resolved",
-          "superseded",
-        ].includes(item.status);
+        const closed = item.status !== "pending" && item.status !== "deferred";
         return (
           <article className="review-card" key={item.id}>
             <div className="review-heading">
@@ -230,9 +223,6 @@ function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | n
   if (status === "accepted" && decision?.decision === "accept") {
     return `Accepted · release #${decision.release_edition_id}`;
   }
-  if (status === "applied" && decision?.decision === "accept") {
-    return `Applied · release #${decision.release_edition_id}`;
-  }
   if (status === "rejected") {
     return "Rejected";
   }
@@ -241,9 +231,6 @@ function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | n
   }
   if (status === "auto_resolved") {
     return "Auto-resolved";
-  }
-  if (status === "processing") {
-    return "Processing";
   }
   if (status === "superseded") {
     return "Superseded";

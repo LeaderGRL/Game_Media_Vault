@@ -78,16 +78,13 @@ export type ReviewDecision =
 export type ReviewStatus =
   | "pending"
   | "deferred"
-  | "processing"
   | "accepted"
-  | "applied"
   | "rejected"
   | "auto_resolved"
   | "superseded";
 
 export interface ReviewItem {
   id: number;
-  run_id: number;
   candidate_identity: string;
   candidate: AssetCandidate;
   competing_matches: ReviewMatchCandidate[];

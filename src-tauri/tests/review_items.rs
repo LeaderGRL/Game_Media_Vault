@@ -4,14 +4,14 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, CatalogPort, ConnectorPort, PortError, acquisition_work_key,
-    complete_acquisition_run, complete_acquisition_work, load_acquisition_run,
-    queue_acquisition_work, start_acquisition_run,
+    AcquisitionRequestInput, ConnectorPort, ParkedReview, PortError, ReviewRepositoryPort,
+    RunRepositoryPort, candidate_identity, load_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRunStatus, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, GameSelection, MatchEvidence, MatchSignal, NewReviewItem,
-    RetentionPolicy, ReviewDecision, ReviewMatchCandidate, SourceId, SourceSelection,
+    AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, MatchEvidence, MatchSignal,
+    NewReviewItem, RetentionPolicy, ReviewDecision, ReviewMatchCandidate, SourceId,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
@@ -47,17 +47,29 @@ impl ConnectorPort for PreviewConnector {
     }
 }
 
-#[test]
-fn tauri_lists_review_evidence_and_persists_resolution() {
-    let temp = tempdir().unwrap();
-    let vault = temp.path().join("vault");
-    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+fn candidate(title: &str) -> AssetCandidate {
+    AssetCandidate {
+        provider_candidate_id: None,
+        game_title: title.to_owned(),
+        platform: "Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Collector".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("fixture-provider"),
+        source_asset_label: Some("front".to_owned()),
+        source_url: format!("https://example.invalid/{title}/front.png"),
+        original_filename: "front.png".to_owned(),
+    }
+}
+
+/// Starts a run whose only discovered candidate is parked on a new Review Item.
+fn seed_parked_review(catalog: &SqliteCatalog, candidate: AssetCandidate) -> (i64, i64) {
     let run = start_acquisition_run(
-        &catalog,
+        catalog,
         AcquisitionRequestInput {
             sources: SourceSelection::Explicit(vec!["fixture-provider".to_owned()]),
             platforms: vec!["Nintendo Entertainment System".to_owned()],
-            games: GameSelection::Explicit(vec!["Review Game".to_owned()]),
+            games: GameSelection::Explicit(vec![candidate.game_title.clone()]),
             regions: Vec::new(),
             languages: Vec::new(),
             asset_types: vec![AssetTypeSelector::BoxFront],
@@ -67,46 +79,64 @@ fn tauri_lists_review_evidence_and_persists_resolution() {
         },
     )
     .unwrap();
-    let candidate = AssetCandidate {
-        provider_candidate_id: None,
-        game_title: "Review Game".to_owned(),
-        platform: "Nintendo Entertainment System".to_owned(),
-        region: "USA".to_owned(),
-        edition_name: "Collector".to_owned(),
-        asset_type: AssetType::BoxFront,
-        source_id: SourceId::from("fixture-provider"),
-        source_asset_label: Some("front".to_owned()),
-        source_url: "fixture://review/front".to_owned(),
-        original_filename: "front.png".to_owned(),
-    };
-    let work_key = acquisition_work_key(candidate.source_id.as_str(), &candidate);
-    queue_acquisition_work(&catalog, run.id, work_key.clone()).unwrap();
-    complete_acquisition_work(&catalog, run.id, &work_key).unwrap();
-    complete_acquisition_run(&catalog, run.id).unwrap();
+    let key = candidate_identity("fixture-provider", &candidate);
     catalog
-        .persist_review_item(NewReviewItem {
-            run_id: run.id,
-            candidate_identity: "connector:tauri-review".to_owned(),
-            candidate,
-            competing_matches: vec![ReviewMatchCandidate {
-                game_id: 301,
-                release_edition_id: 201,
-                game_title: "Review Game".to_owned(),
-                platform: "Nintendo Entertainment System".to_owned(),
-                region: "USA".to_owned(),
-                edition_name: "Standard".to_owned(),
-                score: 90,
-                evidence: vec![MatchEvidence {
-                    signal: MatchSignal::Title,
-                    candidate_value: "Review Game".to_owned(),
-                    release_value: "Review Game".to_owned(),
-                    score_delta: 50,
-                }],
-                assertions: Vec::new(),
+        .record_discovery(
+            run.id,
+            "fixture-provider",
+            &[AcquisitionWorkItem {
+                key: key.clone(),
+                candidate: candidate.clone(),
             }],
-        })
+        )
         .unwrap();
-    let review_item_id = catalog.list_review_items().unwrap()[0].id;
+    let parked = catalog
+        .park_work_for_review(
+            run.id,
+            &key,
+            NewReviewItem {
+                candidate_identity: key.clone(),
+                candidate,
+                competing_matches: vec![ReviewMatchCandidate {
+                    game_id: 301,
+                    release_edition_id: 201,
+                    game_title: "Review Game".to_owned(),
+                    platform: "Nintendo Entertainment System".to_owned(),
+                    region: "USA".to_owned(),
+                    edition_name: "Standard".to_owned(),
+                    score: 90,
+                    evidence: vec![MatchEvidence {
+                        signal: MatchSignal::Title,
+                        candidate_value: "Review Game".to_owned(),
+                        release_value: "Review Game".to_owned(),
+                        score_delta: 50,
+                    }],
+                    assertions: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+    let ParkedReview::Parked(item) = parked else {
+        panic!("expected a new review item");
+    };
+    assert!(
+        catalog
+            .compare_and_set_run_status(
+                run.id,
+                AcquisitionRunStatus::Running,
+                AcquisitionRunStatus::Completed,
+            )
+            .unwrap()
+    );
+    (run.id, item.id)
+}
+
+#[test]
+fn tauri_lists_review_evidence_and_persists_resolution() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let (run_id, review_item_id) = seed_parked_review(&catalog, candidate("Review Game"));
     drop(catalog);
 
     let items = game_media_vault_tauri::load_review_items(&vault).unwrap();
@@ -133,7 +163,7 @@ fn tauri_lists_review_evidence_and_persists_resolution() {
     );
     let reopened_run = load_acquisition_run(
         &SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap(),
-        run.id,
+        run_id,
     )
     .unwrap();
     assert_eq!(reopened_run.status, AcquisitionRunStatus::Running);
@@ -148,41 +178,11 @@ fn tauri_review_preview_returns_backend_media_bytes() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
     let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
-    let run = start_acquisition_run(
-        &catalog,
-        AcquisitionRequestInput {
-            sources: SourceSelection::Explicit(vec!["fixture-provider".to_owned()]),
-            platforms: vec!["Nintendo Entertainment System".to_owned()],
-            games: GameSelection::Explicit(vec!["Preview Game".to_owned()]),
-            regions: Vec::new(),
-            languages: Vec::new(),
-            asset_types: vec![AssetTypeSelector::BoxFront],
-            quality: None,
-            retention: RetentionPolicy::KeepEverything,
-            limits: AcquisitionLimits::default(),
-        },
-    )
-    .unwrap();
-    catalog
-        .persist_review_item(NewReviewItem {
-            run_id: run.id,
-            candidate_identity: "candidate:fixture-preview".to_owned(),
-            candidate: AssetCandidate {
-                provider_candidate_id: Some("fixture-preview".to_owned()),
-                game_title: "Preview Game".to_owned(),
-                platform: "Nintendo Entertainment System".to_owned(),
-                region: "USA".to_owned(),
-                edition_name: "Standard".to_owned(),
-                asset_type: AssetType::BoxFront,
-                source_id: SourceId::from("fixture-provider"),
-                source_asset_label: Some("front".to_owned()),
-                source_url: "https://example.invalid/preview.png".to_owned(),
-                original_filename: "preview.png".to_owned(),
-            },
-            competing_matches: Vec::new(),
-        })
-        .unwrap();
-    let review_item_id = catalog.list_review_items().unwrap()[0].id;
+    let preview_candidate = AssetCandidate {
+        original_filename: "preview.png".to_owned(),
+        ..candidate("Preview Game")
+    };
+    let (_, review_item_id) = seed_parked_review(&catalog, preview_candidate.clone());
     drop(catalog);
     let connector = PreviewConnector {
         downloads: RefCell::new(Vec::new()),
@@ -199,6 +199,6 @@ fn tauri_review_preview_returns_backend_media_bytes() {
     assert_eq!(preview.bytes, b"preview bytes");
     assert_eq!(
         connector.downloads.borrow().as_slice(),
-        &["https://example.invalid/preview.png".to_owned()]
+        &[preview_candidate.source_url]
     );
 }

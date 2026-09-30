@@ -74,32 +74,33 @@ const SCHEMA_V1: &str = "
         id INTEGER PRIMARY KEY,
         request_json TEXT NOT NULL,
         request_schema_version INTEGER NOT NULL CHECK(request_schema_version > 0),
-        status TEXT NOT NULL,
-        queued_work INTEGER NOT NULL CHECK(queued_work >= 0),
-        completed_work INTEGER NOT NULL CHECK(completed_work >= 0)
+        status TEXT NOT NULL
+            CHECK(status IN ('running', 'paused', 'cancelled', 'completed'))
+    );
+    CREATE TABLE acquisition_run_discoveries (
+        run_id INTEGER NOT NULL REFERENCES acquisition_runs(id),
+        source_id TEXT NOT NULL,
+        PRIMARY KEY(run_id, source_id)
+    );
+    CREATE TABLE review_items (
+        id INTEGER PRIMARY KEY,
+        candidate_identity TEXT NOT NULL UNIQUE,
+        candidate_json TEXT NOT NULL,
+        competing_matches_json TEXT NOT NULL,
+        decision_json TEXT,
+        status TEXT NOT NULL CHECK(
+            status IN ('pending', 'deferred', 'accepted', 'rejected', 'auto_resolved', 'superseded')
+        )
     );
     CREATE TABLE acquisition_run_work (
         id INTEGER PRIMARY KEY,
         run_id INTEGER NOT NULL REFERENCES acquisition_runs(id),
         work_key TEXT NOT NULL,
-        completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0, 1)),
-        UNIQUE(run_id, work_key)
-    );
-    CREATE TABLE review_items (
-        id INTEGER PRIMARY KEY,
-        run_id INTEGER NOT NULL,
-        candidate_identity TEXT NOT NULL,
         candidate_json TEXT NOT NULL,
-        competing_matches_json TEXT NOT NULL,
-        decision_json TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        decision_seq INTEGER CHECK(decision_seq > 0),
-        UNIQUE(run_id, candidate_identity)
-    );
-    CREATE TABLE review_processing_leases (
-        review_item_id INTEGER PRIMARY KEY REFERENCES review_items(id) ON DELETE CASCADE,
-        lease_token TEXT NOT NULL,
-        acquired_at INTEGER NOT NULL
+        state TEXT NOT NULL CHECK(state IN ('queued', 'parked', 'done')),
+        review_item_id INTEGER REFERENCES review_items(id),
+        UNIQUE(run_id, work_key),
+        CHECK((state = 'parked') = (review_item_id IS NOT NULL))
     );
     CREATE TABLE pending_object_publications (
         id INTEGER PRIMARY KEY,
@@ -122,11 +123,9 @@ const SCHEMA_V1: &str = "
     CREATE INDEX idx_game_normalized_title ON games(normalized_title);
     CREATE INDEX idx_asset_release ON assets(release_edition_id);
     CREATE INDEX idx_provenance_asset ON asset_provenance(asset_id);
-    CREATE INDEX idx_run_work_pending ON acquisition_run_work(run_id, completed, id);
-    CREATE INDEX idx_review_items_run ON review_items(run_id, id);
-    CREATE INDEX idx_review_items_run_status ON review_items(run_id, status, id);
-    CREATE INDEX idx_review_items_candidate_identity
-        ON review_items(candidate_identity, run_id, id);
+    CREATE INDEX idx_run_work_state ON acquisition_run_work(run_id, state, id);
+    CREATE INDEX idx_run_work_review ON acquisition_run_work(review_item_id)
+        WHERE review_item_id IS NOT NULL;
     CREATE INDEX idx_pending_object_publications_hash_age
         ON pending_object_publications(object_hash, created_at_unix);
 ";

@@ -33,6 +33,7 @@ impl RunRepositoryPort for RecordingRunRepository {
             request,
             status: AcquisitionRunStatus::Running,
             queued_work: 0,
+            awaiting_review_work: 0,
             completed_work: 0,
         })
     }
@@ -45,10 +46,18 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(Vec::new())
     }
 
-    fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
-        Ok(())
+    fn has_discovered(&self, _run_id: i64, _source_id: &str) -> Result<bool, PortError> {
+        Ok(false)
     }
 
+    fn record_discovery(
+        &self,
+        _run_id: i64,
+        _source_id: &str,
+        _work: &[AcquisitionWorkItem],
+    ) -> Result<(), PortError> {
+        Ok(())
+    }
     fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
         Ok(None)
     }
@@ -160,6 +169,7 @@ impl RacingRunRepository {
             request: self.request.clone(),
             status: *self.status.borrow(),
             queued_work: 0,
+            awaiting_review_work: 0,
             completed_work: 0,
         }
     }
@@ -178,10 +188,18 @@ impl RunRepositoryPort for RacingRunRepository {
         Ok(vec![self.run()])
     }
 
-    fn queue_work(&self, _run_id: i64, _work_key: String) -> Result<(), PortError> {
-        Ok(())
+    fn has_discovered(&self, _run_id: i64, _source_id: &str) -> Result<bool, PortError> {
+        Ok(false)
     }
 
+    fn record_discovery(
+        &self,
+        _run_id: i64,
+        _source_id: &str,
+        _work: &[AcquisitionWorkItem],
+    ) -> Result<(), PortError> {
+        Ok(())
+    }
     fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
         Ok(None)
     }

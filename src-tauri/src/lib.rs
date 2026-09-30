@@ -143,6 +143,7 @@ pub fn execute_acquisition_run_in_vault_with_connector(
     acquire_run_with_connector_use_case(
         &catalog,
         &catalog,
+        &catalog,
         &object_store,
         connector,
         run_id,

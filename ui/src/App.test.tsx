@@ -41,7 +41,6 @@ const entry: LibraryEntry = {
 
 const reviewItem: ReviewItem = {
   id: 17,
-  run_id: 7,
   candidate_identity: "connector:review-game",
   candidate: {
     game_title: "Review Game",
@@ -162,30 +161,29 @@ describe("App", () => {
     expect(preview).not.toHaveAttribute("src", "https://example.invalid/review/401");
   });
 
-  it("refreshes every review occurrence changed by a terminal decision", async () => {
-    const siblingReviewItem: ReviewItem = {
+  it("refreshes the whole review list after a decision", async () => {
+    const otherReviewItem: ReviewItem = {
       ...reviewItem,
       id: 18,
-      run_id: 8,
+      candidate_identity: "candidate:other-review",
     };
     const rejectedReviewItem: ReviewItem = {
       ...reviewItem,
       decision: { decision: "reject" },
       status: "rejected",
     };
-    const rejectedSibling: ReviewItem = {
-      ...siblingReviewItem,
-      decision: { decision: "reject" },
-      status: "rejected",
+    const autoResolvedOther: ReviewItem = {
+      ...otherReviewItem,
+      status: "auto_resolved",
     };
-    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, siblingReviewItem]);
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, otherReviewItem]);
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
     fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
     invokeMock.mockResolvedValueOnce(rejectedReviewItem).mockResolvedValueOnce([
       rejectedReviewItem,
-      rejectedSibling,
+      autoResolvedOther,
     ]);
     fireEvent.click(screen.getAllByRole("button", { name: "Reject candidate" })[0]);
 
@@ -194,7 +192,8 @@ describe("App", () => {
         vault_root: ".game-media-vault",
       });
     });
-    expect(await screen.findAllByText("Rejected")).toHaveLength(2);
+    expect(await screen.findByText("Rejected")).toBeInTheDocument();
+    expect(await screen.findByText("Auto-resolved")).toBeInTheDocument();
   });
 
   it("resolves review items against the vault that was actually loaded", async () => {

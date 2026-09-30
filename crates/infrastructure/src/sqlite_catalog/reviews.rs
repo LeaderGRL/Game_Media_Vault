@@ -1,0 +1,307 @@
+use game_media_vault_application::{ParkedReview, PortError, ReviewRepositoryPort};
+use game_media_vault_domain::{
+    NewReviewItem, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus,
+};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
+
+use super::{SqliteCatalog, sql_error};
+
+const REVIEW_ITEM_COLUMNS: &str =
+    "id, candidate_identity, candidate_json, competing_matches_json, decision_json, status";
+
+impl ReviewRepositoryPort for SqliteCatalog {
+    fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {REVIEW_ITEM_COLUMNS} FROM review_items ORDER BY id"
+            ))
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], review_item_row)
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        rows.into_iter().map(decode_review_item).collect()
+    }
+
+    fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError> {
+        select_review_item(&self.connect()?, "id = ?1", params![review_item_id])
+    }
+
+    fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError> {
+        select_review_item(
+            &self.connect()?,
+            "candidate_identity = ?1",
+            params![candidate_identity],
+        )
+    }
+
+    fn park_work_for_review(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        item: NewReviewItem,
+    ) -> Result<ParkedReview, PortError> {
+        let candidate_json = to_json(&item.candidate, "review candidate")?;
+        let competing_matches_json = to_json(&item.competing_matches, "review matches")?;
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let existing = select_review_item(
+            &transaction,
+            "candidate_identity = ?1",
+            params![item.candidate_identity],
+        )?;
+        let review_item_id = match existing {
+            Some(existing)
+                if matches!(
+                    existing.status,
+                    ReviewStatus::Accepted | ReviewStatus::Rejected
+                ) =>
+            {
+                return Ok(ParkedReview::AlreadyDecided(existing));
+            }
+            Some(existing) => {
+                // Refresh the evidence; an item closed by re-evaluation becomes pending again.
+                transaction
+                    .execute(
+                        "UPDATE review_items
+                         SET candidate_json = ?1,
+                             competing_matches_json = ?2,
+                             status = CASE WHEN status = 'deferred' THEN 'deferred' ELSE 'pending' END,
+                             decision_json = CASE WHEN status = 'deferred' THEN decision_json END
+                         WHERE id = ?3",
+                        params![candidate_json, competing_matches_json, existing.id],
+                    )
+                    .map_err(sql_error)?;
+                existing.id
+            }
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO review_items (
+                             candidate_identity, candidate_json, competing_matches_json, status
+                         ) VALUES (?1, ?2, ?3, 'pending')",
+                        params![
+                            item.candidate_identity,
+                            candidate_json,
+                            competing_matches_json
+                        ],
+                    )
+                    .map_err(sql_error)?;
+                transaction.last_insert_rowid()
+            }
+        };
+        let parked = transaction
+            .execute(
+                "UPDATE acquisition_run_work SET state = 'parked', review_item_id = ?1
+                 WHERE run_id = ?2 AND work_key = ?3 AND state = 'queued'",
+                params![review_item_id, run_id, work_key],
+            )
+            .map_err(sql_error)?;
+        if parked != 1 {
+            return Err(PortError(format!(
+                "acquisition run #{run_id} has no queued work {work_key:?} to park"
+            )));
+        }
+        let review_item = select_review_item(&transaction, "id = ?1", params![review_item_id])?
+            .ok_or_else(|| PortError(format!("review item #{review_item_id} disappeared")))?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(ParkedReview::Parked(review_item))
+    }
+
+    fn close_review_item(
+        &self,
+        review_item_id: i64,
+        status: ReviewStatus,
+    ) -> Result<bool, PortError> {
+        if !matches!(
+            status,
+            ReviewStatus::AutoResolved | ReviewStatus::Superseded
+        ) {
+            return Err(PortError(format!(
+                "review items cannot be closed automatically as {status:?}"
+            )));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        if !set_status_if_undecided(&transaction, review_item_id, status, None)? {
+            return Ok(false);
+        }
+        complete_parked_work(&transaction, review_item_id)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(true)
+    }
+
+    fn decide_review_item(
+        &self,
+        review_item_id: i64,
+        decision: ReviewDecision,
+    ) -> Result<Option<ReviewItem>, PortError> {
+        let decision_json = to_json(&decision, "review decision")?;
+        let status = match decision {
+            ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
+            ReviewDecision::Reject => ReviewStatus::Rejected,
+            ReviewDecision::Defer => ReviewStatus::Deferred,
+        };
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        if !set_status_if_undecided(&transaction, review_item_id, status, Some(&decision_json))? {
+            return Ok(None);
+        }
+        match status {
+            ReviewStatus::Accepted => requeue_parked_work(&transaction, review_item_id)?,
+            ReviewStatus::Rejected => complete_parked_work(&transaction, review_item_id)?,
+            _ => {}
+        }
+        let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(decided)
+    }
+}
+
+fn set_status_if_undecided(
+    transaction: &Transaction<'_>,
+    review_item_id: i64,
+    status: ReviewStatus,
+    decision_json: Option<&str>,
+) -> Result<bool, PortError> {
+    let updated = transaction
+        .execute(
+            "UPDATE review_items SET status = ?1, decision_json = ?2
+             WHERE id = ?3 AND status IN ('pending', 'deferred')",
+            params![review_status_to_str(status), decision_json, review_item_id],
+        )
+        .map_err(sql_error)?;
+    Ok(updated == 1)
+}
+
+fn complete_parked_work(
+    transaction: &Transaction<'_>,
+    review_item_id: i64,
+) -> Result<(), PortError> {
+    transaction
+        .execute(
+            "UPDATE acquisition_run_work SET state = 'done', review_item_id = NULL
+             WHERE review_item_id = ?1",
+            params![review_item_id],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
+/// Requeues parked work in runs that can still execute it, reopening completed runs.
+fn requeue_parked_work(
+    transaction: &Transaction<'_>,
+    review_item_id: i64,
+) -> Result<(), PortError> {
+    transaction
+        .execute(
+            "UPDATE acquisition_runs SET status = 'running'
+             WHERE status = 'completed' AND id IN (
+                 SELECT run_id FROM acquisition_run_work WHERE review_item_id = ?1
+             )",
+            params![review_item_id],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "UPDATE acquisition_run_work SET state = 'queued', review_item_id = NULL
+             WHERE review_item_id = ?1 AND run_id IN (
+                 SELECT id FROM acquisition_runs WHERE status != 'cancelled'
+             )",
+            params![review_item_id],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
+fn select_review_item(
+    connection: &Connection,
+    predicate: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<Option<ReviewItem>, PortError> {
+    connection
+        .query_row(
+            &format!("SELECT {REVIEW_ITEM_COLUMNS} FROM review_items WHERE {predicate}"),
+            parameters,
+            review_item_row,
+        )
+        .optional()
+        .map_err(sql_error)?
+        .map(decode_review_item)
+        .transpose()
+}
+
+type ReviewItemRow = (i64, String, String, String, Option<String>, String);
+
+fn review_item_row(row: &Row<'_>) -> rusqlite::Result<ReviewItemRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_review_item(
+    (id, candidate_identity, candidate_json, competing_matches_json, decision_json, status): ReviewItemRow,
+) -> Result<ReviewItem, PortError> {
+    let candidate = from_json(&candidate_json, "review candidate")?;
+    let competing_matches: Vec<ReviewMatchCandidate> =
+        from_json(&competing_matches_json, "review matches")?;
+    let decision = decision_json
+        .map(|json| from_json(&json, "review decision"))
+        .transpose()?;
+    Ok(ReviewItem {
+        id,
+        candidate_identity,
+        candidate,
+        competing_matches,
+        decision,
+        status: parse_review_status(&status)?,
+    })
+}
+
+fn to_json(value: &impl serde::Serialize, what: &str) -> Result<String, PortError> {
+    serde_json::to_string(value)
+        .map_err(|error| PortError(format!("failed to serialize {what}: {error}")))
+}
+
+fn from_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, PortError> {
+    serde_json::from_str(json)
+        .map_err(|error| PortError(format!("catalog contains an invalid {what}: {error}")))
+}
+
+fn review_status_to_str(status: ReviewStatus) -> &'static str {
+    match status {
+        ReviewStatus::Pending => "pending",
+        ReviewStatus::Deferred => "deferred",
+        ReviewStatus::Accepted => "accepted",
+        ReviewStatus::Rejected => "rejected",
+        ReviewStatus::AutoResolved => "auto_resolved",
+        ReviewStatus::Superseded => "superseded",
+    }
+}
+
+fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
+    match value {
+        "pending" => Ok(ReviewStatus::Pending),
+        "deferred" => Ok(ReviewStatus::Deferred),
+        "accepted" => Ok(ReviewStatus::Accepted),
+        "rejected" => Ok(ReviewStatus::Rejected),
+        "auto_resolved" => Ok(ReviewStatus::AutoResolved),
+        "superseded" => Ok(ReviewStatus::Superseded),
+        _ => Err(PortError(format!(
+            "catalog contains invalid review status {value:?}"
+        ))),
+    }
+}

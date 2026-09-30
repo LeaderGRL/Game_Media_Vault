@@ -6,7 +6,6 @@ import type { ReviewItem } from "./types";
 
 const item: ReviewItem = {
   id: 17,
-  run_id: 7,
   candidate_identity: "connector:review-game",
   candidate: {
     game_title: "Review Game",
@@ -182,13 +181,19 @@ describe("ReviewView", () => {
 
     rerender(
       <ReviewView
-        items={[{ ...item, status: "processing" }]}
+        items={[
+          {
+            ...item,
+            status: "accepted",
+            decision: { decision: "accept", release_edition_id: 201 },
+          },
+        ]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
         onLoadPreview={vi.fn()}
       />,
     );
-    expect(screen.getByText("Processing")).toBeInTheDocument();
+    expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject candidate" })).toBeDisabled();
   });
 });
