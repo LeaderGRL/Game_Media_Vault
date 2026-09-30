@@ -2784,7 +2784,7 @@ fn resumes_legacy_queued_work_after_provider_identity_work_keys_are_enabled() {
     assert_eq!(imported.len(), 1);
     assert_eq!(connector.downloads.borrow().len(), 1);
     assert_eq!(runs.run.borrow().queued_work, 0);
-    assert_eq!(runs.run.borrow().completed_work, 2);
+    assert_eq!(runs.run.borrow().completed_work, 1);
 }
 
 fn legacy_connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {

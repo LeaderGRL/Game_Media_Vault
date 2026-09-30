@@ -795,6 +795,7 @@ pub fn acquire_run_with_connector(
         run = load_acquisition_run(runs, run_id)?;
     }
     let releases = catalog.list_library()?;
+    let queued_work_keys = queued_acquisition_work_keys(runs, run_id)?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
     let mut transient_source_url_by_work_key = std::collections::HashMap::new();
@@ -805,7 +806,14 @@ pub fn acquire_run_with_connector(
         {
             continue;
         }
-        let work_key = acquisition_work_key(connector.source_id(), &review_item.candidate);
+        let current_work_key = acquisition_work_key(connector.source_id(), &review_item.candidate);
+        let legacy_work_key =
+            legacy_acquisition_work_key(connector.source_id(), &review_item.candidate);
+        let work_key = if queued_work_keys.contains(&legacy_work_key) {
+            legacy_work_key
+        } else {
+            current_work_key
+        };
         persisted_work_key_by_identity
             .insert(review_item.candidate_identity.clone(), work_key.clone());
         candidates_by_work_key.insert(work_key, review_item.candidate.clone());
@@ -842,8 +850,15 @@ pub fn acquire_run_with_connector(
                     candidates_by_work_key.insert(work_key.clone(), candidate);
                     continue;
                 }
-                let work_key = acquisition_work_key(connector.source_id(), &candidate);
-                queue_acquisition_work(runs, run_id, work_key.clone())?;
+                let current_work_key = acquisition_work_key(connector.source_id(), &candidate);
+                let legacy_work_key =
+                    legacy_acquisition_work_key(connector.source_id(), &candidate);
+                let work_key = if queued_work_keys.contains(&legacy_work_key) {
+                    legacy_work_key
+                } else {
+                    queue_acquisition_work(runs, run_id, current_work_key.clone())?;
+                    current_work_key
+                };
                 if let Some(source_url) = transient_source_url {
                     transient_source_url_by_work_key.insert(work_key.clone(), source_url);
                 }
@@ -1226,6 +1241,37 @@ pub fn acquisition_work_key(source_id: &str, candidate: &AssetCandidate) -> Stri
         push_work_key_part(&mut key, part);
     }
     key
+}
+
+fn legacy_acquisition_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
+    let mut key = "connector".to_owned();
+    for part in [
+        source_id,
+        candidate.platform.as_str(),
+        candidate.game_title.as_str(),
+        candidate.region.as_str(),
+        candidate.edition_name.as_str(),
+        asset_type_work_key(candidate.asset_type),
+        candidate.source_url.as_str(),
+    ] {
+        push_work_key_part(&mut key, part);
+    }
+    key
+}
+
+fn queued_acquisition_work_keys(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+) -> Result<std::collections::HashSet<String>, ApplicationError> {
+    let mut keys = std::collections::HashSet::new();
+    loop {
+        let excluded = keys.iter().cloned().collect::<Vec<_>>();
+        let Some(work) = next_acquisition_work_excluding(runs, run_id, &excluded)? else {
+            break;
+        };
+        keys.insert(work.key);
+    }
+    Ok(keys)
 }
 
 fn review_candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String {
