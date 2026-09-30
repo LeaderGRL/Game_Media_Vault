@@ -77,6 +77,7 @@ impl ConnectorPort for FixtureConnector {
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         Ok(vec![AssetCandidate {
             provider_candidate_id: None,
+            source_url_requires_rediscovery: false,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "World".to_owned(),

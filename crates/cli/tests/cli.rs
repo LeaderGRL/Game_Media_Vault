@@ -38,6 +38,7 @@ impl ConnectorPort for FixtureConnector {
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         Ok(vec![AssetCandidate {
             provider_candidate_id: None,
+            source_url_requires_rediscovery: false,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "World".to_owned(),
@@ -88,6 +89,7 @@ fn seed_review_item(vault: &Path) -> i64 {
     let catalog = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
     let candidate = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Review Game".to_owned(),
         platform: "Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),

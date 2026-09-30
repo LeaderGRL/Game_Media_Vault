@@ -144,6 +144,7 @@ where
                         "{}/Named_Boxarts/{game_title}",
                         repository.repository
                     )),
+                    source_url_requires_rediscovery: false,
                     game_title,
                     platform,
                     region: "Unknown".to_owned(),

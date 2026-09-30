@@ -422,6 +422,8 @@ pub struct ConnectorCapabilities {
 pub struct AssetCandidate {
     #[serde(default)]
     pub provider_candidate_id: Option<String>,
+    #[serde(default)]
+    pub source_url_requires_rediscovery: bool,
     pub game_title: String,
     pub platform: String,
     pub region: String,

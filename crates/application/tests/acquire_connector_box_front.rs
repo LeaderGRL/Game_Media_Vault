@@ -192,6 +192,7 @@ impl ConnectorPort for FakeConnector {
         }
         Ok(vec![AssetCandidate {
             provider_candidate_id: None,
+            source_url_requires_rediscovery: false,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "Unknown".to_owned(),
@@ -743,6 +744,7 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
         downloads: RefCell::new(Vec::new()),
         candidates: vec![AssetCandidate {
             provider_candidate_id: None,
+            source_url_requires_rediscovery: false,
             game_title: "Completely Different Game".to_owned(),
             platform: "Different Platform".to_owned(),
             region: "Europe".to_owned(),
@@ -773,6 +775,7 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
 fn medium_confidence_candidate_creates_review_item_with_competing_release_evidence() {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Super Mario Bros. (World)".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -896,9 +899,67 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
     assert!(!review_items[0].candidate_identity.contains("password"));
 }
 
+#[test]
+fn accepted_review_with_transient_source_url_requires_rediscovery_before_download() {
+    let (mut candidate, library) = ambiguous_candidate_and_releases();
+    candidate.provider_candidate_id = Some("provider-review-401".to_owned());
+    candidate.source_url =
+        "https://user:password@example.invalid/review.png?token=secret#download".to_owned();
+    let discovery_connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &discovery_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    let review_item_id = catalog.review_items.borrow()[0].id;
+    catalog
+        .set_review_decision(
+            review_item_id,
+            ReviewDecision::Accept {
+                release_edition_id: 402,
+            },
+        )
+        .unwrap();
+    let work_key = runs.work.borrow().keys().next().unwrap().clone();
+    runs.requeue_completed_work(7, &work_key).unwrap();
+
+    let resumed_connector = NoDiscoveryConnector {
+        downloads: RefCell::new(Vec::new()),
+    };
+    let error = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &resumed_connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("rediscover"));
+    assert!(resumed_connector.downloads.borrow().is_empty());
+    assert!(catalog.records.borrow().is_empty());
+}
+
 fn ambiguous_candidate_and_releases() -> (AssetCandidate, Vec<LibraryEntry>) {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Review Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -1392,6 +1453,7 @@ fn unrelated_queued_work_does_not_suppress_a_discovery_failure() {
     first_candidate.provider_candidate_id = Some("review-a".to_owned());
     let second_candidate = AssetCandidate {
         provider_candidate_id: Some("review-b".to_owned()),
+        source_url_requires_rediscovery: false,
         ..first_candidate.clone()
     };
     let catalog = FakeCatalog {
@@ -1633,6 +1695,7 @@ fn deferred_review_decision_keeps_the_same_candidate_staged() {
 fn threshold_review_candidate_and_release() -> (AssetCandidate, LibraryEntry) {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Threshold Review Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2232,6 +2295,7 @@ fn rejects_asset_types_not_declared_by_the_connector() {
 fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "A:B".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2244,6 +2308,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     };
     let second = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "A?B".to_owned(),
         ..first.clone()
     };
@@ -2281,6 +2346,7 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
 fn fallback_candidates_with_distinct_asset_labels_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2327,6 +2393,7 @@ fn fallback_candidates_with_distinct_asset_labels_keep_distinct_work_items() {
 fn fallback_candidates_without_labels_use_filename_to_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2373,6 +2440,7 @@ fn fallback_candidates_without_labels_use_filename_to_keep_distinct_work_items()
 fn fallback_work_key_matches_review_identity_normalization() {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -2401,6 +2469,7 @@ fn fallback_work_key_matches_review_identity_normalization() {
 fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: Some("provider-release-1".to_owned()),
+        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2413,6 +2482,7 @@ fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items
     };
     let second = AssetCandidate {
         provider_candidate_id: Some("provider-release-2".to_owned()),
+        source_url_requires_rediscovery: false,
         ..first.clone()
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -2447,6 +2517,7 @@ fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items
 fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
     let first = AssetCandidate {
         provider_candidate_id: Some("provider:A:B".to_owned()),
+        source_url_requires_rediscovery: false,
         game_title: "A:B".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -2459,6 +2530,7 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
     };
     let second = AssetCandidate {
         provider_candidate_id: Some("provider:A?B".to_owned()),
+        source_url_requires_rediscovery: false,
         game_title: "A?B".to_owned(),
         ..first.clone()
     };
@@ -2522,6 +2594,7 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
 fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     let first = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "C".to_owned(),
         platform: "A:B".to_owned(),
         region: "Unknown".to_owned(),
@@ -2534,6 +2607,7 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     };
     let second = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "B:C".to_owned(),
         platform: "A".to_owned(),
         ..first.clone()

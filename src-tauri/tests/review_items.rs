@@ -32,6 +32,7 @@ fn tauri_lists_review_evidence_and_persists_resolution() {
     .unwrap();
     let candidate = AssetCandidate {
         provider_candidate_id: None,
+        source_url_requires_rediscovery: false,
         game_title: "Review Game".to_owned(),
         platform: "Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),

@@ -987,6 +987,14 @@ pub fn acquire_run_with_connector(
         } else {
             None
         };
+        if candidate.source_url_requires_rediscovery
+            && !transient_source_url_by_work_key.contains_key(&work.key)
+        {
+            return Err(PortError(
+                "candidate source URL requires rediscovery before download".to_owned(),
+            )
+            .into());
+        }
         let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
             let mut download_candidate = candidate.clone();
             if let Some(source_url) = transient_source_url_by_work_key.get(&work.key) {
@@ -1224,6 +1232,7 @@ fn catalog_safe_candidate(
     source_url.set_query(None);
     source_url.set_fragment(None);
     candidate.source_url = source_url.into();
+    candidate.source_url_requires_rediscovery = true;
     Ok((candidate, Some(transient_source_url)))
 }
 
