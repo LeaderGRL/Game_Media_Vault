@@ -1552,8 +1552,8 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
 #[test]
 fn publication_failure_after_bytes_become_visible_keeps_recovery_journal() {
     let temp = tempdir().unwrap();
-    let vault = temp.path().join("vault");
-    let catalog_path = vault.join("catalog.sqlite3");
+    let vault = temp.path().join("object-store");
+    let catalog_path = temp.path().join("catalog").join("catalog.sqlite3");
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
     let store = ContentAddressedStore::new(&vault);
     let run = catalog.create_run(request()).unwrap();
