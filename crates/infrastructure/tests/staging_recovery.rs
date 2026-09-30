@@ -56,3 +56,22 @@ fn failed_publish_does_not_leave_a_staging_file() {
     let staging = vault.join("staging");
     assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
 }
+
+#[test]
+fn preparing_a_staged_original_verifies_an_existing_cas_object() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let store = ContentAddressedStore::new(&vault);
+    let bytes = b"trusted original bytes";
+    let stored = store.store_original_bytes(bytes).unwrap();
+    let object_path = store.object_path(&stored.hash);
+    let mut corrupted = bytes.to_vec();
+    corrupted[0] ^= 0xff;
+    fs::write(&object_path, &corrupted).unwrap();
+    let mut staged = store.stage_original_bytes(bytes).unwrap();
+
+    let error = staged.prepare_publish().unwrap_err();
+
+    assert!(error.0.contains("integrity"));
+    assert_eq!(fs::read(object_path).unwrap(), corrupted);
+}

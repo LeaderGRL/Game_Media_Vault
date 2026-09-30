@@ -61,6 +61,7 @@ impl ContentAddressedStore {
             target,
             parent,
             stored: StoredObject { hash, byte_len },
+            prepared_existing_target: false,
         }))
     }
 
@@ -92,11 +93,23 @@ struct ContentAddressedStagedOriginal {
     target: PathBuf,
     parent: PathBuf,
     stored: StoredObject,
+    prepared_existing_target: bool,
 }
 
 impl StagedOriginal for ContentAddressedStagedOriginal {
     fn stored_object(&self) -> &StoredObject {
         &self.stored
+    }
+
+    fn prepare_publish(&mut self) -> Result<(), PortError> {
+        self.prepared_existing_target = false;
+        fs::create_dir_all(&self.parent).map_err(io_error)?;
+        if self.target.exists() {
+            verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
+            sync_object_parent(&self.parent).map_err(io_error)?;
+            self.prepared_existing_target = true;
+        }
+        Ok(())
     }
 
     fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
@@ -113,6 +126,33 @@ impl StagedOriginal for ContentAddressedStagedOriginal {
                     }
                     verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
                     sync_object_parent(&self.parent).map_err(io_error)?;
+                }
+                Err(PublishError::Durability(error)) => return Err(io_error(error)),
+            }
+        }
+        Ok(self.stored.clone())
+    }
+
+    fn publish_prepared(self: Box<Self>) -> Result<StoredObject, PortError> {
+        fs::create_dir_all(&self.parent).map_err(io_error)?;
+        if self.target.exists() {
+            if !self.prepared_existing_target {
+                return Err(PortError(
+                    "content-addressed object appeared after publish preparation; retry finalization"
+                        .to_owned(),
+                ));
+            }
+        } else {
+            match publish_staged_object(&self.staging_path, &self.target, &self.parent) {
+                Ok(()) => {}
+                Err(PublishError::NotPublished(error)) => {
+                    if self.target.exists() {
+                        return Err(PortError(
+                            "content-addressed object appeared after publish preparation; retry finalization"
+                                .to_owned(),
+                        ));
+                    }
+                    return Err(io_error(error));
                 }
                 Err(PublishError::Durability(error)) => return Err(io_error(error)),
             }

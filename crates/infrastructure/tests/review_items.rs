@@ -1,16 +1,59 @@
 use game_media_vault_application::{
-    CatalogPort, ObjectStorePort, ReviewProcessingFinalization, RunRepositoryPort,
-    acquisition_work_key, list_review_items as list_review_items_use_case, resolve_review_item,
+    CatalogPort, ObjectStorePort, PortError, ReviewProcessingFinalization, RunRepositoryPort,
+    StagedOriginal, acquisition_work_key, list_review_items as list_review_items_use_case,
+    resolve_review_item,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetType, AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal,
     NewReviewItem, PersistAsset, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy,
-    ReviewDecision, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
+    ReviewDecision, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection, StoredObject,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::Connection;
+use std::sync::{Arc, Condvar, Mutex};
 use tempfile::tempdir;
+
+#[derive(Default)]
+struct PublishGateState {
+    entered: bool,
+    release: bool,
+}
+
+struct BlockingPreparedOriginal {
+    stored: StoredObject,
+    gate: Arc<(Mutex<PublishGateState>, Condvar)>,
+}
+
+impl BlockingPreparedOriginal {
+    fn wait_for_release(&self) {
+        let (mutex, condvar) = &*self.gate;
+        let mut state = mutex.lock().unwrap();
+        if !state.entered {
+            state.entered = true;
+            condvar.notify_all();
+        }
+        while !state.release {
+            state = condvar.wait(state).unwrap();
+        }
+    }
+}
+
+impl StagedOriginal for BlockingPreparedOriginal {
+    fn stored_object(&self) -> &StoredObject {
+        &self.stored
+    }
+
+    fn prepare_publish(&mut self) -> Result<(), PortError> {
+        self.wait_for_release();
+        Ok(())
+    }
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
+        self.wait_for_release();
+        Ok(self.stored.clone())
+    }
+}
 
 fn candidate() -> AssetCandidate {
     AssetCandidate {
@@ -1121,6 +1164,90 @@ fn processing_asset_finalization_persists_asset_work_and_review_together() {
 }
 
 #[test]
+fn processing_asset_prepares_staged_original_before_taking_sqlite_write_lock() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:prepare-before-write-lock";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:prepare-before-write-lock".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    let stored = StoredObject {
+        hash: "prepared-before-write-lock-hash".to_owned(),
+        byte_len: 42,
+    };
+    let gate = Arc::new((Mutex::new(PublishGateState::default()), Condvar::new()));
+    let writer_gate = Arc::clone(&gate);
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || {
+        let (mutex, condvar) = &*writer_gate;
+        let mut state = mutex.lock().unwrap();
+        while !state.entered {
+            state = condvar.wait(state).unwrap();
+        }
+        drop(state);
+
+        let acquired = Connection::open(writer_path)
+            .unwrap()
+            .execute_batch("PRAGMA busy_timeout = 100; BEGIN IMMEDIATE; COMMIT;")
+            .is_ok();
+
+        let mut state = mutex.lock().unwrap();
+        state.release = true;
+        condvar.notify_all();
+        acquired
+    });
+    let staged = Box::new(BlockingPreparedOriginal {
+        stored: stored.clone(),
+        gate,
+    });
+
+    let outcome = catalog
+        .finalize_review_processing_asset(
+            item.id,
+            &claim.lease_token,
+            run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: stored.hash,
+                byte_len: stored.byte_len,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+            Some(staged),
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, ReviewProcessingFinalization::Imported(_)));
+    assert!(
+        writer.join().unwrap(),
+        "staged object preparation ran while the SQLite write lock was already held"
+    );
+}
+
+#[test]
 fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
@@ -1379,6 +1506,98 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 1);
     assert_eq!(catalog.list_library().unwrap()[0].assets.len(), 1);
+}
+
+#[test]
+fn accepted_review_prepares_staged_original_before_taking_sqlite_write_lock() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:accepted-prepare-before-write-lock";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:accepted-prepare-before-write-lock".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    catalog
+        .set_review_decision(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    let stored = StoredObject {
+        hash: "accepted-prepared-before-write-lock-hash".to_owned(),
+        byte_len: 42,
+    };
+    let gate = Arc::new((Mutex::new(PublishGateState::default()), Condvar::new()));
+    let writer_gate = Arc::clone(&gate);
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || {
+        let (mutex, condvar) = &*writer_gate;
+        let mut state = mutex.lock().unwrap();
+        while !state.entered {
+            state = condvar.wait(state).unwrap();
+        }
+        drop(state);
+
+        let acquired = Connection::open(writer_path)
+            .unwrap()
+            .execute_batch("PRAGMA busy_timeout = 100; BEGIN IMMEDIATE; COMMIT;")
+            .is_ok();
+
+        let mut state = mutex.lock().unwrap();
+        state.release = true;
+        condvar.notify_all();
+        acquired
+    });
+    let staged = Box::new(BlockingPreparedOriginal {
+        stored: stored.clone(),
+        gate,
+    });
+
+    let outcome = catalog
+        .finalize_accepted_review_asset(
+            item.id,
+            &claim.lease_token,
+            run.id,
+            work_key,
+            PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: None,
+                match_decision: None,
+                game_title: "Target Game".to_owned(),
+                platform: "Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Collector".to_owned(),
+                asset_type: AssetType::BoxFront,
+                object_hash: stored.hash,
+                byte_len: stored.byte_len,
+                original_filename: "front.png".to_owned(),
+                source_id: SourceId::from("fixture-provider"),
+                source_asset_label: Some("front".to_owned()),
+                source_location: "fixture://candidate/front".to_owned(),
+            },
+            Some(staged),
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, ReviewProcessingFinalization::Imported(_)));
+    assert!(
+        writer.join().unwrap(),
+        "accepted staged object preparation ran while the SQLite write lock was already held"
+    );
 }
 
 #[test]

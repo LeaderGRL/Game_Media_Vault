@@ -719,6 +719,7 @@ impl CatalogPort for SqliteCatalog {
         mut record: PersistAsset,
         mut staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
+        prepare_staged_original(&mut staged_original)?;
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -855,6 +856,7 @@ impl CatalogPort for SqliteCatalog {
         mut record: PersistAsset,
         mut staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
+        prepare_staged_original(&mut staged_original)?;
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1854,11 +1856,20 @@ fn publish_staged_original(
             "staged original metadata does not match the asset record".to_owned(),
         ));
     }
-    let published = staged_original.publish()?;
+    let published = staged_original.publish_prepared()?;
     if published != expected {
         return Err(PortError(
             "published original metadata changed after staging".to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn prepare_staged_original(
+    staged_original: &mut Option<Box<dyn StagedOriginal>>,
+) -> Result<(), PortError> {
+    if let Some(staged_original) = staged_original.as_mut() {
+        staged_original.prepare_publish()?;
     }
     Ok(())
 }
