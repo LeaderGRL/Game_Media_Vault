@@ -70,7 +70,7 @@ pub fn load_review_preview_in_vault_with_connector(
 ) -> Result<ReviewPreviewPayload, String> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
         .map_err(|error| error.to_string())?;
-    let preview = load_review_preview_use_case(&catalog, &catalog, connector, review_item_id)
+    let preview = load_review_preview_use_case(&catalog, connector, review_item_id)
         .map_err(|error| error.to_string())?;
     Ok(ReviewPreviewPayload {
         media_type: preview_media_type(&preview.original_filename).to_owned(),

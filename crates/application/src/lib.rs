@@ -386,26 +386,17 @@ pub trait RunRepositoryPort {
     ) -> Result<bool, PortError>;
 }
 
+/// Source-specific integration that discovers and downloads Asset Candidates.
+///
+/// Discovered candidates are persisted, so `AssetCandidate::source_url` must be a stable,
+/// credential-free absolute URL. Connectors that need API keys, sessions or signed URLs add
+/// them inside `download`, which receives the persisted candidate.
 pub trait ConnectorPort {
     fn source_id(&self) -> &'static str;
 
     fn capabilities(&self) -> ConnectorCapabilities;
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
-
-    fn stable_source_location(
-        &self,
-        candidate: &AssetCandidate,
-    ) -> Result<Option<String>, PortError> {
-        let Ok(source_url) = Url::parse(&candidate.source_url) else {
-            return Ok(Some(candidate.source_url.clone()));
-        };
-        let contains_transient_transport_data = !source_url.username().is_empty()
-            || source_url.password().is_some()
-            || source_url.query().is_some()
-            || source_url.fragment().is_some();
-        Ok((!contains_transient_transport_data).then(|| candidate.source_url.clone()))
-    }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 }
@@ -661,8 +652,10 @@ pub enum ApplicationError {
         review_item_id: i64,
         status: ReviewStatus,
     },
-    #[error("review item #{review_item_id} candidate is unavailable for preview")]
-    ReviewPreviewCandidateUnavailable { review_item_id: i64 },
+    #[error(
+        "connector {source_id} returned a candidate whose locator is not a credential-free absolute URL"
+    )]
+    UnsafeCandidateLocator { source_id: String },
 }
 
 pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, ApplicationError> {
@@ -728,7 +721,6 @@ pub fn resolve_review_item(
 
 pub fn load_review_preview(
     catalog: &dyn CatalogPort,
-    runs: &dyn RunRepositoryPort,
     connector: &dyn ConnectorPort,
     review_item_id: i64,
 ) -> Result<ReviewPreview, ApplicationError> {
@@ -747,22 +739,7 @@ pub fn load_review_preview(
         });
     }
 
-    let download_candidate = if item.candidate.source_url_requires_rediscovery {
-        let run = load_acquisition_run(runs, item.run_id)?;
-        connector
-            .discover(&run.request)?
-            .into_iter()
-            .find(|candidate| {
-                candidate.source_id.as_str() == connector.source_id()
-                    && review_candidate_identity(connector.source_id(), candidate)
-                        == item.candidate_identity
-            })
-            .ok_or(ApplicationError::ReviewPreviewCandidateUnavailable { review_item_id })?
-    } else {
-        item.candidate.clone()
-    };
-
-    let mut stream = connector.download(&download_candidate)?;
+    let mut stream = connector.download(&item.candidate)?;
     let mut bytes = Vec::new();
     stream
         .read_to_end(&mut bytes)
@@ -856,7 +833,6 @@ pub fn acquire_run_with_connector(
     let releases = catalog.list_library()?;
 
     let mut candidates_by_work_key = std::collections::HashMap::new();
-    let mut transient_source_url_by_work_key = std::collections::HashMap::new();
     let mut persisted_work_key_by_identity = std::collections::HashMap::new();
     for review_item in &review_items {
         if review_item.run_id != run_id
@@ -887,25 +863,17 @@ pub fn acquire_run_with_connector(
                 {
                     continue;
                 }
-                let stable_source_location = connector.stable_source_location(&candidate)?;
-                let (candidate, transient_source_url) =
-                    catalog_safe_candidate(candidate, stable_source_location)?;
+                ensure_catalog_safe_locator(connector.source_id(), &candidate)?;
                 let candidate_identity =
                     review_candidate_identity(connector.source_id(), &candidate);
                 if review_only_resume
                     && let Some(work_key) = persisted_work_key_by_identity.get(&candidate_identity)
                 {
-                    if let Some(source_url) = transient_source_url {
-                        transient_source_url_by_work_key.insert(work_key.clone(), source_url);
-                    }
                     candidates_by_work_key.insert(work_key.clone(), candidate);
                     continue;
                 }
                 let work_key = acquisition_work_key(connector.source_id(), &candidate);
                 queue_acquisition_work(runs, run_id, work_key.clone())?;
-                if let Some(source_url) = transient_source_url {
-                    transient_source_url_by_work_key.insert(work_key.clone(), source_url);
-                }
                 candidates_by_work_key.insert(work_key, candidate);
             }
             None
@@ -1117,20 +1085,8 @@ pub fn acquire_run_with_connector(
         } else {
             None
         };
-        if candidate.source_url_requires_rediscovery
-            && !transient_source_url_by_work_key.contains_key(&work.key)
-        {
-            return Err(PortError(
-                "candidate source URL requires rediscovery before download".to_owned(),
-            )
-            .into());
-        }
         let import_result = (|| -> Result<ReviewProcessingFinalization, ApplicationError> {
-            let mut download_candidate = candidate.clone();
-            if let Some(source_url) = transient_source_url_by_work_key.get(&work.key) {
-                download_candidate.source_url.clone_from(source_url);
-            }
-            let stream = connector.download(&download_candidate)?;
+            let stream = connector.download(candidate)?;
             let processing_lease = review_processing
                 .as_ref()
                 .map(|(review_item_id, _, lease_token)| (*review_item_id, lease_token.as_str()))
@@ -1321,53 +1277,19 @@ fn normalize_review_identity_part(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
-fn catalog_safe_candidate(
-    mut candidate: AssetCandidate,
-    stable_source_location: Option<String>,
-) -> Result<(AssetCandidate, Option<String>), PortError> {
-    let contains_transient_transport_data = match Url::parse(&candidate.source_url) {
-        Ok(source_url) => {
-            !source_url.username().is_empty()
-                || source_url.password().is_some()
-                || source_url.query().is_some()
-                || source_url.fragment().is_some()
-        }
-        Err(_) => true,
-    };
-    if !contains_transient_transport_data {
-        return Ok((candidate, None));
+fn ensure_catalog_safe_locator(
+    source_id: &str,
+    candidate: &AssetCandidate,
+) -> Result<(), ApplicationError> {
+    let catalog_safe = Url::parse(&candidate.source_url)
+        .is_ok_and(|url| url.username().is_empty() && url.password().is_none());
+    if catalog_safe {
+        Ok(())
+    } else {
+        Err(ApplicationError::UnsafeCandidateLocator {
+            source_id: source_id.to_owned(),
+        })
     }
-    if candidate.provider_candidate_id.is_none() {
-        return Err(PortError(
-            "connector candidates with credential-bearing or transient URLs require a stable provider candidate ID"
-                .to_owned(),
-        ));
-    }
-
-    let transient_source_url = candidate.source_url.clone();
-    let stable_source_location = stable_source_location.ok_or_else(|| {
-        PortError(
-            "connector candidates with credential-bearing or transient URLs require a stable source location"
-                .to_owned(),
-        )
-    })?;
-    let stable_url = Url::parse(&stable_source_location).map_err(|error| {
-        PortError(format!(
-            "connector stable source location is not a valid URL: {error}"
-        ))
-    })?;
-    if !stable_url.username().is_empty()
-        || stable_url.password().is_some()
-        || stable_url.query().is_some()
-        || stable_url.fragment().is_some()
-    {
-        return Err(PortError(
-            "connector stable source location must not contain transient transport data".to_owned(),
-        ));
-    }
-    candidate.source_url = stable_source_location;
-    candidate.source_url_requires_rediscovery = true;
-    Ok((candidate, Some(transient_source_url)))
 }
 
 fn push_work_key_part(key: &mut String, value: &str) {

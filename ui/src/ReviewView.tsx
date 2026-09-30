@@ -153,7 +153,6 @@ function CandidatePreview({
   enabled: boolean;
   onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
 }) {
-  const requiresRediscovery = item.candidate.source_url_requires_rediscovery ?? false;
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -207,17 +206,6 @@ function CandidatePreview({
     );
   }
 
-  if (!requiresRediscovery) {
-    return (
-      <img
-        className="review-preview"
-        src={item.candidate.source_url}
-        alt={`${item.candidate.game_title} box front candidate`}
-        loading="lazy"
-      />
-    );
-  }
-
   if (previewUrl === null) {
     return (
       <div className="review-preview review-preview-status">
@@ -229,17 +217,13 @@ function CandidatePreview({
     );
   }
 
-  if (previewUrl !== null) {
-    return (
-      <img
-        className="review-preview"
-        src={previewUrl}
-        alt={`${item.candidate.game_title} box front candidate`}
-      />
-    );
-  }
-
-  return null;
+  return (
+    <img
+      className="review-preview"
+      src={previewUrl}
+      alt={`${item.candidate.game_title} box front candidate`}
+    />
+  );
 }
 
 function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | null) {

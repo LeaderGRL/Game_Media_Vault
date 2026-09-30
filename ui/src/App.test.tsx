@@ -118,7 +118,7 @@ describe("App", () => {
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
 
-  it("loads rediscovery review previews from the vault backend", async () => {
+  it("loads review previews from the vault backend", async () => {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
       value: vi.fn(() => "blob:app-review-preview"),
@@ -127,12 +127,11 @@ describe("App", () => {
       configurable: true,
       value: vi.fn(),
     });
-    const rediscoveryReviewItem: ReviewItem = {
+    const remoteReviewItem: ReviewItem = {
       ...reviewItem,
       candidate: {
         ...reviewItem.candidate,
         source_url: "https://example.invalid/review/401",
-        source_url_requires_rediscovery: true,
       },
     };
     invokeMock.mockImplementation((command: string) => {
@@ -140,7 +139,7 @@ describe("App", () => {
         return Promise.resolve([]);
       }
       if (command === "list_review_items") {
-        return Promise.resolve([rediscoveryReviewItem]);
+        return Promise.resolve([remoteReviewItem]);
       }
       if (command === "load_review_preview") {
         return Promise.resolve({ media_type: "image/png", bytes: [137, 80, 78, 71] });

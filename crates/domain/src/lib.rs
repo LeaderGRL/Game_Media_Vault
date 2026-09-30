@@ -422,8 +422,6 @@ pub struct ConnectorCapabilities {
 pub struct AssetCandidate {
     #[serde(default)]
     pub provider_candidate_id: Option<String>,
-    #[serde(default)]
-    pub source_url_requires_rediscovery: bool,
     pub game_title: String,
     pub platform: String,
     pub region: String,
@@ -431,6 +429,8 @@ pub struct AssetCandidate {
     pub asset_type: AssetType,
     pub source_id: SourceId,
     pub source_asset_label: Option<String>,
+    /// Stable, credential-free locator that is persisted as provenance. Connectors add any
+    /// transport credentials or signed URLs themselves when downloading the candidate.
     pub source_url: String,
     pub original_filename: String,
 }

@@ -302,6 +302,8 @@ Connector families:
 
 A single Source may expose multiple connector implementations when useful, such as API plus public dataset.
 
+Connectors own their transport credentials. Discovered candidates carry a stable, credential-free absolute locator that is persisted with Review Items, work items and provenance; a connector adds API keys, sessions or signed URLs only inside its download step. Candidates whose locator is not a credential-free absolute URL are rejected before anything is persisted.
+
 ## 13. Source Registry
 
 The registry stores source capabilities and policy metadata separately from connector code.

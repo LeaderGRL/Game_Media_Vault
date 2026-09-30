@@ -71,10 +71,8 @@ describe("ReviewView", () => {
     expect(screen.getByRole("heading", { name: "Review Game" })).toBeInTheDocument();
     expect(screen.getByText("fixture-provider · front")).toBeInTheDocument();
     expect(screen.getByText("fixture://review/front")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Review Game box front candidate" })).toHaveAttribute(
-      "src",
-      "fixture://review/front",
-    );
+    expect(screen.getByRole("button", { name: "Load preview" })).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(screen.getByText("Standard")).toBeInTheDocument();
     expect(screen.getByText("Score 90")).toBeInTheDocument();
     expect(screen.getByText("Title: +50")).toBeInTheDocument();
@@ -83,7 +81,7 @@ describe("ReviewView", () => {
     expect(screen.getByText("fixture://reference/review-game-standard")).toBeInTheDocument();
   });
 
-  it("loads rediscovery previews through the backend instead of using the persisted locator", async () => {
+  it("loads previews through the backend instead of using the persisted locator", async () => {
     const createObjectUrl = vi.fn(() => "blob:review-preview");
     const revokeObjectUrl = vi.fn();
     Object.defineProperty(URL, "createObjectURL", {
@@ -98,18 +96,17 @@ describe("ReviewView", () => {
       media_type: "image/png",
       bytes: [137, 80, 78, 71],
     });
-    const rediscoveryItem: ReviewItem = {
+    const remoteItem: ReviewItem = {
       ...item,
       candidate: {
         ...item.candidate,
         source_url: "https://example.invalid/review/401",
-        source_url_requires_rediscovery: true,
       },
     };
 
     const { unmount } = render(
       <ReviewView
-        items={[rediscoveryItem]}
+        items={[remoteItem]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
         onLoadPreview={onLoadPreview}
@@ -154,17 +151,16 @@ describe("ReviewView", () => {
 
   it("labels reviews closed by matching re-evaluation", () => {
     const onLoadPreview = vi.fn();
-    const closedRediscoveryItem: ReviewItem = {
+    const closedItem: ReviewItem = {
       ...item,
       status: "auto_resolved",
       candidate: {
         ...item.candidate,
-        source_url_requires_rediscovery: true,
       },
     };
     const { rerender } = render(
       <ReviewView
-        items={[closedRediscoveryItem]}
+        items={[closedItem]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
         onLoadPreview={onLoadPreview}

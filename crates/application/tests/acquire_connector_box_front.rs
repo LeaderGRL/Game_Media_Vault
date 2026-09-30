@@ -6,9 +6,9 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ConnectorPort, ObjectStorePort, PortError, ReviewProcessingClaim,
-    ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal, acquire_run_with_connector,
-    acquisition_work_key, load_review_preview,
+    ApplicationError, CatalogPort, ConnectorPort, ObjectStorePort, PortError,
+    ReviewProcessingClaim, ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal,
+    acquire_run_with_connector, acquisition_work_key, load_review_preview,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -208,7 +208,6 @@ impl ConnectorPort for FakeConnector {
         }
         Ok(vec![AssetCandidate {
             provider_candidate_id: None,
-            source_url_requires_rediscovery: false,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "Unknown".to_owned(),
@@ -220,28 +219,6 @@ impl ConnectorPort for FakeConnector {
                 .to_owned(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
         }])
-    }
-
-    fn stable_source_location(
-        &self,
-        candidate: &AssetCandidate,
-    ) -> Result<Option<String>, PortError> {
-        if candidate.provider_candidate_id.as_deref() == Some("provider-review-unsafe-stable") {
-            return Ok(Some(
-                "https://example.invalid/review/401?token=secret#download".to_owned(),
-            ));
-        }
-        if candidate.provider_candidate_id.as_deref() == Some("provider-review-401")
-            && candidate.source_url.contains("example.invalid/review.png")
-        {
-            return Ok(Some("https://example.invalid/review/401".to_owned()));
-        }
-        if candidate.provider_candidate_id.as_deref() == Some("provider-review-relative-401") {
-            return Ok(Some(
-                "https://example.invalid/review/relative-401".to_owned(),
-            ));
-        }
-        Ok(Some(candidate.source_url.clone()))
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
@@ -792,7 +769,6 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
         downloads: RefCell::new(Vec::new()),
         candidates: vec![AssetCandidate {
             provider_candidate_id: None,
-            source_url_requires_rediscovery: false,
             game_title: "Completely Different Game".to_owned(),
             platform: "Different Platform".to_owned(),
             region: "Europe".to_owned(),
@@ -823,7 +799,6 @@ fn low_confidence_candidate_is_left_unattached_without_downloading() {
 fn medium_confidence_candidate_creates_review_item_with_competing_release_evidence() {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Super Mario Bros. (World)".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -909,12 +884,12 @@ fn medium_confidence_candidate_creates_review_item_with_competing_release_eviden
     assert_eq!(runs.run.borrow().status, AcquisitionRunStatus::Completed);
 }
 
-#[test]
-fn medium_confidence_candidate_does_not_stage_transport_credentials() {
+fn acquire_with_candidate_locator(
+    source_url: &str,
+) -> (FakeCatalog, FakeConnector, Result<(), ApplicationError>) {
     let (mut candidate, library) = ambiguous_candidate_and_releases();
     candidate.provider_candidate_id = Some("provider-review-401".to_owned());
-    candidate.source_url =
-        "https://user:password@example.invalid/review.png?id=401&token=secret#download".to_owned();
+    candidate.source_url = source_url.to_owned();
     let connector = FakeConnector {
         downloads: RefCell::new(Vec::new()),
         candidates: vec![candidate],
@@ -926,8 +901,7 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
         finalize_calls: RefCell::new(0),
         library,
     };
-
-    acquire_run_with_connector(
+    let result = acquire_run_with_connector(
         &runs,
         &catalog,
         &FakeStore::default(),
@@ -935,201 +909,59 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
         7,
         matching_policy(),
     )
-    .unwrap();
-
-    let review_items = catalog.review_items.borrow();
-    assert_eq!(review_items.len(), 1);
-    assert_eq!(
-        review_items[0].candidate.source_url,
-        "https://example.invalid/review/401"
-    );
-    assert!(!review_items[0].candidate_identity.contains("secret"));
-    assert!(!review_items[0].candidate_identity.contains("password"));
+    .map(|_| ());
+    (catalog, connector, result)
 }
 
 #[test]
-fn review_preview_rediscovers_transient_media_without_persisting_credentials() {
-    let (mut candidate, library) = ambiguous_candidate_and_releases();
-    candidate.provider_candidate_id = Some("provider-review-401".to_owned());
-    candidate.source_url =
-        "https://user:password@example.invalid/review.png?id=401&token=secret#download".to_owned();
-    let connector = FakeConnector {
-        downloads: RefCell::new(Vec::new()),
-        candidates: vec![candidate.clone()],
-    };
-    let runs = FakeRuns::new(run_with_request(request()));
-    let catalog = FakeCatalog {
-        records: RefCell::new(Vec::new()),
-        review_items: RefCell::new(Vec::new()),
-        finalize_calls: RefCell::new(0),
-        library,
-    };
+fn candidates_carrying_url_credentials_are_rejected_before_persistence() {
+    let (catalog, connector, result) =
+        acquire_with_candidate_locator("https://user:secret@example.invalid/review.png");
 
-    acquire_run_with_connector(
-        &runs,
-        &catalog,
-        &FakeStore::default(),
-        &connector,
-        7,
-        matching_policy(),
-    )
-    .unwrap();
+    let error = result.unwrap_err();
+
+    assert!(matches!(
+        error,
+        ApplicationError::UnsafeCandidateLocator { .. }
+    ));
+    assert!(!error.to_string().contains("secret"));
+    assert!(catalog.review_items.borrow().is_empty());
+    assert!(catalog.records.borrow().is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+}
+
+#[test]
+fn relative_candidate_locators_are_rejected_before_persistence() {
+    let (catalog, _connector, result) = acquire_with_candidate_locator("/download/401.png");
+
+    assert!(matches!(
+        result.unwrap_err(),
+        ApplicationError::UnsafeCandidateLocator { .. }
+    ));
+    assert!(catalog.review_items.borrow().is_empty());
+}
+
+#[test]
+fn review_preview_downloads_the_persisted_candidate_through_the_connector() {
+    let (catalog, connector, result) =
+        acquire_with_candidate_locator("https://example.invalid/review/401.png");
+    result.unwrap();
     let review_item_id = catalog.review_items.borrow()[0].id;
     assert!(connector.downloads.borrow().is_empty());
 
-    let preview = load_review_preview(&catalog, &runs, &connector, review_item_id).unwrap();
+    let preview = load_review_preview(&catalog, &connector, review_item_id).unwrap();
 
     assert_eq!(preview.original_filename, "review-reuse.png");
     assert_eq!(preview.bytes, b"fixture box front");
     assert_eq!(
         connector.downloads.borrow().as_slice(),
-        &[candidate.source_url]
+        &["https://example.invalid/review/401.png".to_owned()]
     );
-    let persisted = &catalog.review_items.borrow()[0].candidate;
-    assert_eq!(persisted.source_url, "https://example.invalid/review/401");
-    assert!(persisted.source_url_requires_rediscovery);
-    assert!(!persisted.source_url.contains("secret"));
-    assert!(!persisted.source_url.contains("password"));
-}
-
-#[test]
-fn medium_confidence_relative_candidate_does_not_stage_transport_credentials() {
-    let (mut candidate, library) = ambiguous_candidate_and_releases();
-    candidate.provider_candidate_id = Some("provider-review-relative-401".to_owned());
-    candidate.source_url = "/download/401?token=relative-secret#download".to_owned();
-    let connector = FakeConnector {
-        downloads: RefCell::new(Vec::new()),
-        candidates: vec![candidate],
-    };
-    let runs = FakeRuns::new(run_with_request(request()));
-    let catalog = FakeCatalog {
-        records: RefCell::new(Vec::new()),
-        review_items: RefCell::new(Vec::new()),
-        finalize_calls: RefCell::new(0),
-        library,
-    };
-
-    acquire_run_with_connector(
-        &runs,
-        &catalog,
-        &FakeStore::default(),
-        &connector,
-        7,
-        matching_policy(),
-    )
-    .unwrap();
-
-    let review_items = catalog.review_items.borrow();
-    assert_eq!(review_items.len(), 1);
-    assert_eq!(
-        review_items[0].candidate.source_url,
-        "https://example.invalid/review/relative-401"
-    );
-    assert!(review_items[0].candidate.source_url_requires_rediscovery);
-    assert!(
-        !review_items[0]
-            .candidate_identity
-            .contains("relative-secret")
-    );
-}
-
-#[test]
-fn medium_confidence_candidate_rejects_transient_stable_source_location() {
-    let (mut candidate, library) = ambiguous_candidate_and_releases();
-    candidate.provider_candidate_id = Some("provider-review-unsafe-stable".to_owned());
-    candidate.source_url =
-        "https://user:password@example.invalid/review.png?token=transport-secret".to_owned();
-    let connector = FakeConnector {
-        downloads: RefCell::new(Vec::new()),
-        candidates: vec![candidate],
-    };
-    let runs = FakeRuns::new(run_with_request(request()));
-    let catalog = FakeCatalog {
-        records: RefCell::new(Vec::new()),
-        review_items: RefCell::new(Vec::new()),
-        finalize_calls: RefCell::new(0),
-        library,
-    };
-
-    let error = acquire_run_with_connector(
-        &runs,
-        &catalog,
-        &FakeStore::default(),
-        &connector,
-        7,
-        matching_policy(),
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("stable source location must not contain transient transport data")
-    );
-    assert!(catalog.review_items.borrow().is_empty());
-}
-
-#[test]
-fn accepted_review_with_transient_source_url_requires_rediscovery_before_download() {
-    let (mut candidate, library) = ambiguous_candidate_and_releases();
-    candidate.provider_candidate_id = Some("provider-review-401".to_owned());
-    candidate.source_url =
-        "https://user:password@example.invalid/review.png?token=secret#download".to_owned();
-    let discovery_connector = FakeConnector {
-        downloads: RefCell::new(Vec::new()),
-        candidates: vec![candidate],
-    };
-    let runs = FakeRuns::new(run_with_request(request()));
-    let catalog = FakeCatalog {
-        records: RefCell::new(Vec::new()),
-        review_items: RefCell::new(Vec::new()),
-        finalize_calls: RefCell::new(0),
-        library,
-    };
-
-    acquire_run_with_connector(
-        &runs,
-        &catalog,
-        &FakeStore::default(),
-        &discovery_connector,
-        7,
-        matching_policy(),
-    )
-    .unwrap();
-    let review_item_id = catalog.review_items.borrow()[0].id;
-    catalog
-        .set_review_decision(
-            review_item_id,
-            ReviewDecision::Accept {
-                release_edition_id: 402,
-            },
-        )
-        .unwrap();
-    let work_key = runs.work.borrow().keys().next().unwrap().clone();
-    runs.requeue_completed_work(7, &work_key).unwrap();
-
-    let resumed_connector = NoDiscoveryConnector {
-        downloads: RefCell::new(Vec::new()),
-    };
-    let error = acquire_run_with_connector(
-        &runs,
-        &catalog,
-        &FakeStore::default(),
-        &resumed_connector,
-        7,
-        matching_policy(),
-    )
-    .unwrap_err();
-
-    assert!(error.to_string().contains("rediscover"));
-    assert!(resumed_connector.downloads.borrow().is_empty());
-    assert!(catalog.records.borrow().is_empty());
 }
 
 fn ambiguous_candidate_and_releases() -> (AssetCandidate, Vec<LibraryEntry>) {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Review Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -1623,7 +1455,6 @@ fn unrelated_queued_work_does_not_suppress_a_discovery_failure() {
     first_candidate.provider_candidate_id = Some("review-a".to_owned());
     let second_candidate = AssetCandidate {
         provider_candidate_id: Some("review-b".to_owned()),
-        source_url_requires_rediscovery: false,
         ..first_candidate.clone()
     };
     let catalog = FakeCatalog {
@@ -1865,7 +1696,6 @@ fn deferred_review_decision_keeps_the_same_candidate_staged() {
 fn threshold_review_candidate_and_release() -> (AssetCandidate, LibraryEntry) {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Threshold Review Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2569,7 +2399,6 @@ fn rejects_candidates_whose_source_does_not_match_the_connector() {
 fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "A:B".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2582,7 +2411,6 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     };
     let second = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "A?B".to_owned(),
         ..first.clone()
     };
@@ -2620,7 +2448,6 @@ fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
 fn fallback_candidates_with_distinct_asset_labels_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2667,7 +2494,6 @@ fn fallback_candidates_with_distinct_asset_labels_keep_distinct_work_items() {
 fn fallback_candidates_without_labels_use_filename_to_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2714,7 +2540,6 @@ fn fallback_candidates_without_labels_use_filename_to_keep_distinct_work_items()
 fn fallback_work_key_matches_review_identity_normalization() {
     let candidate = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -2743,7 +2568,6 @@ fn fallback_work_key_matches_review_identity_normalization() {
 fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: Some("provider-release-1".to_owned()),
-        source_url_requires_rediscovery: false,
         game_title: "Shared Game".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "Unknown".to_owned(),
@@ -2756,7 +2580,6 @@ fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items
     };
     let second = AssetCandidate {
         provider_candidate_id: Some("provider-release-2".to_owned()),
-        source_url_requires_rediscovery: false,
         ..first.clone()
     };
     let runs = FakeRuns::new(run_with_request(request()));
@@ -2791,7 +2614,6 @@ fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items
 fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
     let first = AssetCandidate {
         provider_candidate_id: Some("provider:A:B".to_owned()),
-        source_url_requires_rediscovery: false,
         game_title: "A:B".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -2804,7 +2626,6 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
     };
     let second = AssetCandidate {
         provider_candidate_id: Some("provider:A?B".to_owned()),
-        source_url_requires_rediscovery: false,
         game_title: "A?B".to_owned(),
         ..first.clone()
     };
@@ -2868,7 +2689,6 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
 fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     let first = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "C".to_owned(),
         platform: "A:B".to_owned(),
         region: "Unknown".to_owned(),
@@ -2881,7 +2701,6 @@ fn candidate_identity_fields_cannot_collide_through_work_key_delimiters() {
     };
     let second = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "B:C".to_owned(),
         platform: "A".to_owned(),
         ..first.clone()
