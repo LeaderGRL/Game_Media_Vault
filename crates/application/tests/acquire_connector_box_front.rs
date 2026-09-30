@@ -222,6 +222,18 @@ impl ConnectorPort for FakeConnector {
         }])
     }
 
+    fn stable_source_location(
+        &self,
+        candidate: &AssetCandidate,
+    ) -> Result<Option<String>, PortError> {
+        if candidate.provider_candidate_id.as_deref() == Some("provider-review-401")
+            && candidate.source_url.contains("example.invalid/review.png")
+        {
+            return Ok(Some("https://example.invalid/review.png?id=401".to_owned()));
+        }
+        Ok(Some(candidate.source_url.clone()))
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         self.downloads
             .borrow_mut()
@@ -882,7 +894,7 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
     let (mut candidate, library) = ambiguous_candidate_and_releases();
     candidate.provider_candidate_id = Some("provider-review-401".to_owned());
     candidate.source_url =
-        "https://user:password@example.invalid/review.png?token=secret#download".to_owned();
+        "https://user:password@example.invalid/review.png?id=401&token=secret#download".to_owned();
     let connector = FakeConnector {
         downloads: RefCell::new(Vec::new()),
         candidates: vec![candidate],
@@ -909,7 +921,7 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
     assert_eq!(review_items.len(), 1);
     assert_eq!(
         review_items[0].candidate.source_url,
-        "https://example.invalid/review.png"
+        "https://example.invalid/review.png?id=401"
     );
     assert!(!review_items[0].candidate_identity.contains("secret"));
     assert!(!review_items[0].candidate_identity.contains("password"));

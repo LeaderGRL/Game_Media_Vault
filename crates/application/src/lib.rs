@@ -377,6 +377,20 @@ pub trait ConnectorPort {
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 
+    fn stable_source_location(
+        &self,
+        candidate: &AssetCandidate,
+    ) -> Result<Option<String>, PortError> {
+        let Ok(source_url) = Url::parse(&candidate.source_url) else {
+            return Ok(Some(candidate.source_url.clone()));
+        };
+        let contains_transient_transport_data = !source_url.username().is_empty()
+            || source_url.password().is_some()
+            || source_url.query().is_some()
+            || source_url.fragment().is_some();
+        Ok((!contains_transient_transport_data).then(|| candidate.source_url.clone()))
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 }
 
@@ -808,7 +822,9 @@ pub fn acquire_run_with_connector(
                 {
                     continue;
                 }
-                let (candidate, transient_source_url) = catalog_safe_candidate(candidate)?;
+                let stable_source_location = connector.stable_source_location(&candidate)?;
+                let (candidate, transient_source_url) =
+                    catalog_safe_candidate(candidate, stable_source_location)?;
                 let candidate_identity =
                     review_candidate_identity(connector.source_id(), &candidate);
                 if review_only_resume
@@ -1253,8 +1269,9 @@ fn normalize_review_identity_part(value: &str) -> String {
 
 fn catalog_safe_candidate(
     mut candidate: AssetCandidate,
+    stable_source_location: Option<String>,
 ) -> Result<(AssetCandidate, Option<String>), PortError> {
-    let Ok(mut source_url) = Url::parse(&candidate.source_url) else {
+    let Ok(source_url) = Url::parse(&candidate.source_url) else {
         return Ok((candidate, None));
     };
     let contains_transient_transport_data = !source_url.username().is_empty()
@@ -1272,15 +1289,23 @@ fn catalog_safe_candidate(
     }
 
     let transient_source_url = candidate.source_url.clone();
-    source_url.set_username("").map_err(|_| {
-        PortError("candidate source URL cannot remove embedded username".to_owned())
+    let stable_source_location = stable_source_location.ok_or_else(|| {
+        PortError(
+            "connector candidates with credential-bearing or transient URLs require a stable source location"
+                .to_owned(),
+        )
     })?;
-    source_url.set_password(None).map_err(|_| {
-        PortError("candidate source URL cannot remove embedded password".to_owned())
+    let stable_url = Url::parse(&stable_source_location).map_err(|error| {
+        PortError(format!(
+            "connector stable source location is not a valid URL: {error}"
+        ))
     })?;
-    source_url.set_query(None);
-    source_url.set_fragment(None);
-    candidate.source_url = source_url.into();
+    if !stable_url.username().is_empty() || stable_url.password().is_some() {
+        return Err(PortError(
+            "connector stable source location must not contain embedded credentials".to_owned(),
+        ));
+    }
+    candidate.source_url = stable_source_location;
     candidate.source_url_requires_rediscovery = true;
     Ok((candidate, Some(transient_source_url)))
 }
