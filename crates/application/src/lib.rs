@@ -582,6 +582,13 @@ pub enum ApplicationError {
     ConnectorNotSelected { source_id: String },
     #[error("connector {source_id} does not support direct media downloads")]
     ConnectorCannotDownload { source_id: String },
+    #[error(
+        "connector {connector_source_id} returned a candidate belonging to source {candidate_source_id}"
+    )]
+    ConnectorCandidateSourceMismatch {
+        connector_source_id: String,
+        candidate_source_id: String,
+    },
     #[error("acquisition run cannot execute connector work while {status:?}")]
     RunNotExecutable { status: AcquisitionRunStatus },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
@@ -766,6 +773,12 @@ pub fn acquire_run_with_connector(
     let discovery_error = match connector.discover(&run.request) {
         Ok(candidates) => {
             for candidate in candidates {
+                if candidate.source_id.as_str() != connector.source_id() {
+                    return Err(ApplicationError::ConnectorCandidateSourceMismatch {
+                        connector_source_id: connector.source_id().to_owned(),
+                        candidate_source_id: candidate.source_id.as_str().to_owned(),
+                    });
+                }
                 if !run.request.requests_asset_type(candidate.asset_type)
                     || !capabilities.asset_types.contains(&candidate.asset_type)
                 {

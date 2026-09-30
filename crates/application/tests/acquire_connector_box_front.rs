@@ -2292,6 +2292,38 @@ fn rejects_asset_types_not_declared_by_the_connector() {
 }
 
 #[test]
+fn rejects_candidates_whose_source_does_not_match_the_connector() {
+    let mut candidate = ambiguous_candidate_and_releases().0;
+    candidate.source_id = SourceId::from("screenscraper");
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library: Vec::new(),
+    };
+
+    let error = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("screenscraper"));
+    assert!(error.to_string().contains("libretro-thumbnails"));
+    assert!(catalog.review_items.borrow().is_empty());
+    assert_eq!(runs.run.borrow().queued_work, 0);
+}
+
+#[test]
 fn distinct_candidates_that_share_a_source_url_keep_distinct_work_items() {
     let first = AssetCandidate {
         provider_candidate_id: None,
