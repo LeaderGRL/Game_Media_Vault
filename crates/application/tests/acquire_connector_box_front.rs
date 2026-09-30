@@ -2832,6 +2832,56 @@ fn resumes_legacy_queued_work_after_provider_identity_work_keys_are_enabled() {
     assert_eq!(runs.run.borrow().completed_work, 1);
 }
 
+#[test]
+fn legacy_work_key_is_claimed_by_only_one_distinct_provider_candidate() {
+    let first = AssetCandidate {
+        provider_candidate_id: Some("provider-release-a".to_owned()),
+        game_title: "Super Mario Bros. (World)".to_owned(),
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: "World".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        source_id: SourceId::from("libretro-thumbnails"),
+        source_asset_label: Some("Named_Boxarts".to_owned()),
+        source_url: "https://example.invalid/shared-legacy.png".to_owned(),
+        original_filename: "shared-legacy.png".to_owned(),
+        source_url_requires_rediscovery: false,
+    };
+    let second = AssetCandidate {
+        provider_candidate_id: Some("provider-release-b".to_owned()),
+        ..first.clone()
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let legacy_work_key = legacy_connector_work_key("libretro-thumbnails", &first);
+    runs.queue_work(7, legacy_work_key).unwrap();
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library: vec![release_for_candidate(&first, 83)],
+    };
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first, second],
+    };
+
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(connector.downloads.borrow().len(), 2);
+    assert_eq!(catalog.records.borrow().len(), 2);
+    assert_eq!(runs.run.borrow().queued_work, 0);
+    assert_eq!(runs.run.borrow().completed_work, 2);
+}
+
 fn legacy_connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut key = "connector".to_owned();
     for part in [
