@@ -116,6 +116,8 @@ describe("ReviewView", () => {
       />,
     );
 
+    expect(onLoadPreview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
     expect(onLoadPreview).toHaveBeenCalledWith(17);
     const preview = await screen.findByRole("img", { name: "Review Game box front candidate" });
     expect(preview).toHaveAttribute("src", "blob:review-preview");
