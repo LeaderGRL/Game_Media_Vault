@@ -2044,6 +2044,8 @@ fn reconcile_restored_review_with_terminal_sibling(
                 .any(|candidate| candidate.release_edition_id == release_edition_id)
             {
                 ReviewStatus::Accepted
+            } else if restored_status == ReviewStatus::Accepted {
+                ReviewStatus::Superseded
             } else {
                 return Ok(restored_status);
             }

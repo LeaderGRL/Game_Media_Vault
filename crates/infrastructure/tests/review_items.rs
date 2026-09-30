@@ -2278,6 +2278,81 @@ fn accepted_review_claim_is_exclusive_and_recovers_to_accepted_after_expiry() {
 }
 
 #[test]
+fn expired_accepted_occurrence_is_superseded_by_newer_incompatible_acceptance() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let older_run = catalog.create_run(request()).unwrap();
+    let newer_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:expired-accepted-incompatible-sibling";
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: older_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: newer_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(202, "Deluxe")],
+        })
+        .unwrap();
+    let older = catalog
+        .find_review_item_for_run_by_candidate_identity(older_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let newer = catalog
+        .find_review_item_for_run_by_candidate_identity(newer_run.id, identity)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            older.id,
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )
+        .unwrap();
+    catalog
+        .claim_review_item_for_processing(older.id)
+        .unwrap()
+        .unwrap();
+    catalog
+        .set_review_decision(
+            newer.id,
+            ReviewDecision::Accept {
+                release_edition_id: 202,
+            },
+        )
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE review_processing_leases SET acquired_at = unixepoch() - 3601
+             WHERE review_item_id = ?1",
+            [older.id],
+        )
+        .unwrap();
+
+    catalog
+        .recover_expired_review_processing(older_run.id)
+        .unwrap();
+
+    let recovered = catalog.get_review_item(older.id).unwrap().unwrap();
+    assert_eq!(recovered.status, ReviewStatus::Superseded);
+    assert_eq!(
+        recovered.decision,
+        Some(ReviewDecision::Accept {
+            release_edition_id: 202
+        })
+    );
+}
+
+#[test]
 fn processing_review_supersession_completes_work_and_status_together() {
     let temp = tempdir().unwrap();
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
