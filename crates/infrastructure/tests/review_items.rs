@@ -923,6 +923,85 @@ fn current_run_review_occurrence_is_preferred_after_a_processing_race() {
 }
 
 #[test]
+fn latest_human_decision_wins_over_newer_review_occurrence_id() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let older_run = catalog.create_run(request()).unwrap();
+    let newer_run = catalog.create_run(request()).unwrap();
+    let future_run = catalog.create_run(request()).unwrap();
+    let identity = "connector:decision-order-race";
+    let older_work_key = "connector:decision-order-older";
+    let newer_work_key = "connector:decision-order-newer";
+    let future_work_key = "connector:decision-order-future";
+    for (run_id, work_key) in [
+        (older_run.id, older_work_key),
+        (newer_run.id, newer_work_key),
+        (future_run.id, future_work_key),
+    ] {
+        catalog.queue_work(run_id, work_key.to_owned()).unwrap();
+    }
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: older_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: newer_run.id,
+            candidate_identity: identity.to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(202, "Deluxe")],
+        })
+        .unwrap();
+    let older = catalog
+        .find_review_item_for_run_by_candidate_identity(older_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let newer = catalog
+        .find_review_item_for_run_by_candidate_identity(newer_run.id, identity)
+        .unwrap()
+        .unwrap();
+    let older_claim = catalog
+        .claim_review_item_for_processing(older.id)
+        .unwrap()
+        .unwrap();
+
+    catalog
+        .accept_review_item_and_requeue(newer.id, 202, newer_work_key)
+        .unwrap();
+    let restored = catalog
+        .restore_review_item_processing(older.id, &older_claim.lease_token, ReviewStatus::Pending)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.status, ReviewStatus::Pending);
+    catalog
+        .set_review_decision(older.id, ReviewDecision::Reject)
+        .unwrap();
+
+    catalog
+        .stage_review_item_and_complete_work(
+            NewReviewItem {
+                run_id: future_run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(202, "Deluxe")],
+            },
+            future_work_key,
+        )
+        .unwrap();
+
+    let future = catalog
+        .find_review_item_for_run_by_candidate_identity(future_run.id, identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(future.status, ReviewStatus::Rejected);
+    assert_eq!(future.decision, Some(ReviewDecision::Reject));
+}
+
+#[test]
 fn expired_processing_occurrence_reconciles_a_terminal_sibling_decision() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");

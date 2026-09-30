@@ -906,6 +906,7 @@ impl CatalogPort for SqliteCatalog {
                                 OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
                               THEN 0 ELSE 1
                           END,
+                          COALESCE(decision_seq, 0) DESC,
                           id DESC
                  LIMIT 1",
                 params![candidate_identity, run_id],
@@ -1598,68 +1599,66 @@ impl CatalogPort for SqliteCatalog {
         };
         let decision_json = serde_json::to_string(&decision)
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
-        if decision == ReviewDecision::Reject {
-            let mut connection = self.connect()?;
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql_error)?;
-            let target: Option<(String, String)> = transaction
-                .query_row(
-                    "SELECT candidate_identity, status FROM review_items WHERE id = ?1",
-                    params![review_item_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(sql_error)?;
-            let Some((candidate_identity, current_status)) = target else {
-                return Ok(None);
-            };
-            let current_status = parse_review_status(&current_status)?;
-            if !matches!(
-                current_status,
-                ReviewStatus::Pending | ReviewStatus::Deferred
-            ) {
-                return Err(PortError(format!(
-                    "review item #{review_item_id} cannot transition while {}",
-                    review_status_to_str(current_status)
-                )));
-            }
-            let changed_target = transaction
-                .execute(
-                    "UPDATE review_items SET decision_json = ?1, status = 'rejected'
-                     WHERE id = ?2 AND status IN ('pending', 'deferred')",
-                    params![decision_json, review_item_id],
-                )
-                .map_err(sql_error)?;
-            if changed_target != 1 {
-                return Err(PortError(format!(
-                    "review item #{review_item_id} could not be rejected atomically"
-                )));
-            }
-            transaction
-                .execute(
-                    "UPDATE review_items SET decision_json = ?1, status = 'rejected'
-                     WHERE candidate_identity = ?2 AND id != ?3
-                       AND status IN ('pending', 'deferred')",
-                    params![decision_json, candidate_identity, review_item_id],
-                )
-                .map_err(sql_error)?;
-            transaction.commit().map_err(sql_error)?;
-            drop(connection);
-            return self.get_review_item(review_item_id);
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let target: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT candidate_identity, status FROM review_items WHERE id = ?1",
+                params![review_item_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let Some((candidate_identity, current_status)) = target else {
+            return Ok(None);
+        };
+        let current_status = parse_review_status(&current_status)?;
+        if !matches!(
+            current_status,
+            ReviewStatus::Pending | ReviewStatus::Deferred
+        ) {
+            return Err(PortError(format!(
+                "review item #{review_item_id} cannot transition while {}",
+                review_status_to_str(current_status)
+            )));
         }
-
-        let connection = self.connect()?;
-        let changed = connection
+        let decision_seq = next_review_decision_seq(&transaction)?;
+        let changed_target = transaction
             .execute(
-                "UPDATE review_items SET decision_json = ?1, status = ?2
-                 WHERE id = ?3 AND status IN ('pending', 'deferred')",
-                params![decision_json, review_status_to_str(status), review_item_id],
+                "UPDATE review_items SET decision_json = ?1, status = ?2, decision_seq = ?3
+                 WHERE id = ?4 AND status IN ('pending', 'deferred')",
+                params![
+                    decision_json,
+                    review_status_to_str(status),
+                    decision_seq,
+                    review_item_id
+                ],
             )
             .map_err(sql_error)?;
-        if changed == 0 {
-            return review_transition_conflict(self, review_item_id);
+        if changed_target != 1 {
+            return Err(PortError(format!(
+                "review item #{review_item_id} could not be resolved atomically"
+            )));
         }
+        if decision == ReviewDecision::Reject {
+            transaction
+                .execute(
+                    "UPDATE review_items
+                     SET decision_json = ?1, status = 'rejected', decision_seq = ?2
+                     WHERE candidate_identity = ?3 AND id != ?4
+                       AND status IN ('pending', 'deferred')",
+                    params![
+                        decision_json,
+                        decision_seq,
+                        candidate_identity,
+                        review_item_id
+                    ],
+                )
+                .map_err(sql_error)?;
+        }
+        transaction.commit().map_err(sql_error)?;
         drop(connection);
         self.get_review_item(review_item_id)
     }
@@ -1728,6 +1727,7 @@ impl CatalogPort for SqliteCatalog {
         let decision = ReviewDecision::Accept { release_edition_id };
         let decision_json = serde_json::to_string(&decision)
             .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
+        let decision_seq = next_review_decision_seq(&transaction)?;
         let related_items = {
             let mut statement = transaction
                 .prepare(
@@ -1758,9 +1758,15 @@ impl CatalogPort for SqliteCatalog {
             };
             transaction
                 .execute(
-                    "UPDATE review_items SET decision_json = ?1, status = ?2
-                     WHERE id = ?3 AND status IN ('pending', 'deferred')",
-                    params![decision_json, review_status_to_str(status), related_item.id],
+                    "UPDATE review_items
+                     SET decision_json = ?1, status = ?2, decision_seq = ?3
+                     WHERE id = ?4 AND status IN ('pending', 'deferred')",
+                    params![
+                        decision_json,
+                        review_status_to_str(status),
+                        decision_seq,
+                        related_item.id
+                    ],
                 )
                 .map_err(sql_error)?;
             if status == ReviewStatus::Accepted && related_item.id != review_item_id {
@@ -2133,7 +2139,7 @@ fn terminal_review_sibling(
                    status IN ('accepted', 'applied', 'rejected')
                    OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
                )
-             ORDER BY id DESC
+             ORDER BY COALESCE(decision_seq, 0) DESC, id DESC
              LIMIT 1",
             params![current.candidate_identity, current.id],
             review_item_row,
@@ -2142,6 +2148,16 @@ fn terminal_review_sibling(
         .map_err(sql_error)?
         .map(decode_review_item_row)
         .transpose()
+}
+
+fn next_review_decision_seq(transaction: &Transaction<'_>) -> Result<i64, PortError> {
+    transaction
+        .query_row(
+            "SELECT COALESCE(MAX(decision_seq), 0) + 1 FROM review_items",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
 }
 
 fn review_transition_conflict(
@@ -2893,6 +2909,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 competing_matches_json TEXT NOT NULL,
                 decision_json TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
+                decision_seq INTEGER CHECK(decision_seq > 0),
                 UNIQUE(run_id, candidate_identity)
             );
             CREATE TABLE IF NOT EXISTS review_processing_leases (
@@ -2986,6 +3003,25 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 )
                 .map_err(sql_error)?;
         }
+        let review_decision_seq_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('review_items')
+                 WHERE name = 'decision_seq'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if review_decision_seq_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE review_items
+                     ADD COLUMN decision_seq INTEGER CHECK(decision_seq > 0);
+                     UPDATE review_items
+                     SET decision_seq = id
+                     WHERE decision_json IS NOT NULL;",
+                )
+                .map_err(sql_error)?;
+        }
         if has_unique_index(connection, "review_items", &["candidate_identity"])?
             && !has_unique_index(
                 connection,
@@ -3008,14 +3044,15 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                          competing_matches_json TEXT NOT NULL,
                          decision_json TEXT,
                          status TEXT NOT NULL DEFAULT 'pending',
+                         decision_seq INTEGER CHECK(decision_seq > 0),
                          UNIQUE(run_id, candidate_identity)
                      );
                      INSERT INTO review_items (
                          id, run_id, candidate_identity, candidate_json,
-                         competing_matches_json, decision_json, status
+                         competing_matches_json, decision_json, status, decision_seq
                      )
                      SELECT id, run_id, candidate_identity, candidate_json,
-                            competing_matches_json, decision_json, status
+                            competing_matches_json, decision_json, status, decision_seq
                      FROM review_items_legacy_identity;
                      UPDATE review_items
                      SET status = CASE
@@ -3323,7 +3360,37 @@ fn is_recognized_catalog_schema(connection: &Connection) -> Result<bool, PortErr
                 ("status", "TEXT", true, false),
             ],
         )?;
-        if (!legacy_review_items && !status_review_items)
+        let sequenced_review_items = table_matches_columns(
+            connection,
+            "review_items",
+            &[
+                ("id", "INTEGER", false, true),
+                ("run_id", "INTEGER", true, false),
+                ("candidate_identity", "TEXT", true, false),
+                ("candidate_json", "TEXT", true, false),
+                ("competing_matches_json", "TEXT", true, false),
+                ("decision_json", "TEXT", false, false),
+                ("status", "TEXT", true, false),
+                ("decision_seq", "INTEGER", false, false),
+            ],
+        )?;
+        let legacy_sequenced_review_items = table_matches_columns(
+            connection,
+            "review_items",
+            &[
+                ("id", "INTEGER", false, true),
+                ("run_id", "INTEGER", true, false),
+                ("candidate_identity", "TEXT", true, false),
+                ("candidate_json", "TEXT", true, false),
+                ("competing_matches_json", "TEXT", true, false),
+                ("decision_json", "TEXT", false, false),
+                ("decision_seq", "INTEGER", false, false),
+            ],
+        )?;
+        if (!legacy_review_items
+            && !status_review_items
+            && !sequenced_review_items
+            && !legacy_sequenced_review_items)
             || (!has_unique_index(connection, "review_items", &["candidate_identity"])?
                 && !has_unique_index(
                     connection,
