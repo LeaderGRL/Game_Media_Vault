@@ -8,7 +8,7 @@ use std::{
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, PortError, ReviewProcessingClaim,
     ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal, acquire_run_with_connector,
-    acquisition_work_key,
+    acquisition_work_key, load_review_preview,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -945,6 +945,51 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
     );
     assert!(!review_items[0].candidate_identity.contains("secret"));
     assert!(!review_items[0].candidate_identity.contains("password"));
+}
+
+#[test]
+fn review_preview_rediscovers_transient_media_without_persisting_credentials() {
+    let (mut candidate, library) = ambiguous_candidate_and_releases();
+    candidate.provider_candidate_id = Some("provider-review-401".to_owned());
+    candidate.source_url =
+        "https://user:password@example.invalid/review.png?id=401&token=secret#download".to_owned();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate.clone()],
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+    let review_item_id = catalog.review_items.borrow()[0].id;
+    assert!(connector.downloads.borrow().is_empty());
+
+    let preview = load_review_preview(&catalog, &runs, &connector, review_item_id).unwrap();
+
+    assert_eq!(preview.original_filename, "review-reuse.png");
+    assert_eq!(preview.bytes, b"fixture box front");
+    assert_eq!(
+        connector.downloads.borrow().as_slice(),
+        &[candidate.source_url]
+    );
+    let persisted = &catalog.review_items.borrow()[0].candidate;
+    assert_eq!(persisted.source_url, "https://example.invalid/review/401");
+    assert!(persisted.source_url_requires_rediscovery);
+    assert!(!persisted.source_url.contains("secret"));
+    assert!(!persisted.source_url.contains("password"));
 }
 
 #[test]

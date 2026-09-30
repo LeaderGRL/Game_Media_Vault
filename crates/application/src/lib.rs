@@ -31,6 +31,12 @@ pub struct ReviewProcessingClaim {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPreview {
+    pub original_filename: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewProcessingFinalization {
     Imported(ImportedAsset),
     Requeued,
@@ -651,6 +657,8 @@ pub enum ApplicationError {
         review_item_id: i64,
         status: ReviewStatus,
     },
+    #[error("review item #{review_item_id} candidate is unavailable for preview")]
+    ReviewPreviewCandidateUnavailable { review_item_id: i64 },
 }
 
 pub fn list_review_items(catalog: &dyn CatalogPort) -> Result<Vec<ReviewItem>, ApplicationError> {
@@ -712,6 +720,53 @@ pub fn resolve_review_item(
             .set_review_decision(review_item_id, decision)?
             .ok_or(ApplicationError::ReviewItemNotFound(review_item_id)),
     }
+}
+
+pub fn load_review_preview(
+    catalog: &dyn CatalogPort,
+    runs: &dyn RunRepositoryPort,
+    connector: &dyn ConnectorPort,
+    review_item_id: i64,
+) -> Result<ReviewPreview, ApplicationError> {
+    let item = catalog
+        .get_review_item(review_item_id)?
+        .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))?;
+    if item.candidate.source_id.as_str() != connector.source_id() {
+        return Err(ApplicationError::ConnectorCandidateSourceMismatch {
+            connector_source_id: connector.source_id().to_owned(),
+            candidate_source_id: item.candidate.source_id.as_str().to_owned(),
+        });
+    }
+    if !connector.capabilities().direct_media_download {
+        return Err(ApplicationError::ConnectorCannotDownload {
+            source_id: connector.source_id().to_owned(),
+        });
+    }
+
+    let download_candidate = if item.candidate.source_url_requires_rediscovery {
+        let run = load_acquisition_run(runs, item.run_id)?;
+        connector
+            .discover(&run.request)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.source_id.as_str() == connector.source_id()
+                    && review_candidate_identity(connector.source_id(), candidate)
+                        == item.candidate_identity
+            })
+            .ok_or(ApplicationError::ReviewPreviewCandidateUnavailable { review_item_id })?
+    } else {
+        item.candidate.clone()
+    };
+
+    let mut stream = connector.download(&download_candidate)?;
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|error| PortError(error.to_string()))?;
+    Ok(ReviewPreview {
+        original_filename: item.candidate.original_filename,
+        bytes,
+    })
 }
 
 pub fn import_reference_catalog(
