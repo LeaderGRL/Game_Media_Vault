@@ -1,63 +1,26 @@
-use std::{cell::RefCell, fs, path::Path};
+use std::{cell::RefCell, fs, io::Read, path::Path};
 
 use game_media_vault_application::{
-    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, StagedOriginal,
-    import_local_box_front,
+    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, import_local_box_front,
 };
 use game_media_vault_domain::{
     AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceId, StoredObject,
 };
 use tempfile::tempdir;
 
-struct FakeObjectStore {
-    expected_source: std::path::PathBuf,
-}
-
-struct FakeStagedOriginal {
-    stored: StoredObject,
-}
-
-impl StagedOriginal for FakeStagedOriginal {
-    fn stored_object(&self) -> &StoredObject {
-        &self.stored
-    }
-
-    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
-        Ok(self.stored.clone())
-    }
-}
+struct FakeObjectStore;
 
 impl ObjectStorePort for FakeObjectStore {
-    fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
-        assert_eq!(source, self.expected_source);
-        Ok(StoredObject {
-            hash: "abc123".to_owned(),
-            byte_len: 4096,
-        })
-    }
-
-    fn store_original_reader(
-        &self,
-        _reader: &mut dyn std::io::Read,
-    ) -> Result<StoredObject, PortError> {
-        unreachable!()
-    }
-
-    fn stage_original_reader(
-        &self,
-        reader: &mut dyn std::io::Read,
-    ) -> Result<Box<dyn StagedOriginal>, PortError> {
+    fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
             .map_err(|error| PortError(error.to_string()))?;
         assert_eq!(bytes, b"cover bytes");
-        Ok(Box::new(FakeStagedOriginal {
-            stored: StoredObject {
-                hash: "abc123".to_owned(),
-                byte_len: 4096,
-            },
-        }))
+        Ok(StoredObject {
+            hash: "abc123".to_owned(),
+            byte_len: 4096,
+        })
     }
 }
 
@@ -76,16 +39,6 @@ impl CatalogPort for RecordingCatalog {
             object_hash: "abc123".to_owned(),
             byte_len: 4096,
         })
-    }
-
-    fn persist_staged_asset(
-        &self,
-        record: PersistAsset,
-        mut staged_original: Box<dyn StagedOriginal>,
-    ) -> Result<ImportedAsset, PortError> {
-        staged_original.prepare_publish()?;
-        staged_original.publish_prepared()?;
-        self.persist_asset(record)
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
@@ -111,14 +64,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
         source_path: request_source.clone(),
     };
 
-    let imported = import_local_box_front(
-        &catalog,
-        &FakeObjectStore {
-            expected_source: fs::canonicalize(&source).unwrap(),
-        },
-        request,
-    )
-    .unwrap();
+    let imported = import_local_box_front(&catalog, &FakeObjectStore, request).unwrap();
 
     assert_eq!(imported.asset_id, 3);
     let persisted = catalog.persisted.into_inner();

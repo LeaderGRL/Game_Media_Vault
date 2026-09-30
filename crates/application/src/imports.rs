@@ -75,28 +75,24 @@ pub fn import_local_box_front(
     let source_location = source_location(&resolved_source_path);
     let mut source =
         fs::File::open(&resolved_source_path).map_err(|error| PortError(error.to_string()))?;
-    let staged_original = object_store.stage_original_reader(&mut source)?;
-    let stored = staged_original.stored_object().clone();
+    let stored = object_store.store_original(&mut source)?;
 
-    Ok(catalog.persist_staged_asset(
-        PersistAsset {
-            existing_game_id: request.existing_game_id,
-            existing_release_edition_id: None,
-            match_decision: None,
-            game_title: request.game_title,
-            platform: request.platform,
-            region: request.region,
-            edition_name: request.edition_name,
-            asset_type: AssetType::BoxFront,
-            object_hash: stored.hash,
-            byte_len: stored.byte_len,
-            original_filename,
-            source_id: SourceId::from("local_import"),
-            source_asset_label: None,
-            source_location,
-        },
-        staged_original,
-    )?)
+    Ok(catalog.persist_asset(PersistAsset {
+        existing_game_id: request.existing_game_id,
+        existing_release_edition_id: None,
+        match_decision: None,
+        game_title: request.game_title,
+        platform: request.platform,
+        region: request.region,
+        edition_name: request.edition_name,
+        asset_type: AssetType::BoxFront,
+        object_hash: stored.hash,
+        byte_len: stored.byte_len,
+        original_filename,
+        source_id: SourceId::from("local_import"),
+        source_asset_label: None,
+        source_location,
+    })?)
 }
 
 pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, ApplicationError> {

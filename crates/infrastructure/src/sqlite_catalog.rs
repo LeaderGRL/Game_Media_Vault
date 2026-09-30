@@ -2,13 +2,9 @@ use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
-    thread,
-    time::{Duration, Instant},
 };
 
-use game_media_vault_application::{
-    CatalogPort, PortError, ReferenceCatalogRepositoryPort, StagedOriginal,
-};
+use game_media_vault_application::{CatalogPort, PortError, ReferenceCatalogRepositoryPort};
 use game_media_vault_domain::{
     AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset, ImportedReleaseEdition,
     LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord, ReleaseAssertion,
@@ -22,85 +18,11 @@ mod reviews;
 mod runs;
 mod schema;
 
-const PENDING_OBJECT_PUBLICATION_GRACE_SECONDS: i64 = 3600;
-const PRIOR_OBJECT_PUBLICATION_WAIT_SECONDS: u64 = 30;
-
 pub struct SqliteCatalog {
     path: PathBuf,
     mode: CatalogOpenMode,
     #[cfg(test)]
     busy_handler: Option<fn(i32) -> bool>,
-}
-
-struct PendingObjectPublicationGuard {
-    catalog_path: PathBuf,
-    id: i64,
-    object_hash: String,
-    has_prior_publication: bool,
-    publication_started: bool,
-    commit_succeeded: bool,
-}
-
-impl PendingObjectPublicationGuard {
-    fn wait_for_prior_publication(&self) -> Result<(), PortError> {
-        if !self.has_prior_publication {
-            return Ok(());
-        }
-        let deadline = Instant::now() + Duration::from_secs(PRIOR_OBJECT_PUBLICATION_WAIT_SECONDS);
-        loop {
-            let connection =
-                Connection::open_with_flags(&self.catalog_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-                    .map_err(sql_error)?;
-            connection
-                .execute_batch("PRAGMA busy_timeout = 5000;")
-                .map_err(sql_error)?;
-            let prior_exists: bool = connection
-                .query_row(
-                    "SELECT EXISTS(
-                         SELECT 1 FROM pending_object_publications
-                         WHERE object_hash = ?1 AND id < ?2
-                     )",
-                    params![self.object_hash, self.id],
-                    |row| row.get(0),
-                )
-                .map_err(sql_error)?;
-            if !prior_exists {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(PortError(format!(
-                    "timed out waiting for an earlier publication of object {}",
-                    self.object_hash
-                )));
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn mark_publication_started(&mut self) {
-        self.publication_started = true;
-    }
-
-    fn mark_commit_succeeded(&mut self) {
-        self.commit_succeeded = true;
-    }
-}
-
-impl Drop for PendingObjectPublicationGuard {
-    fn drop(&mut self) {
-        if self.publication_started && !self.commit_succeeded {
-            return;
-        }
-        let Ok(connection) =
-            Connection::open_with_flags(&self.catalog_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        else {
-            return;
-        };
-        let _ = connection.execute(
-            "DELETE FROM pending_object_publications WHERE id = ?1",
-            params![self.id],
-        );
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -147,8 +69,6 @@ impl SqliteCatalog {
         let mut connection = catalog.connect()?;
         schema::open(&mut connection, &catalog.path)?;
 
-        recover_stale_pending_object_publications(&mut connection, &catalog.path)?;
-
         Ok(catalog)
     }
 
@@ -165,73 +85,6 @@ impl SqliteCatalog {
             connection.busy_handler(Some(handler)).map_err(sql_error)?;
         }
         Ok(connection)
-    }
-
-    fn register_pending_object_publication(
-        &self,
-        staged_original: &Option<Box<dyn StagedOriginal>>,
-    ) -> Result<Option<PendingObjectPublicationGuard>, PortError> {
-        let Some(staged_original) = staged_original.as_ref() else {
-            return Ok(None);
-        };
-        let stored = staged_original.stored_object();
-        let object_store_root = staged_original
-            .object_store_root()
-            .map(|root| {
-                root.to_str().map(str::to_owned).ok_or_else(|| {
-                    PortError(format!(
-                        "object store root is not valid UTF-8: {}",
-                        root.display()
-                    ))
-                })
-            })
-            .transpose()?;
-        let byte_len = i64::try_from(stored.byte_len).map_err(|_| {
-            PortError(format!(
-                "object {} is too large to journal in SQLite",
-                stored.hash
-            ))
-        })?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let inserted = transaction
-            .execute(
-                "INSERT INTO pending_object_publications (object_hash, byte_len, object_store_root)
-                 SELECT ?1, ?2, ?3
-                 WHERE NOT EXISTS (
-                     SELECT 1 FROM object_publication_recovery_claims WHERE object_hash = ?1
-                 )",
-                params![stored.hash, byte_len, object_store_root],
-            )
-            .map_err(sql_error)?;
-        if inserted != 1 {
-            return Err(PortError(format!(
-                "object {} is being recovered; retry publication",
-                stored.hash
-            )));
-        }
-        let id = transaction.last_insert_rowid();
-        let has_prior_publication: bool = transaction
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM pending_object_publications
-                     WHERE object_hash = ?1 AND id < ?2
-                 )",
-                params![stored.hash, id],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
-        transaction.commit().map_err(sql_error)?;
-        Ok(Some(PendingObjectPublicationGuard {
-            catalog_path: self.path.clone(),
-            id,
-            object_hash: stored.hash.clone(),
-            has_prior_publication,
-            publication_started: false,
-            commit_succeeded: false,
-        }))
     }
 }
 
@@ -268,183 +121,6 @@ fn initialize_new_catalog(
             ))),
         },
     }
-}
-
-fn recover_stale_pending_object_publications(
-    connection: &mut Connection,
-    catalog_path: &Path,
-) -> Result<(), PortError> {
-    recover_stale_pending_object_publications_with(connection, catalog_path, |path| {
-        fs::remove_file(path)
-    })
-}
-
-fn recover_stale_pending_object_publications_with<F>(
-    connection: &mut Connection,
-    catalog_path: &Path,
-    mut remove_object: F,
-) -> Result<(), PortError>
-where
-    F: FnMut(&Path) -> std::io::Result<()>,
-{
-    let cutoff: i64 = connection
-        .query_row(
-            "SELECT unixepoch() - ?1",
-            params![PENDING_OBJECT_PUBLICATION_GRACE_SECONDS],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)?;
-    let stale_publications = {
-        let mut statement = connection
-            .prepare(
-                "SELECT DISTINCT object_hash, object_store_root
-                 FROM pending_object_publications
-                 WHERE created_at_unix <= ?1
-                 ORDER BY object_hash, object_store_root",
-            )
-            .map_err(sql_error)?;
-        let rows = statement
-            .query_map(params![cutoff], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })
-            .map_err(sql_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sql_error)?
-    };
-
-    connection
-        .execute(
-            "DELETE FROM object_publication_recovery_claims
-             WHERE claimed_at_unix <= ?1
-               AND NOT EXISTS (
-                   SELECT 1 FROM pending_object_publications
-                   WHERE pending_object_publications.object_hash = object_publication_recovery_claims.object_hash
-               )",
-            params![cutoff],
-        )
-        .map_err(sql_error)?;
-
-    for (object_hash, object_store_root) in stale_publications {
-        let object_path = object_store_root
-            .as_deref()
-            .map(Path::new)
-            .map(|root| content_addressed_object_path_from_root(root, &object_hash))
-            .unwrap_or_else(|| content_addressed_object_path(catalog_path, &object_hash));
-        let Some(object_path) = object_path else {
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1
-                       AND created_at_unix <= ?2
-                       AND object_store_root IS ?3",
-                    params![object_hash, cutoff, object_store_root],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM object_publication_recovery_claims
-                     WHERE object_hash = ?1 AND claimed_at_unix <= ?2",
-                    params![object_hash, cutoff],
-                )
-                .map_err(sql_error)?;
-            transaction.commit().map_err(sql_error)?;
-            continue;
-        };
-
-        let claimed = connection
-            .execute(
-                "INSERT INTO object_publication_recovery_claims (object_hash, claimed_at_unix)
-                 SELECT ?1, unixepoch()
-                 WHERE EXISTS (
-                     SELECT 1 FROM pending_object_publications
-                     WHERE object_hash = ?1 AND created_at_unix <= ?2
-                 )
-                   AND NOT EXISTS (SELECT 1 FROM assets WHERE object_hash = ?1)
-                   AND NOT EXISTS (
-                       SELECT 1 FROM pending_object_publications
-                       WHERE object_hash = ?1 AND created_at_unix > ?2
-                   )
-                   AND NOT EXISTS (
-                       SELECT 1 FROM object_publication_recovery_claims
-                       WHERE object_hash = ?1 AND claimed_at_unix > ?2
-                   )
-                 ON CONFLICT(object_hash) DO UPDATE SET claimed_at_unix = excluded.claimed_at_unix
-                 WHERE object_publication_recovery_claims.claimed_at_unix <= ?2",
-                params![object_hash, cutoff],
-            )
-            .map_err(sql_error)?;
-
-        if claimed == 1 {
-            match remove_object(&object_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    let _ = connection.execute(
-                        "DELETE FROM object_publication_recovery_claims WHERE object_hash = ?1",
-                        params![object_hash],
-                    );
-                    return Err(io_error(error));
-                }
-            }
-
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1
-                       AND created_at_unix <= ?2
-                       AND object_store_root IS ?3",
-                    params![object_hash, cutoff, object_store_root],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM object_publication_recovery_claims WHERE object_hash = ?1",
-                    params![object_hash],
-                )
-                .map_err(sql_error)?;
-            transaction.commit().map_err(sql_error)?;
-        } else {
-            connection
-                .execute(
-                    "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1
-                       AND created_at_unix <= ?2
-                       AND object_store_root IS ?3
-                       AND (
-                           EXISTS (SELECT 1 FROM assets WHERE object_hash = ?1)
-                           OR EXISTS (
-                               SELECT 1 FROM pending_object_publications AS fresh
-                               WHERE fresh.object_hash = ?1 AND fresh.created_at_unix > ?2
-                           )
-                       )",
-                    params![object_hash, cutoff, object_store_root],
-                )
-                .map_err(sql_error)?;
-        }
-    }
-    Ok(())
-}
-
-fn content_addressed_object_path(catalog_path: &Path, object_hash: &str) -> Option<PathBuf> {
-    let root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
-    content_addressed_object_path_from_root(root, object_hash)
-}
-
-fn content_addressed_object_path_from_root(root: &Path, object_hash: &str) -> Option<PathBuf> {
-    if object_hash.len() != 64 || !object_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(
-        root.join("objects")
-            .join(&object_hash[0..2])
-            .join(&object_hash[2..4])
-            .join(object_hash),
-    )
 }
 
 impl ReferenceCatalogRepositoryPort for SqliteCatalog {
@@ -486,29 +162,6 @@ impl CatalogPort for SqliteCatalog {
             .map_err(sql_error)?;
         let imported = persist_asset_in_transaction(&transaction, record)?;
         transaction.commit().map_err(sql_error)?;
-        Ok(imported)
-    }
-
-    fn persist_staged_asset(
-        &self,
-        record: PersistAsset,
-        staged_original: Box<dyn StagedOriginal>,
-    ) -> Result<ImportedAsset, PortError> {
-        let mut staged_original = Some(staged_original);
-        let mut pending_publication =
-            prepare_and_register_object_publication(self, &mut staged_original)?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let imported = persist_asset_in_transaction(&transaction, record)?;
-        publish_staged_original(
-            &mut staged_original,
-            &imported.object_hash,
-            imported.byte_len,
-            pending_publication.as_mut(),
-        )?;
-        commit_asset_publication(transaction, &mut pending_publication)?;
         Ok(imported)
     }
 
@@ -666,79 +319,6 @@ impl CatalogPort for SqliteCatalog {
     }
 }
 
-fn publish_staged_original(
-    staged_original: &mut Option<Box<dyn StagedOriginal>>,
-    expected_hash: &str,
-    expected_byte_len: u64,
-    pending_publication: Option<&mut PendingObjectPublicationGuard>,
-) -> Result<(), PortError> {
-    let Some(staged_original) = staged_original.take() else {
-        return Ok(());
-    };
-    let expected = staged_original.stored_object().clone();
-    if expected.hash != expected_hash || expected.byte_len != expected_byte_len {
-        return Err(PortError(
-            "staged original metadata does not match the asset record".to_owned(),
-        ));
-    }
-    if let Some(pending_publication) = pending_publication {
-        pending_publication.mark_publication_started();
-    }
-    let published = staged_original.publish_prepared()?;
-    if published != expected {
-        return Err(PortError(
-            "published original metadata changed after staging".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn commit_asset_publication(
-    transaction: Transaction<'_>,
-    pending_publication: &mut Option<PendingObjectPublicationGuard>,
-) -> Result<(), PortError> {
-    if let Some(pending_publication) = pending_publication.as_ref() {
-        let deleted = transaction
-            .execute(
-                "DELETE FROM pending_object_publications WHERE id = ?1",
-                params![pending_publication.id],
-            )
-            .map_err(sql_error)?;
-        if deleted != 1 {
-            return Err(PortError(format!(
-                "pending object publication #{} disappeared before asset commit",
-                pending_publication.id
-            )));
-        }
-    }
-    transaction.commit().map_err(sql_error)?;
-    if let Some(pending_publication) = pending_publication.as_mut() {
-        pending_publication.mark_commit_succeeded();
-    }
-    Ok(())
-}
-
-fn prepare_staged_original(
-    staged_original: &mut Option<Box<dyn StagedOriginal>>,
-) -> Result<(), PortError> {
-    if let Some(staged_original) = staged_original.as_mut() {
-        staged_original.prepare_publish()?;
-    }
-    Ok(())
-}
-
-fn prepare_and_register_object_publication(
-    catalog: &SqliteCatalog,
-    staged_original: &mut Option<Box<dyn StagedOriginal>>,
-) -> Result<Option<PendingObjectPublicationGuard>, PortError> {
-    let pending_publication = catalog.register_pending_object_publication(staged_original)?;
-    if let Some(pending_publication) = pending_publication.as_ref() {
-        pending_publication.wait_for_prior_publication()?;
-    }
-    prepare_staged_original(staged_original)?;
-    Ok(pending_publication)
-}
-
 struct ExistingImportLookup<'a> {
     normalized_title: &'a str,
     normalized_platform: &'a str,
@@ -758,21 +338,6 @@ fn persist_asset_in_transaction(
     transaction: &Transaction<'_>,
     record: PersistAsset,
 ) -> Result<ImportedAsset, PortError> {
-    let recovery_claimed: bool = transaction
-        .query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM object_publication_recovery_claims WHERE object_hash = ?1
-             )",
-            params![record.object_hash],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)?;
-    if recovery_claimed {
-        return Err(PortError(format!(
-            "object {} is being recovered; retry asset persistence",
-            record.object_hash
-        )));
-    }
     let normalized_title = normalize(&record.game_title);
     let normalized_platform = normalize(&record.platform);
     let normalized_region = normalize(&record.region);
@@ -1358,7 +923,7 @@ fn sql_error(error: rusqlite::Error) -> PortError {
 mod tests {
     use std::{
         collections::HashSet,
-        sync::{Arc, Condvar, Mutex, OnceLock, mpsc},
+        sync::{Condvar, Mutex, OnceLock},
         thread,
         time::Duration,
     };
@@ -1379,45 +944,6 @@ mod tests {
         true
     }
 
-    struct NeverPublishOriginal {
-        stored: game_media_vault_domain::StoredObject,
-    }
-
-    impl StagedOriginal for NeverPublishOriginal {
-        fn stored_object(&self) -> &game_media_vault_domain::StoredObject {
-            &self.stored
-        }
-
-        fn publish(self: Box<Self>) -> Result<game_media_vault_domain::StoredObject, PortError> {
-            panic!("publication must not start while recovery owns the object hash")
-        }
-    }
-
-    struct JournalObservingOriginal {
-        stored: game_media_vault_domain::StoredObject,
-        catalog_path: PathBuf,
-        journal_seen: Arc<Mutex<bool>>,
-    }
-
-    impl StagedOriginal for JournalObservingOriginal {
-        fn stored_object(&self) -> &game_media_vault_domain::StoredObject {
-            &self.stored
-        }
-
-        fn publish(self: Box<Self>) -> Result<game_media_vault_domain::StoredObject, PortError> {
-            let pending: i64 = Connection::open(&self.catalog_path)
-                .map_err(sql_error)?
-                .query_row(
-                    "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
-                    params![self.stored.hash],
-                    |row| row.get(0),
-                )
-                .map_err(sql_error)?;
-            *self.journal_seen.lock().unwrap() = pending > 0;
-            Ok(self.stored.clone())
-        }
-    }
-
     #[test]
     fn failed_new_catalog_initialization_removes_the_reserved_file() {
         let temp = tempdir().unwrap();
@@ -1430,196 +956,6 @@ mod tests {
 
         assert_eq!(error.to_string(), "forced initialization failure");
         assert!(!catalog_path.exists());
-    }
-
-    #[test]
-    fn ordinary_staged_asset_publication_is_journaled_until_commit() {
-        let temp = tempdir().unwrap();
-        let catalog_path = temp.path().join("catalog.sqlite3");
-        let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-        let object_hash = "cd".repeat(32);
-        let journal_seen = Arc::new(Mutex::new(false));
-
-        let imported = catalog
-            .persist_staged_asset(
-                PersistAsset {
-                    existing_game_id: None,
-                    existing_release_edition_id: None,
-                    match_decision: None,
-                    game_title: "Journaled Import".to_owned(),
-                    platform: "Fixture".to_owned(),
-                    region: "World".to_owned(),
-                    edition_name: "Standard".to_owned(),
-                    asset_type: AssetType::BoxFront,
-                    object_hash: object_hash.clone(),
-                    byte_len: 12,
-                    original_filename: "front.png".to_owned(),
-                    source_id: SourceId::from("fixture"),
-                    source_asset_label: None,
-                    source_location: "fixture://journaled-import".to_owned(),
-                },
-                Box::new(JournalObservingOriginal {
-                    stored: game_media_vault_domain::StoredObject {
-                        hash: object_hash.clone(),
-                        byte_len: 12,
-                    },
-                    catalog_path: catalog_path.clone(),
-                    journal_seen: Arc::clone(&journal_seen),
-                }),
-            )
-            .unwrap();
-
-        assert_eq!(imported.object_hash, object_hash);
-        assert!(*journal_seen.lock().unwrap());
-        let pending: i64 = Connection::open(&catalog_path)
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM pending_object_publications",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending, 0);
-    }
-
-    #[test]
-    fn committed_asset_publication_clears_journal_before_guard_drop() {
-        let temp = tempdir().unwrap();
-        let catalog_path = temp.path().join("catalog.sqlite3");
-        let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-        let stored = game_media_vault_domain::StoredObject {
-            hash: "ef".repeat(32),
-            byte_len: 42,
-        };
-        let staged_original: Option<Box<dyn StagedOriginal>> =
-            Some(Box::new(NeverPublishOriginal {
-                stored: stored.clone(),
-            }));
-        let mut pending_publication = catalog
-            .register_pending_object_publication(&staged_original)
-            .unwrap();
-        let mut connection = catalog.connect().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .unwrap();
-
-        commit_asset_publication(transaction, &mut pending_publication).unwrap();
-
-        assert!(pending_publication.is_some());
-        let pending: i64 = Connection::open(&catalog_path)
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
-                [&stored.hash],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending, 0);
-    }
-
-    #[test]
-    fn recovery_releases_sqlite_before_filesystem_cleanup_and_blocks_same_hash_publication() {
-        let temp = tempdir().unwrap();
-        let vault = temp.path().join("vault");
-        fs::create_dir_all(&vault).unwrap();
-        let catalog_path = vault.join("catalog.sqlite3");
-        SqliteCatalog::open(&catalog_path).unwrap();
-        let object_hash = "ab".repeat(32);
-        let object_path = content_addressed_object_path(&catalog_path, &object_hash).unwrap();
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, b"stale bytes").unwrap();
-        Connection::open(&catalog_path)
-            .unwrap()
-            .execute(
-                "INSERT INTO pending_object_publications (object_hash, byte_len, created_at_unix)
-                 VALUES (?1, 11, 0)",
-                params![object_hash],
-            )
-            .unwrap();
-
-        let (cleanup_started_tx, cleanup_started_rx) = mpsc::channel();
-        let (finish_cleanup_tx, finish_cleanup_rx) = mpsc::channel();
-        let worker_catalog_path = catalog_path.clone();
-        let worker_object_path = object_path.clone();
-        let recovery = thread::spawn(move || {
-            let mut connection = Connection::open(&worker_catalog_path).unwrap();
-            connection
-                .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
-                .unwrap();
-            recover_stale_pending_object_publications_with(
-                &mut connection,
-                &worker_catalog_path,
-                |path| {
-                    assert_eq!(path, worker_object_path);
-                    cleanup_started_tx.send(()).unwrap();
-                    finish_cleanup_rx.recv().unwrap();
-                    fs::remove_file(path)
-                },
-            )
-            .unwrap();
-        });
-
-        cleanup_started_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-
-        let writer = Connection::open(&catalog_path).unwrap();
-        writer.execute_batch("PRAGMA busy_timeout = 100;").unwrap();
-        writer.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").unwrap();
-
-        let catalog = SqliteCatalog {
-            path: catalog_path.clone(),
-            mode: CatalogOpenMode::ExistingOnly,
-            busy_handler: None,
-        };
-        let error = catalog
-            .persist_staged_asset(
-                PersistAsset {
-                    existing_game_id: None,
-                    existing_release_edition_id: None,
-                    match_decision: None,
-                    game_title: "Recovery Race".to_owned(),
-                    platform: "Fixture".to_owned(),
-                    region: "World".to_owned(),
-                    edition_name: "Standard".to_owned(),
-                    asset_type: AssetType::BoxFront,
-                    object_hash: object_hash.clone(),
-                    byte_len: 11,
-                    original_filename: "front.png".to_owned(),
-                    source_id: SourceId::from("fixture"),
-                    source_asset_label: None,
-                    source_location: "fixture://recovery-race".to_owned(),
-                },
-                Box::new(NeverPublishOriginal {
-                    stored: game_media_vault_domain::StoredObject {
-                        hash: object_hash.clone(),
-                        byte_len: 11,
-                    },
-                }),
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("is being recovered"));
-
-        finish_cleanup_tx.send(()).unwrap();
-        recovery.join().unwrap();
-        assert!(!object_path.exists());
-        let connection = Connection::open(&catalog_path).unwrap();
-        let assets: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM assets WHERE object_hash = ?1",
-                params![object_hash],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(assets, 0);
-        let claims: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM object_publication_recovery_claims",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(claims, 0);
     }
 
     #[test]

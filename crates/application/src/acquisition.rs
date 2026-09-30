@@ -294,27 +294,23 @@ impl Acquisition<'_> {
     ) -> Result<Option<ImportedAsset>, ApplicationError> {
         let candidate = &work.candidate;
         let mut stream = self.connector.download(candidate)?;
-        let staged_original = self.object_store.stage_original_reader(stream.as_mut())?;
-        let stored = staged_original.stored_object().clone();
-        let imported = self.catalog.persist_staged_asset(
-            PersistAsset {
-                existing_game_id: Some(release.game_id),
-                existing_release_edition_id: Some(release.release_edition_id),
-                match_decision: Some(candidate_match),
-                game_title: candidate.game_title.clone(),
-                platform: candidate.platform.clone(),
-                region: candidate.region.clone(),
-                edition_name: candidate.edition_name.clone(),
-                asset_type: candidate.asset_type,
-                object_hash: stored.hash,
-                byte_len: stored.byte_len,
-                original_filename: candidate.original_filename.clone(),
-                source_id: candidate.source_id.clone(),
-                source_asset_label: candidate.source_asset_label.clone(),
-                source_location: candidate.source_url.clone(),
-            },
-            staged_original,
-        )?;
+        let stored = self.object_store.store_original(stream.as_mut())?;
+        let imported = self.catalog.persist_asset(PersistAsset {
+            existing_game_id: Some(release.game_id),
+            existing_release_edition_id: Some(release.release_edition_id),
+            match_decision: Some(candidate_match),
+            game_title: candidate.game_title.clone(),
+            platform: candidate.platform.clone(),
+            region: candidate.region.clone(),
+            edition_name: candidate.edition_name.clone(),
+            asset_type: candidate.asset_type,
+            object_hash: stored.hash,
+            byte_len: stored.byte_len,
+            original_filename: candidate.original_filename.clone(),
+            source_id: candidate.source_id.clone(),
+            source_asset_label: candidate.source_asset_label.clone(),
+            source_location: candidate.source_url.clone(),
+        })?;
         self.runs.complete_work(self.run_id, &work.key)?;
         Ok(Some(imported))
     }

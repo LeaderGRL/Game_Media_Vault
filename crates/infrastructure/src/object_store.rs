@@ -5,11 +5,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use game_media_vault_application::{ObjectStorePort, PortError, StagedOriginal};
+use game_media_vault_application::{ObjectStorePort, PortError};
 use game_media_vault_domain::StoredObject;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// BLAKE3-addressed store of immutable original bytes (ADR 0002).
 pub struct ContentAddressedStore {
     root: PathBuf,
 }
@@ -29,16 +30,21 @@ impl ContentAddressedStore {
             .join(hash)
     }
 
-    fn stage_reader(&self, mut input: impl Read) -> Result<Box<dyn StagedOriginal>, PortError> {
+    /// Streams the bytes into a private staging file while hashing them.
+    fn stage(&self, input: &mut dyn Read) -> Result<StagedObject, PortError> {
         let staging_dir = self.root.join("staging");
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
-        let recovery_root = fs::canonicalize(&self.root).map_err(io_error)?;
-
         let (staging_path, mut output) = create_staging_file(&staging_dir)?;
+        // From here on, dropping `staged` removes the staging file on every error path.
+        let mut staged = StagedObject {
+            staging_path,
+            stored: StoredObject {
+                hash: String::new(),
+                byte_len: 0,
+            },
+        };
         let mut hasher = blake3::Hasher::new();
-        let mut byte_len = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
-
         loop {
             let read = input.read(&mut buffer).map_err(io_error)?;
             if read == 0 {
@@ -46,130 +52,52 @@ impl ContentAddressedStore {
             }
             hasher.update(&buffer[..read]);
             output.write_all(&buffer[..read]).map_err(io_error)?;
-            byte_len += read as u64;
+            staged.stored.byte_len += read as u64;
         }
         output.sync_all().map_err(io_error)?;
-        drop(output);
-
-        let hash = hasher.finalize().to_hex().to_string();
-        let target = self.object_path(&hash);
-        let parent = target
-            .parent()
-            .ok_or_else(|| PortError("object path has no parent directory".into()))?
-            .to_path_buf();
-        Ok(Box::new(ContentAddressedStagedOriginal {
-            staging_path,
-            target,
-            parent,
-            recovery_root,
-            stored: StoredObject { hash, byte_len },
-            prepared_existing_target: false,
-        }))
+        staged.stored.hash = hasher.finalize().to_hex().to_string();
+        Ok(staged)
     }
 
-    fn store_reader(&self, input: impl Read) -> Result<StoredObject, PortError> {
-        self.stage_reader(input)?.publish()
+    /// Moves the staged file to its content address, or verifies the object already there.
+    fn publish(&self, staged: StagedObject) -> Result<StoredObject, PortError> {
+        let target = self.object_path(&staged.stored.hash);
+        let parent = target
+            .parent()
+            .ok_or_else(|| PortError("object path has no parent directory".into()))?;
+        fs::create_dir_all(parent).map_err(io_error)?;
+        if !target.exists() {
+            match publish_staged_object(&staged.staging_path, &target, parent) {
+                Ok(()) => return Ok(staged.stored.clone()),
+                Err(PublishError::Durability(error)) => return Err(io_error(error)),
+                // Another import published the same bytes concurrently; verify them below.
+                Err(PublishError::NotPublished(error)) if !target.exists() => {
+                    return Err(io_error(error));
+                }
+                Err(PublishError::NotPublished(_)) => {}
+            }
+        }
+        verify_existing_object(&target, &staged.stored.hash, staged.stored.byte_len)?;
+        sync_object_parent(parent).map_err(io_error)?;
+        Ok(staged.stored.clone())
     }
 }
 
 impl ObjectStorePort for ContentAddressedStore {
-    fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
-        let input = File::open(source).map_err(io_error)?;
-        self.store_reader(input)
-    }
-
-    fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
-        self.store_reader(reader)
-    }
-
-    fn stage_original_reader(
-        &self,
-        reader: &mut dyn Read,
-    ) -> Result<Box<dyn StagedOriginal>, PortError> {
-        self.stage_reader(reader)
+    fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
+        let staged = self.stage(reader)?;
+        self.publish(staged)
     }
 }
 
-struct ContentAddressedStagedOriginal {
+struct StagedObject {
     staging_path: PathBuf,
-    target: PathBuf,
-    parent: PathBuf,
-    recovery_root: PathBuf,
     stored: StoredObject,
-    prepared_existing_target: bool,
 }
 
-impl StagedOriginal for ContentAddressedStagedOriginal {
-    fn stored_object(&self) -> &StoredObject {
-        &self.stored
-    }
-
-    fn object_store_root(&self) -> Option<&Path> {
-        Some(&self.recovery_root)
-    }
-
-    fn prepare_publish(&mut self) -> Result<(), PortError> {
-        self.prepared_existing_target = false;
-        fs::create_dir_all(&self.parent).map_err(io_error)?;
-        if self.target.exists() {
-            verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
-            sync_object_parent(&self.parent).map_err(io_error)?;
-            self.prepared_existing_target = true;
-        }
-        Ok(())
-    }
-
-    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
-        fs::create_dir_all(&self.parent).map_err(io_error)?;
-        if self.target.exists() {
-            verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
-            sync_object_parent(&self.parent).map_err(io_error)?;
-        } else {
-            match publish_staged_object(&self.staging_path, &self.target, &self.parent) {
-                Ok(()) => {}
-                Err(PublishError::NotPublished(error)) => {
-                    if !self.target.exists() {
-                        return Err(io_error(error));
-                    }
-                    verify_existing_object(&self.target, &self.stored.hash, self.stored.byte_len)?;
-                    sync_object_parent(&self.parent).map_err(io_error)?;
-                }
-                Err(PublishError::Durability(error)) => return Err(io_error(error)),
-            }
-        }
-        Ok(self.stored.clone())
-    }
-
-    fn publish_prepared(self: Box<Self>) -> Result<StoredObject, PortError> {
-        fs::create_dir_all(&self.parent).map_err(io_error)?;
-        if self.target.exists() {
-            if !self.prepared_existing_target {
-                return Err(PortError(
-                    "content-addressed object appeared after publish preparation; retry finalization"
-                        .to_owned(),
-                ));
-            }
-        } else {
-            match publish_staged_object(&self.staging_path, &self.target, &self.parent) {
-                Ok(()) => {}
-                Err(PublishError::NotPublished(error)) => {
-                    if self.target.exists() {
-                        return Err(PortError(
-                            "content-addressed object appeared after publish preparation; retry finalization"
-                                .to_owned(),
-                        ));
-                    }
-                    return Err(io_error(error));
-                }
-                Err(PublishError::Durability(error)) => return Err(io_error(error)),
-            }
-        }
-        Ok(self.stored.clone())
-    }
-}
-
-impl Drop for ContentAddressedStagedOriginal {
+impl Drop for StagedObject {
     fn drop(&mut self) {
+        // Already moved when publication succeeded.
         let _ = fs::remove_file(&self.staging_path);
     }
 }

@@ -1,7 +1,4 @@
-use std::{
-    io::{Cursor, Read},
-    path::Path,
-};
+use std::{io::Read, path::Path};
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
@@ -14,54 +11,18 @@ use thiserror::Error;
 #[error("{0}")]
 pub struct PortError(pub String);
 
-pub trait StagedOriginal {
-    fn stored_object(&self) -> &StoredObject;
-
-    fn object_store_root(&self) -> Option<&Path> {
-        None
-    }
-
-    fn prepare_publish(&mut self) -> Result<(), PortError> {
-        Ok(())
-    }
-
-    fn publish(self: Box<Self>) -> Result<StoredObject, PortError>;
-
-    fn publish_prepared(self: Box<Self>) -> Result<StoredObject, PortError> {
-        self.publish()
-    }
-}
-
+/// Immutable content-addressed store of original bytes.
 pub trait ObjectStorePort {
-    fn store_original(&self, source: &Path) -> Result<StoredObject, PortError>;
-
-    fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError>;
-
-    fn stage_original_reader(
-        &self,
-        reader: &mut dyn Read,
-    ) -> Result<Box<dyn StagedOriginal>, PortError>;
-
-    fn store_original_bytes(&self, bytes: &[u8]) -> Result<StoredObject, PortError> {
-        let mut reader = Cursor::new(bytes);
-        self.store_original_reader(&mut reader)
-    }
-
-    fn stage_original_bytes(&self, bytes: &[u8]) -> Result<Box<dyn StagedOriginal>, PortError> {
-        let mut reader = Cursor::new(bytes);
-        self.stage_original_reader(&mut reader)
-    }
+    /// Streams original bytes into the store and returns their identity. Publishing is atomic
+    /// and idempotent: identical bytes resolve to the same verified object. Originals are
+    /// stored before the catalog references them, so an interrupted import can only leave an
+    /// unreferenced object behind.
+    fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError>;
 }
 
 /// Library catalog: Games, Release Editions and their Assets.
 pub trait CatalogPort {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError>;
-
-    fn persist_staged_asset(
-        &self,
-        record: PersistAsset,
-        staged_original: Box<dyn StagedOriginal>,
-    ) -> Result<ImportedAsset, PortError>;
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }

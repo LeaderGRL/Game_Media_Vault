@@ -42,8 +42,12 @@ fn stores_identical_original_bytes_only_once() {
     fs::write(&source, b"same original bytes").unwrap();
     let store = ContentAddressedStore::new(temp.path().join("vault"));
 
-    let first = store.store_original(&source).unwrap();
-    let second = store.store_original(&source).unwrap();
+    let first = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
+    let second = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
 
     assert_eq!(first, second);
     assert_eq!(
@@ -59,11 +63,15 @@ fn reimport_rejects_a_corrupted_existing_object() {
     fs::write(&source, b"trusted original bytes").unwrap();
     let store = ContentAddressedStore::new(temp.path().join("vault"));
 
-    let stored = store.store_original(&source).unwrap();
+    let stored = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
     let object_path = store.object_path(&stored.hash);
     fs::write(&object_path, b"corrupted bytes").unwrap();
 
-    let error = store.store_original(&source).unwrap_err();
+    let error = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap_err();
 
     assert!(error.0.contains("integrity"));
     assert_eq!(fs::read(object_path).unwrap(), b"corrupted bytes");

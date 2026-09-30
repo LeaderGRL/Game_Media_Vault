@@ -102,17 +102,6 @@ const SCHEMA_V1: &str = "
         UNIQUE(run_id, work_key),
         CHECK((state = 'parked') = (review_item_id IS NOT NULL))
     );
-    CREATE TABLE pending_object_publications (
-        id INTEGER PRIMARY KEY,
-        object_hash TEXT NOT NULL,
-        byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
-        object_store_root TEXT,
-        created_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
-    );
-    CREATE TABLE object_publication_recovery_claims (
-        object_hash TEXT PRIMARY KEY,
-        claimed_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
-    );
     CREATE INDEX idx_release_game ON release_editions(game_id);
     CREATE INDEX idx_release_assertion_release ON release_assertions(release_edition_id);
     CREATE INDEX idx_release_assertion_title
@@ -126,8 +115,6 @@ const SCHEMA_V1: &str = "
     CREATE INDEX idx_run_work_state ON acquisition_run_work(run_id, state, id);
     CREATE INDEX idx_run_work_review ON acquisition_run_work(review_item_id)
         WHERE review_item_id IS NOT NULL;
-    CREATE INDEX idx_pending_object_publications_hash_age
-        ON pending_object_publications(object_hash, created_at_unix);
 ";
 
 /// Creates the current schema in an empty database and stamps it as a vault catalog.

@@ -5,12 +5,11 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io::{Cursor, Read},
-    rc::Rc,
 };
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError, ReviewRepositoryPort,
-    RunRepositoryPort, StagedOriginal,
+    RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -486,15 +485,6 @@ impl CatalogPort for FakeVault {
         })
     }
 
-    fn persist_staged_asset(
-        &self,
-        record: PersistAsset,
-        staged_original: Box<dyn StagedOriginal>,
-    ) -> Result<ImportedAsset, PortError> {
-        staged_original.publish()?;
-        self.persist_asset(record)
-    }
-
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
         Ok(self.library.borrow().clone())
     }
@@ -502,51 +492,21 @@ impl CatalogPort for FakeVault {
 
 #[derive(Default)]
 pub struct FakeStore {
-    pub published: Rc<RefCell<Vec<Vec<u8>>>>,
-}
-
-struct FakeStagedOriginal {
-    bytes: Vec<u8>,
-    stored: StoredObject,
-    sink: Rc<RefCell<Vec<Vec<u8>>>>,
-}
-
-impl StagedOriginal for FakeStagedOriginal {
-    fn stored_object(&self) -> &StoredObject {
-        &self.stored
-    }
-
-    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
-        self.sink.borrow_mut().push(self.bytes.clone());
-        Ok(self.stored.clone())
-    }
+    pub stored: RefCell<Vec<Vec<u8>>>,
 }
 
 impl ObjectStorePort for FakeStore {
-    fn store_original(&self, _source: &std::path::Path) -> Result<StoredObject, PortError> {
-        unreachable!("acquisition streams downloads into the store")
-    }
-
-    fn store_original_reader(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
-        self.stage_original_reader(reader)?.publish()
-    }
-
-    fn stage_original_reader(
-        &self,
-        reader: &mut dyn Read,
-    ) -> Result<Box<dyn StagedOriginal>, PortError> {
+    fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
             .map_err(|error| PortError(error.to_string()))?;
-        Ok(Box::new(FakeStagedOriginal {
-            stored: StoredObject {
-                hash: format!("hash-of-{}-bytes", bytes.len()),
-                byte_len: bytes.len() as u64,
-            },
-            bytes,
-            sink: Rc::clone(&self.published),
-        }))
+        let stored = StoredObject {
+            hash: format!("hash-of-{}-bytes", bytes.len()),
+            byte_len: bytes.len() as u64,
+        };
+        self.stored.borrow_mut().push(bytes);
+        Ok(stored)
     }
 }
 
