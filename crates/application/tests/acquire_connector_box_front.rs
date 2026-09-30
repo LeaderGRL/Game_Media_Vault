@@ -226,10 +226,15 @@ impl ConnectorPort for FakeConnector {
         &self,
         candidate: &AssetCandidate,
     ) -> Result<Option<String>, PortError> {
+        if candidate.provider_candidate_id.as_deref() == Some("provider-review-unsafe-stable") {
+            return Ok(Some(
+                "https://example.invalid/review/401?token=secret#download".to_owned(),
+            ));
+        }
         if candidate.provider_candidate_id.as_deref() == Some("provider-review-401")
             && candidate.source_url.contains("example.invalid/review.png")
         {
-            return Ok(Some("https://example.invalid/review.png?id=401".to_owned()));
+            return Ok(Some("https://example.invalid/review/401".to_owned()));
         }
         Ok(Some(candidate.source_url.clone()))
     }
@@ -931,10 +936,46 @@ fn medium_confidence_candidate_does_not_stage_transport_credentials() {
     assert_eq!(review_items.len(), 1);
     assert_eq!(
         review_items[0].candidate.source_url,
-        "https://example.invalid/review.png?id=401"
+        "https://example.invalid/review/401"
     );
     assert!(!review_items[0].candidate_identity.contains("secret"));
     assert!(!review_items[0].candidate_identity.contains("password"));
+}
+
+#[test]
+fn medium_confidence_candidate_rejects_transient_stable_source_location() {
+    let (mut candidate, library) = ambiguous_candidate_and_releases();
+    candidate.provider_candidate_id = Some("provider-review-unsafe-stable".to_owned());
+    candidate.source_url =
+        "https://user:password@example.invalid/review.png?token=transport-secret".to_owned();
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![candidate],
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+
+    let error = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("stable source location must not contain transient transport data")
+    );
+    assert!(catalog.review_items.borrow().is_empty());
 }
 
 #[test]

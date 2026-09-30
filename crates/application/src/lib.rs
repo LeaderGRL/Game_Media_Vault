@@ -1295,9 +1295,13 @@ fn catalog_safe_candidate(
             "connector stable source location is not a valid URL: {error}"
         ))
     })?;
-    if !stable_url.username().is_empty() || stable_url.password().is_some() {
+    if !stable_url.username().is_empty()
+        || stable_url.password().is_some()
+        || stable_url.query().is_some()
+        || stable_url.fragment().is_some()
+    {
         return Err(PortError(
-            "connector stable source location must not contain embedded credentials".to_owned(),
+            "connector stable source location must not contain transient transport data".to_owned(),
         ));
     }
     candidate.source_url = stable_source_location;
