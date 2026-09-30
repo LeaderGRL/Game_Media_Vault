@@ -889,32 +889,22 @@ impl CatalogPort for SqliteCatalog {
         candidate_identity: &str,
     ) -> Result<Option<ReviewItem>, PortError> {
         let connection = self.connect()?;
-        let row = connection
+        let current = connection
             .query_row(
                 "SELECT id, run_id, candidate_identity, candidate_json,
                         competing_matches_json, decision_json, status
                  FROM review_items
-                 WHERE candidate_identity = ?1
-                   AND (
-                       run_id = ?2
-                       OR status IN ('accepted', 'applied', 'rejected')
-                       OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
-                   )
-                 ORDER BY CASE WHEN run_id = ?2 THEN 0 ELSE 1 END,
-                          CASE
-                              WHEN status IN ('accepted', 'applied', 'rejected')
-                                OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
-                              THEN 0 ELSE 1
-                          END,
-                          COALESCE(decision_seq, 0) DESC,
-                          id DESC
+                 WHERE candidate_identity = ?1 AND run_id = ?2
                  LIMIT 1",
                 params![candidate_identity, run_id],
                 review_item_row,
             )
             .optional()
             .map_err(sql_error)?;
-        row.map(decode_review_item_row).transpose()
+        if let Some(current) = current {
+            return decode_review_item_row(current).map(Some);
+        }
+        latest_unambiguous_terminal_review(&connection, candidate_identity, None)
     }
 
     fn claim_review_item_for_processing(
@@ -2129,25 +2119,77 @@ fn terminal_review_sibling(
     transaction: &Transaction<'_>,
     current: &ReviewItem,
 ) -> Result<Option<ReviewItem>, PortError> {
-    transaction
+    latest_unambiguous_terminal_review(transaction, &current.candidate_identity, Some(current.id))
+}
+
+fn latest_unambiguous_terminal_review(
+    connection: &Connection,
+    candidate_identity: &str,
+    excluded_review_item_id: Option<i64>,
+) -> Result<Option<ReviewItem>, PortError> {
+    let sequenced = connection
         .query_row(
             "SELECT id, run_id, candidate_identity, candidate_json,
                     competing_matches_json, decision_json, status
              FROM review_items
-             WHERE candidate_identity = ?1 AND id != ?2
+             WHERE candidate_identity = ?1
+               AND (?2 IS NULL OR id != ?2)
+               AND decision_seq IS NOT NULL
                AND (
                    status IN ('accepted', 'applied', 'rejected')
                    OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
                )
-             ORDER BY COALESCE(decision_seq, 0) DESC, id DESC
+             ORDER BY decision_seq DESC, id DESC
              LIMIT 1",
-            params![current.candidate_identity, current.id],
+            params![candidate_identity, excluded_review_item_id],
             review_item_row,
         )
         .optional()
-        .map_err(sql_error)?
-        .map(decode_review_item_row)
-        .transpose()
+        .map_err(sql_error)?;
+    if let Some(sequenced) = sequenced {
+        return decode_review_item_row(sequenced).map(Some);
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT id, run_id, candidate_identity, candidate_json,
+                    competing_matches_json, decision_json, status
+             FROM review_items
+             WHERE candidate_identity = ?1
+               AND (?2 IS NULL OR id != ?2)
+               AND decision_seq IS NULL
+               AND (
+                   status IN ('accepted', 'applied', 'rejected')
+                   OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
+               )
+             ORDER BY id DESC",
+        )
+        .map_err(sql_error)?;
+    let rows = statement
+        .query_map(
+            params![candidate_identity, excluded_review_item_id],
+            review_item_row,
+        )
+        .map_err(sql_error)?;
+    let mut representative = None;
+    let mut legacy_decision = None;
+    for row in rows {
+        let item = decode_review_item_row(row.map_err(sql_error)?)?;
+        let Some(decision) = item.decision.clone() else {
+            return Ok(None);
+        };
+        if legacy_decision
+            .as_ref()
+            .is_some_and(|existing| existing != &decision)
+        {
+            return Ok(None);
+        }
+        if legacy_decision.is_none() {
+            legacy_decision = Some(decision);
+            representative = Some(item);
+        }
+    }
+    Ok(representative)
 }
 
 fn next_review_decision_seq(transaction: &Transaction<'_>) -> Result<i64, PortError> {
@@ -3015,10 +3057,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             connection
                 .execute_batch(
                     "ALTER TABLE review_items
-                     ADD COLUMN decision_seq INTEGER CHECK(decision_seq > 0);
-                     UPDATE review_items
-                     SET decision_seq = id
-                     WHERE decision_json IS NOT NULL;",
+                     ADD COLUMN decision_seq INTEGER CHECK(decision_seq > 0);",
                 )
                 .map_err(sql_error)?;
         }

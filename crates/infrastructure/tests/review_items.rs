@@ -2740,6 +2740,86 @@ fn opening_a_review_catalog_without_status_migrates_existing_decisions() {
 }
 
 #[test]
+fn migrating_unsequenced_conflicting_decisions_keeps_future_occurrences_reviewable() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let identity = "connector:legacy-ambiguous-decision-order";
+    for run_id in [7, 8] {
+        catalog
+            .persist_review_item(NewReviewItem {
+                run_id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            })
+            .unwrap();
+    }
+    let items = catalog.list_review_items().unwrap();
+    let lower_id = items.iter().find(|item| item.run_id == 7).unwrap();
+    let higher_id = items.iter().find(|item| item.run_id == 8).unwrap();
+    let lower_id = lower_id.id;
+    let higher_id = higher_id.id;
+    drop(catalog);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE review_items
+             SET decision_json = '{\"decision\":\"reject\"}', status = 'rejected'
+             WHERE id = ?1",
+            [lower_id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE review_items
+             SET decision_json = '{\"decision\":\"accept\",\"release_edition_id\":201}',
+                 status = 'accepted'
+             WHERE id = ?1",
+            [higher_id],
+        )
+        .unwrap();
+    connection
+        .execute_batch("ALTER TABLE review_items DROP COLUMN decision_seq;")
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let legacy_sequences: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM review_items WHERE decision_seq IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_sequences, 0);
+
+    let run = reopened.create_run(request()).unwrap();
+    let work_key = "connector:legacy-ambiguous-decision-order-work";
+    reopened.queue_work(run.id, work_key.to_owned()).unwrap();
+    reopened
+        .stage_review_item_and_complete_work(
+            NewReviewItem {
+                run_id: run.id,
+                candidate_identity: identity.to_owned(),
+                candidate: candidate(),
+                competing_matches: vec![review_match(201, "Standard")],
+            },
+            work_key,
+        )
+        .unwrap();
+
+    let staged = reopened
+        .find_review_item_for_run_by_candidate_identity(run.id, identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(staged.status, ReviewStatus::Pending);
+    assert_eq!(staged.decision, None);
+}
+
+#[test]
 fn migrating_legacy_review_identity_preserves_processing_acceptance() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
