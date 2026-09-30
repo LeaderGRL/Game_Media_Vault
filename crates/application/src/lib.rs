@@ -344,6 +344,22 @@ pub trait RunRepositoryPort {
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
+    fn next_queued_work_excluding(
+        &self,
+        run_id: i64,
+        excluded_work_keys: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        let next = self.next_queued_work(run_id)?;
+        if next.as_ref().is_some_and(|work| {
+            excluded_work_keys
+                .iter()
+                .any(|excluded| excluded == &work.key)
+        }) {
+            return Ok(None);
+        }
+        Ok(next)
+    }
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 
     fn compare_and_set_run_status(
@@ -460,11 +476,19 @@ pub fn next_acquisition_work(
     runs: &dyn RunRepositoryPort,
     run_id: i64,
 ) -> Result<Option<AcquisitionWorkItem>, ApplicationError> {
+    next_acquisition_work_excluding(runs, run_id, &[])
+}
+
+fn next_acquisition_work_excluding(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+    excluded_work_keys: &[String],
+) -> Result<Option<AcquisitionWorkItem>, ApplicationError> {
     let run = load_acquisition_run(runs, run_id)?;
     if run.status != AcquisitionRunStatus::Running {
         return Ok(None);
     }
-    Ok(runs.next_queued_work(run_id)?)
+    Ok(runs.next_queued_work_excluding(run_id, excluded_work_keys)?)
 }
 
 pub fn complete_acquisition_work(
@@ -810,7 +834,8 @@ pub fn acquire_run_with_connector(
     };
 
     let mut imported_assets = Vec::new();
-    while let Some(work) = next_acquisition_work(runs, run_id)? {
+    let mut blocked_work_keys = Vec::new();
+    while let Some(work) = next_acquisition_work_excluding(runs, run_id, &blocked_work_keys)? {
         let Some(candidate) = candidates_by_work_key.get(&work.key) else {
             if let Some(error) = discovery_error.as_ref() {
                 return Err(error.clone().into());
@@ -832,7 +857,8 @@ pub fn acquire_run_with_connector(
             .as_ref()
             .is_some_and(|item| item.status == ReviewStatus::Processing)
         {
-            break;
+            blocked_work_keys.push(work.key.clone());
+            continue;
         }
         if existing_review_item.as_ref().is_some_and(|item| {
             item.run_id == run_id
@@ -877,6 +903,7 @@ pub fn acquire_run_with_connector(
                 ReviewStatus::Pending | ReviewStatus::Deferred
             ) {
             let Some(claimed) = catalog.claim_review_item_for_processing(review_item.id)? else {
+                blocked_work_keys.push(work.key.clone());
                 continue;
             };
             let previous_status = if claimed.item.decision == Some(ReviewDecision::Defer) {
@@ -1002,6 +1029,7 @@ pub fn acquire_run_with_connector(
         };
         let accepted_review_processing = if let Some(review_item_id) = accepted_review_item_id {
             let Some(claimed) = catalog.claim_review_item_for_processing(review_item_id)? else {
+                blocked_work_keys.push(work.key.clone());
                 continue;
             };
             Some((review_item_id, claimed.lease_token))

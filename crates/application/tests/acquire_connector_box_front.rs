@@ -121,6 +121,22 @@ impl RunRepositoryPort for FakeRuns {
             .map(|(key, _)| AcquisitionWorkItem { key: key.clone() }))
     }
 
+    fn next_queued_work_excluding(
+        &self,
+        run_id: i64,
+        excluded_work_keys: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        assert_eq!(run_id, self.run.borrow().id);
+        Ok(self
+            .work
+            .borrow()
+            .iter()
+            .find(|(key, completed)| {
+                !**completed && !excluded_work_keys.iter().any(|excluded| excluded == *key)
+            })
+            .map(|(key, _)| AcquisitionWorkItem { key: key.clone() }))
+    }
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
         assert_eq!(run_id, self.run.borrow().id);
         let mut work = self.work.borrow_mut();
@@ -1811,6 +1827,78 @@ fn concurrent_execution_does_not_complete_work_owned_by_a_processing_review() {
     assert_eq!(run.status, AcquisitionRunStatus::Running);
     assert_eq!(run.queued_work, 1);
     assert_eq!(run.completed_work, 0);
+}
+
+#[test]
+fn processing_review_does_not_block_later_work_in_the_same_run() {
+    let (first_candidate, library) = ambiguous_candidate_and_releases();
+    let second_candidate = AssetCandidate {
+        source_asset_label: Some("Alternate_Boxarts".to_owned()),
+        source_url: "https://example.invalid/review-reuse-alternate.png".to_owned(),
+        original_filename: "review-reuse-alternate.png".to_owned(),
+        ..first_candidate.clone()
+    };
+    let connector = FakeConnector {
+        downloads: RefCell::new(Vec::new()),
+        candidates: vec![first_candidate.clone(), second_candidate.clone()],
+    };
+    let catalog = FakeCatalog {
+        records: RefCell::new(Vec::new()),
+        review_items: RefCell::new(Vec::new()),
+        finalize_calls: RefCell::new(0),
+        library,
+    };
+    let runs = FakeRuns::new(run_with_request(request()));
+
+    acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    let first_key = acquisition_work_key(connector.source_id(), &first_candidate);
+    let second_key = acquisition_work_key(connector.source_id(), &second_candidate);
+    runs.requeue_completed_work(7, &first_key).unwrap();
+    runs.requeue_completed_work(7, &second_key).unwrap();
+    let blocked_key = runs.next_queued_work(7).unwrap().unwrap().key;
+    let accepted_key = if blocked_key == first_key {
+        second_key
+    } else {
+        first_key
+    };
+
+    for review_item in catalog.review_items.borrow_mut().iter_mut() {
+        let work_key = acquisition_work_key(connector.source_id(), &review_item.candidate);
+        if work_key == blocked_key {
+            review_item.status = ReviewStatus::Processing;
+        } else if work_key == accepted_key {
+            review_item.status = ReviewStatus::Accepted;
+            review_item.decision = Some(ReviewDecision::Accept {
+                release_edition_id: review_item.competing_matches[0].release_edition_id,
+            });
+        }
+    }
+
+    let imported = acquire_run_with_connector(
+        &runs,
+        &catalog,
+        &FakeStore::default(),
+        &connector,
+        7,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(connector.downloads.borrow().len(), 1);
+    let run = runs.run.borrow();
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+    assert_eq!(run.queued_work, 1);
+    assert_eq!(run.completed_work, 1);
 }
 
 #[test]

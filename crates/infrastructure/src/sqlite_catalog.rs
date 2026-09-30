@@ -296,21 +296,34 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        self.next_queued_work_excluding(run_id, &[])
+    }
+
+    fn next_queued_work_excluding(
+        &self,
+        run_id: i64,
+        excluded_work_keys: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
         let connection = self.connect()?;
-        connection
-            .query_row(
+        let mut statement = connection
+            .prepare(
                 "SELECT work.work_key
                  FROM acquisition_run_work AS work
                  INNER JOIN acquisition_runs AS run ON run.id = work.run_id
                  WHERE work.run_id = ?1
                    AND work.completed = 0
                    AND run.status = 'running'
-                 ORDER BY work.id LIMIT 1",
-                params![run_id],
-                |row| Ok(AcquisitionWorkItem { key: row.get(0)? }),
+                 ORDER BY work.id",
             )
-            .optional()
-            .map_err(sql_error)
+            .map_err(sql_error)?;
+        let mut rows = statement.query(params![run_id]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let key: String = row.get(0).map_err(sql_error)?;
+            if !excluded_work_keys.iter().any(|excluded| excluded == &key) {
+                return Ok(Some(AcquisitionWorkItem { key }));
+            }
+        }
+        Ok(None)
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
