@@ -98,6 +98,10 @@ impl Read for ReviewLeaseReader<'_> {
 pub trait StagedOriginal {
     fn stored_object(&self) -> &StoredObject;
 
+    fn object_store_root(&self) -> Option<&Path> {
+        None
+    }
+
     fn prepare_publish(&mut self) -> Result<(), PortError> {
         Ok(())
     }

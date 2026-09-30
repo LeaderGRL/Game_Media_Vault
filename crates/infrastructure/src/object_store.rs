@@ -32,6 +32,7 @@ impl ContentAddressedStore {
     fn stage_reader(&self, mut input: impl Read) -> Result<Box<dyn StagedOriginal>, PortError> {
         let staging_dir = self.root.join("staging");
         fs::create_dir_all(&staging_dir).map_err(io_error)?;
+        let recovery_root = fs::canonicalize(&self.root).map_err(io_error)?;
 
         let (staging_path, mut output) = create_staging_file(&staging_dir)?;
         let mut hasher = blake3::Hasher::new();
@@ -60,6 +61,7 @@ impl ContentAddressedStore {
             staging_path,
             target,
             parent,
+            recovery_root,
             stored: StoredObject { hash, byte_len },
             prepared_existing_target: false,
         }))
@@ -92,6 +94,7 @@ struct ContentAddressedStagedOriginal {
     staging_path: PathBuf,
     target: PathBuf,
     parent: PathBuf,
+    recovery_root: PathBuf,
     stored: StoredObject,
     prepared_existing_target: bool,
 }
@@ -99,6 +102,10 @@ struct ContentAddressedStagedOriginal {
 impl StagedOriginal for ContentAddressedStagedOriginal {
     fn stored_object(&self) -> &StoredObject {
         &self.stored
+    }
+
+    fn object_store_root(&self) -> Option<&Path> {
+        Some(&self.recovery_root)
     }
 
     fn prepare_publish(&mut self) -> Result<(), PortError> {

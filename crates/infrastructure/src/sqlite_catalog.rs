@@ -200,6 +200,17 @@ impl SqliteCatalog {
             return Ok(None);
         };
         let stored = staged_original.stored_object();
+        let object_store_root = staged_original
+            .object_store_root()
+            .map(|root| {
+                root.to_str().map(str::to_owned).ok_or_else(|| {
+                    PortError(format!(
+                        "object store root is not valid UTF-8: {}",
+                        root.display()
+                    ))
+                })
+            })
+            .transpose()?;
         let byte_len = i64::try_from(stored.byte_len).map_err(|_| {
             PortError(format!(
                 "object {} is too large to journal in SQLite",
@@ -212,12 +223,12 @@ impl SqliteCatalog {
             .map_err(sql_error)?;
         let inserted = transaction
             .execute(
-                "INSERT INTO pending_object_publications (object_hash, byte_len)
-                 SELECT ?1, ?2
+                "INSERT INTO pending_object_publications (object_hash, byte_len, object_store_root)
+                 SELECT ?1, ?2, ?3
                  WHERE NOT EXISTS (
                      SELECT 1 FROM object_publication_recovery_claims WHERE object_hash = ?1
                  )",
-                params![stored.hash, byte_len],
+                params![stored.hash, byte_len, object_store_root],
             )
             .map_err(sql_error)?;
         if inserted != 1 {
@@ -308,32 +319,52 @@ where
             |row| row.get(0),
         )
         .map_err(sql_error)?;
-    let stale_hashes = {
+    let stale_publications = {
         let mut statement = connection
             .prepare(
-                "SELECT object_hash FROM pending_object_publications
+                "SELECT DISTINCT object_hash, object_store_root
+                 FROM pending_object_publications
                  WHERE created_at_unix <= ?1
-                 UNION
-                 SELECT object_hash FROM object_publication_recovery_claims
-                 WHERE claimed_at_unix <= ?1",
+                 ORDER BY object_hash, object_store_root",
             )
             .map_err(sql_error)?;
         let rows = statement
-            .query_map(params![cutoff], |row| row.get::<_, String>(0))
+            .query_map(params![cutoff], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
             .map_err(sql_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(sql_error)?
     };
 
-    for object_hash in stale_hashes {
-        if content_addressed_object_path(catalog_path, &object_hash).is_none() {
+    connection
+        .execute(
+            "DELETE FROM object_publication_recovery_claims
+             WHERE claimed_at_unix <= ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM pending_object_publications
+                   WHERE pending_object_publications.object_hash = object_publication_recovery_claims.object_hash
+               )",
+            params![cutoff],
+        )
+        .map_err(sql_error)?;
+
+    for (object_hash, object_store_root) in stale_publications {
+        let object_path = object_store_root
+            .as_deref()
+            .map(Path::new)
+            .map(|root| content_addressed_object_path_from_root(root, &object_hash))
+            .unwrap_or_else(|| content_addressed_object_path(catalog_path, &object_hash));
+        let Some(object_path) = object_path else {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(sql_error)?;
             transaction
                 .execute(
                     "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1 AND created_at_unix <= ?2",
-                    params![object_hash, cutoff],
+                     WHERE object_hash = ?1
+                       AND created_at_unix <= ?2
+                       AND object_store_root IS ?3",
+                    params![object_hash, cutoff, object_store_root],
                 )
                 .map_err(sql_error)?;
             transaction
@@ -345,7 +376,7 @@ where
                 .map_err(sql_error)?;
             transaction.commit().map_err(sql_error)?;
             continue;
-        }
+        };
 
         let claimed = connection
             .execute(
@@ -371,8 +402,6 @@ where
             .map_err(sql_error)?;
 
         if claimed == 1 {
-            let object_path = content_addressed_object_path(catalog_path, &object_hash)
-                .expect("validated content-addressed object hash");
             match remove_object(&object_path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -391,8 +420,10 @@ where
             transaction
                 .execute(
                     "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1 AND created_at_unix <= ?2",
-                    params![object_hash, cutoff],
+                     WHERE object_hash = ?1
+                       AND created_at_unix <= ?2
+                       AND object_store_root IS ?3",
+                    params![object_hash, cutoff, object_store_root],
                 )
                 .map_err(sql_error)?;
             transaction
@@ -408,6 +439,7 @@ where
                     "DELETE FROM pending_object_publications
                      WHERE object_hash = ?1
                        AND created_at_unix <= ?2
+                       AND object_store_root IS ?3
                        AND (
                            EXISTS (SELECT 1 FROM assets WHERE object_hash = ?1)
                            OR EXISTS (
@@ -415,7 +447,7 @@ where
                                WHERE fresh.object_hash = ?1 AND fresh.created_at_unix > ?2
                            )
                        )",
-                    params![object_hash, cutoff],
+                    params![object_hash, cutoff, object_store_root],
                 )
                 .map_err(sql_error)?;
         }
@@ -424,10 +456,14 @@ where
 }
 
 fn content_addressed_object_path(catalog_path: &Path, object_hash: &str) -> Option<PathBuf> {
+    let root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
+    content_addressed_object_path_from_root(root, object_hash)
+}
+
+fn content_addressed_object_path_from_root(root: &Path, object_hash: &str) -> Option<PathBuf> {
     if object_hash.len() != 64 || !object_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
-    let root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
     Some(
         root.join("objects")
             .join(&object_hash[0..2])
@@ -2986,6 +3022,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 id INTEGER PRIMARY KEY,
                 object_hash TEXT NOT NULL,
                 byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
+                object_store_root TEXT,
                 created_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
             );
             CREATE TABLE IF NOT EXISTS object_publication_recovery_claims (
@@ -3026,6 +3063,22 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                     "ALTER TABLE acquisition_runs
                  ADD COLUMN request_schema_version INTEGER NOT NULL DEFAULT 1
                  CHECK(request_schema_version > 0);",
+                )
+                .map_err(sql_error)?;
+        }
+        let object_store_root_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pending_object_publications')
+                 WHERE name = 'object_store_root'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if object_store_root_column_count == 0 {
+            connection
+                .execute_batch(
+                    "ALTER TABLE pending_object_publications
+                     ADD COLUMN object_store_root TEXT;",
                 )
                 .map_err(sql_error)?;
         }

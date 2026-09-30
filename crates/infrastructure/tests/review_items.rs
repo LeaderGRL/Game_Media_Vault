@@ -87,11 +87,16 @@ impl StagedOriginal for JournalCheckingOriginal {
 struct VisibleThenFailingOriginal {
     stored: StoredObject,
     object_path: PathBuf,
+    object_store_root: PathBuf,
 }
 
 impl StagedOriginal for VisibleThenFailingOriginal {
     fn stored_object(&self) -> &StoredObject {
         &self.stored
+    }
+
+    fn object_store_root(&self) -> Option<&std::path::Path> {
+        Some(&self.object_store_root)
     }
 
     fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
@@ -1602,6 +1607,7 @@ fn publication_failure_after_bytes_become_visible_keeps_recovery_journal() {
         Some(Box::new(VisibleThenFailingOriginal {
             stored: stored.clone(),
             object_path: object_path.clone(),
+            object_store_root: vault.clone(),
         })),
     );
 
