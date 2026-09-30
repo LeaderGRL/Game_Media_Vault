@@ -94,14 +94,25 @@ impl ReviewRepositoryPort for SqliteCatalog {
                 transaction.last_insert_rowid()
             }
         };
-        let parked = transaction
+        transaction
             .execute(
                 "UPDATE acquisition_run_work SET state = 'parked', review_item_id = ?1
                  WHERE run_id = ?2 AND work_key = ?3 AND state = 'queued'",
                 params![review_item_id, run_id, work_key],
             )
             .map_err(sql_error)?;
-        if parked != 1 {
+        // A concurrent execution of the same run may already have parked this work here.
+        let parked_here: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM acquisition_run_work
+                     WHERE run_id = ?1 AND work_key = ?2 AND review_item_id = ?3
+                 )",
+                params![run_id, work_key, review_item_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if !parked_here {
             return Err(PortError(format!(
                 "acquisition run #{run_id} has no queued work {work_key:?} to park"
             )));

@@ -45,7 +45,8 @@ pub trait ReviewRepositoryPort {
     fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError>;
 
     /// Opens or refreshes the undecided Review Item for the candidate identity and parks the
-    /// queued run work on it. An item closed by re-evaluation is reopened as pending.
+    /// queued run work on it; parking work already parked on the item is a no-op. An item
+    /// closed by re-evaluation is reopened as pending.
     fn park_work_for_review(
         &self,
         run_id: i64,

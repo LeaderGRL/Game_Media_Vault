@@ -459,3 +459,25 @@ fn parking_unknown_work_creates_no_review_item() {
     assert!(error.to_string().contains("no queued work"), "{error}");
     assert!(catalog.list_review_items().unwrap().is_empty());
 }
+
+#[test]
+fn parking_work_already_parked_on_the_same_item_is_idempotent() {
+    let (_temp, catalog) = open_catalog();
+    let run_id = start_run(&catalog);
+    let item = parked_item(&catalog, run_id);
+
+    // A concurrent execution of the same run parks the same work again.
+    let again = catalog
+        .park_work_for_review(
+            run_id,
+            IDENTITY,
+            new_item(vec![competing_match(201, "Standard")]),
+        )
+        .unwrap();
+
+    let ParkedReview::Parked(parked) = again else {
+        panic!("expected the work to stay parked, got {again:?}");
+    };
+    assert_eq!(parked.id, item.id);
+    assert_eq!(counts(&catalog, run_id), (0, 1, 0));
+}

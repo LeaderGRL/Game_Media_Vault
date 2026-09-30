@@ -406,7 +406,11 @@ impl ReviewRepositoryPort for FakeVault {
             .unwrap()
             .work
             .iter_mut()
-            .find(|work| work.item.key == work_key && work.state == WorkState::Queued)
+            .find(|work| {
+                work.item.key == work_key
+                    && (work.state == WorkState::Queued
+                        || work.state == WorkState::Parked(review_item.id))
+            })
             .ok_or_else(|| PortError(format!("queued work {work_key} does not exist")))?;
         work.state = WorkState::Parked(review_item.id);
         Ok(ParkedReview::Parked(review_item))
