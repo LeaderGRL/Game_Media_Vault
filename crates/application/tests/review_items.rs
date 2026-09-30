@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    CatalogPort, PortError, list_review_items, resolve_review_item,
+    CatalogPort, PortError, StagedOriginal, list_review_items, resolve_review_item,
 };
 use game_media_vault_domain::{
     AssetCandidate, AssetType, ImportedAsset, LibraryEntry, MatchEvidence, MatchSignal,
@@ -38,6 +38,14 @@ fn failed_atomic_accept_does_not_persist_an_accept_decision() {
 
 impl CatalogPort for FakeCatalog {
     fn persist_asset(&self, _record: PersistAsset) -> Result<ImportedAsset, PortError> {
+        unreachable!()
+    }
+
+    fn persist_staged_asset(
+        &self,
+        _record: PersistAsset,
+        _staged_original: Box<dyn StagedOriginal>,
+    ) -> Result<ImportedAsset, PortError> {
         unreachable!()
     }
 

@@ -127,6 +127,12 @@ pub trait ObjectStorePort {
 pub trait CatalogPort {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError>;
 
+    fn persist_staged_asset(
+        &self,
+        record: PersistAsset,
+        staged_original: Box<dyn StagedOriginal>,
+    ) -> Result<ImportedAsset, PortError>;
+
     fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError>;
 
     fn stage_review_item_and_complete_work(
@@ -1076,21 +1082,18 @@ pub fn acquire_run_with_connector(
                             (*review_item_id, lease_token.as_str())
                         })
                 });
-            let (stored, staged_original) =
-                if let Some((review_item_id, lease_token)) = processing_lease {
-                    ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
-                    let mut stream =
-                        ReviewLeaseReader::new(stream, catalog, review_item_id, lease_token);
-                    let staged_original = object_store.stage_original_reader(&mut stream)?;
-                    ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
-                    (
-                        staged_original.stored_object().clone(),
-                        Some(staged_original),
-                    )
-                } else {
-                    let mut stream = stream;
-                    (object_store.store_original_reader(stream.as_mut())?, None)
-                };
+            let staged_original = if let Some((review_item_id, lease_token)) = processing_lease {
+                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
+                let mut stream =
+                    ReviewLeaseReader::new(stream, catalog, review_item_id, lease_token);
+                let staged_original = object_store.stage_original_reader(&mut stream)?;
+                ensure_review_processing_lease(catalog, review_item_id, lease_token)?;
+                staged_original
+            } else {
+                let mut stream = stream;
+                object_store.stage_original_reader(stream.as_mut())?
+            };
+            let stored = staged_original.stored_object().clone();
             let record = PersistAsset {
                 existing_game_id: Some(release.game_id),
                 existing_release_edition_id: Some(release.release_edition_id),
@@ -1108,11 +1111,6 @@ pub fn acquire_run_with_connector(
                 source_location: candidate.source_url.clone(),
             };
             if let Some((review_item_id, _, lease_token)) = review_processing.as_ref() {
-                let staged_original = staged_original.ok_or_else(|| {
-                    PortError(
-                        "review processing asset was not staged before finalization".to_owned(),
-                    )
-                })?;
                 Ok(catalog.finalize_review_processing_asset(
                     *review_item_id,
                     lease_token,
@@ -1123,9 +1121,6 @@ pub fn acquire_run_with_connector(
                 )?)
             } else if let Some((review_item_id, lease_token)) = accepted_review_processing.as_ref()
             {
-                let staged_original = staged_original.ok_or_else(|| {
-                    PortError("accepted review asset was not staged before finalization".to_owned())
-                })?;
                 Ok(catalog.finalize_accepted_review_asset(
                     *review_item_id,
                     lease_token,
@@ -1136,7 +1131,7 @@ pub fn acquire_run_with_connector(
                 )?)
             } else {
                 Ok(ReviewProcessingFinalization::Imported(
-                    catalog.persist_asset(record)?,
+                    catalog.persist_staged_asset(record, staged_original)?,
                 ))
             }
         })();
@@ -1373,24 +1368,30 @@ pub fn import_local_box_front(
         .ok_or(ApplicationError::MissingSourceFileName)?;
     let resolved_source_path = resolve_source_path(&request.source_path)?;
     let source_location = source_location(&resolved_source_path);
-    let stored = object_store.store_original(&resolved_source_path)?;
+    let mut source =
+        fs::File::open(&resolved_source_path).map_err(|error| PortError(error.to_string()))?;
+    let staged_original = object_store.stage_original_reader(&mut source)?;
+    let stored = staged_original.stored_object().clone();
 
-    Ok(catalog.persist_asset(PersistAsset {
-        existing_game_id: request.existing_game_id,
-        existing_release_edition_id: None,
-        match_decision: None,
-        game_title: request.game_title,
-        platform: request.platform,
-        region: request.region,
-        edition_name: request.edition_name,
-        asset_type: AssetType::BoxFront,
-        object_hash: stored.hash,
-        byte_len: stored.byte_len,
-        original_filename,
-        source_id: SourceId::from("local_import"),
-        source_asset_label: None,
-        source_location,
-    })?)
+    Ok(catalog.persist_staged_asset(
+        PersistAsset {
+            existing_game_id: request.existing_game_id,
+            existing_release_edition_id: None,
+            match_decision: None,
+            game_title: request.game_title,
+            platform: request.platform,
+            region: request.region,
+            edition_name: request.edition_name,
+            asset_type: AssetType::BoxFront,
+            object_hash: stored.hash,
+            byte_len: stored.byte_len,
+            original_filename,
+            source_id: SourceId::from("local_import"),
+            source_asset_label: None,
+            source_location,
+        },
+        staged_original,
+    )?)
 }
 
 fn resolve_source_path(path: &Path) -> Result<PathBuf, ApplicationError> {

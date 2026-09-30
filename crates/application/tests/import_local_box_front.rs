@@ -13,6 +13,20 @@ struct FakeObjectStore {
     expected_source: std::path::PathBuf,
 }
 
+struct FakeStagedOriginal {
+    stored: StoredObject,
+}
+
+impl StagedOriginal for FakeStagedOriginal {
+    fn stored_object(&self) -> &StoredObject {
+        &self.stored
+    }
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
+        Ok(self.stored.clone())
+    }
+}
+
 impl ObjectStorePort for FakeObjectStore {
     fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
         assert_eq!(source, self.expected_source);
@@ -31,9 +45,19 @@ impl ObjectStorePort for FakeObjectStore {
 
     fn stage_original_reader(
         &self,
-        _reader: &mut dyn std::io::Read,
+        reader: &mut dyn std::io::Read,
     ) -> Result<Box<dyn StagedOriginal>, PortError> {
-        unreachable!()
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| PortError(error.to_string()))?;
+        assert_eq!(bytes, b"cover bytes");
+        Ok(Box::new(FakeStagedOriginal {
+            stored: StoredObject {
+                hash: "abc123".to_owned(),
+                byte_len: 4096,
+            },
+        }))
     }
 }
 
@@ -52,6 +76,16 @@ impl CatalogPort for RecordingCatalog {
             object_hash: "abc123".to_owned(),
             byte_len: 4096,
         })
+    }
+
+    fn persist_staged_asset(
+        &self,
+        record: PersistAsset,
+        mut staged_original: Box<dyn StagedOriginal>,
+    ) -> Result<ImportedAsset, PortError> {
+        staged_original.prepare_publish()?;
+        staged_original.publish_prepared()?;
+        self.persist_asset(record)
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {

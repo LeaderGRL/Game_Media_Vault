@@ -382,6 +382,16 @@ impl CatalogPort for FakeCatalog {
         })
     }
 
+    fn persist_staged_asset(
+        &self,
+        record: PersistAsset,
+        mut staged_original: Box<dyn StagedOriginal>,
+    ) -> Result<ImportedAsset, PortError> {
+        staged_original.prepare_publish()?;
+        staged_original.publish_prepared()?;
+        self.persist_asset(record)
+    }
+
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
         Ok(self.library.clone())
     }
