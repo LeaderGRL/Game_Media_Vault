@@ -817,3 +817,91 @@ fn acquire_persists_a_run_that_can_be_controlled_and_listed() {
     let cancelled: serde_json::Value = serde_json::from_str(&cancelled).unwrap();
     assert_eq!(cancelled["status"], "cancelled");
 }
+
+struct LibretroFixtureTransport;
+
+impl game_media_vault_connectors::HttpTransport for LibretroFixtureTransport {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        let body: &[u8] = if url.ends_with("/.gitmodules") {
+            b"[submodule \"Nintendo - Game Boy\"]\n\
+              path = Nintendo - Game Boy\n\
+              url = https://github.com/libretro-thumbnails/Nintendo_-_Game_Boy.git\n\
+              branch = master\n"
+        } else {
+            b"tetris box front"
+        };
+        Ok(Box::new(Cursor::new(body.to_vec())))
+    }
+}
+
+#[test]
+fn libretro_box_front_auto_links_to_an_imported_no_intro_release() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("connectors")
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_sample.dat");
+    run_in_vault(
+        &vault,
+        &[
+            "import-no-intro",
+            "--file",
+            fixture.to_str().unwrap(),
+            "--max-games",
+            "10",
+        ],
+    )
+    .unwrap();
+    let started: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &vault,
+            &[
+                "acquire",
+                "--source",
+                "libretro-thumbnails",
+                "--platform",
+                "Nintendo - Game Boy",
+                "--game",
+                "Tetris (World) (Rev 1)",
+                "--asset-type",
+                "box-front",
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let connector = game_media_vault_connectors::LibretroThumbnailsConnector::with_transport(
+        LibretroFixtureTransport,
+    );
+
+    let completed = game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+        &vault,
+        started["id"].as_i64().unwrap(),
+        &connector,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(completed.completed_work, 1);
+    assert_eq!(completed.awaiting_review_work, 0);
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let tetris = library
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["game_title"] == "Tetris")
+        .unwrap();
+    assert_eq!(tetris["region"], "World");
+    let provenance = &tetris["assets"][0]["provenance"][0];
+    assert_eq!(provenance["source_id"], "libretro-thumbnails");
+    let decision = &provenance["match_decision"];
+    assert_eq!(decision["confidence"], "high");
+    assert_eq!(decision["score"], 100);
+}
