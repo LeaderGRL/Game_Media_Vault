@@ -4,7 +4,7 @@ Acquisition keeps one Review Item per candidate identity instead of one per run.
 
 Each acquisition work item persists the candidate snapshot captured when its Source finished discovery. Work is `queued`, `done`, or `parked` on a Review Item. Recording a human decision moves the parked work in the same transaction: accepting requeues it (and reopens a completed run; cancelled runs stay untouched), rejecting completes it, deferring keeps it parked. Resuming a run therefore never needs connector rediscovery.
 
-Connectors own transport credentials. Candidates carry a stable, credential-free locator (no URL userinfo); `ConnectorPort::download` adds API keys or requests signed URLs itself. Review previews download from the persisted candidate through the connector, so the application never stores or forwards transient URLs.
+Connectors own transport credentials. Candidates carry a stable locator: an absolute URL without userinfo, query or fragment, where keys and signatures usually travel; `ConnectorPort::download` adds API keys or requests signed URLs itself. Review previews download from the persisted candidate through the connector, so the application never stores or forwards transient URLs.
 
 Races are resolved with conditional state transitions instead of processing leases. The engine only closes a Review Item if it is still undecided, and a human decision is only recorded if the item is still undecided; whoever commits first wins and the other side re-reads the item. Importing an Asset is idempotent (content-addressed objects, unique catalog rows), so two concurrent executions of the same run can waste a download but cannot corrupt the catalog. Work claiming for concurrent workers belongs to the scheduler (#20).
 

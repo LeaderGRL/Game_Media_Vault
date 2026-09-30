@@ -110,8 +110,8 @@ pub trait RunRepositoryPort {
 /// Source-specific integration that discovers and downloads Asset Candidates.
 ///
 /// Discovered candidates are persisted, so `AssetCandidate::source_url` must be a stable,
-/// credential-free absolute URL. Connectors that need API keys, sessions or signed URLs add
-/// them inside `download`, which receives the persisted candidate.
+/// absolute URL without userinfo, query or fragment. Connectors that need API keys, sessions or
+/// signed URLs add them inside `download`, which receives the persisted candidate.
 pub trait ConnectorPort {
     fn source_id(&self) -> &'static str;
 

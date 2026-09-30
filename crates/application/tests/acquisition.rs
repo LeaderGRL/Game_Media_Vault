@@ -168,6 +168,30 @@ fn relative_candidate_locators_are_rejected_before_persistence() {
 }
 
 #[test]
+fn locators_with_query_or_fragment_data_are_rejected_before_persistence() {
+    for source_url in [
+        "https://example.invalid/media.png?api_key=secret",
+        "https://example.invalid/media.png#token=secret",
+    ] {
+        let signed = AssetCandidate {
+            source_url: source_url.to_owned(),
+            ..candidate("Signed Game")
+        };
+        let vault = FakeVault::with_library(vec![release_for(&signed, 1)]);
+        let run_id = vault.start_run();
+
+        let error = execute(&vault, &FakeConnector::new(vec![signed]), run_id).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplicationError::UnsafeCandidateLocator { .. }
+        ));
+        assert!(!error.to_string().contains("secret"));
+        assert_eq!(vault.run(run_id).queued_work, 0);
+    }
+}
+
+#[test]
 fn rejects_candidates_whose_source_does_not_match_the_connector() {
     let foreign = AssetCandidate {
         source_id: SourceId::from("another-source"),

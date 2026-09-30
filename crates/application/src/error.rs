@@ -41,7 +41,7 @@ pub enum ApplicationError {
         candidate_source_id: String,
     },
     #[error(
-        "connector {source_id} returned a candidate whose locator is not a credential-free absolute URL"
+        "connector {source_id} returned a candidate whose locator is not an absolute URL free of userinfo, query and fragment"
     )]
     UnsafeCandidateLocator { source_id: String },
     #[error("acquisition run cannot execute connector work while {status:?}")]

@@ -166,8 +166,14 @@ fn ensure_catalog_safe_locator(
     source_id: &str,
     candidate: &AssetCandidate,
 ) -> Result<(), ApplicationError> {
-    let catalog_safe = Url::parse(&candidate.source_url)
-        .is_ok_and(|url| url.username().is_empty() && url.password().is_none());
+    // Query strings and fragments are where API keys and signatures travel, so a stable
+    // locator carries none of them; connectors add request parameters in `download`.
+    let catalog_safe = Url::parse(&candidate.source_url).is_ok_and(|url| {
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    });
     if catalog_safe {
         Ok(())
     } else {
