@@ -3,6 +3,7 @@ import { FormEvent, useCallback, useRef, useState } from "react";
 
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
+import { errorMessage } from "./types";
 import type { LibraryEntry, ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
 
 export function App() {
@@ -57,7 +58,7 @@ export function App() {
         activeVaultRoot.current === requestedVaultRoot &&
         loadGeneration === vaultLoadRequestGeneration.current
       ) {
-        setError(String(reason));
+        setError(errorMessage(reason));
       }
     } finally {
       if (
@@ -115,7 +116,7 @@ export function App() {
       setEntries(library);
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
-        setError(String(reason));
+        setError(errorMessage(reason));
         // A refused decision usually means the item changed elsewhere, possibly linking or
         // detaching its asset; show the current reviews and library.
         reviewRefreshRequestGeneration.current += 1;

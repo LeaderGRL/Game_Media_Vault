@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, AcquisitionRequestValidationError, ConnectorPort,
-    acquire_run_with_connector as acquire_run_with_connector_use_case,
+    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
+    ErrorKind, PortError, acquire_run_with_connector as acquire_run_with_connector_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
@@ -21,10 +21,48 @@ use game_media_vault_domain::{
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use serde::Serialize;
 
+/// Error returned by every command: a stable `kind` the frontend can branch on and a
+/// human-readable `message`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommandError {
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl From<ApplicationError> for CommandError {
+    fn from(error: ApplicationError) -> Self {
+        Self {
+            kind: error.kind().as_str(),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<PortError> for CommandError {
+    fn from(error: PortError) -> Self {
+        ApplicationError::from(error).into()
+    }
+}
+
+impl CommandError {
+    fn worker_failed(worker: &str, error: impl std::fmt::Display) -> Self {
+        Self {
+            kind: ErrorKind::External.as_str(),
+            message: format!("{worker} worker failed: {error}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewPreviewPayload {
     pub media_type: String,
     pub bytes: Vec<u8>,
+}
+
+fn open_existing_catalog(vault_root: &Path) -> Result<SqliteCatalog, CommandError> {
+    Ok(SqliteCatalog::open_existing(
+        vault_root.join("catalog.sqlite3"),
+    )?)
 }
 
 pub fn validate_acquisition_request(
@@ -40,38 +78,36 @@ fn build_acquisition_request(
     validate_acquisition_request(request)
 }
 
-pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryEntry>, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    list_library_use_case(&catalog).map_err(|error| error.to_string())
+pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryEntry>, CommandError> {
+    Ok(list_library_use_case(&open_existing_catalog(vault_root)?)?)
 }
 
-pub fn load_review_items(vault_root: &Path) -> Result<Vec<ReviewItem>, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    list_review_items_use_case(&catalog).map_err(|error| error.to_string())
+pub fn load_review_items(vault_root: &Path) -> Result<Vec<ReviewItem>, CommandError> {
+    Ok(list_review_items_use_case(&open_existing_catalog(
+        vault_root,
+    )?)?)
 }
 
 pub fn resolve_review_item_in_vault(
     vault_root: &Path,
     review_item_id: i64,
     decision: ReviewDecision,
-) -> Result<ReviewItem, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    resolve_review_item_use_case(&catalog, review_item_id, decision)
-        .map_err(|error| error.to_string())
+) -> Result<ReviewItem, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    Ok(resolve_review_item_use_case(
+        &catalog,
+        review_item_id,
+        decision,
+    )?)
 }
 
 pub fn load_review_preview_in_vault_with_connector(
     vault_root: &Path,
     review_item_id: i64,
     connector: &dyn ConnectorPort,
-) -> Result<ReviewPreviewPayload, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    let preview = load_review_preview_use_case(&catalog, connector, review_item_id)
-        .map_err(|error| error.to_string())?;
+) -> Result<ReviewPreviewPayload, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    let preview = load_review_preview_use_case(&catalog, connector, review_item_id)?;
     Ok(ReviewPreviewPayload {
         media_type: preview_media_type(&preview.original_filename).to_owned(),
         bytes: preview.bytes,
@@ -82,21 +118,21 @@ pub async fn load_review_preview_in_vault_with_connector_async(
     vault_root: PathBuf,
     review_item_id: i64,
     connector: Box<dyn ConnectorPort + Send>,
-) -> Result<ReviewPreviewPayload, String> {
+) -> Result<ReviewPreviewPayload, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         load_review_preview_in_vault_with_connector(&vault_root, review_item_id, connector.as_ref())
     })
     .await
-    .map_err(|error| format!("review preview worker failed: {error}"))?
+    .map_err(|error| CommandError::worker_failed("review preview", error))?
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_library(vault_root: String) -> Result<Vec<LibraryEntry>, String> {
+fn list_library(vault_root: String) -> Result<Vec<LibraryEntry>, CommandError> {
     load_library(Path::new(&vault_root))
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_review_items(vault_root: String) -> Result<Vec<ReviewItem>, String> {
+fn list_review_items(vault_root: String) -> Result<Vec<ReviewItem>, CommandError> {
     load_review_items(Path::new(&vault_root))
 }
 
@@ -105,7 +141,7 @@ fn resolve_review_item(
     vault_root: String,
     review_item_id: i64,
     decision: ReviewDecision,
-) -> Result<ReviewItem, String> {
+) -> Result<ReviewItem, CommandError> {
     resolve_review_item_in_vault(Path::new(&vault_root), review_item_id, decision)
 }
 
@@ -113,7 +149,7 @@ fn resolve_review_item(
 async fn load_review_preview(
     vault_root: String,
     review_item_id: i64,
-) -> Result<ReviewPreviewPayload, String> {
+) -> Result<ReviewPreviewPayload, CommandError> {
     load_review_preview_in_vault_with_connector_async(
         PathBuf::from(vault_root),
         review_item_id,
@@ -125,10 +161,9 @@ async fn load_review_preview(
 pub fn start_acquisition_run_in_vault(
     vault_root: &Path,
     request: AcquisitionRequestInput,
-) -> Result<AcquisitionRun, String> {
-    let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    start_acquisition_run_use_case(&catalog, request).map_err(|error| error.to_string())
+) -> Result<AcquisitionRun, CommandError> {
+    let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))?;
+    Ok(start_acquisition_run_use_case(&catalog, request)?)
 }
 
 pub fn execute_acquisition_run_in_vault_with_connector(
@@ -136,9 +171,8 @@ pub fn execute_acquisition_run_in_vault_with_connector(
     run_id: i64,
     connector: &dyn ConnectorPort,
     matching_policy: MatchingPolicy,
-) -> Result<AcquisitionRun, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
+) -> Result<AcquisitionRun, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
     let object_store = ContentAddressedStore::new(vault_root);
     acquire_run_with_connector_use_case(
         &catalog,
@@ -148,9 +182,8 @@ pub fn execute_acquisition_run_in_vault_with_connector(
         connector,
         run_id,
         matching_policy,
-    )
-    .map_err(|error| error.to_string())?;
-    load_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+    )?;
+    Ok(load_acquisition_run_use_case(&catalog, run_id)?)
 }
 
 pub async fn execute_acquisition_run_in_vault_with_connector_async(
@@ -158,7 +191,7 @@ pub async fn execute_acquisition_run_in_vault_with_connector_async(
     run_id: i64,
     connector: Box<dyn ConnectorPort + Send>,
     matching_policy: MatchingPolicy,
-) -> Result<AcquisitionRun, String> {
+) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         execute_acquisition_run_in_vault_with_connector(
             &vault_root,
@@ -168,56 +201,62 @@ pub async fn execute_acquisition_run_in_vault_with_connector_async(
         )
     })
     .await
-    .map_err(|error| format!("acquisition worker failed: {error}"))?
+    .map_err(|error| CommandError::worker_failed("acquisition", error))?
 }
 
 pub fn load_acquisition_run_from_vault(
     vault_root: &Path,
     run_id: i64,
-) -> Result<AcquisitionRun, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    load_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+) -> Result<AcquisitionRun, CommandError> {
+    Ok(load_acquisition_run_use_case(
+        &open_existing_catalog(vault_root)?,
+        run_id,
+    )?)
 }
 
-pub fn list_acquisition_runs_from_vault(vault_root: &Path) -> Result<Vec<AcquisitionRun>, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    list_acquisition_runs_use_case(&catalog).map_err(|error| error.to_string())
+pub fn list_acquisition_runs_from_vault(
+    vault_root: &Path,
+) -> Result<Vec<AcquisitionRun>, CommandError> {
+    Ok(list_acquisition_runs_use_case(&open_existing_catalog(
+        vault_root,
+    )?)?)
 }
 
 pub fn pause_acquisition_run_in_vault(
     vault_root: &Path,
     run_id: i64,
-) -> Result<AcquisitionRun, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    pause_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+) -> Result<AcquisitionRun, CommandError> {
+    Ok(pause_acquisition_run_use_case(
+        &open_existing_catalog(vault_root)?,
+        run_id,
+    )?)
 }
 
 pub fn resume_acquisition_run_in_vault(
     vault_root: &Path,
     run_id: i64,
-) -> Result<AcquisitionRun, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    resume_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+) -> Result<AcquisitionRun, CommandError> {
+    Ok(resume_acquisition_run_use_case(
+        &open_existing_catalog(vault_root)?,
+        run_id,
+    )?)
 }
 
 pub fn cancel_acquisition_run_in_vault(
     vault_root: &Path,
     run_id: i64,
-) -> Result<AcquisitionRun, String> {
-    let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))
-        .map_err(|error| error.to_string())?;
-    cancel_acquisition_run_use_case(&catalog, run_id).map_err(|error| error.to_string())
+) -> Result<AcquisitionRun, CommandError> {
+    Ok(cancel_acquisition_run_use_case(
+        &open_existing_catalog(vault_root)?,
+        run_id,
+    )?)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 fn start_acquisition_run(
     vault_root: String,
     request: AcquisitionRequestInput,
-) -> Result<AcquisitionRun, String> {
+) -> Result<AcquisitionRun, CommandError> {
     start_acquisition_run_in_vault(Path::new(&vault_root), request)
 }
 
@@ -226,7 +265,7 @@ async fn execute_acquisition_run(
     vault_root: String,
     run_id: i64,
     matching_policy: MatchingPolicy,
-) -> Result<AcquisitionRun, String> {
+) -> Result<AcquisitionRun, CommandError> {
     execute_acquisition_run_in_vault_with_connector_async(
         PathBuf::from(vault_root),
         run_id,
@@ -237,27 +276,27 @@ async fn execute_acquisition_run(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn get_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+fn get_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
     load_acquisition_run_from_vault(Path::new(&vault_root), run_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_acquisition_runs(vault_root: String) -> Result<Vec<AcquisitionRun>, String> {
+fn list_acquisition_runs(vault_root: String) -> Result<Vec<AcquisitionRun>, CommandError> {
     list_acquisition_runs_from_vault(Path::new(&vault_root))
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn pause_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+fn pause_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
     pause_acquisition_run_in_vault(Path::new(&vault_root), run_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn resume_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+fn resume_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
     resume_acquisition_run_in_vault(Path::new(&vault_root), run_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn cancel_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, String> {
+fn cancel_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
     cancel_acquisition_run_in_vault(Path::new(&vault_root), run_id)
 }
 

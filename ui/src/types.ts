@@ -96,3 +96,23 @@ export interface ReviewPreviewPayload {
   media_type: string;
   bytes: number[];
 }
+
+/** Error returned by every Tauri command. */
+export interface CommandError {
+  kind:
+    | "invalid_request"
+    | "not_found"
+    | "conflict"
+    | "unsupported"
+    | "source_failure"
+    | "external";
+  message: string;
+}
+
+/** Human-readable message of a rejected Tauri invocation. */
+export function errorMessage(reason: unknown): string {
+  if (typeof reason === "object" && reason !== null && "message" in reason) {
+    return String((reason as { message: unknown }).message);
+  }
+  return String(reason);
+}

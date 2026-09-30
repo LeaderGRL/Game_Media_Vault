@@ -97,6 +97,24 @@ describe("App", () => {
     expect(screen.queryByText("Metal Gear Solid")).not.toBeInTheDocument();
   });
 
+  it("shows the message of a structured backend error", async () => {
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    invokeMock.mockRejectedValueOnce({
+      kind: "conflict",
+      message: "review item #17 cannot be resolved while Rejected",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    expect(
+      await screen.findByText("review item #17 cannot be resolved while Rejected"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+  });
+
   it("loads review items and persists a decision through Tauri", async () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
@@ -555,7 +573,7 @@ describe("App", () => {
     finishFirstResolution?.(acceptedFirst);
     await waitFor(() => expect(refreshCount).toBe(1));
     finishSecondResolution?.(acceptedSecond);
-    await screen.findByText("Error: newer refresh failed");
+    await screen.findByText("newer refresh failed");
 
     finishFirstRefresh?.([acceptedFirst, secondReviewItem]);
 
