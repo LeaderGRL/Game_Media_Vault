@@ -9,14 +9,22 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 1;
+const VAULT_SCHEMA_VERSION: i32 = 2;
+
+/// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
+const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
 
 type Migration = fn(&Transaction<'_>) -> Result<(), PortError>;
 
-/// Each entry upgrades a catalog from version `index + 1` to version `index + 2`.
+/// Entry `i` upgrades a catalog from `OLDEST_SUPPORTED_SCHEMA_VERSION + i` to the next version.
 const MIGRATIONS: &[Migration] = &[];
 
-const SCHEMA_V1: &str = "
+const _: () = assert!(
+    MIGRATIONS.len() as i32 == VAULT_SCHEMA_VERSION - OLDEST_SUPPORTED_SCHEMA_VERSION,
+    "every supported schema version needs a migration to the current layout"
+);
+
+const SCHEMA: &str = "
     CREATE TABLE games (
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
@@ -130,7 +138,7 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
             "refusing to create a vault catalog in a non-empty database".to_owned(),
         ));
     }
-    transaction.execute_batch(SCHEMA_V1).map_err(sql_error)?;
+    transaction.execute_batch(SCHEMA).map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)
 }
@@ -151,22 +159,19 @@ pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortE
             path.display()
         )));
     }
-    if version < 1 {
+    if version < OLDEST_SUPPORTED_SCHEMA_VERSION {
         return Err(PortError(format!(
-            "catalog {} uses unsupported schema version {version}",
+            "catalog {} uses unsupported schema version {version}; recreate the vault with this version of Game Media Vault",
             path.display()
         )));
     }
-    for (index, migrate) in MIGRATIONS
-        .iter()
-        .enumerate()
-        .skip(usize::try_from(version - 1).unwrap_or_default())
-    {
+    for target in version + 1..=VAULT_SCHEMA_VERSION {
+        let migrate = MIGRATIONS[(target - OLDEST_SUPPORTED_SCHEMA_VERSION - 1) as usize];
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         migrate(&transaction)?;
-        stamp(&transaction, i32::try_from(index).unwrap_or(i32::MAX) + 2)?;
+        stamp(&transaction, target)?;
         transaction.commit().map_err(sql_error)?;
     }
     Ok(())

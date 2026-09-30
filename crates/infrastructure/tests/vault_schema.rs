@@ -21,7 +21,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 1);
+    assert_eq!(pragma(&path, "user_version"), 2);
 }
 
 #[test]
@@ -77,5 +77,23 @@ fn creating_a_vault_over_an_unrelated_database_is_refused_unchanged() {
         error.0.contains("not a Game Media Vault catalog"),
         "{error}"
     );
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn catalog_from_an_unsupported_older_schema_version_is_refused_unchanged() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    SqliteCatalog::open(&path).unwrap();
+    // Version 1 was a pre-release layout that is not migrated.
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("PRAGMA user_version = 1;")
+        .unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let error = SqliteCatalog::open_existing(&path).err().unwrap();
+
+    assert!(error.0.contains("unsupported schema version 1"), "{error}");
     assert_eq!(fs::read(&path).unwrap(), before);
 }
