@@ -1,12 +1,15 @@
-import type { ReviewDecision, ReviewItem } from "./types";
+import { useEffect, useState } from "react";
+
+import type { ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
 
 interface ReviewViewProps {
   items: ReviewItem[];
   resolvingIds: ReadonlySet<number>;
   onResolve: (reviewItemId: number, decision: ReviewDecision) => void;
+  onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
 }
 
-export function ReviewView({ items, resolvingIds, onResolve }: ReviewViewProps) {
+export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: ReviewViewProps) {
   if (items.length === 0) {
     return (
       <section className="empty-state" aria-live="polite">
@@ -42,12 +45,7 @@ export function ReviewView({ items, resolvingIds, onResolve }: ReviewViewProps) 
             </div>
 
             <div className="review-source">
-              <img
-                className="review-preview"
-                src={item.candidate.source_url}
-                alt={`${item.candidate.game_title} box front candidate`}
-                loading="lazy"
-              />
+              <CandidatePreview item={item} onLoadPreview={onLoadPreview} />
               <span className="detail-label">Source evidence</span>
               <strong>
                 {item.candidate.source_id}
@@ -138,6 +136,80 @@ export function ReviewView({ items, resolvingIds, onResolve }: ReviewViewProps) 
         );
       })}
     </section>
+  );
+}
+
+function CandidatePreview({
+  item,
+  onLoadPreview,
+}: {
+  item: ReviewItem;
+  onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
+}) {
+  const requiresRediscovery = item.candidate.source_url_requires_rediscovery ?? false;
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+
+  useEffect(() => {
+    if (!requiresRediscovery) {
+      setPreviewUrl(null);
+      setPreviewFailed(false);
+      return undefined;
+    }
+
+    let active = true;
+    let objectUrl: string | null = null;
+    setPreviewUrl(null);
+    setPreviewFailed(false);
+    void onLoadPreview(item.id)
+      .then((preview) => {
+        if (!active) {
+          return;
+        }
+        objectUrl = URL.createObjectURL(
+          new Blob([Uint8Array.from(preview.bytes)], { type: preview.media_type }),
+        );
+        setPreviewUrl(objectUrl);
+      })
+      .catch(() => {
+        if (active) {
+          setPreviewFailed(true);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl !== null) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [item.candidate.source_url, item.id, onLoadPreview, requiresRediscovery]);
+
+  if (!requiresRediscovery) {
+    return (
+      <img
+        className="review-preview"
+        src={item.candidate.source_url}
+        alt={`${item.candidate.game_title} box front candidate`}
+        loading="lazy"
+      />
+    );
+  }
+
+  if (previewUrl !== null) {
+    return (
+      <img
+        className="review-preview"
+        src={previewUrl}
+        alt={`${item.candidate.game_title} box front candidate`}
+      />
+    );
+  }
+
+  return (
+    <div className="review-preview review-preview-status" role="status">
+      {previewFailed ? "Preview unavailable" : "Loading preview…"}
+    </div>
   );
 }
 

@@ -221,6 +221,15 @@ input:focus {
   background: #0d1015;
 }
 
+.review-preview-status {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  color: #9fa9ba;
+  text-align: center;
+}
+
 .review-source code,
 .evidence-row span {
   overflow-wrap: anywhere;

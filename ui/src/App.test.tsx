@@ -118,6 +118,49 @@ describe("App", () => {
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
 
+  it("loads rediscovery review previews from the vault backend", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:app-review-preview"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const rediscoveryReviewItem: ReviewItem = {
+      ...reviewItem,
+      candidate: {
+        ...reviewItem.candidate,
+        source_url: "https://example.invalid/review/401",
+        source_url_requires_rediscovery: true,
+      },
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        return Promise.resolve([]);
+      }
+      if (command === "list_review_items") {
+        return Promise.resolve([rediscoveryReviewItem]);
+      }
+      if (command === "load_review_preview") {
+        return Promise.resolve({ media_type: "image/png", bytes: [137, 80, 78, 71] });
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    expect(invokeMock).toHaveBeenCalledWith("load_review_preview", {
+      vault_root: ".game-media-vault",
+      review_item_id: 17,
+    });
+    const preview = await screen.findByRole("img", { name: "Review Game box front candidate" });
+    expect(preview).toHaveAttribute("src", "blob:app-review-preview");
+    expect(preview).not.toHaveAttribute("src", "https://example.invalid/review/401");
+  });
+
   it("refreshes every review occurrence changed by a terminal decision", async () => {
     const siblingReviewItem: ReviewItem = {
       ...reviewItem,

@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useCallback, useRef, useState } from "react";
 
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
-import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
+import type { LibraryEntry, ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
@@ -124,6 +124,24 @@ export function App() {
     }
   }
 
+  const loadReviewPreview = useCallback(
+    async (reviewItemId: number): Promise<ReviewPreviewPayload> => {
+      if (loadedVaultRoot === null) {
+        throw new Error("Load a vault before loading review previews.");
+      }
+      const previewVaultRoot = loadedVaultRoot;
+      const preview = await invoke<ReviewPreviewPayload>("load_review_preview", {
+        vault_root: previewVaultRoot,
+        review_item_id: reviewItemId,
+      });
+      if (activeVaultRoot.current !== previewVaultRoot) {
+        throw new Error("Vault changed while loading review preview.");
+      }
+      return preview;
+    },
+    [loadedVaultRoot],
+  );
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -177,6 +195,7 @@ export function App() {
           items={reviewItems}
           resolvingIds={resolvingIds}
           onResolve={resolveReviewItem}
+          onLoadPreview={loadReviewPreview}
         />
       )}
     </main>

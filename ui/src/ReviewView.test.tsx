@@ -59,7 +59,14 @@ const item: ReviewItem = {
 
 describe("ReviewView", () => {
   it("shows source evidence, competing scores and score explanation", () => {
-    render(<ReviewView items={[item]} resolvingIds={new Set()} onResolve={vi.fn()} />);
+    render(
+      <ReviewView
+        items={[item]}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+      />,
+    );
 
     expect(screen.getByRole("heading", { name: "Review Game" })).toBeInTheDocument();
     expect(screen.getByText("fixture-provider · front")).toBeInTheDocument();
@@ -76,9 +83,59 @@ describe("ReviewView", () => {
     expect(screen.getByText("fixture://reference/review-game-standard")).toBeInTheDocument();
   });
 
+  it("loads rediscovery previews through the backend instead of using the persisted locator", async () => {
+    const createObjectUrl = vi.fn(() => "blob:review-preview");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const onLoadPreview = vi.fn().mockResolvedValue({
+      media_type: "image/png",
+      bytes: [137, 80, 78, 71],
+    });
+    const rediscoveryItem: ReviewItem = {
+      ...item,
+      candidate: {
+        ...item.candidate,
+        source_url: "https://example.invalid/review/401",
+        source_url_requires_rediscovery: true,
+      },
+    };
+
+    const { unmount } = render(
+      <ReviewView
+        items={[rediscoveryItem]}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={onLoadPreview}
+      />,
+    );
+
+    expect(onLoadPreview).toHaveBeenCalledWith(17);
+    const preview = await screen.findByRole("img", { name: "Review Game box front candidate" });
+    expect(preview).toHaveAttribute("src", "blob:review-preview");
+    expect(preview).not.toHaveAttribute("src", "https://example.invalid/review/401");
+    expect(createObjectUrl).toHaveBeenCalledOnce();
+
+    unmount();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:review-preview");
+  });
+
   it("emits accept reject and defer decisions", () => {
     const onResolve = vi.fn();
-    render(<ReviewView items={[item]} resolvingIds={new Set()} onResolve={onResolve} />);
+    render(
+      <ReviewView
+        items={[item]}
+        resolvingIds={new Set()}
+        onResolve={onResolve}
+        onLoadPreview={vi.fn()}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
     expect(onResolve).toHaveBeenLastCalledWith(17, {
@@ -99,6 +156,7 @@ describe("ReviewView", () => {
         items={[{ ...item, status: "auto_resolved" }]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
       />,
     );
     expect(screen.getByText("Auto-resolved")).toBeInTheDocument();
@@ -108,6 +166,7 @@ describe("ReviewView", () => {
         items={[{ ...item, status: "superseded" }]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
       />,
     );
     expect(screen.getByText("Superseded")).toBeInTheDocument();
@@ -117,6 +176,7 @@ describe("ReviewView", () => {
         items={[{ ...item, status: "processing" }]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
       />,
     );
     expect(screen.getByText("Processing")).toBeInTheDocument();

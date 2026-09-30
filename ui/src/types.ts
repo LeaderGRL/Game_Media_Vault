@@ -38,6 +38,7 @@ export interface LibraryEntry {
 
 export interface AssetCandidate {
   provider_candidate_id?: string | null;
+  source_url_requires_rediscovery?: boolean;
   game_title: string;
   platform: string;
   region: string;
@@ -93,4 +94,9 @@ export interface ReviewItem {
   competing_matches: ReviewMatchCandidate[];
   decision: ReviewDecision | null;
   status: ReviewStatus;
+}
+
+export interface ReviewPreviewPayload {
+  media_type: string;
+  bytes: number[];
 }
