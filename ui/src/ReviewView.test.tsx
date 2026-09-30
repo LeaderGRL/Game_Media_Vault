@@ -153,15 +153,26 @@ describe("ReviewView", () => {
   });
 
   it("labels reviews closed by matching re-evaluation", () => {
+    const onLoadPreview = vi.fn();
+    const closedRediscoveryItem: ReviewItem = {
+      ...item,
+      status: "auto_resolved",
+      candidate: {
+        ...item.candidate,
+        source_url_requires_rediscovery: true,
+      },
+    };
     const { rerender } = render(
       <ReviewView
-        items={[{ ...item, status: "auto_resolved" }]}
+        items={[closedRediscoveryItem]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
-        onLoadPreview={vi.fn()}
+        onLoadPreview={onLoadPreview}
       />,
     );
     expect(screen.getByText("Auto-resolved")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load preview" })).not.toBeInTheDocument();
+    expect(onLoadPreview).not.toHaveBeenCalled();
 
     rerender(
       <ReviewView

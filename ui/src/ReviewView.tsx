@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
 
@@ -45,7 +45,12 @@ export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: Re
             </div>
 
             <div className="review-source">
-              <CandidatePreview item={item} onLoadPreview={onLoadPreview} />
+              <CandidatePreview
+                key={`${item.id}:${item.candidate.source_url}`}
+                item={item}
+                enabled={!closed}
+                onLoadPreview={onLoadPreview}
+              />
               <span className="detail-label">Source evidence</span>
               <strong>
                 {item.candidate.source_id}
@@ -141,49 +146,66 @@ export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: Re
 
 function CandidatePreview({
   item,
+  enabled,
   onLoadPreview,
 }: {
   item: ReviewItem;
+  enabled: boolean;
   onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
 }) {
   const requiresRediscovery = item.candidate.source_url_requires_rediscovery ?? false;
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const active = useRef(true);
 
   useEffect(() => {
-    if (!requiresRediscovery) {
-      setPreviewUrl(null);
-      setPreviewFailed(false);
-      return undefined;
-    }
-
-    let active = true;
-    let objectUrl: string | null = null;
-    setPreviewUrl(null);
-    setPreviewFailed(false);
-    void onLoadPreview(item.id)
-      .then((preview) => {
-        if (!active) {
-          return;
-        }
-        objectUrl = URL.createObjectURL(
-          new Blob([Uint8Array.from(preview.bytes)], { type: preview.media_type }),
-        );
-        setPreviewUrl(objectUrl);
-      })
-      .catch(() => {
-        if (active) {
-          setPreviewFailed(true);
-        }
-      });
-
     return () => {
-      active = false;
-      if (objectUrl !== null) {
-        URL.revokeObjectURL(objectUrl);
+      active.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl !== null) {
+        URL.revokeObjectURL(previewUrl);
       }
     };
-  }, [item.candidate.source_url, item.id, onLoadPreview, requiresRediscovery]);
+  }, [previewUrl]);
+
+  async function loadPreview() {
+    if (previewLoading || previewUrl !== null) {
+      return;
+    }
+    setPreviewLoading(true);
+    setPreviewFailed(false);
+    try {
+      const preview = await onLoadPreview(item.id);
+      if (!active.current) {
+        return;
+      }
+      const objectUrl = URL.createObjectURL(
+        new Blob([Uint8Array.from(preview.bytes)], { type: preview.media_type }),
+      );
+      setPreviewUrl(objectUrl);
+    } catch {
+      if (active.current) {
+        setPreviewFailed(true);
+      }
+    } finally {
+      if (active.current) {
+        setPreviewLoading(false);
+      }
+    }
+  }
+
+  if (!enabled) {
+    return (
+      <div className="review-preview review-preview-status">
+        Preview not loaded for closed review
+      </div>
+    );
+  }
 
   if (!requiresRediscovery) {
     return (
@@ -193,6 +215,17 @@ function CandidatePreview({
         alt={`${item.candidate.game_title} box front candidate`}
         loading="lazy"
       />
+    );
+  }
+
+  if (previewUrl === null) {
+    return (
+      <div className="review-preview review-preview-status">
+        <button type="button" disabled={previewLoading} onClick={() => void loadPreview()}>
+          {previewLoading ? "Loading preview…" : "Load preview"}
+        </button>
+        {previewFailed ? <span role="status">Preview unavailable</span> : null}
+      </div>
     );
   }
 
@@ -206,11 +239,7 @@ function CandidatePreview({
     );
   }
 
-  return (
-    <div className="review-preview review-preview-status" role="status">
-      {previewFailed ? "Preview unavailable" : "Loading preview…"}
-    </div>
-  );
+  return null;
 }
 
 function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | null) {

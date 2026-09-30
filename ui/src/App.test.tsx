@@ -152,6 +152,8 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
+    expect(invokeMock).not.toHaveBeenCalledWith("load_review_preview", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
     expect(invokeMock).toHaveBeenCalledWith("load_review_preview", {
       vault_root: ".game-media-vault",
       review_item_id: 17,
