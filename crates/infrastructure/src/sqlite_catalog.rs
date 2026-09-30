@@ -20,12 +20,47 @@ use rusqlite::{
 };
 
 const ACQUISITION_REQUEST_SCHEMA_VERSION: i64 = 1;
+const PENDING_OBJECT_PUBLICATION_GRACE_SECONDS: i64 = 3600;
 
 pub struct SqliteCatalog {
     path: PathBuf,
     mode: CatalogOpenMode,
     #[cfg(test)]
     busy_handler: Option<fn(i32) -> bool>,
+}
+
+struct PendingObjectPublicationGuard {
+    catalog_path: PathBuf,
+    id: i64,
+    publication_started: bool,
+    commit_succeeded: bool,
+}
+
+impl PendingObjectPublicationGuard {
+    fn mark_publication_started(&mut self) {
+        self.publication_started = true;
+    }
+
+    fn mark_commit_succeeded(&mut self) {
+        self.commit_succeeded = true;
+    }
+}
+
+impl Drop for PendingObjectPublicationGuard {
+    fn drop(&mut self) {
+        if self.publication_started && !self.commit_succeeded {
+            return;
+        }
+        let Ok(connection) =
+            Connection::open_with_flags(&self.catalog_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        else {
+            return;
+        };
+        let _ = connection.execute(
+            "DELETE FROM pending_object_publications WHERE id = ?1",
+            params![self.id],
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -69,7 +104,7 @@ impl SqliteCatalog {
             #[cfg(test)]
             busy_handler: None,
         };
-        let connection = catalog.connect()?;
+        let mut connection = catalog.connect()?;
         if !is_recognized_catalog_schema(&connection)? {
             return Err(PortError(format!(
                 "catalog schema is missing or incomplete: {}",
@@ -87,6 +122,7 @@ impl SqliteCatalog {
             "acquisition_runs",
             "acquisition_run_work",
             "review_items",
+            "pending_object_publications",
         ];
         if !required_tables_exist(&connection, &current_catalog_tables)? {
             return Err(PortError(format!(
@@ -94,6 +130,8 @@ impl SqliteCatalog {
                 catalog.path.display()
             )));
         }
+
+        recover_stale_pending_object_publications(&mut connection, &catalog.path)?;
 
         Ok(catalog)
     }
@@ -111,6 +149,36 @@ impl SqliteCatalog {
             connection.busy_handler(Some(handler)).map_err(sql_error)?;
         }
         Ok(connection)
+    }
+
+    fn register_pending_object_publication(
+        &self,
+        staged_original: &Option<Box<dyn StagedOriginal>>,
+    ) -> Result<Option<PendingObjectPublicationGuard>, PortError> {
+        let Some(staged_original) = staged_original.as_ref() else {
+            return Ok(None);
+        };
+        let stored = staged_original.stored_object();
+        let byte_len = i64::try_from(stored.byte_len).map_err(|_| {
+            PortError(format!(
+                "object {} is too large to journal in SQLite",
+                stored.hash
+            ))
+        })?;
+        let connection = self.connect()?;
+        connection
+            .execute(
+                "INSERT INTO pending_object_publications (object_hash, byte_len)
+                 VALUES (?1, ?2)",
+                params![stored.hash, byte_len],
+            )
+            .map_err(sql_error)?;
+        Ok(Some(PendingObjectPublicationGuard {
+            catalog_path: self.path.clone(),
+            id: connection.last_insert_rowid(),
+            publication_started: false,
+            commit_succeeded: false,
+        }))
     }
 }
 
@@ -147,6 +215,88 @@ fn initialize_new_catalog(
             ))),
         },
     }
+}
+
+fn recover_stale_pending_object_publications(
+    connection: &mut Connection,
+    catalog_path: &Path,
+) -> Result<(), PortError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
+    let cutoff: i64 = transaction
+        .query_row(
+            "SELECT unixepoch() - ?1",
+            params![PENDING_OBJECT_PUBLICATION_GRACE_SECONDS],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    let stale_hashes = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT DISTINCT stale.object_hash
+                 FROM pending_object_publications AS stale
+                 WHERE stale.created_at_unix <= ?1",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map(params![cutoff], |row| row.get::<_, String>(0))
+            .map_err(sql_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sql_error)?
+    };
+
+    for object_hash in stale_hashes {
+        let is_referenced: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM assets WHERE object_hash = ?1)",
+                params![object_hash],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        let has_fresh_publication: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1
+                     FROM pending_object_publications
+                     WHERE object_hash = ?1 AND created_at_unix > ?2
+                 )",
+                params![object_hash, cutoff],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if !is_referenced
+            && !has_fresh_publication
+            && let Some(object_path) = content_addressed_object_path(catalog_path, &object_hash)
+        {
+            match fs::remove_file(&object_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        transaction
+            .execute(
+                "DELETE FROM pending_object_publications
+                 WHERE object_hash = ?1 AND created_at_unix <= ?2",
+                params![object_hash, cutoff],
+            )
+            .map_err(sql_error)?;
+    }
+
+    transaction.commit().map_err(sql_error)
+}
+
+fn content_addressed_object_path(catalog_path: &Path, object_hash: &str) -> Option<PathBuf> {
+    if object_hash.len() != 64 || !object_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
+    Some(
+        root.join("objects")
+            .join(&object_hash[0..2])
+            .join(&object_hash[2..4])
+            .join(object_hash),
+    )
 }
 
 impl RunRepositoryPort for SqliteCatalog {
@@ -733,6 +883,7 @@ impl CatalogPort for SqliteCatalog {
         mut staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         prepare_staged_original(&mut staged_original)?;
+        let mut pending_publication = self.register_pending_object_publication(&staged_original)?;
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -802,8 +953,9 @@ impl CatalogPort for SqliteCatalog {
                             &mut staged_original,
                             &imported.object_hash,
                             imported.byte_len,
+                            pending_publication.as_mut(),
                         )?;
-                        transaction.commit().map_err(sql_error)?;
+                        commit_asset_publication(transaction, &mut pending_publication)?;
                         return Ok(ReviewProcessingFinalization::Imported(imported));
                     }
                     (
@@ -855,8 +1007,9 @@ impl CatalogPort for SqliteCatalog {
             &mut staged_original,
             &imported.object_hash,
             imported.byte_len,
+            pending_publication.as_mut(),
         )?;
-        transaction.commit().map_err(sql_error)?;
+        commit_asset_publication(transaction, &mut pending_publication)?;
         Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
@@ -870,6 +1023,7 @@ impl CatalogPort for SqliteCatalog {
         mut staged_original: Option<Box<dyn StagedOriginal>>,
     ) -> Result<ReviewProcessingFinalization, PortError> {
         prepare_staged_original(&mut staged_original)?;
+        let mut pending_publication = self.register_pending_object_publication(&staged_original)?;
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -953,8 +1107,9 @@ impl CatalogPort for SqliteCatalog {
                                 &mut staged_original,
                                 &imported.object_hash,
                                 imported.byte_len,
+                                pending_publication.as_mut(),
                             )?;
-                            transaction.commit().map_err(sql_error)?;
+                            commit_asset_publication(transaction, &mut pending_publication)?;
                             return Ok(ReviewProcessingFinalization::Imported(imported));
                         }
                         (
@@ -1020,8 +1175,9 @@ impl CatalogPort for SqliteCatalog {
             &mut staged_original,
             &imported.object_hash,
             imported.byte_len,
+            pending_publication.as_mut(),
         )?;
-        transaction.commit().map_err(sql_error)?;
+        commit_asset_publication(transaction, &mut pending_publication)?;
         Ok(ReviewProcessingFinalization::Imported(imported))
     }
 
@@ -1859,6 +2015,7 @@ fn publish_staged_original(
     staged_original: &mut Option<Box<dyn StagedOriginal>>,
     expected_hash: &str,
     expected_byte_len: u64,
+    pending_publication: Option<&mut PendingObjectPublicationGuard>,
 ) -> Result<(), PortError> {
     let Some(staged_original) = staged_original.take() else {
         return Ok(());
@@ -1869,11 +2026,25 @@ fn publish_staged_original(
             "staged original metadata does not match the asset record".to_owned(),
         ));
     }
+    if let Some(pending_publication) = pending_publication {
+        pending_publication.mark_publication_started();
+    }
     let published = staged_original.publish_prepared()?;
     if published != expected {
         return Err(PortError(
             "published original metadata changed after staging".to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn commit_asset_publication(
+    transaction: Transaction<'_>,
+    pending_publication: &mut Option<PendingObjectPublicationGuard>,
+) -> Result<(), PortError> {
+    transaction.commit().map_err(sql_error)?;
+    if let Some(pending_publication) = pending_publication.as_mut() {
+        pending_publication.mark_commit_succeeded();
     }
     Ok(())
 }
@@ -2542,6 +2713,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
                 lease_token TEXT NOT NULL,
                 acquired_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS pending_object_publications (
+                id INTEGER PRIMARY KEY,
+                object_hash TEXT NOT NULL,
+                byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
+                created_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
+            );
             CREATE INDEX IF NOT EXISTS idx_release_game ON release_editions(game_id);
             CREATE INDEX IF NOT EXISTS idx_release_assertion_release
                 ON release_assertions(release_edition_id);
@@ -2556,7 +2733,9 @@ fn initialize_schema(connection: &Connection) -> Result<(), PortError> {
             CREATE INDEX IF NOT EXISTS idx_run_work_pending
                 ON acquisition_run_work(run_id, completed, id);
             CREATE INDEX IF NOT EXISTS idx_review_items_run
-                ON review_items(run_id, id);",
+                ON review_items(run_id, id);
+            CREATE INDEX IF NOT EXISTS idx_pending_object_publications_hash_age
+                ON pending_object_publications(object_hash, created_at_unix);",
             )
             .map_err(sql_error)?;
 

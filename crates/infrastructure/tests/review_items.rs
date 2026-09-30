@@ -11,7 +11,11 @@ use game_media_vault_domain::{
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::Connection;
-use std::sync::{Arc, Condvar, Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, Condvar, Mutex},
+};
 use tempfile::tempdir;
 
 #[derive(Default)]
@@ -52,6 +56,51 @@ impl StagedOriginal for BlockingPreparedOriginal {
     fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
         self.wait_for_release();
         Ok(self.stored.clone())
+    }
+}
+
+struct JournalCheckingOriginal {
+    stored: StoredObject,
+    catalog_path: PathBuf,
+    journal_seen: Arc<Mutex<bool>>,
+}
+
+impl StagedOriginal for JournalCheckingOriginal {
+    fn stored_object(&self) -> &StoredObject {
+        &self.stored
+    }
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
+        let pending: i64 = Connection::open(&self.catalog_path)
+            .map_err(|error| PortError(error.to_string()))?
+            .query_row(
+                "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
+                [&self.stored.hash],
+                |row| row.get(0),
+            )
+            .map_err(|error| PortError(error.to_string()))?;
+        *self.journal_seen.lock().unwrap() = pending > 0;
+        Ok(self.stored.clone())
+    }
+}
+
+struct VisibleThenFailingOriginal {
+    stored: StoredObject,
+    object_path: PathBuf,
+}
+
+impl StagedOriginal for VisibleThenFailingOriginal {
+    fn stored_object(&self) -> &StoredObject {
+        &self.stored
+    }
+
+    fn publish(self: Box<Self>) -> Result<StoredObject, PortError> {
+        if let Some(parent) = self.object_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| PortError(error.to_string()))?;
+        }
+        fs::write(&self.object_path, b"visible before failure")
+            .map_err(|error| PortError(error.to_string()))?;
+        Err(PortError("forced publication failure".to_owned()))
     }
 }
 
@@ -1104,7 +1153,8 @@ fn terminal_acceptance_reuses_processing_bytes_without_requeueing() {
 #[test]
 fn processing_asset_finalization_persists_asset_work_and_review_together() {
     let temp = tempdir().unwrap();
-    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let catalog_path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
     let run = catalog.create_run(request()).unwrap();
     let work_key = "connector:atomic-finalization";
     catalog.queue_work(run.id, work_key.to_owned()).unwrap();
@@ -1121,6 +1171,7 @@ fn processing_asset_finalization_persists_asset_work_and_review_together() {
         .claim_review_item_for_processing(item.id)
         .unwrap()
         .unwrap();
+    let journal_seen = Arc::new(Mutex::new(false));
 
     let outcome = catalog
         .finalize_review_processing_asset(
@@ -1144,7 +1195,14 @@ fn processing_asset_finalization_persists_asset_work_and_review_together() {
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
-            None,
+            Some(Box::new(JournalCheckingOriginal {
+                stored: StoredObject {
+                    hash: "atomic-finalization-hash".to_owned(),
+                    byte_len: 42,
+                },
+                catalog_path: catalog_path.clone(),
+                journal_seen: Arc::clone(&journal_seen),
+            })),
         )
         .unwrap();
 
@@ -1161,6 +1219,16 @@ fn processing_asset_finalization_persists_asset_work_and_review_together() {
     assert_eq!(library.len(), 1);
     assert_eq!(library[0].assets.len(), 1);
     assert_eq!(library[0].assets[0].object_hash, "atomic-finalization-hash");
+    assert!(*journal_seen.lock().unwrap());
+    let pending: i64 = Connection::open(&catalog_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_object_publications",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
 }
 
 #[test]
@@ -1319,6 +1387,105 @@ fn processing_asset_finalization_rolls_back_if_review_transition_fails() {
     assert_eq!(run.completed_work, 0);
     assert!(catalog.list_library().unwrap().is_empty());
     assert!(!object_path.exists());
+    let pending: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_object_publications",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+}
+
+#[test]
+fn publication_failure_after_bytes_become_visible_keeps_recovery_journal() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog_path = vault.join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let run = catalog.create_run(request()).unwrap();
+    let work_key = "connector:publication-failure-recovery";
+    catalog.queue_work(run.id, work_key.to_owned()).unwrap();
+    catalog
+        .persist_review_item(NewReviewItem {
+            run_id: run.id,
+            candidate_identity: "connector:publication-failure-recovery".to_owned(),
+            candidate: candidate(),
+            competing_matches: vec![review_match(201, "Standard")],
+        })
+        .unwrap();
+    let item = catalog.list_review_items().unwrap().remove(0);
+    let claim = catalog
+        .claim_review_item_for_processing(item.id)
+        .unwrap()
+        .unwrap();
+    let stored = StoredObject {
+        hash: "ab".repeat(32),
+        byte_len: 22,
+    };
+    let object_path = store.object_path(&stored.hash);
+
+    let result = catalog.finalize_review_processing_asset(
+        item.id,
+        &claim.lease_token,
+        run.id,
+        work_key,
+        PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: None,
+            game_title: "Target Game".to_owned(),
+            platform: "Nintendo Entertainment System".to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Collector".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: stored.hash.clone(),
+            byte_len: stored.byte_len,
+            original_filename: "front.png".to_owned(),
+            source_id: SourceId::from("fixture-provider"),
+            source_asset_label: Some("front".to_owned()),
+            source_location: "fixture://candidate/front".to_owned(),
+        },
+        Some(Box::new(VisibleThenFailingOriginal {
+            stored: stored.clone(),
+            object_path: object_path.clone(),
+        })),
+    );
+
+    assert!(result.is_err());
+    assert!(object_path.is_file());
+    assert!(catalog.list_library().unwrap().is_empty());
+    let connection = Connection::open(&catalog_path).unwrap();
+    let pending: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
+            [&stored.hash],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 1);
+    connection
+        .execute(
+            "UPDATE pending_object_publications SET created_at_unix = 0 WHERE object_hash = ?1",
+            [&stored.hash],
+        )
+        .unwrap();
+    drop(connection);
+
+    SqliteCatalog::open_existing(&catalog_path).unwrap();
+
+    assert!(!object_path.exists());
+    let pending: i64 = Connection::open(&catalog_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
+            [&stored.hash],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
 }
 
 #[test]
@@ -1441,7 +1608,8 @@ fn processing_review_refresh_rolls_back_if_status_restore_fails() {
 #[test]
 fn accepted_review_finalization_persists_asset_work_and_status_together() {
     let temp = tempdir().unwrap();
-    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let catalog_path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
     let run = catalog.create_run(request()).unwrap();
     let work_key = "connector:accepted-atomic-finalization";
     catalog.queue_work(run.id, work_key.to_owned()).unwrap();
@@ -1466,6 +1634,7 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
         .claim_review_item_for_processing(item.id)
         .unwrap()
         .unwrap();
+    let journal_seen = Arc::new(Mutex::new(false));
 
     let outcome = catalog
         .finalize_accepted_review_asset(
@@ -1489,7 +1658,14 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
                 source_asset_label: Some("front".to_owned()),
                 source_location: "fixture://candidate/front".to_owned(),
             },
-            None,
+            Some(Box::new(JournalCheckingOriginal {
+                stored: StoredObject {
+                    hash: "accepted-atomic-hash".to_owned(),
+                    byte_len: 42,
+                },
+                catalog_path: catalog_path.clone(),
+                journal_seen: Arc::clone(&journal_seen),
+            })),
         )
         .unwrap();
 
@@ -1506,6 +1682,16 @@ fn accepted_review_finalization_persists_asset_work_and_status_together() {
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 1);
     assert_eq!(catalog.list_library().unwrap()[0].assets.len(), 1);
+    assert!(*journal_seen.lock().unwrap());
+    let pending: i64 = Connection::open(&catalog_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_object_publications",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
 }
 
 #[test]
@@ -1893,6 +2079,15 @@ fn accepted_review_finalization_rolls_back_if_status_transition_fails() {
     assert_eq!(run.completed_work, 0);
     assert!(catalog.list_library().unwrap().is_empty());
     assert!(!object_path.exists());
+    let pending: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM pending_object_publications",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
     assert!(
         catalog
             .renew_review_item_processing(item.id, &claim.lease_token)
