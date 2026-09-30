@@ -385,6 +385,8 @@ Every stage must be restartable from persisted state. Connector failures must no
 
 SQLite is the initial local catalog because the primary product is a single-user desktop/CLI tool. Database access must stay behind repository interfaces so a future server deployment can migrate to PostgreSQL without leaking SQL concerns into the domain.
 
+Catalog files are identified by a Game Media Vault SQLite application id and versioned with `user_version`. Opening a vault refuses foreign databases and catalogs written by a newer version without modifying them; older supported versions are upgraded through ordered, transactional migrations.
+
 ### Media Objects
 
 Original binary data lives outside SQLite in a content-addressed object store keyed by BLAKE3.
