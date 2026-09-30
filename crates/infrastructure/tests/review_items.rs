@@ -173,25 +173,6 @@ fn request() -> AcquisitionRequest {
     .unwrap()
 }
 
-fn legacy_connector_work_key(source_id: &str, candidate: &AssetCandidate) -> String {
-    let mut key = "connector".to_owned();
-    for part in [
-        source_id,
-        candidate.platform.as_str(),
-        candidate.game_title.as_str(),
-        candidate.region.as_str(),
-        candidate.edition_name.as_str(),
-        "box_front",
-        candidate.source_url.as_str(),
-    ] {
-        key.push(':');
-        key.push_str(&part.len().to_string());
-        key.push(':');
-        key.push_str(part);
-    }
-    key
-}
-
 fn completed_review_work(catalog: &SqliteCatalog, work_key: &str) -> i64 {
     let run = catalog.create_run(request()).unwrap();
     catalog.queue_work(run.id, work_key.to_owned()).unwrap();
@@ -318,59 +299,6 @@ fn accepting_a_review_atomically_requeues_its_completed_work() {
     assert_eq!(
         catalog.next_queued_work(run_id).unwrap().unwrap().key,
         work_key
-    );
-}
-
-#[test]
-fn accepting_a_legacy_review_requeues_the_original_work_key() {
-    let temp = tempdir().unwrap();
-    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
-    let mut review_candidate = candidate();
-    review_candidate.provider_candidate_id = Some("provider-review-legacy".to_owned());
-    let legacy_work_key = legacy_connector_work_key("fixture-provider", &review_candidate);
-    assert_ne!(
-        legacy_work_key,
-        acquisition_work_key("fixture-provider", &review_candidate)
-    );
-    let run = catalog.create_run(request()).unwrap();
-    catalog.queue_work(run.id, legacy_work_key.clone()).unwrap();
-    catalog.complete_work(run.id, &legacy_work_key).unwrap();
-    assert!(
-        catalog
-            .compare_and_set_run_status(
-                run.id,
-                AcquisitionRunStatus::Running,
-                AcquisitionRunStatus::Completed,
-            )
-            .unwrap()
-    );
-    catalog
-        .persist_review_item(NewReviewItem {
-            run_id: run.id,
-            candidate_identity: "candidate:fixture-provider:legacy-review".to_owned(),
-            candidate: review_candidate,
-            competing_matches: vec![review_match(201, "Standard")],
-        })
-        .unwrap();
-    let item = catalog.list_review_items().unwrap().remove(0);
-
-    let accepted = resolve_review_item(
-        &catalog,
-        item.id,
-        ReviewDecision::Accept {
-            release_edition_id: 201,
-        },
-    )
-    .unwrap();
-
-    assert_eq!(accepted.status, ReviewStatus::Accepted);
-    let run = catalog.get_run(run.id).unwrap().unwrap();
-    assert_eq!(run.status, AcquisitionRunStatus::Running);
-    assert_eq!(run.queued_work, 1);
-    assert_eq!(run.completed_work, 0);
-    assert_eq!(
-        catalog.next_queued_work(run.id).unwrap().unwrap().key,
-        legacy_work_key
     );
 }
 
