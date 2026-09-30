@@ -1657,7 +1657,7 @@ impl CatalogPort for SqliteCatalog {
         &self,
         review_item_id: i64,
         release_edition_id: i64,
-        work_key: &str,
+        work_keys: &[&str],
     ) -> Result<Option<ReviewItem>, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -1693,20 +1693,27 @@ impl CatalogPort for SqliteCatalog {
             )));
         }
 
-        let run_status = transaction
-            .query_row(
-                "SELECT run.status
-                 FROM acquisition_run_work AS work
-                 INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-                 WHERE work.run_id = ?1 AND work.work_key = ?2",
-                params![item.run_id, work_key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(sql_error)?;
-        let Some(run_status) = run_status else {
+        let mut selected_work = None;
+        for &work_key in work_keys {
+            let run_status = transaction
+                .query_row(
+                    "SELECT run.status
+                     FROM acquisition_run_work AS work
+                     INNER JOIN acquisition_runs AS run ON run.id = work.run_id
+                     WHERE work.run_id = ?1 AND work.work_key = ?2",
+                    params![item.run_id, work_key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(sql_error)?;
+            if let Some(run_status) = run_status {
+                selected_work = Some((work_key, run_status));
+                break;
+            }
+        }
+        let Some((work_key, run_status)) = selected_work else {
             return Err(PortError(format!(
-                "acquisition work {work_key:?} does not exist for run #{}",
+                "no compatible acquisition work exists for run #{}",
                 item.run_id
             )));
         };

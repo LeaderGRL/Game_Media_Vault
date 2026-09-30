@@ -74,7 +74,7 @@ impl CatalogPort for FakeCatalog {
         &self,
         review_item_id: i64,
         release_edition_id: i64,
-        work_key: &str,
+        work_keys: &[&str],
     ) -> Result<Option<ReviewItem>, PortError> {
         if self.fail_atomic_accept {
             return Err(PortError("atomic accept failed".to_owned()));
@@ -88,7 +88,7 @@ impl CatalogPort for FakeCatalog {
         self.accepted_work.borrow_mut().push((
             item.run_id,
             release_edition_id,
-            work_key.to_owned(),
+            work_keys.first().copied().unwrap_or_default().to_owned(),
         ));
         Ok(Some(item.clone()))
     }

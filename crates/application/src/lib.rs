@@ -319,7 +319,7 @@ pub trait CatalogPort {
         &self,
         _review_item_id: i64,
         _release_edition_id: i64,
-        _work_key: &str,
+        _work_keys: &[&str],
     ) -> Result<Option<ReviewItem>, PortError> {
         Err(PortError(
             "catalog does not support atomic review acceptance".to_owned(),
@@ -712,8 +712,15 @@ pub fn resolve_review_item(
     match decision {
         ReviewDecision::Accept { release_edition_id } => {
             let work_key = acquisition_work_key(item.candidate.source_id.as_str(), &item.candidate);
+            let legacy_work_key =
+                legacy_acquisition_work_key(item.candidate.source_id.as_str(), &item.candidate);
+            let work_keys = if legacy_work_key == work_key {
+                vec![work_key.as_str()]
+            } else {
+                vec![work_key.as_str(), legacy_work_key.as_str()]
+            };
             catalog
-                .accept_review_item_and_requeue(review_item_id, release_edition_id, &work_key)?
+                .accept_review_item_and_requeue(review_item_id, release_edition_id, &work_keys)?
                 .ok_or(ApplicationError::ReviewItemNotFound(review_item_id))
         }
         decision => catalog

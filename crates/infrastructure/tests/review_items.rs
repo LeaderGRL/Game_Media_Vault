@@ -295,7 +295,7 @@ fn accepting_a_review_atomically_requeues_its_completed_work() {
     let item = catalog.list_review_items().unwrap().remove(0);
 
     let accepted = catalog
-        .accept_review_item_and_requeue(item.id, 201, work_key)
+        .accept_review_item_and_requeue(item.id, 201, &[work_key])
         .unwrap()
         .unwrap();
 
@@ -403,7 +403,7 @@ fn accepting_a_review_from_cancelled_run_persists_without_requeueing_work() {
         .unwrap();
 
     let accepted = catalog
-        .accept_review_item_and_requeue(item.id, 201, work_key)
+        .accept_review_item_and_requeue(item.id, 201, &[work_key])
         .unwrap()
         .unwrap();
 
@@ -468,7 +468,7 @@ fn accepting_a_review_supersedes_incompatible_occurrences_of_the_same_candidate(
         .find(|item| item.run_id == first_run.id)
         .unwrap();
     catalog
-        .accept_review_item_and_requeue(first_item.id, 201, first_work_key)
+        .accept_review_item_and_requeue(first_item.id, 201, &[first_work_key])
         .unwrap()
         .unwrap();
 
@@ -525,7 +525,7 @@ fn accepting_a_review_requeues_compatible_occurrences_of_the_same_candidate() {
         .unwrap()
         .unwrap();
     catalog
-        .accept_review_item_and_requeue(first_item.id, 201, &work_key)
+        .accept_review_item_and_requeue(first_item.id, 201, &[work_key.as_str()])
         .unwrap()
         .unwrap();
 
@@ -857,7 +857,7 @@ fn failed_review_acceptance_rolls_back_the_work_requeue() {
 
     assert!(
         catalog
-            .accept_review_item_and_requeue(item.id, 201, work_key)
+            .accept_review_item_and_requeue(item.id, 201, &[work_key])
             .is_err()
     );
 
@@ -1042,7 +1042,7 @@ fn latest_human_decision_wins_over_newer_review_occurrence_id() {
         .unwrap();
 
     catalog
-        .accept_review_item_and_requeue(newer.id, 202, newer_work_key)
+        .accept_review_item_and_requeue(newer.id, 202, &[newer_work_key])
         .unwrap();
     let restored = catalog
         .restore_review_item_processing(older.id, &older_claim.lease_token, ReviewStatus::Pending)
