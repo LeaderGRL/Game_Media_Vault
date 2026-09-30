@@ -855,6 +855,7 @@ pub fn acquire_run_with_connector(
     let mut candidates_by_work_key = std::collections::HashMap::new();
     let mut transient_source_url_by_work_key = std::collections::HashMap::new();
     let mut persisted_work_key_by_identity = std::collections::HashMap::new();
+    let mut claimed_legacy_work_keys = std::collections::HashMap::new();
     for review_item in &review_items {
         if review_item.run_id != run_id
             || review_item.candidate.source_id.as_str() != connector.source_id()
@@ -864,7 +865,12 @@ pub fn acquire_run_with_connector(
         let current_work_key = acquisition_work_key(connector.source_id(), &review_item.candidate);
         let legacy_work_key =
             legacy_acquisition_work_key(connector.source_id(), &review_item.candidate);
-        let work_key = if queued_work_keys.contains(&legacy_work_key) {
+        let work_key = if claim_legacy_work_key(
+            &queued_work_keys,
+            &mut claimed_legacy_work_keys,
+            &legacy_work_key,
+            &review_item.candidate_identity,
+        ) {
             legacy_work_key
         } else {
             current_work_key
@@ -908,7 +914,12 @@ pub fn acquire_run_with_connector(
                 let current_work_key = acquisition_work_key(connector.source_id(), &candidate);
                 let legacy_work_key =
                     legacy_acquisition_work_key(connector.source_id(), &candidate);
-                let work_key = if queued_work_keys.contains(&legacy_work_key) {
+                let work_key = if claim_legacy_work_key(
+                    &queued_work_keys,
+                    &mut claimed_legacy_work_keys,
+                    &legacy_work_key,
+                    &candidate_identity,
+                ) {
                     legacy_work_key
                 } else {
                     queue_acquisition_work(runs, run_id, current_work_key.clone())?;
@@ -1312,6 +1323,25 @@ fn legacy_acquisition_work_key(source_id: &str, candidate: &AssetCandidate) -> S
         push_work_key_part(&mut key, part);
     }
     key
+}
+
+fn claim_legacy_work_key(
+    queued_work_keys: &std::collections::HashSet<String>,
+    claimed_legacy_work_keys: &mut std::collections::HashMap<String, String>,
+    legacy_work_key: &str,
+    candidate_identity: &str,
+) -> bool {
+    if !queued_work_keys.contains(legacy_work_key) {
+        return false;
+    }
+    match claimed_legacy_work_keys.get(legacy_work_key) {
+        Some(owner) => owner == candidate_identity,
+        None => {
+            claimed_legacy_work_keys
+                .insert(legacy_work_key.to_owned(), candidate_identity.to_owned());
+            true
+        }
+    }
 }
 
 fn queued_acquisition_work_keys(
