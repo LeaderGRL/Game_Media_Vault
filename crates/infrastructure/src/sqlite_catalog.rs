@@ -2260,6 +2260,20 @@ fn commit_asset_publication(
     transaction: Transaction<'_>,
     pending_publication: &mut Option<PendingObjectPublicationGuard>,
 ) -> Result<(), PortError> {
+    if let Some(pending_publication) = pending_publication.as_ref() {
+        let deleted = transaction
+            .execute(
+                "DELETE FROM pending_object_publications WHERE id = ?1",
+                params![pending_publication.id],
+            )
+            .map_err(sql_error)?;
+        if deleted != 1 {
+            return Err(PortError(format!(
+                "pending object publication #{} disappeared before asset commit",
+                pending_publication.id
+            )));
+        }
+    }
     transaction.commit().map_err(sql_error)?;
     if let Some(pending_publication) = pending_publication.as_mut() {
         pending_publication.mark_commit_succeeded();
@@ -4035,6 +4049,41 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM pending_object_publications",
                 [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn committed_asset_publication_clears_journal_before_guard_drop() {
+        let temp = tempdir().unwrap();
+        let catalog_path = temp.path().join("catalog.sqlite3");
+        let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+        let stored = game_media_vault_domain::StoredObject {
+            hash: "ef".repeat(32),
+            byte_len: 42,
+        };
+        let staged_original: Option<Box<dyn StagedOriginal>> =
+            Some(Box::new(NeverPublishOriginal {
+                stored: stored.clone(),
+            }));
+        let mut pending_publication = catalog
+            .register_pending_object_publication(&staged_original)
+            .unwrap();
+        let mut connection = catalog.connect().unwrap();
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        commit_asset_publication(transaction, &mut pending_publication).unwrap();
+
+        assert!(pending_publication.is_some());
+        let pending: i64 = Connection::open(&catalog_path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
+                [&stored.hash],
                 |row| row.get(0),
             )
             .unwrap();
