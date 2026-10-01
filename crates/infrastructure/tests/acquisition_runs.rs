@@ -76,8 +76,13 @@ fn completed_work_is_not_returned_after_restart() {
     let catalog = SqliteCatalog::open(&path).unwrap();
     let run = start_acquisition_run(&catalog, request()).unwrap();
 
-    queue(&catalog, run.id, "discover:first");
-    queue(&catalog, run.id, "discover:second");
+    catalog
+        .record_discovery(
+            run.id,
+            SOURCE_ID,
+            &[work("discover:first"), work("discover:second")],
+        )
+        .unwrap();
     let first = catalog.next_queued_work(run.id).unwrap().unwrap();
     assert_eq!(first.key, "discover:first");
     catalog.complete_work(run.id, &first.key).unwrap();
@@ -186,8 +191,13 @@ fn duplicate_work_keys_are_queued_only_once() {
     let catalog = SqliteCatalog::open(&path).unwrap();
     let run = start_acquisition_run(&catalog, request()).unwrap();
 
-    queue(&catalog, run.id, "download:cover");
-    queue(&catalog, run.id, "download:cover");
+    catalog
+        .record_discovery(
+            run.id,
+            SOURCE_ID,
+            &[work("download:cover"), work("download:cover")],
+        )
+        .unwrap();
 
     let loaded = load_acquisition_run(&catalog, run.id).unwrap();
     let next = catalog.next_queued_work(run.id).unwrap().unwrap();
@@ -426,6 +436,30 @@ fn recorded_discovery_persists_work_candidates_and_the_discovered_source() {
     assert_eq!(
         load_acquisition_run(&reopened, run.id).unwrap().queued_work,
         2
+    );
+}
+
+#[test]
+fn a_later_discovery_of_an_already_discovered_source_is_ignored() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("first")])
+        .unwrap();
+
+    // A concurrent execution that also discovered the source must not add its snapshot.
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("second")])
+        .unwrap();
+
+    assert_eq!(
+        load_acquisition_run(&catalog, run.id).unwrap().queued_work,
+        1
+    );
+    assert_eq!(
+        catalog.next_queued_work(run.id).unwrap(),
+        Some(work("first"))
     );
 }
 

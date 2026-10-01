@@ -293,6 +293,9 @@ impl RunRepositoryPort for FakeVault {
         ) {
             return Err(PortError("run does not accept new work".to_owned()));
         }
+        if !run.discovered.insert(source_id.to_owned()) {
+            return Ok(());
+        }
         for item in work {
             if !run
                 .work
@@ -305,7 +308,6 @@ impl RunRepositoryPort for FakeVault {
                 });
             }
         }
-        run.discovered.insert(source_id.to_owned());
         Ok(())
     }
 

@@ -126,7 +126,8 @@ pub trait RunRepositoryPort {
     fn has_discovered(&self, run_id: i64, source_id: &str) -> Result<bool, PortError>;
 
     /// Queues the work discovered from one Source and marks its discovery complete, atomically.
-    /// Work whose key is already recorded for the run is ignored.
+    /// Work whose key is already recorded for the run is ignored, and so is any later discovery
+    /// of an already discovered source: a run keeps a single snapshot per source.
     fn record_discovery(
         &self,
         run_id: i64,

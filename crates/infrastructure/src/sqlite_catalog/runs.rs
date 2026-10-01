@@ -116,6 +116,18 @@ impl RunRepositoryPort for SqliteCatalog {
                 "acquisition run #{run_id} cannot accept work while {status}"
             )));
         }
+        // Claiming the marker first under the write lock keeps exactly one discovery snapshot
+        // per source when executions of the same run race.
+        let claimed = transaction
+            .execute(
+                "INSERT OR IGNORE INTO acquisition_run_discoveries (run_id, source_id)
+                 VALUES (?1, ?2)",
+                params![run_id, source_id],
+            )
+            .map_err(sql_error)?;
+        if claimed == 0 {
+            return Ok(());
+        }
         for item in work {
             let candidate_json = serde_json::to_string(&item.candidate).map_err(|error| {
                 PortError(format!(
@@ -131,13 +143,6 @@ impl RunRepositoryPort for SqliteCatalog {
                 )
                 .map_err(sql_error)?;
         }
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO acquisition_run_discoveries (run_id, source_id)
-                 VALUES (?1, ?2)",
-                params![run_id, source_id],
-            )
-            .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)
     }
 
