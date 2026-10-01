@@ -7,7 +7,11 @@ use game_media_vault_domain::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use super::{SqliteCatalog, detach_candidate_links, persist_asset_in_transaction, sql_error};
+use super::{
+    SqliteCatalog,
+    assets::{detach_candidate_links, persist_asset_in_transaction},
+    sql_error,
+};
 
 const REVIEW_ITEM_COLUMNS: &str =
     "id, candidate_identity, candidate_json, competing_matches_json, decision_json, status";
