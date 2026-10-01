@@ -106,7 +106,21 @@ pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, Appl
 /// Canonical absolute path of a user-provided source, used for reading it. On Windows it keeps
 /// the verbatim prefix so long or unusual file names stay addressable.
 fn resolve_source_path(path: &Path) -> Result<PathBuf, ApplicationError> {
-    fs::canonicalize(path).map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))
+    fs::canonicalize(path).map_err(source_path_error)
+}
+
+/// A path that names no file is an invalid request; other failures, such as denied
+/// permissions or unavailable storage, are environmental and may succeed when retried.
+fn source_path_error(error: std::io::Error) -> ApplicationError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound
+        | std::io::ErrorKind::InvalidInput
+        | std::io::ErrorKind::InvalidFilename
+        | std::io::ErrorKind::NotADirectory => {
+            ApplicationError::ResolveSourcePath(error.to_string())
+        }
+        _ => ApplicationError::Port(PortError(format!("failed to resolve source path: {error}"))),
+    }
 }
 
 /// Readable location recorded for a resolved source, identical across import kinds: Windows
@@ -126,4 +140,24 @@ fn source_location(path: &Path) -> String {
 #[cfg(not(windows))]
 fn source_location(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind as IoErrorKind};
+
+    use super::source_path_error;
+    use crate::ErrorKind;
+
+    #[test]
+    fn only_paths_naming_no_file_are_invalid_requests() {
+        assert_eq!(
+            source_path_error(Error::from(IoErrorKind::NotFound)).kind(),
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            source_path_error(Error::from(IoErrorKind::PermissionDenied)).kind(),
+            ErrorKind::External
+        );
+    }
 }
