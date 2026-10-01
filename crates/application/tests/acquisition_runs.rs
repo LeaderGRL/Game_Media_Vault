@@ -55,8 +55,8 @@ impl RunRepositoryPort for RecordingRunRepository {
         _run_id: i64,
         _source_id: &str,
         _work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError> {
-        Ok(())
+    ) -> Result<bool, PortError> {
+        Ok(true)
     }
     fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
         Ok(None)
@@ -197,8 +197,8 @@ impl RunRepositoryPort for RacingRunRepository {
         _run_id: i64,
         _source_id: &str,
         _work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError> {
-        Ok(())
+    ) -> Result<bool, PortError> {
+        Ok(true)
     }
     fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
         Ok(None)

@@ -1005,3 +1005,18 @@ fn connector_specific_limits_are_checked_before_a_run_starts() {
     );
     assert!(vault.runs.borrow().is_empty());
 }
+
+#[test]
+fn a_cancellation_during_discovery_stops_the_execution_quietly() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    *vault.status_before_next_discovery.borrow_mut() = Some(AcquisitionRunStatus::Cancelled);
+    let run_id = vault.start_run();
+
+    let imported = execute(&vault, &FakeConnector::new(vec![smb]), run_id).unwrap();
+
+    assert!(imported.is_empty());
+    let run = vault.run(run_id);
+    assert_eq!(run.status, AcquisitionRunStatus::Cancelled);
+    assert_eq!(run.queued_work, 0);
+}

@@ -55,7 +55,10 @@ pub fn acquire_run_with_connector(
             let capabilities = validate_connector_plan(&run.request, connector)?;
             if !runs.has_discovered(run_id, connector.source_id())? {
                 let work = discover_work(&run.request, connector, &capabilities)?;
-                runs.record_discovery(run_id, connector.source_id(), &work)?;
+                // A cancellation or completion that won the race while discovering stops quietly.
+                if !runs.record_discovery(run_id, connector.source_id(), &work)? {
+                    return Ok(Vec::new());
+                }
             }
         }
         // Nothing is left to discover, but an acceptance may reopen the run right after this

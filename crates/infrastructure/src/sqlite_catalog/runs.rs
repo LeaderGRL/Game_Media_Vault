@@ -97,7 +97,7 @@ impl RunRepositoryPort for SqliteCatalog {
         run_id: i64,
         source_id: &str,
         work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError> {
+    ) -> Result<bool, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -112,9 +112,7 @@ impl RunRepositoryPort for SqliteCatalog {
             .map_err(sql_error)?
             .ok_or_else(|| PortError(format!("acquisition run #{run_id} does not exist")))?;
         if !matches!(status.as_str(), "running" | "paused") {
-            return Err(PortError(format!(
-                "acquisition run #{run_id} cannot accept work while {status}"
-            )));
+            return Ok(false);
         }
         // Claiming the marker first under the write lock keeps exactly one discovery snapshot
         // per source when executions of the same run race.
@@ -126,7 +124,7 @@ impl RunRepositoryPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
         if claimed == 0 {
-            return Ok(());
+            return Ok(true);
         }
         for item in work {
             let candidate_json = serde_json::to_string(&item.candidate).map_err(|error| {
@@ -143,7 +141,8 @@ impl RunRepositoryPort for SqliteCatalog {
                 )
                 .map_err(sql_error)?;
         }
-        transaction.commit().map_err(sql_error)
+        transaction.commit().map_err(sql_error)?;
+        Ok(true)
     }
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {

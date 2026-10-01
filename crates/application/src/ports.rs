@@ -135,13 +135,14 @@ pub trait RunRepositoryPort {
 
     /// Queues the work discovered from one Source and marks its discovery complete, atomically.
     /// Work whose key is already recorded for the run is ignored, and so is any later discovery
-    /// of an already discovered source: a run keeps a single snapshot per source.
+    /// of an already discovered source: a run keeps a single snapshot per source. Returns
+    /// `false`, recording nothing, when the run was cancelled or completed meanwhile.
     fn record_discovery(
         &self,
         run_id: i64,
         source_id: &str,
         work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError>;
+    ) -> Result<bool, PortError>;
 
     /// Returns the oldest queued work item while the run is running.
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;

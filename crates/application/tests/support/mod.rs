@@ -163,6 +163,8 @@ pub struct FakeVault {
     /// Simulates a human decision on the first Review Item committed right after the next run
     /// read.
     pub decision_after_next_run_read: RefCell<Option<ReviewDecision>>,
+    /// Simulates a pause or cancellation landing while the next discovery runs.
+    pub status_before_next_discovery: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
@@ -335,17 +337,20 @@ impl RunRepositoryPort for FakeVault {
         run_id: i64,
         source_id: &str,
         work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError> {
+    ) -> Result<bool, PortError> {
         let mut runs = self.runs.borrow_mut();
         let run = runs.get_mut(&run_id).unwrap();
+        if let Some(status) = self.status_before_next_discovery.borrow_mut().take() {
+            run.status = status;
+        }
         if matches!(
             run.status,
             AcquisitionRunStatus::Cancelled | AcquisitionRunStatus::Completed
         ) {
-            return Err(PortError("run does not accept new work".to_owned()));
+            return Ok(false);
         }
         if !run.discovered.insert(source_id.to_owned()) {
-            return Ok(());
+            return Ok(true);
         }
         for item in work {
             if !run
@@ -359,7 +364,7 @@ impl RunRepositoryPort for FakeVault {
                 });
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
