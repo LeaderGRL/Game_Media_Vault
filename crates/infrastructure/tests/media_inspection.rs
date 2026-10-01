@@ -85,6 +85,35 @@ fn jpeg_xl_originals_are_recorded_as_images() {
 }
 
 #[test]
+fn jpeg_xl_codestreams_after_large_container_boxes_still_give_the_pixel_size() {
+    // Signature and file type boxes, a 300 000-byte metadata box declared with a 64-bit size,
+    // then the codestream of a 64 x 64 image split over two partial codestream boxes, the
+    // second one marked last.
+    let mut jxl = b"\0\0\0\x0cJXL \r\n\x87\n".to_vec();
+    jxl.extend_from_slice(b"\0\0\0\x14ftypjxl \0\0\0\0jxl ");
+    let metadata_len: u64 = 300_000;
+    jxl.extend_from_slice(b"\0\0\0\x01Exif");
+    jxl.extend_from_slice(&metadata_len.to_be_bytes());
+    jxl.resize(jxl.len() + metadata_len as usize - 16, 0);
+    let codestream = [0xff, 0x0a, 0x4f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (index, part) in [(0_u32, &codestream[..3]), (0x8000_0001, &codestream[3..])] {
+        jxl.extend_from_slice(&(12 + part.len() as u32).to_be_bytes());
+        jxl.extend_from_slice(b"jxlp");
+        jxl.extend_from_slice(&index.to_be_bytes());
+        jxl.extend_from_slice(part);
+    }
+
+    assert_eq!(
+        stored_media(&jxl),
+        MediaInfo {
+            media_type: "image/jxl".to_owned(),
+            width: Some(64),
+            height: Some(64),
+        }
+    );
+}
+
+#[test]
 fn icon_originals_are_recorded_as_images() {
     // ICONDIR header and the directory entry of a 32 x 32 image.
     let ico = [

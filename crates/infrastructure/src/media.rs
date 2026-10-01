@@ -144,12 +144,14 @@ fn is_start_of_frame(marker: u8) -> bool {
 }
 
 /// Inspects an original while it streams: it keeps a bounded prefix for format detection and
-/// follows JPEG segments and the first TIFF image file directory past it.
+/// follows JPEG segments, the first TIFF image file directory and JPEG XL container boxes past
+/// it.
 #[derive(Default)]
 pub(crate) struct MediaInspector {
     header: Vec<u8>,
     jpeg: JpegFrameScanner,
     tiff: TiffDirectoryScanner,
+    jxl: JxlCodestreamScanner,
 }
 
 impl MediaInspector {
@@ -159,6 +161,7 @@ impl MediaInspector {
             .extend_from_slice(&chunk[..chunk.len().min(room)]);
         self.jpeg.update(chunk);
         self.tiff.update(chunk);
+        self.jxl.update(chunk);
     }
 
     pub(crate) fn finish(self) -> MediaInfo {
@@ -166,6 +169,7 @@ impl MediaInspector {
         let streamed_size = match media.media_type.as_str() {
             "image/jpeg" => self.jpeg.size(),
             "image/tiff" if media.width.is_none() => self.tiff.size(),
+            "image/jxl" if media.width.is_none() => self.jxl.size(),
             _ => None,
         };
         if let Some((width, height)) = streamed_size {
@@ -173,6 +177,178 @@ impl MediaInspector {
             media.height = Some(height);
         }
         media
+    }
+}
+
+const JXL_CONTAINER_SIGNATURE: &[u8] = b"\0\0\0\x0cJXL \r\n\x87\n";
+
+/// Codestream bytes that hold a JPEG XL size header whatever its encoding.
+const JXL_SIZE_HEADER_BYTES: usize = 16;
+
+/// Follows the boxes of a JPEG XL container while its bytes stream past and keeps the start of
+/// its codestream, which metadata boxes may push past the inspected prefix.
+#[derive(Default)]
+struct JxlCodestreamScanner {
+    state: JxlState,
+    /// Bytes of the structure being read: the signature, a box header or a part index.
+    pending: Vec<u8>,
+    codestream: Vec<u8>,
+}
+
+#[derive(Default, Clone, Copy)]
+enum JxlState {
+    #[default]
+    Signature,
+    BoxHeader,
+    /// Skips the rest of a box.
+    Skip(u64),
+    /// Reads the index that starts a partial codestream box; `None` sizes run to the end.
+    PartIndex(Option<u64>),
+    Codestream {
+        remaining: Option<u64>,
+        last: bool,
+    },
+    Stopped,
+}
+
+impl JxlCodestreamScanner {
+    fn update(&mut self, mut chunk: &[u8]) {
+        while !chunk.is_empty() {
+            let (state, consumed) = self.next(chunk);
+            self.state = state;
+            chunk = &chunk[consumed..];
+            if matches!(self.state, JxlState::Stopped) {
+                return;
+            }
+        }
+    }
+
+    /// Advances over the start of `chunk`, returning the next state and the bytes consumed.
+    fn next(&mut self, chunk: &[u8]) -> (JxlState, usize) {
+        match self.state {
+            JxlState::Signature => {
+                let taken = self.fill(chunk, JXL_CONTAINER_SIGNATURE.len());
+                let state = match self.pending.len() {
+                    len if len < JXL_CONTAINER_SIGNATURE.len() => JxlState::Signature,
+                    _ if self.pending == JXL_CONTAINER_SIGNATURE => {
+                        self.pending.clear();
+                        JxlState::BoxHeader
+                    }
+                    _ => JxlState::Stopped,
+                };
+                (state, taken)
+            }
+            JxlState::BoxHeader => {
+                let mut taken = self.fill(chunk, 8);
+                // A size of 1 announces a 64-bit size after the type.
+                let large = self.pending.len() >= 8 && self.pending[..4] == [0, 0, 0, 1];
+                if large {
+                    taken += self.fill(&chunk[taken..], 16);
+                }
+                if self.pending.len() < if large { 16 } else { 8 } {
+                    return (JxlState::BoxHeader, taken);
+                }
+                let state = self.start_box();
+                self.pending.clear();
+                (state, taken)
+            }
+            JxlState::Skip(remaining) => {
+                let skipped = remaining.min(chunk.len() as u64);
+                let state = if remaining > skipped {
+                    JxlState::Skip(remaining - skipped)
+                } else {
+                    JxlState::BoxHeader
+                };
+                (state, skipped as usize)
+            }
+            JxlState::PartIndex(remaining) => {
+                let taken = self.fill(chunk, 4);
+                if self.pending.len() < 4 {
+                    return (JxlState::PartIndex(remaining), taken);
+                }
+                // The high bit marks the last part of the codestream.
+                let last = self.pending[0] & 0x80 != 0;
+                self.pending.clear();
+                let state = match remaining {
+                    Some(remaining) if remaining < 4 => JxlState::Stopped,
+                    remaining => JxlState::Codestream {
+                        remaining: remaining.map(|remaining| remaining - 4),
+                        last,
+                    },
+                };
+                (state, taken)
+            }
+            JxlState::Codestream { remaining, last } => {
+                let wanted = JXL_SIZE_HEADER_BYTES - self.codestream.len();
+                let available = remaining.map_or(chunk.len(), |remaining| {
+                    remaining.min(chunk.len() as u64) as usize
+                });
+                let taken = wanted.min(available);
+                self.codestream.extend_from_slice(&chunk[..taken]);
+                let remaining = remaining.map(|remaining| remaining - taken as u64);
+                let state = if self.codestream.len() == JXL_SIZE_HEADER_BYTES
+                    || (last && remaining == Some(0))
+                {
+                    JxlState::Stopped
+                } else if remaining == Some(0) {
+                    JxlState::BoxHeader
+                } else {
+                    JxlState::Codestream { remaining, last }
+                };
+                (state, taken)
+            }
+            JxlState::Stopped => (JxlState::Stopped, chunk.len()),
+        }
+    }
+
+    /// Reads a complete box header from `pending` and starts its content.
+    fn start_box(&self) -> JxlState {
+        let size = u32::from_be_bytes([
+            self.pending[0],
+            self.pending[1],
+            self.pending[2],
+            self.pending[3],
+        ]);
+        let (header_len, box_len) = match size {
+            0 => (8, None),
+            1 => {
+                let mut large = [0; 8];
+                large.copy_from_slice(&self.pending[8..16]);
+                (16, Some(u64::from_be_bytes(large)))
+            }
+            size => (8, Some(u64::from(size))),
+        };
+        // `None` means the box runs to the end of the file.
+        let content = match box_len {
+            Some(len) if len < header_len => return JxlState::Stopped,
+            len => len.map(|len| len - header_len),
+        };
+        match (&self.pending[4..8], content) {
+            (b"jxlc", content) => JxlState::Codestream {
+                remaining: content,
+                last: true,
+            },
+            (b"jxlp", content) => JxlState::PartIndex(content),
+            (_, Some(content)) => JxlState::Skip(content),
+            // Nothing follows a box that runs to the end of the file.
+            (_, None) => JxlState::Stopped,
+        }
+    }
+
+    /// Appends bytes of `chunk` to `pending` until it holds `len` bytes; returns those taken.
+    fn fill(&mut self, chunk: &[u8], len: usize) -> usize {
+        let taken = len.saturating_sub(self.pending.len()).min(chunk.len());
+        self.pending.extend_from_slice(&chunk[..taken]);
+        taken
+    }
+
+    fn size(&self) -> Option<(u32, u32)> {
+        let size = imagesize::blob_size(&self.codestream).ok()?;
+        Some((
+            u32::try_from(size.width).ok()?,
+            u32::try_from(size.height).ok()?,
+        ))
+        .filter(|(width, height)| *width > 0 && *height > 0)
     }
 }
 
