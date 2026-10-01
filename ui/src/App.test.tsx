@@ -103,10 +103,13 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
-    invokeMock.mockRejectedValueOnce({
-      kind: "conflict",
-      message: "review item #17 cannot be resolved while Rejected",
-    });
+    invokeMock
+      .mockRejectedValueOnce({
+        kind: "conflict",
+        message: "review item #17 cannot be resolved while Rejected",
+      })
+      // The refused decision refreshes the reviews.
+      .mockResolvedValueOnce([reviewItem]);
     fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
 
     expect(
