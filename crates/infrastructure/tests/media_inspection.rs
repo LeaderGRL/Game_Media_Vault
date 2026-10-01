@@ -114,6 +114,36 @@ fn jpeg_xl_codestreams_after_large_container_boxes_still_give_the_pixel_size() {
 }
 
 #[test]
+fn heif_properties_after_large_boxes_still_give_the_pixel_size() {
+    // File type box, a 300 000-byte free box, then the meta box whose item properties hold
+    // the image spatial extents of a 1920 x 1080 image.
+    let mut avif = b"\0\0\0\x14ftypavif\0\0\0\0mif1".to_vec();
+    avif.extend_from_slice(&300_000_u32.to_be_bytes());
+    avif.extend_from_slice(b"free");
+    avif.resize(avif.len() + 300_000 - 8, 0);
+    let mut ispe = b"\0\0\0\x14ispe\0\0\0\0".to_vec();
+    ispe.extend_from_slice(&1920_u32.to_be_bytes());
+    ispe.extend_from_slice(&1080_u32.to_be_bytes());
+    let boxed = |box_type: &[u8], content: &[u8]| {
+        let mut bytes = (8 + content.len() as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(box_type);
+        bytes.extend_from_slice(content);
+        bytes
+    };
+    let iprp = boxed(b"iprp", &boxed(b"ipco", &ispe));
+    avif.extend(boxed(b"meta", &[&[0, 0, 0, 0][..], &iprp].concat()));
+
+    assert_eq!(
+        stored_media(&avif),
+        MediaInfo {
+            media_type: "image/avif".to_owned(),
+            width: Some(1920),
+            height: Some(1080),
+        }
+    );
+}
+
+#[test]
 fn other_raster_originals_are_recorded_as_images() {
     let image = |media_type: &str| MediaInfo {
         media_type: media_type.to_owned(),

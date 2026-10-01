@@ -162,13 +162,14 @@ fn is_start_of_frame(marker: u8) -> bool {
 const PORTABLE_ANYMAP: &str = "image/x-portable-anymap";
 
 /// Inspects an original while it streams: it keeps a bounded prefix for format detection and
-/// follows JPEG segments, the first TIFF image file directory, JPEG XL container boxes and
-/// portable anymap headers past it.
+/// follows JPEG segments, the first TIFF image file directory, HEIF and JPEG XL container
+/// boxes and portable anymap headers past it.
 #[derive(Default)]
 pub(crate) struct MediaInspector {
     header: Vec<u8>,
     jpeg: JpegFrameScanner,
     tiff: TiffDirectoryScanner,
+    heif: HeifPropertyScanner,
     jxl: JxlCodestreamScanner,
     pnm: PnmHeaderScanner,
 }
@@ -180,6 +181,7 @@ impl MediaInspector {
             .extend_from_slice(&chunk[..chunk.len().min(room)]);
         self.jpeg.update(chunk);
         self.tiff.update(chunk);
+        self.heif.update(chunk);
         self.jxl.update(chunk);
         self.pnm.update(chunk);
     }
@@ -189,6 +191,7 @@ impl MediaInspector {
         let streamed_size = match media.media_type.as_str() {
             "image/jpeg" => self.jpeg.size(),
             "image/tiff" if media.width.is_none() => self.tiff.size(),
+            "image/avif" | "image/heic" | "image/heif" if media.width.is_none() => self.heif.size(),
             "image/jxl" if media.width.is_none() => self.jxl.size(),
             // The portable anymap signature is two letters, so only a header read to its
             // dimensions identifies one.
@@ -291,6 +294,173 @@ impl PnmHeaderScanner {
     }
 }
 
+/// Type and content length of an ISO base media box; `None` lengths run to the end of the file.
+struct BoxHeader {
+    box_type: [u8; 4],
+    content_len: Option<u64>,
+}
+
+enum BoxHeaderRead {
+    Incomplete,
+    Complete(BoxHeader),
+    Invalid,
+}
+
+/// Reads the header of the next ISO base media box, as HEIF images and JPEG XL containers
+/// use them, from bytes that arrive in chunks.
+#[derive(Default)]
+struct BoxHeaderReader {
+    pending: Vec<u8>,
+}
+
+impl BoxHeaderReader {
+    /// Consumes header bytes from the start of `chunk`, returning how many it took.
+    fn read(&mut self, chunk: &[u8]) -> (usize, BoxHeaderRead) {
+        let mut taken = fill(&mut self.pending, chunk, 8);
+        // A size of 1 announces a 64-bit size after the type.
+        let large = self.pending.len() >= 8 && self.pending[..4] == [0, 0, 0, 1];
+        if large {
+            taken += fill(&mut self.pending, &chunk[taken..], 16);
+        }
+        if self.pending.len() < if large { 16 } else { 8 } {
+            return (taken, BoxHeaderRead::Incomplete);
+        }
+        let header = Self::parse(&self.pending);
+        self.pending.clear();
+        (
+            taken,
+            header.map_or(BoxHeaderRead::Invalid, BoxHeaderRead::Complete),
+        )
+    }
+
+    fn parse(bytes: &[u8]) -> Option<BoxHeader> {
+        let size = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let (header_len, box_len) = match size {
+            0 => (8, None),
+            1 => {
+                let mut large = [0; 8];
+                large.copy_from_slice(&bytes[8..16]);
+                (16, Some(u64::from_be_bytes(large)))
+            }
+            size => (8, Some(u64::from(size))),
+        };
+        let content_len = match box_len {
+            Some(len) if len < header_len => return None,
+            len => len.map(|len| len - header_len),
+        };
+        Some(BoxHeader {
+            box_type: [bytes[4], bytes[5], bytes[6], bytes[7]],
+            content_len,
+        })
+    }
+}
+
+/// Appends bytes of `chunk` to `pending` until it holds `len` bytes; returns those taken.
+fn fill(pending: &mut Vec<u8>, chunk: &[u8], len: usize) -> usize {
+    let taken = len.saturating_sub(pending.len()).min(chunk.len());
+    pending.extend_from_slice(&chunk[..taken]);
+    taken
+}
+
+/// Largest `ftyp` and `meta` boxes kept. Item properties sit in the `meta` box, which stays
+/// small since media data lives in other boxes.
+const MAX_HEIF_FILE_TYPE_BOX: u64 = 4 * 1024;
+const MAX_HEIF_META_BOX: u64 = 1024 * 1024;
+
+/// Keeps the `ftyp` and `meta` boxes of a HEIF image while its bytes stream past, so its image
+/// spatial extents are read wherever other boxes push the `meta` box.
+#[derive(Default)]
+struct HeifPropertyScanner {
+    state: HeifState,
+    headers: BoxHeaderReader,
+    /// The `ftyp` box, then the `meta` box once reached, headers included.
+    boxes: Vec<u8>,
+}
+
+#[derive(Default, Clone, Copy)]
+enum HeifState {
+    #[default]
+    BoxHeader,
+    Keep {
+        remaining: u64,
+        meta: bool,
+    },
+    Skip(u64),
+    Done,
+    Stopped,
+}
+
+impl HeifPropertyScanner {
+    fn update(&mut self, mut chunk: &[u8]) {
+        while !chunk.is_empty() {
+            let taken = match self.state {
+                HeifState::BoxHeader => {
+                    let (taken, header) = self.headers.read(chunk);
+                    match header {
+                        BoxHeaderRead::Incomplete => {}
+                        BoxHeaderRead::Invalid => self.state = HeifState::Stopped,
+                        BoxHeaderRead::Complete(header) => self.state = self.start_box(&header),
+                    }
+                    taken
+                }
+                HeifState::Keep { remaining, meta } => {
+                    let taken = remaining.min(chunk.len() as u64);
+                    self.boxes.extend_from_slice(&chunk[..taken as usize]);
+                    self.state = match remaining - taken {
+                        0 if meta => HeifState::Done,
+                        0 => HeifState::BoxHeader,
+                        remaining => HeifState::Keep { remaining, meta },
+                    };
+                    taken as usize
+                }
+                HeifState::Skip(remaining) => {
+                    let skipped = remaining.min(chunk.len() as u64);
+                    self.state = match remaining - skipped {
+                        0 => HeifState::BoxHeader,
+                        remaining => HeifState::Skip(remaining),
+                    };
+                    skipped as usize
+                }
+                HeifState::Done | HeifState::Stopped => return,
+            };
+            chunk = &chunk[taken..];
+        }
+    }
+
+    /// Keeps the leading `ftyp` box and the `meta` box, and skips the boxes between them.
+    fn start_box(&mut self, header: &BoxHeader) -> HeifState {
+        let first = self.boxes.is_empty();
+        let (keep, meta) = match (&header.box_type, header.content_len) {
+            (b"ftyp", Some(len)) if first && len <= MAX_HEIF_FILE_TYPE_BOX => (len, false),
+            // A HEIF image starts with its file type box.
+            _ if first => return HeifState::Stopped,
+            (b"meta", Some(len)) if len <= MAX_HEIF_META_BOX => (len, true),
+            (b"meta", _) | (_, None) => return HeifState::Stopped,
+            (_, Some(len)) => return HeifState::Skip(len),
+        };
+        // Both limits keep the box length within a compact header.
+        self.boxes
+            .extend_from_slice(&((keep + 8) as u32).to_be_bytes());
+        self.boxes.extend_from_slice(&header.box_type);
+        HeifState::Keep {
+            remaining: keep,
+            meta,
+        }
+    }
+
+    fn size(&self) -> Option<(u32, u32)> {
+        if !matches!(self.state, HeifState::Done) {
+            return None;
+        }
+        let size = imagesize::blob_size(&self.boxes).ok()?;
+        Some((
+            u32::try_from(size.width).ok()?,
+            u32::try_from(size.height).ok()?,
+        ))
+        .filter(|(width, height)| *width > 0 && *height > 0)
+    }
+}
+
 const JXL_CONTAINER_SIGNATURE: &[u8] = b"\0\0\0\x0cJXL \r\n\x87\n";
 
 /// Codestream bytes that hold a JPEG XL size header whatever its encoding.
@@ -301,7 +471,8 @@ const JXL_SIZE_HEADER_BYTES: usize = 16;
 #[derive(Default)]
 struct JxlCodestreamScanner {
     state: JxlState,
-    /// Bytes of the structure being read: the signature, a box header or a part index.
+    headers: BoxHeaderReader,
+    /// Bytes of the signature or of a part index being read.
     pending: Vec<u8>,
     codestream: Vec<u8>,
 }
@@ -350,17 +521,12 @@ impl JxlCodestreamScanner {
                 (state, taken)
             }
             JxlState::BoxHeader => {
-                let mut taken = self.fill(chunk, 8);
-                // A size of 1 announces a 64-bit size after the type.
-                let large = self.pending.len() >= 8 && self.pending[..4] == [0, 0, 0, 1];
-                if large {
-                    taken += self.fill(&chunk[taken..], 16);
-                }
-                if self.pending.len() < if large { 16 } else { 8 } {
-                    return (JxlState::BoxHeader, taken);
-                }
-                let state = self.start_box();
-                self.pending.clear();
+                let (taken, header) = self.headers.read(chunk);
+                let state = match header {
+                    BoxHeaderRead::Incomplete => JxlState::BoxHeader,
+                    BoxHeaderRead::Invalid => JxlState::Stopped,
+                    BoxHeaderRead::Complete(header) => Self::start_box(header),
+                };
                 (state, taken)
             }
             JxlState::Skip(remaining) => {
@@ -412,29 +578,9 @@ impl JxlCodestreamScanner {
         }
     }
 
-    /// Reads a complete box header from `pending` and starts its content.
-    fn start_box(&self) -> JxlState {
-        let size = u32::from_be_bytes([
-            self.pending[0],
-            self.pending[1],
-            self.pending[2],
-            self.pending[3],
-        ]);
-        let (header_len, box_len) = match size {
-            0 => (8, None),
-            1 => {
-                let mut large = [0; 8];
-                large.copy_from_slice(&self.pending[8..16]);
-                (16, Some(u64::from_be_bytes(large)))
-            }
-            size => (8, Some(u64::from(size))),
-        };
-        // `None` means the box runs to the end of the file.
-        let content = match box_len {
-            Some(len) if len < header_len => return JxlState::Stopped,
-            len => len.map(|len| len - header_len),
-        };
-        match (&self.pending[4..8], content) {
+    /// Starts the content of a box: the codestream is kept, other boxes are skipped.
+    fn start_box(header: BoxHeader) -> JxlState {
+        match (&header.box_type, header.content_len) {
             (b"jxlc", content) => JxlState::Codestream {
                 remaining: content,
                 last: true,
@@ -446,11 +592,8 @@ impl JxlCodestreamScanner {
         }
     }
 
-    /// Appends bytes of `chunk` to `pending` until it holds `len` bytes; returns those taken.
     fn fill(&mut self, chunk: &[u8], len: usize) -> usize {
-        let taken = len.saturating_sub(self.pending.len()).min(chunk.len());
-        self.pending.extend_from_slice(&chunk[..taken]);
-        taken
+        fill(&mut self.pending, chunk, len)
     }
 
     fn size(&self) -> Option<(u32, u32)> {
