@@ -180,16 +180,20 @@ pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortE
             path.display()
         )));
     }
-    for target in version + 1..=VAULT_SCHEMA_VERSION {
-        let migrate = MIGRATIONS[(target - OLDEST_SUPPORTED_SCHEMA_VERSION - 1) as usize];
+    loop {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        // Another opener may have upgraded the catalog while this one waited for the lock.
+        let version = read_pragma(&transaction, "user_version")?;
+        if version >= VAULT_SCHEMA_VERSION {
+            return Ok(());
+        }
+        let migrate = MIGRATIONS[(version - OLDEST_SUPPORTED_SCHEMA_VERSION) as usize];
         migrate(&transaction)?;
-        stamp(&transaction, target)?;
+        stamp(&transaction, version + 1)?;
         transaction.commit().map_err(sql_error)?;
     }
-    Ok(())
 }
 
 fn stamp(transaction: &Transaction<'_>, version: i32) -> Result<(), PortError> {
@@ -204,4 +208,70 @@ fn read_pragma(connection: &Connection, name: &str) -> Result<i32, PortError> {
     connection
         .query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))
         .map_err(sql_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Condvar, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
+
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    static WAITING_FOR_WRITE_LOCK: AtomicBool = AtomicBool::new(false);
+    static WAITING_SIGNAL: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
+
+    fn signal_waiting(_: i32) -> bool {
+        WAITING_FOR_WRITE_LOCK.store(true, Ordering::SeqCst);
+        WAITING_SIGNAL.1.notify_all();
+        thread::sleep(Duration::from_millis(1));
+        true
+    }
+
+    #[test]
+    fn a_catalog_upgraded_by_a_concurrent_opener_is_not_upgraded_again() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("catalog.sqlite3");
+        // The first opener read the oldest version and holds the write lock to upgrade it.
+        let mut first_opener = Connection::open(&path).unwrap();
+        create(&mut first_opener).unwrap();
+        first_opener
+            .execute_batch(&format!(
+                "PRAGMA user_version = {OLDEST_SUPPORTED_SCHEMA_VERSION}; BEGIN IMMEDIATE;"
+            ))
+            .unwrap();
+        let second_path = path.clone();
+        let second_opener = thread::spawn(move || {
+            let mut connection = Connection::open(&second_path).unwrap();
+            connection.busy_handler(Some(signal_waiting)).unwrap();
+            open(&mut connection, &second_path)
+        });
+        let guard = WAITING_SIGNAL.0.lock().unwrap();
+        let (_guard, timeout) = WAITING_SIGNAL
+            .1
+            .wait_timeout_while(guard, Duration::from_secs(5), |_| {
+                !WAITING_FOR_WRITE_LOCK.load(Ordering::SeqCst)
+            })
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "the second opener should wait for the lock"
+        );
+
+        first_opener
+            .execute_batch(&format!(
+                "PRAGMA user_version = {VAULT_SCHEMA_VERSION}; COMMIT;"
+            ))
+            .unwrap();
+
+        assert!(second_opener.join().unwrap().is_ok());
+    }
 }
