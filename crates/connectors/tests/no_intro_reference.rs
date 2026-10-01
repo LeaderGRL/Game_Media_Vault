@@ -277,3 +277,25 @@ fn connector_returns_no_releases_when_the_requested_bound_is_zero() {
 
     assert!(releases.is_empty());
 }
+
+#[test]
+fn platform_names_drop_dat_variant_qualifiers() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_headered_platform.dat");
+
+    let releases = NoIntroReferenceCatalog::new()
+        .read_releases(&fixture, 1)
+        .unwrap();
+
+    assert_eq!(
+        releases[0].platform,
+        "Nintendo - Nintendo Entertainment System"
+    );
+    assert!(releases[0].assertions.iter().any(|assertion| {
+        assertion.qualifier.as_deref() == Some("source_record")
+            && assertion.value
+                == "40:Nintendo - Nintendo Entertainment SystemSuper Mario Bros. (World)"
+    }));
+}

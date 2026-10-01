@@ -208,7 +208,8 @@ fn platform_bound_targets_respect_explicit_platform_filters() {
         candidates[0].platform,
         "Nintendo - Nintendo Entertainment System"
     );
-    assert_eq!(candidates[0].game_title, "Super Mario Bros. (World)");
+    assert_eq!(candidates[0].game_title, "Super Mario Bros.");
+    assert_eq!(candidates[0].region, "World");
 }
 
 #[test]
@@ -251,4 +252,51 @@ fn rejects_language_filters_without_source_language_evidence() {
     let error = connector.discover(&request).unwrap_err();
 
     assert!(error.0.contains("language"));
+}
+
+fn discover_one(game: &str) -> game_media_vault_domain::AssetCandidate {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        games: GameSelection::Explicit(vec![game.to_owned()]),
+        ..request_draft()
+    })
+    .unwrap();
+    connector.discover(&request).unwrap().remove(0)
+}
+
+fn request_draft() -> AcquisitionRequestDraft {
+    AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    }
+}
+
+#[test]
+fn candidates_carry_the_release_fields_encoded_in_the_no_intro_thumbnail_name() {
+    let candidate = discover_one("Tetris (World) (Rev 1)");
+
+    assert_eq!(candidate.game_title, "Tetris");
+    assert_eq!(candidate.region, "World");
+    assert_eq!(candidate.edition_name, "Rev 1");
+    assert_eq!(candidate.original_filename, "Tetris (World) (Rev 1).png");
+    assert_eq!(
+        candidate.provider_candidate_id.as_deref(),
+        Some("Nintendo_-_Nintendo_Entertainment_System/Named_Boxarts/Tetris (World) (Rev 1)")
+    );
+}
+
+#[test]
+fn untagged_thumbnail_names_keep_an_unknown_region_and_standard_edition() {
+    let candidate = discover_one("Homebrew Collection");
+
+    assert_eq!(candidate.game_title, "Homebrew Collection");
+    assert_eq!(candidate.region, "Unknown");
+    assert_eq!(candidate.edition_name, "Standard");
 }

@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Nintendo - Nintendo Entertainment System (Headered)</name>
+    <description>Nintendo - Nintendo Entertainment System (Headered)</description>
+  </header>
+  <game name="Super Mario Bros. (World)">
+    <description>Super Mario Bros. (World)</description>
+    <rom name="Super Mario Bros. (World).nes" size="40976" crc="3337EC46"/>
+  </game>
+</datafile>
