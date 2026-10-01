@@ -786,6 +786,26 @@ fn is_missing_match_value(signal: MatchSignal, value: &str) -> bool {
 pub struct StoredObject {
     pub hash: String,
     pub byte_len: u64,
+    pub media: MediaInfo,
+}
+
+/// What an original is, read from its bytes: its media type and, for images, its pixel size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaInfo {
+    pub media_type: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+impl MediaInfo {
+    /// Media whose bytes match no known format.
+    pub fn unknown() -> Self {
+        Self {
+            media_type: "application/octet-stream".to_owned(),
+            width: None,
+            height: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -800,6 +820,7 @@ pub struct PersistAsset {
     pub asset_type: AssetType,
     pub object_hash: String,
     pub byte_len: u64,
+    pub media: MediaInfo,
     pub original_filename: String,
     pub source_id: SourceId,
     pub source_asset_label: Option<String>,
@@ -829,6 +850,8 @@ pub struct LibraryAsset {
     pub asset_type: AssetType,
     pub object_hash: String,
     pub byte_len: u64,
+    #[serde(flatten)]
+    pub media: MediaInfo,
     pub original_filename: String,
     pub provenance: Vec<AssetProvenance>,
 }

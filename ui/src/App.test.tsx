@@ -36,6 +36,9 @@ const entry: LibraryEntry = {
       asset_type: "box_front",
       object_hash: "abc123",
       byte_len: 4096,
+      media_type: "image/png",
+      width: 1200,
+      height: 1600,
       original_filename: "mgs-front.png",
       provenance: [
         {

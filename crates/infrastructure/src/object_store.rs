@@ -6,7 +6,9 @@ use std::{
 };
 
 use game_media_vault_application::{ObjectStorePort, PortError};
-use game_media_vault_domain::StoredObject;
+use game_media_vault_domain::{MediaInfo, StoredObject};
+
+use crate::media::{MEDIA_HEADER_BYTES, inspect_media};
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -41,9 +43,11 @@ impl ContentAddressedStore {
             stored: StoredObject {
                 hash: String::new(),
                 byte_len: 0,
+                media: MediaInfo::unknown(),
             },
         };
         let mut hasher = blake3::Hasher::new();
+        let mut header = Vec::new();
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             let read = input.read(&mut buffer).map_err(io_error)?;
@@ -52,10 +56,13 @@ impl ContentAddressedStore {
             }
             hasher.update(&buffer[..read]);
             output.write_all(&buffer[..read]).map_err(io_error)?;
+            let header_room = MEDIA_HEADER_BYTES.saturating_sub(header.len());
+            header.extend_from_slice(&buffer[..read.min(header_room)]);
             staged.stored.byte_len += read as u64;
         }
         output.sync_all().map_err(io_error)?;
         staged.stored.hash = hasher.finalize().to_hex().to_string();
+        staged.stored.media = inspect_media(&header);
         Ok(staged)
     }
 

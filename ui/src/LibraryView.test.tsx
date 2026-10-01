@@ -19,6 +19,9 @@ const entry: LibraryEntry = {
       asset_type: "box_front",
       object_hash: "abc123",
       byte_len: 4096,
+      media_type: "image/png",
+      width: 1200,
+      height: 1600,
       original_filename: "mgs-front.png",
       provenance: [
         {
@@ -51,13 +54,27 @@ describe("LibraryView", () => {
     expect(screen.getByText("Original unavailable")).toBeInTheDocument();
   });
 
-  it("does not render non-image originals as images", () => {
+  it("shows the pixel size of image originals", () => {
+    render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
+
+    expect(screen.getByText("1200 × 1600 px")).toBeInTheDocument();
+  });
+
+  it("renders originals as images by their media type, not their file name", () => {
     render(
       <LibraryView
         entries={[
           {
             ...entry,
-            assets: [{ ...entry.assets[0], original_filename: "manual.pdf" }],
+            assets: [
+              {
+                ...entry.assets[0],
+                original_filename: "cover.png",
+                media_type: "application/pdf",
+                width: null,
+                height: null,
+              },
+            ],
           },
         ]}
         objectUrl={objectUrl}
@@ -65,7 +82,7 @@ describe("LibraryView", () => {
     );
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
-    expect(screen.getByText("manual.pdf")).toBeInTheDocument();
+    expect(screen.getByText("cover.png")).toBeInTheDocument();
   });
 
   it("shows canonical values with their confidence, sources and conflicts", () => {

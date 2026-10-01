@@ -146,8 +146,9 @@ fn persist_new_asset_row(
     transaction
         .execute(
             "INSERT INTO assets (
-                release_edition_id, asset_type, object_hash, byte_len, original_filename
-             ) VALUES (?1, ?2, ?3, ?4, ?5)
+                release_edition_id, asset_type, object_hash, byte_len, original_filename,
+                media_type, width, height
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(release_edition_id, asset_type, object_hash) DO NOTHING",
             params![
                 release_edition_id,
@@ -155,6 +156,9 @@ fn persist_new_asset_row(
                 record.object_hash,
                 byte_len,
                 record.original_filename,
+                record.media.media_type,
+                record.media.width,
+                record.media.height,
             ],
         )
         .map_err(sql_error)?;

@@ -7,7 +7,7 @@ use std::{
 use game_media_vault_application::{
     CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
 };
-use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
+use game_media_vault_domain::{AssetType, MediaInfo, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
@@ -142,6 +142,7 @@ fn canonical_provenance_identity_ignores_caller_filename_alias() {
         asset_type: AssetType::BoxFront,
         object_hash: "shared-object-hash".to_owned(),
         byte_len: 18,
+        media: MediaInfo::unknown(),
         original_filename: "alias-front.png".to_owned(),
         source_id: SourceId::from("local_import"),
         source_asset_label: None,
@@ -290,4 +291,40 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
     assert_eq!(second.game_id, first.game_id);
     assert_eq!(second.release_edition_id, first.release_edition_id);
     assert_ne!(second.asset_id, first.asset_id);
+}
+
+#[test]
+fn imported_originals_list_their_media_type_and_pixel_size() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let source = temp.path().join("front.png");
+    let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    png.extend_from_slice(&1200_u32.to_be_bytes());
+    png.extend_from_slice(&1600_u32.to_be_bytes());
+    png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    fs::write(&source, png).unwrap();
+
+    import_local_box_front(
+        &catalog,
+        &ContentAddressedStore::new(&vault),
+        ImportLocalBoxFrontRequest {
+            existing_game_id: None,
+            game_title: "Metal Gear Solid".to_owned(),
+            platform: "PlayStation".to_owned(),
+            region: "France".to_owned(),
+            edition_name: "Original".to_owned(),
+            source_path: source,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        catalog.list_library().unwrap()[0].assets[0].media,
+        MediaInfo {
+            media_type: "image/png".to_owned(),
+            width: Some(1200),
+            height: Some(1600),
+        }
+    );
 }

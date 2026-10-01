@@ -5,7 +5,7 @@ use game_media_vault_application::{
     import_local_box_front,
 };
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceId, StoredObject,
+    AssetType, ImportedAsset, LibraryEntry, MediaInfo, PersistAsset, SourceId, StoredObject,
 };
 use tempfile::tempdir;
 
@@ -21,6 +21,7 @@ impl ObjectStorePort for FakeObjectStore {
         Ok(StoredObject {
             hash: "abc123".to_owned(),
             byte_len: 4096,
+            media: cover_media(),
         })
     }
 }
@@ -89,6 +90,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
             asset_type: AssetType::BoxFront,
             object_hash: "abc123".to_owned(),
             byte_len: 4096,
+            media: cover_media(),
             original_filename: "cover-front.png".to_owned(),
             source_id: SourceId::from("local_import"),
             source_asset_label: None,
@@ -118,4 +120,12 @@ fn a_directory_is_not_a_source_file() {
     .unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+}
+
+fn cover_media() -> MediaInfo {
+    MediaInfo {
+        media_type: "image/png".to_owned(),
+        width: Some(1200),
+        height: Some(1600),
+    }
 }

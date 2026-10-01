@@ -1,7 +1,6 @@
 import { useState } from "react";
 
 import {
-  filenameMediaType,
   type LibraryAsset,
   type LibraryEntry,
   type ReleaseAssertionField,
@@ -81,6 +80,11 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
                     <div>
                       <span className="detail-label">Size</span>
                       <strong>{formatBytes(asset.byte_len)}</strong>
+                      {asset.width !== null && asset.height !== null ? (
+                        <span className="pixel-size">
+                          {asset.width} × {asset.height} px
+                        </span>
+                      ) : null}
                     </div>
                   </div>
 
@@ -129,7 +133,7 @@ interface AssetOriginalProps {
 function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
   const [unavailable, setUnavailable] = useState(false);
 
-  if (!filenameMediaType(asset.original_filename).startsWith("image/")) {
+  if (!asset.media_type.startsWith("image/")) {
     return null;
   }
   if (unavailable) {

@@ -409,7 +409,7 @@ vault/
     ...
 ```
 
-The database records MIME type, byte length, dimensions/duration where applicable, original filename, source relationships, integrity information, and object hash.
+The database records MIME type, byte length, dimensions/duration where applicable, original filename, source relationships, integrity information, and object hash. The object store reads the media type and pixel size from the first bytes of each original while storing it, so they describe the bytes rather than a file extension; originals whose format is unknown are kept as `application/octet-stream`.
 
 Identical files from multiple Sources reuse one physical object while retaining each provenance record.
 

@@ -1,7 +1,7 @@
 use game_media_vault_application::{CatalogPort, ObjectStorePort};
 use game_media_vault_domain::{
-    AssetCandidateMatch, AssetType, MatchConfidence, MatchEvidence, MatchSignal, PersistAsset,
-    SourceId,
+    AssetCandidateMatch, AssetType, MatchConfidence, MatchEvidence, MatchSignal, MediaInfo,
+    PersistAsset, SourceId,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -27,6 +27,7 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
             asset_type: AssetType::BoxFront,
             object_hash: stored.hash.clone(),
             byte_len: stored.byte_len,
+            media: MediaInfo::unknown(),
             original_filename: "Super Mario Bros. (World).png".to_owned(),
             source_id: SourceId::from("provider-added-without-domain-change"),
             source_asset_label: Some("Named_Boxarts".to_owned()),
@@ -77,6 +78,7 @@ fn explicit_release_target_attaches_asset_to_that_release() {
             asset_type: AssetType::BoxFront,
             object_hash: "existing-hash".to_owned(),
             byte_len: 10,
+            media: MediaInfo::unknown(),
             original_filename: "existing.png".to_owned(),
             source_id: SourceId::from("fixture"),
             source_asset_label: None,
@@ -96,6 +98,7 @@ fn explicit_release_target_attaches_asset_to_that_release() {
             asset_type: AssetType::BoxFront,
             object_hash: "matched-hash".to_owned(),
             byte_len: 11,
+            media: MediaInfo::unknown(),
             original_filename: "matched.png".to_owned(),
             source_id: SourceId::from("fixture"),
             source_asset_label: None,
@@ -123,6 +126,7 @@ fn explicit_release_target_is_validated_before_duplicate_lookup() {
         asset_type: AssetType::BoxFront,
         object_hash: "shared-hash".to_owned(),
         byte_len: 10,
+        media: MediaInfo::unknown(),
         original_filename: "front.png".to_owned(),
         source_id: SourceId::from("fixture"),
         source_asset_label: None,
@@ -161,6 +165,7 @@ fn explicit_release_target_scopes_duplicate_lookup_to_that_release() {
         asset_type: AssetType::BoxFront,
         object_hash: "shared-hash".to_owned(),
         byte_len: 10,
+        media: MediaInfo::unknown(),
         original_filename: "front.png".to_owned(),
         source_id: SourceId::from("fixture"),
         source_asset_label: None,
@@ -240,6 +245,7 @@ fn matched_asset_round_trips_its_decision_evidence() {
             asset_type: AssetType::BoxFront,
             object_hash: "matched-hash".to_owned(),
             byte_len: 11,
+            media: MediaInfo::unknown(),
             original_filename: "matched.png".to_owned(),
             source_id: SourceId::from("fixture"),
             source_asset_label: None,
@@ -294,6 +300,7 @@ fn deduplicated_asset_preserves_match_decision_per_provenance() {
         asset_type: AssetType::BoxFront,
         object_hash: "shared-matched-hash".to_owned(),
         byte_len: 11,
+        media: MediaInfo::unknown(),
         original_filename: "matched.png".to_owned(),
         source_id: SourceId::from("provider-one"),
         source_asset_label: Some("front".to_owned()),

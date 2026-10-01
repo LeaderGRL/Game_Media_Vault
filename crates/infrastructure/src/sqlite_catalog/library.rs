@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use game_media_vault_application::PortError;
 use game_media_vault_domain::{
-    AssetCandidateMatch, AssetProvenance, LibraryAsset, LibraryEntry, ReleaseAssertion, SourceId,
+    AssetCandidateMatch, AssetProvenance, LibraryAsset, LibraryEntry, MediaInfo, ReleaseAssertion,
+    SourceId,
 };
 
 use super::{
@@ -23,7 +24,8 @@ impl SqliteCatalog {
                         r.id, r.platform, r.region, r.edition_name,
                         a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
                         p.source_kind, p.source_asset_label, p.source_location,
-                        p.match_decision_json
+                        p.match_decision_json,
+                        a.media_type, a.width, a.height
                      FROM release_editions r
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
@@ -108,6 +110,16 @@ impl SqliteCatalog {
                     .ok_or_else(|| {
                         PortError("catalog asset is missing its original filename".into())
                     })?;
+                let media = MediaInfo {
+                    media_type: row
+                        .get::<_, Option<String>>(15)
+                        .map_err(sql_error)?
+                        .ok_or_else(|| {
+                            PortError("catalog asset is missing its media type".into())
+                        })?,
+                    width: row.get(16).map_err(sql_error)?,
+                    height: row.get(17).map_err(sql_error)?,
+                };
                 let mut provenance = Vec::new();
                 if let (Some(id), Some(location)) = (source_id, source_location) {
                     provenance.push(AssetProvenance {
@@ -123,6 +135,7 @@ impl SqliteCatalog {
                     object_hash,
                     byte_len: u64::try_from(byte_len)
                         .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
+                    media,
                     original_filename,
                     provenance,
                 });

@@ -92,6 +92,7 @@ pub fn import_local_box_front(
         asset_type: AssetType::BoxFront,
         object_hash: stored.hash,
         byte_len: stored.byte_len,
+        media: stored.media,
         original_filename,
         source_id: SourceId::from("local_import"),
         source_asset_label: None,

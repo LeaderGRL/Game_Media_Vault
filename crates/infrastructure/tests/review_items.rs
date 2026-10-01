@@ -5,9 +5,9 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset,
-    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem,
-    ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal, MediaInfo, NewReviewItem,
+    PersistAsset, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, ReviewDecision,
+    ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::{TempDir, tempdir};
@@ -599,6 +599,7 @@ fn auto_linked_record() -> PersistAsset {
         asset_type: AssetType::BoxFront,
         object_hash: "auto-linked-object".to_owned(),
         byte_len: 12,
+        media: MediaInfo::unknown(),
         original_filename: "front.png".to_owned(),
         source_id: SourceId::from(SOURCE_ID),
         source_asset_label: Some("front".to_owned()),

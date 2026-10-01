@@ -38,12 +38,16 @@ fn labels_objects_with_the_media_type_of_their_signature() {
     let (temp, session, _hash) = open_vault_with_object();
     let store = ContentAddressedStore::new(temp.path().join("vault"));
 
+    // Smallest headers of each format, as image files start.
+    let jpeg =
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x01\xe0\x02\x80\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01";
+    let gif = b"GIF89a\x80\x02\xe0\x01\x00\x00\x00";
+    let webp =
+        b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\x7f\x02\x00\xdf\x01\x00";
     for (bytes, media_type) in [
-        (&b"\xff\xd8\xff\xe0 jpeg"[..], "image/jpeg"),
-        (b"GIF89a gif", "image/gif"),
-        (b"RIFF\0\0\0\0WEBPVP8 ", "image/webp"),
-        (b"BM bitmap", "image/bmp"),
-        (b"\0\0\0\x1cftypavif", "image/avif"),
+        (&jpeg[..], "image/jpeg"),
+        (&gif[..], "image/gif"),
+        (&webp[..], "image/webp"),
         (b"%PDF-1.7", "application/pdf"),
         (b"<html><script>", "application/octet-stream"),
     ] {

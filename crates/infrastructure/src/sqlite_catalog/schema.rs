@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 2;
+const VAULT_SCHEMA_VERSION: i32 = 3;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -17,7 +17,23 @@ const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
 type Migration = fn(&Transaction<'_>) -> Result<(), PortError>;
 
 /// Entry `i` upgrades a catalog from `OLDEST_SUPPORTED_SCHEMA_VERSION + i` to the next version.
-const MIGRATIONS: &[Migration] = &[];
+const MIGRATIONS: &[Migration] = &[add_asset_media];
+
+/// Version 3 records what each original is. Assets imported before keep unknown media until
+/// vault verification inspects their objects again. The columns match the `assets` layout of
+/// `SCHEMA`.
+fn add_asset_media(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(
+            "ALTER TABLE assets
+                 ADD COLUMN media_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+             ALTER TABLE assets
+                 ADD COLUMN width INTEGER CHECK(width IS NULL OR width > 0);
+             ALTER TABLE assets
+                 ADD COLUMN height INTEGER CHECK(height IS NULL OR height > 0);",
+        )
+        .map_err(sql_error)
+}
 
 const _: () = assert!(
     MIGRATIONS.len() as i32 == VAULT_SCHEMA_VERSION - OLDEST_SUPPORTED_SCHEMA_VERSION,
@@ -59,6 +75,9 @@ const SCHEMA: &str = "
         object_hash TEXT NOT NULL,
         byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
         original_filename TEXT NOT NULL,
+        media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+        width INTEGER CHECK(width IS NULL OR width > 0),
+        height INTEGER CHECK(height IS NULL OR height > 0),
         UNIQUE(release_edition_id, asset_type, object_hash)
     );
     CREATE TABLE asset_provenance (

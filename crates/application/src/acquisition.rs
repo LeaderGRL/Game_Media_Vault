@@ -374,6 +374,7 @@ impl Acquisition<'_> {
             asset_type: candidate.asset_type,
             object_hash: stored.hash,
             byte_len: stored.byte_len,
+            media: stored.media,
             original_filename: candidate.original_filename.clone(),
             source_id: candidate.source_id.clone(),
             source_asset_label: candidate.source_asset_label.clone(),

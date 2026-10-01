@@ -160,7 +160,7 @@ mod tests {
     };
 
     use game_media_vault_application::CatalogPort;
-    use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
+    use game_media_vault_domain::{AssetType, MediaInfo, PersistAsset, SourceId};
     use tempfile::tempdir;
 
     use super::*;
@@ -224,6 +224,7 @@ mod tests {
                             asset_type: AssetType::BoxFront,
                             object_hash: "shared-object-hash".to_owned(),
                             byte_len: 42,
+                            media: MediaInfo::unknown(),
                             original_filename: "front.png".to_owned(),
                             source_id: SourceId::from("local_import"),
                             source_asset_label: None,

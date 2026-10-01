@@ -32,6 +32,10 @@ export interface LibraryAsset {
   asset_type: AssetType;
   object_hash: string;
   byte_len: number;
+  /** Media type read from the original bytes. */
+  media_type: string;
+  width: number | null;
+  height: number | null;
   original_filename: string;
   provenance: AssetProvenance[];
 }
@@ -143,7 +147,7 @@ export function previewMediaType(bytes: Uint8Array, filename: string): string {
 }
 
 /** Media type suggested by a filename extension, for media whose bytes are not at hand. */
-export function filenameMediaType(filename: string): string {
+function filenameMediaType(filename: string): string {
   const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
   return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
 }
