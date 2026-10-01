@@ -27,6 +27,7 @@ impl ReferenceCatalogSourcePort for SyntheticSource {
 #[derive(Default)]
 struct BatchRecordingCatalog {
     batch_sizes: RefCell<Vec<usize>>,
+    assertion_locations: RefCell<Vec<String>>,
 }
 
 impl ReferenceCatalogRepositoryPort for BatchRecordingCatalog {
@@ -42,6 +43,12 @@ impl ReferenceCatalogRepositoryPort for BatchRecordingCatalog {
         records: Vec<ReferenceReleaseRecord>,
     ) -> Result<Vec<ImportedReleaseEdition>, PortError> {
         self.batch_sizes.borrow_mut().push(records.len());
+        self.assertion_locations.borrow_mut().extend(
+            records
+                .iter()
+                .flat_map(|record| &record.assertions)
+                .map(|assertion| assertion.source_location.clone()),
+        );
         Ok(records
             .into_iter()
             .enumerate()
@@ -95,5 +102,57 @@ fn reference_release(index: usize) -> ReferenceReleaseRecord {
                 value: format!("synthetic:{index}"),
             },
         ],
+    }
+}
+
+#[derive(Default)]
+struct PathRecordingSource {
+    source_paths: RefCell<Vec<PathBuf>>,
+}
+
+impl ReferenceCatalogSourcePort for PathRecordingSource {
+    fn read_releases(
+        &self,
+        source_path: &Path,
+        _max_games: usize,
+    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+        self.source_paths
+            .borrow_mut()
+            .push(source_path.to_path_buf());
+        Ok(vec![reference_release(0)])
+    }
+}
+
+#[test]
+fn reference_sources_read_the_canonical_path_and_assertions_record_a_plain_location() {
+    let source = PathRecordingSource::default();
+    let catalog = BatchRecordingCatalog::default();
+    let requested = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("..")
+        .join("Cargo.toml");
+
+    import_reference_catalog(
+        &catalog,
+        &source,
+        ImportReferenceCatalogRequest {
+            source_path: requested.clone(),
+            max_games: 1,
+        },
+    )
+    .unwrap();
+
+    // Reading keeps the canonical path, verbatim on Windows, so every valid file stays readable.
+    assert_eq!(
+        source.source_paths.borrow()[0],
+        std::fs::canonicalize(&requested).unwrap()
+    );
+    let locations = catalog.assertion_locations.borrow();
+    assert_eq!(locations.len(), 2);
+    for location in locations.iter() {
+        assert!(Path::new(location).is_absolute(), "{location}");
+        assert!(!location.starts_with(r"\\?\"), "{location}");
+        assert!(!location.contains(".."), "{location}");
+        assert!(location.ends_with("Cargo.toml"), "{location}");
     }
 }
