@@ -74,6 +74,9 @@ export function App() {
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
+      if (activeView === "runs") {
+        await refreshRuns(requestedVaultRoot);
+      }
     } catch (reason) {
       if (
         activeVaultRoot.current === requestedVaultRoot &&
@@ -224,6 +227,8 @@ export function App() {
 
   async function executeRun(runId: number) {
     const actingVaultRoot = loadedVaultRoot;
+    // A vault loaded while this execution runs tracks its own executions.
+    const actingLoadGeneration = vaultLoadRequestGeneration.current;
     setExecutingRunIds((current) => new Set(current).add(runId));
     setError(null);
     try {
@@ -236,7 +241,9 @@ export function App() {
         setError(errorMessage(reason));
       }
     } finally {
-      setExecutingRunIds((current) => withoutRun(current, runId));
+      if (vaultLoadRequestGeneration.current === actingLoadGeneration) {
+        setExecutingRunIds((current) => withoutRun(current, runId));
+      }
     }
     // Executions persist imports, Review Items and progress as they go, even when they fail.
     try {

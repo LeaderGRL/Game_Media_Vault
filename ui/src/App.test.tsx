@@ -949,6 +949,45 @@ describe("App acquisition", () => {
     expect(screen.getByText("Rejected")).toBeInTheDocument();
   });
 
+  it("keeps another vault's execution running when an older one finishes", async () => {
+    const executions: Array<() => void> = [];
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise<void>((resolve) => executions.push(() => resolve()));
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(executions).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(executions).toHaveLength(2));
+    await act(async () => executions[0]());
+
+    expect(screen.getByRole("button", { name: "Executing…" })).toBeDisabled();
+  });
+
+  it("lists the runs of a vault loaded from the Runs view", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+  });
+
   it("asks for a vault before starting an acquisition", async () => {
     invokeMock.mockResolvedValue([]);
     render(<App />);
