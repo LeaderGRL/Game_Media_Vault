@@ -46,8 +46,9 @@ export function App() {
       ) {
         return;
       }
-      setEntries(library);
+      // A decision made meanwhile refreshes both lists itself; this load read them before it.
       if (reviewMutationGeneration.current === reviewGenerationAtLoadStart) {
+        setEntries(library);
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
