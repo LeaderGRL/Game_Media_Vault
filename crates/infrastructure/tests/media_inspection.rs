@@ -100,3 +100,23 @@ fn icon_originals_are_recorded_as_images() {
         }
     );
 }
+
+#[test]
+fn jpeg_frames_after_large_metadata_still_give_the_pixel_size() {
+    // Five maximal APP1 segments (about 320 KiB of metadata) precede the frame header.
+    let mut jpeg = vec![0xff, 0xd8];
+    for _ in 0..5 {
+        jpeg.extend_from_slice(&[0xff, 0xe1, 0xff, 0xff]);
+        jpeg.extend(std::iter::repeat_n(0, 0xffff - 2));
+    }
+    jpeg.extend_from_slice(&jpeg_header(2400, 3200)[2..]);
+
+    assert_eq!(
+        stored_media(&jpeg),
+        MediaInfo {
+            media_type: "image/jpeg".to_owned(),
+            width: Some(2400),
+            height: Some(3200),
+        }
+    );
+}
