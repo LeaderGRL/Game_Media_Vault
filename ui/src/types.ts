@@ -124,6 +124,10 @@ export function previewMediaType(bytes: Uint8Array, filename: string): string {
   if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP") {
     return "image/webp";
   }
+  // ISO-BMFF images start with an `ftyp` box naming their brand.
+  if (bytes.length >= 12 && ascii(bytes, 4, 8) === "ftyp" && ["avif", "avis"].includes(ascii(bytes, 8, 12))) {
+    return "image/avif";
+  }
   const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
   return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
 }

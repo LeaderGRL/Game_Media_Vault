@@ -24,4 +24,12 @@ describe("previewMediaType", () => {
     expect(previewMediaType(jpeg, "cover")).toBe("image/jpeg");
     expect(previewMediaType(gif, "cover.png")).toBe("image/gif");
   });
+
+  it("recognizes AVIF bytes by their ISO-BMFF brand", () => {
+    const avif = new Uint8Array([0, 0, 0, 0x1c, ...new TextEncoder().encode("ftypavif")]);
+    const sequence = new Uint8Array([0, 0, 0, 0x1c, ...new TextEncoder().encode("ftypavis")]);
+
+    expect(previewMediaType(avif, "cover.jpg")).toBe("image/avif");
+    expect(previewMediaType(sequence, "cover.jpg")).toBe("image/avif");
+  });
 });
