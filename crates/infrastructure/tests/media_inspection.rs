@@ -144,6 +144,23 @@ fn other_raster_originals_are_recorded_as_images() {
 }
 
 #[test]
+fn portable_anymap_headers_with_long_comments_still_give_the_pixel_size() {
+    // A 300 000-byte comment separates the magic number from the dimensions.
+    let mut pnm = b"P6\n# ".to_vec();
+    pnm.extend(std::iter::repeat_n(b'x', 300_000));
+    pnm.extend_from_slice(b"\n640 480\n255\n\0\0\0");
+
+    assert_eq!(
+        stored_media(&pnm),
+        MediaInfo {
+            media_type: "image/x-portable-anymap".to_owned(),
+            width: Some(640),
+            height: Some(480),
+        }
+    );
+}
+
+#[test]
 fn text_resembling_a_portable_anymap_signature_stays_opaque() {
     // Two bytes are all the PNM signature is, so a header without dimensions is not trusted.
     assert_eq!(

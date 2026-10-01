@@ -5,9 +5,17 @@ use imagesize::{Compression, ImageType};
 /// found by `JpegFrameScanner` while the bytes stream past.
 const MEDIA_HEADER_BYTES: usize = 256 * 1024;
 
+/// Identifies an original from its bytes: its media type and, for images, their pixel size.
+/// It reads them as storing does, so both always agree.
+pub fn inspect_media(bytes: &[u8]) -> MediaInfo {
+    let mut inspector = MediaInspector::default();
+    inspector.update(bytes);
+    inspector.finish()
+}
+
 /// Identifies an original from its first bytes: its media type and, for images whose header
 /// fits in `header`, their pixel size.
-pub fn inspect_media(header: &[u8]) -> MediaInfo {
+fn inspect_header(header: &[u8]) -> MediaInfo {
     if header.starts_with(b"%PDF-") {
         return MediaInfo {
             media_type: "application/pdf".to_owned(),
@@ -22,10 +30,6 @@ pub fn inspect_media(header: &[u8]) -> MediaInfo {
         return MediaInfo::unknown();
     };
     let size = imagesize::blob_size(header).ok();
-    // The portable anymap signature is two letters, so only a readable header identifies one.
-    if image_type == ImageType::Pnm && size.is_none() {
-        return MediaInfo::unknown();
-    }
     MediaInfo {
         media_type: media_type.to_owned(),
         width: size.and_then(|size| u32::try_from(size.width).ok()),
@@ -46,7 +50,7 @@ fn image_media_type(image_type: ImageType) -> Option<&'static str> {
         ImageType::Heif(Compression::Av1) => Some("image/avif"),
         ImageType::Heif(Compression::Hevc) => Some("image/heic"),
         ImageType::Heif(_) => Some("image/heif"),
-        ImageType::Pnm => Some("image/x-portable-anymap"),
+        ImageType::Pnm => Some(PORTABLE_ANYMAP),
         ImageType::Qoi => Some("image/qoi"),
         ImageType::Tga => Some("image/x-tga"),
         ImageType::Farbfeld => Some("image/x-farbfeld"),
@@ -155,15 +159,18 @@ fn is_start_of_frame(marker: u8) -> bool {
     matches!(marker, 0xc0..=0xcf) && !matches!(marker, 0xc4 | 0xc8 | 0xcc)
 }
 
+const PORTABLE_ANYMAP: &str = "image/x-portable-anymap";
+
 /// Inspects an original while it streams: it keeps a bounded prefix for format detection and
-/// follows JPEG segments, the first TIFF image file directory and JPEG XL container boxes past
-/// it.
+/// follows JPEG segments, the first TIFF image file directory, JPEG XL container boxes and
+/// portable anymap headers past it.
 #[derive(Default)]
 pub(crate) struct MediaInspector {
     header: Vec<u8>,
     jpeg: JpegFrameScanner,
     tiff: TiffDirectoryScanner,
     jxl: JxlCodestreamScanner,
+    pnm: PnmHeaderScanner,
 }
 
 impl MediaInspector {
@@ -174,14 +181,21 @@ impl MediaInspector {
         self.jpeg.update(chunk);
         self.tiff.update(chunk);
         self.jxl.update(chunk);
+        self.pnm.update(chunk);
     }
 
     pub(crate) fn finish(self) -> MediaInfo {
-        let mut media = inspect_media(&self.header);
+        let mut media = inspect_header(&self.header);
         let streamed_size = match media.media_type.as_str() {
             "image/jpeg" => self.jpeg.size(),
             "image/tiff" if media.width.is_none() => self.tiff.size(),
             "image/jxl" if media.width.is_none() => self.jxl.size(),
+            // The portable anymap signature is two letters, so only a header read to its
+            // dimensions identifies one.
+            PORTABLE_ANYMAP => match self.pnm.size() {
+                Some(size) => Some(size),
+                None => return MediaInfo::unknown(),
+            },
             _ => None,
         };
         if let Some((width, height)) = streamed_size {
@@ -189,6 +203,91 @@ impl MediaInspector {
             media.height = Some(height);
         }
         media
+    }
+}
+
+/// Reads the dimensions of a portable anymap header while its bytes stream past, through
+/// comments of any length.
+#[derive(Default)]
+struct PnmHeaderScanner {
+    state: PnmState,
+    width: u32,
+}
+
+#[derive(Default, Clone, Copy)]
+enum PnmState {
+    #[default]
+    Magic,
+    MagicKind,
+    /// The magic number is followed by whitespace or a comment.
+    AfterMagic,
+    /// Whitespace before the width (field 0) or the height (field 1).
+    Separator(usize),
+    /// A comment, up to the end of its line, before a field.
+    Comment(usize),
+    Number(usize, u32),
+    Found(u32, u32),
+    Stopped,
+}
+
+impl PnmHeaderScanner {
+    fn update(&mut self, mut chunk: &[u8]) {
+        while let Some((&byte, rest)) = chunk.split_first() {
+            if let PnmState::Comment(field) = self.state {
+                // Skip the comment to its line end in one step.
+                match chunk.iter().position(|byte| matches!(byte, b'\n' | b'\r')) {
+                    Some(end) => {
+                        self.state = PnmState::Separator(field);
+                        chunk = &chunk[end + 1..];
+                    }
+                    None => return,
+                }
+                continue;
+            }
+            self.state = self.next(byte);
+            if matches!(self.state, PnmState::Found(..) | PnmState::Stopped) {
+                return;
+            }
+            chunk = rest;
+        }
+    }
+
+    fn next(&mut self, byte: u8) -> PnmState {
+        let space = byte.is_ascii_whitespace();
+        match (self.state, byte) {
+            (PnmState::Magic, b'P') => PnmState::MagicKind,
+            (PnmState::MagicKind, b'1'..=b'6') => PnmState::AfterMagic,
+            (PnmState::AfterMagic, b'#') => PnmState::Comment(0),
+            (PnmState::Separator(field), b'#') => PnmState::Comment(field),
+            (PnmState::AfterMagic, _) if space => PnmState::Separator(0),
+            (PnmState::Separator(field), _) if space => PnmState::Separator(field),
+            (PnmState::Separator(field), b'0'..=b'9') => {
+                PnmState::Number(field, u32::from(byte - b'0'))
+            }
+            (PnmState::Number(field, value), b'0'..=b'9') => value
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(u32::from(byte - b'0')))
+                .map_or(PnmState::Stopped, |value| PnmState::Number(field, value)),
+            (PnmState::Number(0, width), _) if space || byte == b'#' => {
+                self.width = width;
+                if space {
+                    PnmState::Separator(1)
+                } else {
+                    PnmState::Comment(1)
+                }
+            }
+            (PnmState::Number(_, height), _) if space || byte == b'#' => {
+                PnmState::Found(self.width, height)
+            }
+            _ => PnmState::Stopped,
+        }
+    }
+
+    fn size(&self) -> Option<(u32, u32)> {
+        match self.state {
+            PnmState::Found(width, height) if width > 0 && height > 0 => Some((width, height)),
+            _ => None,
+        }
     }
 }
 
