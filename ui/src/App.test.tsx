@@ -191,6 +191,31 @@ describe("App", () => {
     expect(preview).not.toHaveAttribute("src", "https://example.invalid/review/401");
   });
 
+  it("refreshes a review that changed elsewhere when its decision is refused", async () => {
+    const autoResolved: ReviewItem = { ...reviewItem, status: "auto_resolved" };
+    let refused = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "resolve_review_item") {
+        refused = true;
+        return Promise.reject("review item #17 cannot be resolved while AutoResolved");
+      }
+      if (command === "list_review_items") {
+        return Promise.resolve([refused ? autoResolved : reviewItem]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    expect(
+      await screen.findByText("review item #17 cannot be resolved while AutoResolved"),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Auto-resolved")).toBeInTheDocument();
+  });
+
   it("refreshes the whole review list after a decision", async () => {
     const otherReviewItem: ReviewItem = {
       ...reviewItem,
@@ -431,6 +456,9 @@ describe("App", () => {
           });
         }
         return Promise.resolve([acceptedFirst, acceptedSecond]);
+      }
+      if (command === "list_library") {
+        return Promise.resolve([]);
       }
       throw new Error(`unexpected command: ${command}`);
     });

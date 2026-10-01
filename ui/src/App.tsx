@@ -116,6 +116,22 @@ export function App() {
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(String(reason));
+        // A refused decision usually means the item changed elsewhere; show its current state.
+        reviewRefreshRequestGeneration.current += 1;
+        const refusalRefreshGeneration = reviewRefreshRequestGeneration.current;
+        try {
+          const reviews = await invoke<ReviewItem[]>("list_review_items", {
+            vault_root: resolvingVaultRoot,
+          });
+          if (
+            activeVaultRoot.current === resolvingVaultRoot &&
+            refusalRefreshGeneration === reviewRefreshRequestGeneration.current
+          ) {
+            setReviewItems(reviews);
+          }
+        } catch {
+          // The refused decision stays the reported error.
+        }
       }
     } finally {
       if (activeVaultRoot.current === resolvingVaultRoot) {
