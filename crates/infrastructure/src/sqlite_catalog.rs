@@ -873,7 +873,8 @@ fn persist_release_assertions(
     Ok(())
 }
 
-/// Records which acquisition candidate produced a provenance row.
+/// Records that an acquisition candidate supports a provenance row. Distinct candidates can
+/// share one row when they point at the same locator and bytes.
 fn tag_candidate_provenance(
     transaction: &Transaction<'_>,
     imported: &ImportedAsset,
@@ -883,7 +884,8 @@ fn tag_candidate_provenance(
 ) -> Result<(), PortError> {
     transaction
         .execute(
-            "UPDATE asset_provenance SET candidate_identity = ?1
+            "INSERT OR IGNORE INTO asset_provenance_candidates (provenance_id, candidate_identity)
+             SELECT id, ?1 FROM asset_provenance
              WHERE asset_id = ?2 AND source_kind = ?3 AND source_location = ?4",
             params![
                 candidate_identity,
@@ -896,9 +898,10 @@ fn tag_candidate_provenance(
     Ok(())
 }
 
-/// Removes the candidate's acquisition links, except to `keep_release_edition_id`. Assets left
-/// without provenance leave the library; their original objects stay in the store until vault
-/// verification collects them.
+/// Removes the candidate's acquisition links, except to `keep_release_edition_id`. Provenance
+/// still supported by another candidate stays; assets left without provenance leave the
+/// library while their original objects stay in the store until vault verification collects
+/// them.
 fn detach_candidate_links(
     transaction: &Transaction<'_>,
     candidate_identity: &str,
@@ -906,10 +909,11 @@ fn detach_candidate_links(
 ) -> Result<(), PortError> {
     let detached = transaction
         .prepare(
-            "SELECT provenance.id, provenance.asset_id
-             FROM asset_provenance AS provenance
+            "SELECT link.provenance_id, provenance.asset_id
+             FROM asset_provenance_candidates AS link
+             JOIN asset_provenance AS provenance ON provenance.id = link.provenance_id
              JOIN assets AS asset ON asset.id = provenance.asset_id
-             WHERE provenance.candidate_identity = ?1
+             WHERE link.candidate_identity = ?1
                AND (?2 IS NULL OR asset.release_edition_id != ?2)",
         )
         .map_err(sql_error)?
@@ -921,6 +925,25 @@ fn detach_candidate_links(
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql_error)?;
     for (provenance_id, asset_id) in detached {
+        transaction
+            .execute(
+                "DELETE FROM asset_provenance_candidates
+                 WHERE provenance_id = ?1 AND candidate_identity = ?2",
+                params![provenance_id, candidate_identity],
+            )
+            .map_err(sql_error)?;
+        let still_supported: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM asset_provenance_candidates WHERE provenance_id = ?1
+                 )",
+                params![provenance_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if still_supported {
+            continue;
+        }
         transaction
             .execute(
                 "DELETE FROM asset_match_decisions

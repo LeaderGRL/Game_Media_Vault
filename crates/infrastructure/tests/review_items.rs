@@ -730,3 +730,62 @@ fn accepting_an_edition_the_item_no_longer_offers_is_refused_atomically() {
     );
     assert_eq!(counts(&catalog, run_id), (0, 1, 0));
 }
+
+#[test]
+fn candidates_sharing_one_provenance_are_detached_independently() {
+    let (_temp, catalog) = open_catalog();
+    let first = catalog
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+    // Another provider record serving the same locator and bytes for the same edition.
+    let other_identity = "candidate:fixture-provider:same-locator";
+    catalog
+        .persist_candidate_asset(
+            other_identity,
+            PersistAsset {
+                existing_release_edition_id: Some(first.release_edition_id),
+                ..auto_linked_record()
+            },
+        )
+        .unwrap();
+    let run_id = start_run(&catalog);
+    catalog
+        .record_discovery(
+            run_id,
+            SOURCE_ID,
+            &[AcquisitionWorkItem {
+                key: other_identity.to_owned(),
+                candidate: candidate(),
+            }],
+        )
+        .unwrap();
+    let ParkedReview::Parked(other_item) = catalog
+        .park_work_for_review(
+            run_id,
+            other_identity,
+            NewReviewItem {
+                candidate_identity: other_identity.to_owned(),
+                ..new_item(vec![competing_match(201, "Standard")])
+            },
+        )
+        .unwrap()
+    else {
+        panic!("expected a pending review item");
+    };
+
+    catalog
+        .decide_review_item(other_item.id, ReviewDecision::Reject)
+        .unwrap();
+
+    assert_eq!(
+        library_asset_count(&catalog),
+        1,
+        "the first candidate still supports it"
+    );
+    let item = parked_item(&catalog, start_run(&catalog));
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+    assert_eq!(library_asset_count(&catalog), 0);
+}
