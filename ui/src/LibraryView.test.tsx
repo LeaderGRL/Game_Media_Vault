@@ -60,6 +60,29 @@ describe("LibraryView", () => {
     expect(screen.getByText("1200 × 1600 px")).toBeInTheDocument();
   });
 
+  it("falls back to the file name for originals whose media is not inspected yet", () => {
+    render(
+      <LibraryView
+        entries={[
+          {
+            ...entry,
+            assets: [
+              {
+                ...entry.assets[0],
+                media_type: "application/octet-stream",
+                width: null,
+                height: null,
+              },
+            ],
+          },
+        ]}
+        objectUrl={objectUrl}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toBeInTheDocument();
+  });
+
   it("renders originals as images by their media type, not their file name", () => {
     render(
       <LibraryView

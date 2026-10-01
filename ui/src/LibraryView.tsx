@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import {
+  filenameMediaType,
   type LibraryAsset,
   type LibraryEntry,
   type ReleaseAssertionField,
@@ -133,7 +134,7 @@ interface AssetOriginalProps {
 function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
   const [unavailable, setUnavailable] = useState(false);
 
-  if (!asset.media_type.startsWith("image/")) {
+  if (!isImageOriginal(asset)) {
     return null;
   }
   if (unavailable) {
@@ -163,4 +164,17 @@ function formatBytes(byteLength: number) {
     return String(byteLength) + " B";
   }
   return (byteLength / 1024).toFixed(1) + " KiB";
+}
+
+/**
+ * Whether an original is an image. Assets imported before media inspection (vaults upgraded
+ * from schema version 2) still have unknown media, so their file name decides until the vault
+ * is verified again.
+ */
+function isImageOriginal(asset: LibraryAsset) {
+  const mediaType =
+    asset.media_type === "application/octet-stream"
+      ? filenameMediaType(asset.original_filename)
+      : asset.media_type;
+  return mediaType.startsWith("image/");
 }
