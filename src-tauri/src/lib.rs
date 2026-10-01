@@ -213,6 +213,19 @@ pub fn start_acquisition_run_in_vault(
     )?)
 }
 
+/// Starts a run on a blocking worker, since checking the plan may reach the Source.
+pub async fn start_acquisition_run_in_vault_async(
+    vault_root: PathBuf,
+    request: AcquisitionRequestInput,
+    connector: Box<dyn ConnectorPort + Send>,
+) -> Result<AcquisitionRun, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        start_acquisition_run_in_vault(&vault_root, request, connector.as_ref())
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("acquisition start", error))?
+}
+
 pub fn execute_acquisition_run_in_vault_with_connector(
     vault_root: &Path,
     run_id: i64,
@@ -300,15 +313,16 @@ pub fn cancel_acquisition_run_in_vault(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn start_acquisition_run(
+async fn start_acquisition_run(
     session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionRun, CommandError> {
-    start_acquisition_run_in_vault(
-        &session.root()?,
+    start_acquisition_run_in_vault_async(
+        session.root()?,
         request,
-        &LibretroThumbnailsConnector::new(),
+        Box::new(LibretroThumbnailsConnector::new()),
     )
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]

@@ -107,6 +107,14 @@ impl ConnectorPort for ThreadRecordingConnector {
         FixtureConnector.capabilities()
     }
 
+    fn unsupported_request_reason(
+        &self,
+        _request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        *self.worker_thread.lock().unwrap() = Some(thread::current().id());
+        Ok(None)
+    }
+
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         *self.worker_thread.lock().unwrap() = Some(thread::current().id());
         FixtureConnector.discover(request)
@@ -369,6 +377,29 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
         assert_eq!(execution_result.status, target_status);
         assert_eq!(execution_result.queued_work, 0);
     }
+}
+
+#[test]
+fn tauri_async_start_checks_the_plan_off_the_calling_thread() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let calling_thread = thread::current().id();
+    let worker_thread = Arc::new(Mutex::new(None));
+
+    // The plan check may reach the Source, which must not block the window.
+    let started = tauri::async_runtime::block_on(
+        game_media_vault_tauri::start_acquisition_run_in_vault_async(
+            vault,
+            request_input(),
+            Box::new(ThreadRecordingConnector {
+                worker_thread: Arc::clone(&worker_thread),
+            }),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(started.status, AcquisitionRunStatus::Running);
+    assert_ne!(worker_thread.lock().unwrap().unwrap(), calling_thread);
 }
 
 #[test]

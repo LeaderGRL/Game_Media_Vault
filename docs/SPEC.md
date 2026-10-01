@@ -557,6 +557,7 @@ Errors are classified into stable kinds shared by every frontend. The desktop sh
 - Lazy media decoding; inspect headers/metadata before full decode where possible.
 - Concurrent independent source work under per-source limits.
 - No UI dependency in background workers.
+- Desktop commands that may wait on a Source (starting a run, whose plan check can consult it, executing a run, loading a review preview) run on blocking workers so the window stays responsive.
 - Benchmark matching, catalog lookup, hashing, and high-volume import paths before micro-optimizing them.
 
 ## 23. Reliability and Observability
