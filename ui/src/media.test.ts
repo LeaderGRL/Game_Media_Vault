@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { previewMediaType } from "./types";
+import { filenameMediaType, previewMediaType } from "./types";
 
 const noBytes = new Uint8Array();
 
@@ -13,6 +13,25 @@ describe("previewMediaType", () => {
     expect(previewMediaType(noBytes, "logo.svg")).toBe("application/octet-stream");
     expect(previewMediaType(noBytes, "manual.pdf")).toBe("application/octet-stream");
     expect(previewMediaType(noBytes, "no-extension")).toBe("application/octet-stream");
+  });
+
+  it("suggests every image media type the vault inspector records", () => {
+    // Assets of upgraded vaults have unknown media until verified, so their names decide.
+    expect(
+      ["a.tif", "a.tiff", "a.jxl", "a.heic", "a.heif", "a.ppm", "a.qoi", "a.tga", "a.exr"].map(
+        filenameMediaType,
+      ),
+    ).toEqual([
+      "image/tiff",
+      "image/tiff",
+      "image/jxl",
+      "image/heic",
+      "image/heif",
+      "image/x-portable-anymap",
+      "image/qoi",
+      "image/x-tga",
+      "image/x-exr",
+    ]);
   });
 
   it("reads the media type from the preview bytes before the filename", () => {

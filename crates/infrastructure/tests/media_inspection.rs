@@ -114,6 +114,45 @@ fn jpeg_xl_codestreams_after_large_container_boxes_still_give_the_pixel_size() {
 }
 
 #[test]
+fn other_raster_originals_are_recorded_as_images() {
+    let image = |media_type: &str| MediaInfo {
+        media_type: media_type.to_owned(),
+        width: Some(640),
+        height: Some(480),
+    };
+    let mut qoi = b"qoif".to_vec();
+    qoi.extend_from_slice(&640_u32.to_be_bytes());
+    qoi.extend_from_slice(&480_u32.to_be_bytes());
+    qoi.extend_from_slice(&[4, 0]);
+    let mut farbfeld = b"farbfeld".to_vec();
+    farbfeld.extend_from_slice(&640_u32.to_be_bytes());
+    farbfeld.extend_from_slice(&480_u32.to_be_bytes());
+    // Uncompressed true-color TGA header with an 8-bit alpha channel.
+    let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    tga.extend_from_slice(&640_u16.to_le_bytes());
+    tga.extend_from_slice(&480_u16.to_le_bytes());
+    tga.extend_from_slice(&[32, 8]);
+    tga.extend_from_slice(&[0; 16]);
+
+    assert_eq!(
+        stored_media(b"P6\n640 480\n255\n\0\0\0"),
+        image("image/x-portable-anymap")
+    );
+    assert_eq!(stored_media(&qoi), image("image/qoi"));
+    assert_eq!(stored_media(&farbfeld), image("image/x-farbfeld"));
+    assert_eq!(stored_media(&tga), image("image/x-tga"));
+}
+
+#[test]
+fn text_resembling_a_portable_anymap_signature_stays_opaque() {
+    // Two bytes are all the PNM signature is, so a header without dimensions is not trusted.
+    assert_eq!(
+        stored_media(b"P1 review notes\nnothing to see"),
+        MediaInfo::unknown()
+    );
+}
+
+#[test]
 fn icon_originals_are_recorded_as_images() {
     // ICONDIR header and the directory entry of a 32 x 32 image.
     let ico = [

@@ -15,13 +15,17 @@ pub fn inspect_media(header: &[u8]) -> MediaInfo {
             height: None,
         };
     }
-    let Some(media_type) = imagesize::image_type(header)
-        .ok()
-        .and_then(image_media_type)
-    else {
+    let Ok(image_type) = imagesize::image_type(header) else {
+        return MediaInfo::unknown();
+    };
+    let Some(media_type) = image_media_type(image_type) else {
         return MediaInfo::unknown();
     };
     let size = imagesize::blob_size(header).ok();
+    // The portable anymap signature is two letters, so only a readable header identifies one.
+    if image_type == ImageType::Pnm && size.is_none() {
+        return MediaInfo::unknown();
+    }
     MediaInfo {
         media_type: media_type.to_owned(),
         width: size.and_then(|size| u32::try_from(size.width).ok()),
@@ -41,7 +45,15 @@ fn image_media_type(image_type: ImageType) -> Option<&'static str> {
         ImageType::Ico => Some("image/x-icon"),
         ImageType::Heif(Compression::Av1) => Some("image/avif"),
         ImageType::Heif(Compression::Hevc) => Some("image/heic"),
-        // Texture and editing formats are kept as opaque originals.
+        ImageType::Heif(_) => Some("image/heif"),
+        ImageType::Pnm => Some("image/x-portable-anymap"),
+        ImageType::Qoi => Some("image/qoi"),
+        ImageType::Tga => Some("image/x-tga"),
+        ImageType::Farbfeld => Some("image/x-farbfeld"),
+        ImageType::Ilbm => Some("image/x-ilbm"),
+        ImageType::Exr => Some("image/x-exr"),
+        ImageType::Hdr => Some("image/vnd.radiance"),
+        // GPU texture containers and layered editing documents are kept as opaque originals.
         _ => None,
     }
 }

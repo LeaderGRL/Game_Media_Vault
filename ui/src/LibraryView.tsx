@@ -130,7 +130,10 @@ interface AssetOriginalProps {
   objectUrl: (objectHash: string) => string;
 }
 
-/** Thumbnail of an image original, or a placeholder when the vault cannot serve it. */
+/**
+ * Thumbnail of an image original, or a placeholder when the vault cannot serve it or the view
+ * cannot decode its format.
+ */
 function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
   const [unavailable, setUnavailable] = useState(false);
 
@@ -138,7 +141,7 @@ function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
     return null;
   }
   if (unavailable) {
-    return <p className="asset-original unavailable">Original unavailable</p>;
+    return <p className="asset-original unavailable">Preview unavailable</p>;
   }
   return (
     <img

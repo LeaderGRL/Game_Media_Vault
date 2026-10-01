@@ -45,13 +45,14 @@ describe("LibraryView", () => {
     expect(original).toHaveAttribute("loading", "lazy");
   });
 
-  it("replaces an original the vault cannot serve with a placeholder", () => {
+  it("replaces an original the view cannot show with a placeholder", () => {
     render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
 
+    // Either the vault cannot serve the original or the view cannot decode its format.
     fireEvent.error(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" }));
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
-    expect(screen.getByText("Original unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
   });
 
   it("shows the pixel size of image originals", () => {
