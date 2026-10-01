@@ -300,3 +300,43 @@ fn untagged_thumbnail_names_keep_an_unknown_region_and_standard_edition() {
     assert_eq!(candidate.region, "Unknown");
     assert_eq!(candidate.edition_name, "Standard");
 }
+
+#[test]
+fn explains_the_requests_it_cannot_execute_before_any_discovery() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let base = request(vec![AssetTypeSelector::BoxFront]);
+    let with = |change: fn(&mut AcquisitionRequestDraft)| {
+        let mut draft = AcquisitionRequestDraft {
+            sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+            platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+            games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+            regions: Vec::new(),
+            languages: Vec::new(),
+            asset_types: vec![AssetTypeSelector::BoxFront],
+            quality: None,
+            retention: RetentionPolicy::KeepEverything,
+            limits: AcquisitionLimits::default(),
+        };
+        change(&mut draft);
+        AcquisitionRequest::try_from_draft(draft).unwrap()
+    };
+
+    assert_eq!(connector.unsupported_request_reason(&base), None);
+    for (request, topic) in [
+        (
+            with(|draft| draft.games = GameSelection::All),
+            "game selection",
+        ),
+        (
+            with(|draft| draft.regions = vec!["World".to_owned()]),
+            "region",
+        ),
+        (
+            with(|draft| draft.languages = vec!["fr".to_owned()]),
+            "language",
+        ),
+    ] {
+        let reason = connector.unsupported_request_reason(&request).unwrap();
+        assert!(reason.contains(topic), "{reason}");
+    }
+}

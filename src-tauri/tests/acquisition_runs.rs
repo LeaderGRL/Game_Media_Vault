@@ -28,11 +28,11 @@ fn matching_policy() -> MatchingPolicy {
 
 fn request_input() -> AcquisitionRequestInput {
     AcquisitionRequestInput {
-        sources: SourceSelection::Explicit(vec!["screenscraper".to_owned()]),
-        platforms: vec!["Windows".to_owned()],
-        games: GameSelection::All,
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
         regions: Vec::new(),
-        languages: vec!["en".to_owned()],
+        languages: Vec::new(),
         asset_types: vec![AssetTypeSelector::BoxFront],
         quality: None,
         retention: RetentionPolicy::KeepEverything,
@@ -152,8 +152,12 @@ fn tauri_exposes_the_shared_persisted_acquisition_run_state() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
 
-    let started =
-        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request_input()).unwrap();
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(
+        &vault,
+        request_input(),
+        &FixtureConnector,
+    )
+    .unwrap();
     assert_eq!(started.status, AcquisitionRunStatus::Running);
 
     let catalog = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
@@ -202,7 +206,9 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
     };
-    let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+    let started =
+        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request, &FixtureConnector)
+            .unwrap();
     seed_matching_release(&vault);
 
     let completed = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
@@ -237,7 +243,9 @@ fn tauri_adapter_rejects_invalid_matching_threshold_order() {
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
     };
-    let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+    let started =
+        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request, &FixtureConnector)
+            .unwrap();
 
     let error = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
         &vault,
@@ -275,7 +283,9 @@ fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
     };
-    let started = game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+    let started =
+        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request, &FixtureConnector)
+            .unwrap();
     let calling_thread = thread::current().id();
     let worker_thread = Arc::new(Mutex::new(None));
 
@@ -314,8 +324,12 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
             retention: RetentionPolicy::KeepEverything,
             limits: AcquisitionLimits::default(),
         };
-        let started =
-            game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request).unwrap();
+        let started = game_media_vault_tauri::start_acquisition_run_in_vault(
+            &vault,
+            request,
+            &FixtureConnector,
+        )
+        .unwrap();
         seed_matching_release(&vault);
         let (download_started_tx, download_started_rx) = mpsc::channel();
         let (continue_download_tx, continue_download_rx) = mpsc::channel();
@@ -355,4 +369,27 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
         assert_eq!(execution_result.status, target_status);
         assert_eq!(execution_result.queued_work, 0);
     }
+}
+
+#[test]
+fn the_desktop_starts_only_runs_its_connector_can_execute() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let error = game_media_vault_tauri::start_acquisition_run_in_vault(
+        &vault,
+        AcquisitionRequestInput {
+            sources: SourceSelection::Auto,
+            ..request_input()
+        },
+        &FixtureConnector,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, "unsupported");
+    assert!(
+        game_media_vault_tauri::list_acquisition_runs_from_vault(&vault)
+            .unwrap()
+            .is_empty()
+    );
 }

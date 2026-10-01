@@ -1,16 +1,17 @@
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, ConnectorCapabilities, ImportedAsset,
-    LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset, RetentionPolicy,
-    ReviewDecision, ReviewItem, ReviewStatus, StoredObject, ValidatedMatchingPolicy,
-    confirmed_asset_candidate_match, match_asset_candidate_to_release,
-    review_matches_for_asset_candidate,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
+    AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch,
+    ConnectorCapabilities, ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy,
+    NewReviewItem, PersistAsset, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
+    StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
+    match_asset_candidate_to_release, review_matches_for_asset_candidate,
 };
 use url::Url;
 
 use crate::{
     ApplicationError, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview,
-    ReviewRepositoryPort, RunRepositoryPort, candidate_identity, load_acquisition_run,
+    ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request, candidate_identity,
+    load_acquisition_run,
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -51,7 +52,7 @@ pub fn acquire_run_with_connector(
     let run = load_acquisition_run(runs, run_id)?;
     match run.status {
         AcquisitionRunStatus::Running => {
-            let capabilities = validate_connector_plan(&run, connector)?;
+            let capabilities = validate_connector_plan(&run.request, connector)?;
             if !runs.has_discovered(run_id, connector.source_id())? {
                 let work = discover_work(&run.request, connector, &capabilities)?;
                 runs.record_discovery(run_id, connector.source_id(), &work)?;
@@ -96,12 +97,23 @@ pub fn acquire_run_with_connector(
     Ok(imported_assets)
 }
 
+/// Starts an Acquisition Run only if `connector` can execute it, so runs that would fail on
+/// every execution are never persisted.
+pub fn start_acquisition_run_for_connector(
+    runs: &dyn RunRepositoryPort,
+    input: AcquisitionRequestDraft,
+    connector: &dyn ConnectorPort,
+) -> Result<AcquisitionRun, ApplicationError> {
+    let request = build_acquisition_request(input)?;
+    validate_connector_plan(&request, connector)?;
+    Ok(runs.create_run(request)?)
+}
+
 fn validate_connector_plan(
-    run: &AcquisitionRun,
+    request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
 ) -> Result<ConnectorCapabilities, ApplicationError> {
     let source_id = connector.source_id();
-    let request = &run.request;
     if !request.selects_source(source_id) {
         return Err(ApplicationError::ConnectorNotSelected {
             source_id: source_id.to_owned(),
@@ -141,6 +153,9 @@ fn validate_connector_plan(
         return Err(unsupported(
             "acquisition limits are not supported by this execution path",
         ));
+    }
+    if let Some(reason) = connector.unsupported_request_reason(request) {
+        return Err(unsupported(&reason));
     }
     Ok(capabilities)
 }

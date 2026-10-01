@@ -159,6 +159,12 @@ pub trait ConnectorPort {
 
     fn capabilities(&self) -> ConnectorCapabilities;
 
+    /// Why this connector cannot execute `request` beyond its declared capabilities (for
+    /// example a source that needs an explicit game selection), or `None` when it can.
+    fn unsupported_request_reason(&self, _request: &AcquisitionRequest) -> Option<String> {
+        None
+    }
+
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;

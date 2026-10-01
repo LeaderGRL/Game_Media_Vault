@@ -111,21 +111,25 @@ where
         }
     }
 
+    fn unsupported_request_reason(&self, request: &AcquisitionRequest) -> Option<String> {
+        let reason = if matches!(request.games(), GameSelection::All) {
+            "Libretro Thumbnails requires an explicit bounded game selection"
+        } else if !request.regions().is_empty() {
+            "Libretro Thumbnails cannot satisfy region filters because the source provides no region evidence"
+        } else if !request.languages().is_empty() {
+            "Libretro Thumbnails cannot satisfy language filters because the source provides no language evidence"
+        } else {
+            return None;
+        };
+        Some(reason.to_owned())
+    }
+
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         if !request.requests_asset_type(AssetType::BoxFront) {
             return Ok(Vec::new());
         }
-        if !request.regions().is_empty() {
-            return Err(PortError(
-                "Libretro Thumbnails cannot satisfy region filters because the source provides no region evidence"
-                    .to_owned(),
-            ));
-        }
-        if !request.languages().is_empty() {
-            return Err(PortError(
-                "Libretro Thumbnails cannot satisfy language filters because the source provides no language evidence"
-                    .to_owned(),
-            ));
+        if let Some(reason) = self.unsupported_request_reason(request) {
+            return Err(PortError(reason));
         }
 
         let repositories = self.repository_catalog()?;

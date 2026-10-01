@@ -2,7 +2,7 @@ mod support;
 
 use game_media_vault_application::{
     ApplicationError, ReviewRepositoryPort, RunRepositoryPort, acquire_run_with_connector,
-    candidate_identity, resolve_review_item,
+    candidate_identity, resolve_review_item, start_acquisition_run_for_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
@@ -962,4 +962,49 @@ fn an_acceptance_reopening_a_run_read_as_completed_is_executed() {
 
     assert_eq!(imported.len(), 1);
     assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn a_run_is_started_for_a_connector_only_when_it_can_execute_it() {
+    let vault = FakeVault::default();
+    let connector = FakeConnector::new(Vec::new());
+
+    let error = start_acquisition_run_for_connector(
+        &vault,
+        AcquisitionRequestDraft {
+            sources: SourceSelection::Auto,
+            ..request_draft()
+        },
+        &connector,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+    assert!(vault.runs.borrow().is_empty());
+    let started = start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap();
+    assert_eq!(vault.run(started.id).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn connector_specific_limits_are_checked_before_a_run_starts() {
+    let vault = FakeVault::default();
+    let connector = FakeConnector {
+        unsupported_reason: Some("this source needs an explicit game selection".to_owned()),
+        ..FakeConnector::new(Vec::new())
+    };
+
+    let error =
+        start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::UnsupportedConnectorPlan {
+            source_id: SOURCE_ID.to_owned(),
+            reason: "this source needs an explicit game selection".to_owned(),
+        }
+    );
+    assert!(vault.runs.borrow().is_empty());
 }

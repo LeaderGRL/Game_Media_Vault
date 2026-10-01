@@ -648,6 +648,8 @@ pub struct FakeConnector {
     pub failing_downloads: BTreeSet<String>,
     pub discover_calls: RefCell<u32>,
     pub downloads: RefCell<Vec<String>>,
+    /// Why the connector refuses every request, if it does.
+    pub unsupported_reason: Option<String>,
 }
 
 impl FakeConnector {
@@ -658,6 +660,7 @@ impl FakeConnector {
             failing_downloads: BTreeSet::new(),
             discover_calls: RefCell::new(0),
             downloads: RefCell::new(Vec::new()),
+            unsupported_reason: None,
         }
     }
 }
@@ -672,6 +675,10 @@ impl ConnectorPort for FakeConnector {
             asset_types: vec![AssetType::BoxFront],
             direct_media_download: true,
         }
+    }
+
+    fn unsupported_request_reason(&self, _request: &AcquisitionRequest) -> Option<String> {
+        self.unsupported_reason.clone()
     }
 
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
