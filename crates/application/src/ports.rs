@@ -165,6 +165,8 @@ pub trait ConnectorPort {
 }
 
 pub trait ReferenceCatalogSourcePort {
+    /// Reads up to `max_games` releases from the canonical `source_path`. The application then
+    /// records the readable location of that file on every returned assertion.
     fn read_releases(
         &self,
         source_path: &Path,

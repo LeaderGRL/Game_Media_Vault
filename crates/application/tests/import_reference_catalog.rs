@@ -27,6 +27,7 @@ impl ReferenceCatalogSourcePort for SyntheticSource {
 #[derive(Default)]
 struct BatchRecordingCatalog {
     batch_sizes: RefCell<Vec<usize>>,
+    assertion_locations: RefCell<Vec<String>>,
 }
 
 impl ReferenceCatalogRepositoryPort for BatchRecordingCatalog {
@@ -42,6 +43,12 @@ impl ReferenceCatalogRepositoryPort for BatchRecordingCatalog {
         records: Vec<ReferenceReleaseRecord>,
     ) -> Result<Vec<ImportedReleaseEdition>, PortError> {
         self.batch_sizes.borrow_mut().push(records.len());
+        self.assertion_locations.borrow_mut().extend(
+            records
+                .iter()
+                .flat_map(|record| &record.assertions)
+                .map(|assertion| assertion.source_location.clone()),
+        );
         Ok(records
             .into_iter()
             .enumerate()
@@ -112,29 +119,40 @@ impl ReferenceCatalogSourcePort for PathRecordingSource {
         self.source_paths
             .borrow_mut()
             .push(source_path.to_path_buf());
-        Ok(Vec::new())
+        Ok(vec![reference_release(0)])
     }
 }
 
 #[test]
-fn reference_sources_receive_a_plain_absolute_source_path() {
+fn reference_sources_read_the_canonical_path_and_assertions_record_a_plain_location() {
     let source = PathRecordingSource::default();
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let catalog = BatchRecordingCatalog::default();
+    let requested = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("..")
+        .join("Cargo.toml");
 
     import_reference_catalog(
-        &BatchRecordingCatalog::default(),
+        &catalog,
         &source,
         ImportReferenceCatalogRequest {
-            source_path: manifest_dir.join("src").join("..").join("Cargo.toml"),
+            source_path: requested.clone(),
             max_games: 1,
         },
     )
     .unwrap();
 
-    let source_paths = source.source_paths.borrow();
-    let recorded = source_paths[0].to_string_lossy();
-    assert!(source_paths[0].is_absolute());
-    assert!(!recorded.starts_with(r"\\?\"), "{recorded}");
-    assert!(!recorded.contains(".."), "{recorded}");
-    assert!(recorded.ends_with("Cargo.toml"), "{recorded}");
+    // Reading keeps the canonical path, verbatim on Windows, so every valid file stays readable.
+    assert_eq!(
+        source.source_paths.borrow()[0],
+        std::fs::canonicalize(&requested).unwrap()
+    );
+    let locations = catalog.assertion_locations.borrow();
+    assert_eq!(locations.len(), 2);
+    for location in locations.iter() {
+        assert!(Path::new(location).is_absolute(), "{location}");
+        assert!(!location.starts_with(r"\\?\"), "{location}");
+        assert!(!location.contains(".."), "{location}");
+        assert!(location.ends_with("Cargo.toml"), "{location}");
+    }
 }

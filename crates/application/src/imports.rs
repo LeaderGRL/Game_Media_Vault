@@ -43,10 +43,14 @@ pub fn import_reference_catalog(
     }
 
     let source_path = resolve_source_path(&request.source_path)?;
+    let location = source_location(&source_path);
     let releases = source.read_releases(&source_path, request.max_games)?;
     let mut imported_releases = 0;
     let mut batch = Vec::with_capacity(REFERENCE_IMPORT_BATCH_SIZE);
-    for release in releases.into_iter().take(request.max_games) {
+    for mut release in releases.into_iter().take(request.max_games) {
+        for assertion in &mut release.assertions {
+            assertion.source_location.clone_from(&location);
+        }
         batch.push(release);
         if batch.len() == REFERENCE_IMPORT_BATCH_SIZE {
             imported_releases += catalog
@@ -99,31 +103,27 @@ pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, Appl
     Ok(catalog.list_library()?)
 }
 
-/// Canonical absolute path of a user-provided source, without Windows verbatim prefixes, so
-/// recorded source locations stay readable and identical across import kinds.
+/// Canonical absolute path of a user-provided source, used for reading it. On Windows it keeps
+/// the verbatim prefix so long or unusual file names stay addressable.
 fn resolve_source_path(path: &Path) -> Result<PathBuf, ApplicationError> {
-    let canonical = fs::canonicalize(path)
-        .map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))?;
-    Ok(without_verbatim_prefix(canonical))
+    fs::canonicalize(path).map_err(|error| ApplicationError::ResolveSourcePath(error.to_string()))
 }
 
+/// Readable location recorded for a resolved source, identical across import kinds: Windows
+/// verbatim prefixes are dropped.
 #[cfg(windows)]
-fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+fn source_location(path: &Path) -> String {
     let location = path.to_string_lossy();
     if let Some(network_path) = location.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{network_path}"));
+        return format!(r"\\{network_path}");
     }
     if let Some(local_path) = location.strip_prefix(r"\\?\") {
-        return PathBuf::from(local_path);
+        return local_path.to_owned();
     }
-    path
+    location.into_owned()
 }
 
 #[cfg(not(windows))]
-fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
-    path
-}
-
 fn source_location(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
