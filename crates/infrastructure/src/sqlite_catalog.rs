@@ -2,107 +2,27 @@ use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
-    thread,
-    time::{Duration, Instant},
 };
 
-use game_media_vault_application::{
-    CatalogPort, PortError, ReferenceCatalogRepositoryPort, ReviewProcessingClaim,
-    ReviewProcessingFinalization, RunRepositoryPort, StagedOriginal, acquisition_work_key,
-};
+use game_media_vault_application::{CatalogPort, PortError, ReferenceCatalogRepositoryPort};
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset,
-    ImportedReleaseEdition, LibraryAsset, LibraryEntry, MatchConfidence, NewReviewItem,
-    PersistAsset, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewDecision,
-    ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
+    AssetCandidateMatch, AssetProvenance, AssetType, ImportedAsset, ImportedReleaseEdition,
+    LibraryAsset, LibraryEntry, PersistAsset, ReferenceReleaseRecord, ReleaseAssertion,
+    ReleaseAssertionField, SourceId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
+mod reviews;
+mod runs;
 mod schema;
-
-const ACQUISITION_REQUEST_SCHEMA_VERSION: i64 = 1;
-const PENDING_OBJECT_PUBLICATION_GRACE_SECONDS: i64 = 3600;
-const PRIOR_OBJECT_PUBLICATION_WAIT_SECONDS: u64 = 30;
 
 pub struct SqliteCatalog {
     path: PathBuf,
     mode: CatalogOpenMode,
     #[cfg(test)]
     busy_handler: Option<fn(i32) -> bool>,
-}
-
-struct PendingObjectPublicationGuard {
-    catalog_path: PathBuf,
-    id: i64,
-    object_hash: String,
-    has_prior_publication: bool,
-    publication_started: bool,
-    commit_succeeded: bool,
-}
-
-impl PendingObjectPublicationGuard {
-    fn wait_for_prior_publication(&self) -> Result<(), PortError> {
-        if !self.has_prior_publication {
-            return Ok(());
-        }
-        let deadline = Instant::now() + Duration::from_secs(PRIOR_OBJECT_PUBLICATION_WAIT_SECONDS);
-        loop {
-            let connection =
-                Connection::open_with_flags(&self.catalog_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-                    .map_err(sql_error)?;
-            connection
-                .execute_batch("PRAGMA busy_timeout = 5000;")
-                .map_err(sql_error)?;
-            let prior_exists: bool = connection
-                .query_row(
-                    "SELECT EXISTS(
-                         SELECT 1 FROM pending_object_publications
-                         WHERE object_hash = ?1 AND id < ?2
-                     )",
-                    params![self.object_hash, self.id],
-                    |row| row.get(0),
-                )
-                .map_err(sql_error)?;
-            if !prior_exists {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(PortError(format!(
-                    "timed out waiting for an earlier publication of object {}",
-                    self.object_hash
-                )));
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn mark_publication_started(&mut self) {
-        self.publication_started = true;
-    }
-
-    fn mark_commit_succeeded(&mut self) {
-        self.commit_succeeded = true;
-    }
-}
-
-impl Drop for PendingObjectPublicationGuard {
-    fn drop(&mut self) {
-        if self.publication_started && !self.commit_succeeded {
-            return;
-        }
-        let Ok(connection) =
-            Connection::open_with_flags(&self.catalog_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-        else {
-            return;
-        };
-        let _ = connection.execute(
-            "DELETE FROM pending_object_publications WHERE id = ?1",
-            params![self.id],
-        );
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -149,8 +69,6 @@ impl SqliteCatalog {
         let mut connection = catalog.connect()?;
         schema::open(&mut connection, &catalog.path)?;
 
-        recover_stale_pending_object_publications(&mut connection, &catalog.path)?;
-
         Ok(catalog)
     }
 
@@ -167,73 +85,6 @@ impl SqliteCatalog {
             connection.busy_handler(Some(handler)).map_err(sql_error)?;
         }
         Ok(connection)
-    }
-
-    fn register_pending_object_publication(
-        &self,
-        staged_original: &Option<Box<dyn StagedOriginal>>,
-    ) -> Result<Option<PendingObjectPublicationGuard>, PortError> {
-        let Some(staged_original) = staged_original.as_ref() else {
-            return Ok(None);
-        };
-        let stored = staged_original.stored_object();
-        let object_store_root = staged_original
-            .object_store_root()
-            .map(|root| {
-                root.to_str().map(str::to_owned).ok_or_else(|| {
-                    PortError(format!(
-                        "object store root is not valid UTF-8: {}",
-                        root.display()
-                    ))
-                })
-            })
-            .transpose()?;
-        let byte_len = i64::try_from(stored.byte_len).map_err(|_| {
-            PortError(format!(
-                "object {} is too large to journal in SQLite",
-                stored.hash
-            ))
-        })?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let inserted = transaction
-            .execute(
-                "INSERT INTO pending_object_publications (object_hash, byte_len, object_store_root)
-                 SELECT ?1, ?2, ?3
-                 WHERE NOT EXISTS (
-                     SELECT 1 FROM object_publication_recovery_claims WHERE object_hash = ?1
-                 )",
-                params![stored.hash, byte_len, object_store_root],
-            )
-            .map_err(sql_error)?;
-        if inserted != 1 {
-            return Err(PortError(format!(
-                "object {} is being recovered; retry publication",
-                stored.hash
-            )));
-        }
-        let id = transaction.last_insert_rowid();
-        let has_prior_publication: bool = transaction
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM pending_object_publications
-                     WHERE object_hash = ?1 AND id < ?2
-                 )",
-                params![stored.hash, id],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
-        transaction.commit().map_err(sql_error)?;
-        Ok(Some(PendingObjectPublicationGuard {
-            catalog_path: self.path.clone(),
-            id,
-            object_hash: stored.hash.clone(),
-            has_prior_publication,
-            publication_started: false,
-            commit_succeeded: false,
-        }))
     }
 }
 
@@ -269,391 +120,6 @@ fn initialize_new_catalog(
                 path.display()
             ))),
         },
-    }
-}
-
-fn recover_stale_pending_object_publications(
-    connection: &mut Connection,
-    catalog_path: &Path,
-) -> Result<(), PortError> {
-    recover_stale_pending_object_publications_with(connection, catalog_path, |path| {
-        fs::remove_file(path)
-    })
-}
-
-fn recover_stale_pending_object_publications_with<F>(
-    connection: &mut Connection,
-    catalog_path: &Path,
-    mut remove_object: F,
-) -> Result<(), PortError>
-where
-    F: FnMut(&Path) -> std::io::Result<()>,
-{
-    let cutoff: i64 = connection
-        .query_row(
-            "SELECT unixepoch() - ?1",
-            params![PENDING_OBJECT_PUBLICATION_GRACE_SECONDS],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)?;
-    let stale_publications = {
-        let mut statement = connection
-            .prepare(
-                "SELECT DISTINCT object_hash, object_store_root
-                 FROM pending_object_publications
-                 WHERE created_at_unix <= ?1
-                 ORDER BY object_hash, object_store_root",
-            )
-            .map_err(sql_error)?;
-        let rows = statement
-            .query_map(params![cutoff], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })
-            .map_err(sql_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sql_error)?
-    };
-
-    connection
-        .execute(
-            "DELETE FROM object_publication_recovery_claims
-             WHERE claimed_at_unix <= ?1
-               AND NOT EXISTS (
-                   SELECT 1 FROM pending_object_publications
-                   WHERE pending_object_publications.object_hash = object_publication_recovery_claims.object_hash
-               )",
-            params![cutoff],
-        )
-        .map_err(sql_error)?;
-
-    for (object_hash, object_store_root) in stale_publications {
-        let object_path = object_store_root
-            .as_deref()
-            .map(Path::new)
-            .map(|root| content_addressed_object_path_from_root(root, &object_hash))
-            .unwrap_or_else(|| content_addressed_object_path(catalog_path, &object_hash));
-        let Some(object_path) = object_path else {
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1
-                       AND created_at_unix <= ?2
-                       AND object_store_root IS ?3",
-                    params![object_hash, cutoff, object_store_root],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM object_publication_recovery_claims
-                     WHERE object_hash = ?1 AND claimed_at_unix <= ?2",
-                    params![object_hash, cutoff],
-                )
-                .map_err(sql_error)?;
-            transaction.commit().map_err(sql_error)?;
-            continue;
-        };
-
-        let claimed = connection
-            .execute(
-                "INSERT INTO object_publication_recovery_claims (object_hash, claimed_at_unix)
-                 SELECT ?1, unixepoch()
-                 WHERE EXISTS (
-                     SELECT 1 FROM pending_object_publications
-                     WHERE object_hash = ?1 AND created_at_unix <= ?2
-                 )
-                   AND NOT EXISTS (SELECT 1 FROM assets WHERE object_hash = ?1)
-                   AND NOT EXISTS (
-                       SELECT 1 FROM pending_object_publications
-                       WHERE object_hash = ?1 AND created_at_unix > ?2
-                   )
-                   AND NOT EXISTS (
-                       SELECT 1 FROM object_publication_recovery_claims
-                       WHERE object_hash = ?1 AND claimed_at_unix > ?2
-                   )
-                 ON CONFLICT(object_hash) DO UPDATE SET claimed_at_unix = excluded.claimed_at_unix
-                 WHERE object_publication_recovery_claims.claimed_at_unix <= ?2",
-                params![object_hash, cutoff],
-            )
-            .map_err(sql_error)?;
-
-        if claimed == 1 {
-            match remove_object(&object_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    let _ = connection.execute(
-                        "DELETE FROM object_publication_recovery_claims WHERE object_hash = ?1",
-                        params![object_hash],
-                    );
-                    return Err(io_error(error));
-                }
-            }
-
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1
-                       AND created_at_unix <= ?2
-                       AND object_store_root IS ?3",
-                    params![object_hash, cutoff, object_store_root],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM object_publication_recovery_claims WHERE object_hash = ?1",
-                    params![object_hash],
-                )
-                .map_err(sql_error)?;
-            transaction.commit().map_err(sql_error)?;
-        } else {
-            connection
-                .execute(
-                    "DELETE FROM pending_object_publications
-                     WHERE object_hash = ?1
-                       AND created_at_unix <= ?2
-                       AND object_store_root IS ?3
-                       AND (
-                           EXISTS (SELECT 1 FROM assets WHERE object_hash = ?1)
-                           OR EXISTS (
-                               SELECT 1 FROM pending_object_publications AS fresh
-                               WHERE fresh.object_hash = ?1 AND fresh.created_at_unix > ?2
-                           )
-                       )",
-                    params![object_hash, cutoff, object_store_root],
-                )
-                .map_err(sql_error)?;
-        }
-    }
-    Ok(())
-}
-
-fn content_addressed_object_path(catalog_path: &Path, object_hash: &str) -> Option<PathBuf> {
-    let root = catalog_path.parent().unwrap_or_else(|| Path::new("."));
-    content_addressed_object_path_from_root(root, object_hash)
-}
-
-fn content_addressed_object_path_from_root(root: &Path, object_hash: &str) -> Option<PathBuf> {
-    if object_hash.len() != 64 || !object_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(
-        root.join("objects")
-            .join(&object_hash[0..2])
-            .join(&object_hash[2..4])
-            .join(object_hash),
-    )
-}
-
-impl RunRepositoryPort for SqliteCatalog {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
-        let connection = self.connect()?;
-        let request_json = serde_json::to_string(&request).map_err(|error| {
-            PortError(format!("failed to serialize acquisition request: {error}"))
-        })?;
-        connection
-            .execute(
-                "INSERT INTO acquisition_runs (
-                    request_json, request_schema_version, status, queued_work, completed_work
-                 ) VALUES (?1, ?2, 'running', 0, 0)",
-                params![request_json, ACQUISITION_REQUEST_SCHEMA_VERSION],
-            )
-            .map_err(sql_error)?;
-
-        Ok(AcquisitionRun {
-            id: connection.last_insert_rowid(),
-            request,
-            status: AcquisitionRunStatus::Running,
-            queued_work: 0,
-            completed_work: 0,
-        })
-    }
-
-    fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
-        let connection = self.connect()?;
-        let row = connection
-            .query_row(
-                "SELECT request_json, request_schema_version, status, queued_work, completed_work
-                 FROM acquisition_runs WHERE id = ?1",
-                params![run_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(sql_error)?;
-
-        let Some((request_json, request_schema_version, status, queued_work, completed_work)) = row
-        else {
-            return Ok(None);
-        };
-        if request_schema_version != ACQUISITION_REQUEST_SCHEMA_VERSION {
-            return Err(PortError(format!(
-                "unsupported acquisition request schema version: {request_schema_version}"
-            )));
-        }
-        let draft: AcquisitionRequestDraft =
-            serde_json::from_str(&request_json).map_err(|error| {
-                PortError(format!("invalid persisted acquisition request: {error}"))
-            })?;
-        let request = AcquisitionRequest::try_from_draft(draft).map_err(|error| {
-            PortError(format!("invalid persisted acquisition request: {error}"))
-        })?;
-
-        Ok(Some(AcquisitionRun {
-            id: run_id,
-            request,
-            status: parse_run_status(&status)?,
-            queued_work: u64::try_from(queued_work)
-                .map_err(|_| PortError("catalog contains a negative queued work count".into()))?,
-            completed_work: u64::try_from(completed_work).map_err(|_| {
-                PortError("catalog contains a negative completed work count".into())
-            })?,
-        }))
-    }
-
-    fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
-        let connection = self.connect()?;
-        let mut statement = connection
-            .prepare("SELECT id FROM acquisition_runs ORDER BY id")
-            .map_err(sql_error)?;
-        let run_ids = statement
-            .query_map([], |row| row.get::<_, i64>(0))
-            .map_err(sql_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(sql_error)?;
-
-        run_ids
-            .into_iter()
-            .map(|run_id| {
-                self.get_run(run_id)?.ok_or_else(|| {
-                    PortError(format!(
-                        "acquisition run #{run_id} disappeared while listing"
-                    ))
-                })
-            })
-            .collect()
-    }
-
-    fn queue_work(&self, run_id: i64, work_key: String) -> Result<(), PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let status: Option<String> = transaction
-            .query_row(
-                "SELECT status FROM acquisition_runs WHERE id = ?1",
-                params![run_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql_error)?;
-        let Some(status) = status else {
-            return Err(PortError(format!(
-                "acquisition run #{run_id} does not exist"
-            )));
-        };
-        if !matches!(status.as_str(), "running" | "paused") {
-            return Err(PortError(format!(
-                "acquisition run #{run_id} cannot accept work while {status}"
-            )));
-        }
-        let inserted = transaction
-            .execute(
-                "INSERT OR IGNORE INTO acquisition_run_work (run_id, work_key, completed)
-                 VALUES (?1, ?2, 0)",
-                params![run_id, work_key],
-            )
-            .map_err(sql_error)?;
-        if inserted == 1 {
-            transaction
-                .execute(
-                    "UPDATE acquisition_runs SET queued_work = queued_work + 1 WHERE id = ?1",
-                    params![run_id],
-                )
-                .map_err(sql_error)?;
-        }
-        transaction.commit().map_err(sql_error)
-    }
-
-    fn requeue_completed_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        requeue_completed_work_in_transaction(&transaction, run_id, work_key)?;
-        transaction.commit().map_err(sql_error)
-    }
-
-    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
-        self.next_queued_work_excluding(run_id, &[])
-    }
-
-    fn next_queued_work_excluding(
-        &self,
-        run_id: i64,
-        excluded_work_keys: &[String],
-    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
-        let connection = self.connect()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT work.work_key
-                 FROM acquisition_run_work AS work
-                 INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-                 WHERE work.run_id = ?1
-                   AND work.completed = 0
-                   AND run.status = 'running'
-                 ORDER BY work.id",
-            )
-            .map_err(sql_error)?;
-        let mut rows = statement.query(params![run_id]).map_err(sql_error)?;
-        while let Some(row) = rows.next().map_err(sql_error)? {
-            let key: String = row.get(0).map_err(sql_error)?;
-            if !excluded_work_keys.iter().any(|excluded| excluded == &key) {
-                return Ok(Some(AcquisitionWorkItem { key }));
-            }
-        }
-        Ok(None)
-    }
-
-    fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        complete_work_in_transaction(&transaction, run_id, work_key)?;
-        transaction.commit().map_err(sql_error)
-    }
-
-    fn compare_and_set_run_status(
-        &self,
-        run_id: i64,
-        expected: AcquisitionRunStatus,
-        target: AcquisitionRunStatus,
-    ) -> Result<bool, PortError> {
-        let connection = self.connect()?;
-        let target_status = run_status_to_str(target);
-        let updated = connection
-            .execute(
-                "UPDATE acquisition_runs
-                 SET status = ?1
-                 WHERE id = ?2
-                   AND status = ?3
-                   AND (?1 != 'completed' OR queued_work = 0)",
-                params![target_status, run_id, run_status_to_str(expected)],
-            )
-            .map_err(sql_error)?;
-        Ok(updated == 1)
     }
 }
 
@@ -694,1145 +160,9 @@ impl CatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let imported = persist_asset_in_transaction(&transaction, record)?;
+        let imported = persist_asset_in_transaction(&transaction, record, None)?;
         transaction.commit().map_err(sql_error)?;
         Ok(imported)
-    }
-
-    fn persist_staged_asset(
-        &self,
-        record: PersistAsset,
-        staged_original: Box<dyn StagedOriginal>,
-    ) -> Result<ImportedAsset, PortError> {
-        let mut staged_original = Some(staged_original);
-        let mut pending_publication =
-            prepare_and_register_object_publication(self, &mut staged_original)?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let imported = persist_asset_in_transaction(&transaction, record)?;
-        publish_staged_original(
-            &mut staged_original,
-            &imported.object_hash,
-            imported.byte_len,
-            pending_publication.as_mut(),
-        )?;
-        commit_asset_publication(transaction, &mut pending_publication)?;
-        Ok(imported)
-    }
-
-    fn persist_review_item(&self, item: NewReviewItem) -> Result<(), PortError> {
-        let connection = self.connect()?;
-        let candidate_json = serde_json::to_string(&item.candidate)
-            .map_err(|error| PortError(format!("failed to serialize review candidate: {error}")))?;
-        let competing_matches_json = serde_json::to_string(&item.competing_matches)
-            .map_err(|error| PortError(format!("failed to serialize review matches: {error}")))?;
-        connection
-            .execute(
-                "INSERT INTO review_items (
-                    run_id, candidate_identity, candidate_json, competing_matches_json
-                 ) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(run_id, candidate_identity) DO UPDATE SET
-                    candidate_json = excluded.candidate_json,
-                    competing_matches_json = excluded.competing_matches_json
-                 WHERE review_items.run_id = excluded.run_id
-                   AND review_items.status IN ('pending', 'deferred', 'processing')",
-                params![
-                    item.run_id,
-                    item.candidate_identity,
-                    candidate_json,
-                    competing_matches_json,
-                ],
-            )
-            .map_err(sql_error)?;
-        Ok(())
-    }
-
-    fn stage_review_item_and_complete_work(
-        &self,
-        item: NewReviewItem,
-        work_key: &str,
-    ) -> Result<bool, PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let candidate_json = serde_json::to_string(&item.candidate)
-            .map_err(|error| PortError(format!("failed to serialize review candidate: {error}")))?;
-        let competing_matches_json = serde_json::to_string(&item.competing_matches)
-            .map_err(|error| PortError(format!("failed to serialize review matches: {error}")))?;
-        transaction
-            .execute(
-                "INSERT INTO review_items (
-                    run_id, candidate_identity, candidate_json, competing_matches_json
-                 ) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(run_id, candidate_identity) DO UPDATE SET
-                    candidate_json = excluded.candidate_json,
-                    competing_matches_json = excluded.competing_matches_json
-                 WHERE review_items.status IN ('pending', 'deferred')",
-                params![
-                    item.run_id,
-                    item.candidate_identity,
-                    candidate_json,
-                    competing_matches_json,
-                ],
-            )
-            .map_err(sql_error)?;
-        let staged = transaction
-            .query_row(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 WHERE run_id = ?1 AND candidate_identity = ?2",
-                params![item.run_id, item.candidate_identity],
-                review_item_row,
-            )
-            .map_err(sql_error)
-            .and_then(decode_review_item_row)?;
-        let final_status = if matches!(
-            staged.status,
-            ReviewStatus::Pending | ReviewStatus::Deferred
-        ) {
-            reconcile_staged_review_with_terminal_sibling(&transaction, staged.id, staged.status)?
-        } else {
-            staged.status
-        };
-        if final_status == ReviewStatus::Accepted {
-            requeue_completed_work_in_transaction(&transaction, item.run_id, work_key)?;
-        } else {
-            complete_work_in_transaction(&transaction, item.run_id, work_key)?;
-        }
-        transaction.commit().map_err(sql_error)?;
-        Ok(true)
-    }
-
-    fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 ORDER BY id",
-            )
-            .map_err(sql_error)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(sql_error)?;
-        let mut items = Vec::new();
-        for row in rows {
-            items.push(decode_review_item_row(row.map_err(sql_error)?)?);
-        }
-        Ok(items)
-    }
-
-    fn list_processable_review_items_for_run(
-        &self,
-        run_id: i64,
-    ) -> Result<Vec<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 WHERE run_id = ?1 AND status IN ('pending', 'deferred', 'accepted')
-                 ORDER BY id",
-            )
-            .map_err(sql_error)?;
-        let rows = statement
-            .query_map(params![run_id], review_item_row)
-            .map_err(sql_error)?;
-        let mut items = Vec::new();
-        for row in rows {
-            items.push(decode_review_item_row(row.map_err(sql_error)?)?);
-        }
-        Ok(items)
-    }
-
-    fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let row = connection
-            .query_row(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 WHERE id = ?1",
-                params![review_item_id],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?;
-        row.map(decode_review_item_row).transpose()
-    }
-
-    fn find_review_item_by_candidate_identity(
-        &self,
-        candidate_identity: &str,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let row = connection
-            .query_row(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 WHERE candidate_identity = ?1",
-                params![candidate_identity],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?;
-        row.map(decode_review_item_row).transpose()
-    }
-
-    fn find_review_item_for_run_by_candidate_identity(
-        &self,
-        run_id: i64,
-        candidate_identity: &str,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let current = connection
-            .query_row(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 WHERE candidate_identity = ?1 AND run_id = ?2
-                 LIMIT 1",
-                params![candidate_identity, run_id],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?;
-        if let Some(current) = current {
-            return decode_review_item_row(current).map(Some);
-        }
-        latest_unambiguous_terminal_review(&connection, candidate_identity, None)
-    }
-
-    fn claim_review_item_for_processing(
-        &self,
-        review_item_id: i64,
-    ) -> Result<Option<ReviewProcessingClaim>, PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let changed = transaction
-            .execute(
-                "UPDATE review_items SET status = 'processing'
-                 WHERE id = ?1 AND status IN ('pending', 'deferred', 'accepted')",
-                params![review_item_id],
-            )
-            .map_err(sql_error)?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        let lease_token: String = transaction
-            .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
-            .map_err(sql_error)?;
-        transaction
-            .execute(
-                "INSERT INTO review_processing_leases (review_item_id, lease_token, acquired_at)
-                 VALUES (?1, ?2, unixepoch())
-                 ON CONFLICT(review_item_id) DO UPDATE SET
-                    lease_token = excluded.lease_token,
-                    acquired_at = excluded.acquired_at",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        transaction.commit().map_err(sql_error)?;
-        drop(connection);
-        Ok(self
-            .get_review_item(review_item_id)?
-            .map(|item| ReviewProcessingClaim { item, lease_token }))
-    }
-
-    fn renew_review_item_processing(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-    ) -> Result<bool, PortError> {
-        let connection = self.connect()?;
-        let changed = connection
-            .execute(
-                "UPDATE review_processing_leases
-                 SET acquired_at = unixepoch()
-                 WHERE review_item_id = ?1 AND lease_token = ?2
-                   AND EXISTS (
-                       SELECT 1 FROM review_items
-                       WHERE id = ?1 AND status = 'processing'
-                   )",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        Ok(changed == 1)
-    }
-
-    fn recover_expired_review_processing(&self, run_id: i64) -> Result<(), PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let expired = {
-            let mut statement = transaction
-                .prepare(
-                    "SELECT review.id,
-                            CASE
-                                WHEN review.decision_json LIKE '%\"accept\"%' THEN 'accepted'
-                                WHEN review.decision_json LIKE '%\"defer\"%' THEN 'deferred'
-                                ELSE 'pending'
-                            END
-                     FROM review_items AS review
-                     INNER JOIN review_processing_leases AS lease
-                        ON lease.review_item_id = review.id
-                     WHERE review.run_id = ?1
-                       AND review.status = 'processing'
-                       AND lease.acquired_at <= unixepoch() - 3600",
-                )
-                .map_err(sql_error)?;
-            let rows = statement
-                .query_map(params![run_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(sql_error)?;
-            let mut expired = Vec::new();
-            for row in rows {
-                let (review_item_id, status) = row.map_err(sql_error)?;
-                expired.push((review_item_id, parse_review_status(&status)?));
-            }
-            expired
-        };
-        for (review_item_id, restored_status) in expired {
-            transaction
-                .execute(
-                    "UPDATE review_items SET status = ?1 WHERE id = ?2 AND status = 'processing'",
-                    params![review_status_to_str(restored_status), review_item_id],
-                )
-                .map_err(sql_error)?;
-            reconcile_restored_review_with_terminal_sibling(
-                &transaction,
-                review_item_id,
-                restored_status,
-            )?;
-        }
-        transaction
-            .execute(
-                "DELETE FROM review_processing_leases
-                 WHERE acquired_at <= unixepoch() - 3600
-                   AND review_item_id IN (SELECT id FROM review_items WHERE run_id = ?1)",
-                params![run_id],
-            )
-            .map_err(sql_error)?;
-        transaction.commit().map_err(sql_error)
-    }
-
-    fn finalize_review_processing_asset(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-        run_id: i64,
-        work_key: &str,
-        mut record: PersistAsset,
-        mut staged_original: Option<Box<dyn StagedOriginal>>,
-    ) -> Result<ReviewProcessingFinalization, PortError> {
-        let mut pending_publication =
-            prepare_and_register_object_publication(self, &mut staged_original)?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let current = transaction
-            .query_row(
-                "SELECT review.id, review.run_id, review.candidate_identity, review.candidate_json,
-                        review.competing_matches_json, review.decision_json, review.status
-                 FROM review_items AS review
-                 INNER JOIN review_processing_leases AS lease ON lease.review_item_id = review.id
-                 WHERE review.id = ?1 AND review.status = 'processing' AND lease.lease_token = ?2",
-                params![review_item_id, lease_token],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?
-            .map(decode_review_item_row)
-            .transpose()?;
-        let Some(current) = current else {
-            drop(transaction);
-            drop(connection);
-            return review_transition_conflict(self, review_item_id).and_then(|_| {
-                Err(PortError(format!(
-                    "review item #{review_item_id} lost its processing lease"
-                )))
-            });
-        };
-        if current.run_id != run_id {
-            return Err(PortError(format!(
-                "review item #{review_item_id} belongs to run #{}, not run #{run_id}",
-                current.run_id
-            )));
-        }
-        let sibling = terminal_review_sibling(&transaction, &current)?;
-        if let Some(decision) = sibling.and_then(|item| item.decision) {
-            let (status, outcome, complete_work) = match decision {
-                ReviewDecision::Reject => (
-                    ReviewStatus::Rejected,
-                    ReviewProcessingFinalization::Discarded,
-                    true,
-                ),
-                ReviewDecision::Accept { release_edition_id } => {
-                    if let Some(accepted_match) = current
-                        .competing_matches
-                        .iter()
-                        .find(|candidate| candidate.release_edition_id == release_edition_id)
-                    {
-                        retarget_asset_for_review_acceptance(&mut record, accepted_match);
-                        let imported = persist_asset_in_transaction(&transaction, record)?;
-                        complete_work_in_transaction(&transaction, run_id, work_key)?;
-                        let decision_json = serde_json::to_string(&decision).map_err(|error| {
-                            PortError(format!("failed to serialize review decision: {error}"))
-                        })?;
-                        transaction
-                            .execute(
-                                "UPDATE review_items SET decision_json = ?1, status = 'applied' WHERE id = ?2",
-                                params![decision_json, review_item_id],
-                            )
-                            .map_err(sql_error)?;
-                        transaction
-                            .execute(
-                                "DELETE FROM review_processing_leases WHERE review_item_id = ?1 AND lease_token = ?2",
-                                params![review_item_id, lease_token],
-                            )
-                            .map_err(sql_error)?;
-                        publish_staged_original(
-                            &mut staged_original,
-                            &imported.object_hash,
-                            imported.byte_len,
-                            pending_publication.as_mut(),
-                        )?;
-                        commit_asset_publication(transaction, &mut pending_publication)?;
-                        return Ok(ReviewProcessingFinalization::Imported(imported));
-                    }
-                    (
-                        ReviewStatus::Superseded,
-                        ReviewProcessingFinalization::Discarded,
-                        true,
-                    )
-                }
-                ReviewDecision::Defer => unreachable!("deferred reviews are not terminal siblings"),
-            };
-            let decision_json = serde_json::to_string(&decision).map_err(|error| {
-                PortError(format!("failed to serialize review decision: {error}"))
-            })?;
-            transaction
-                .execute(
-                    "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
-                    params![decision_json, review_status_to_str(status), review_item_id],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM review_processing_leases WHERE review_item_id = ?1 AND lease_token = ?2",
-                    params![review_item_id, lease_token],
-                )
-                .map_err(sql_error)?;
-            if complete_work {
-                complete_work_in_transaction(&transaction, run_id, work_key)?;
-            }
-            transaction.commit().map_err(sql_error)?;
-            return Ok(outcome);
-        }
-
-        let imported = persist_asset_in_transaction(&transaction, record)?;
-        complete_work_in_transaction(&transaction, run_id, work_key)?;
-        transaction
-            .execute(
-                "UPDATE review_items SET status = 'auto_resolved'
-                 WHERE id = ?1 AND status = 'processing'",
-                params![review_item_id],
-            )
-            .map_err(sql_error)?;
-        transaction
-            .execute(
-                "DELETE FROM review_processing_leases WHERE review_item_id = ?1 AND lease_token = ?2",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        publish_staged_original(
-            &mut staged_original,
-            &imported.object_hash,
-            imported.byte_len,
-            pending_publication.as_mut(),
-        )?;
-        commit_asset_publication(transaction, &mut pending_publication)?;
-        Ok(ReviewProcessingFinalization::Imported(imported))
-    }
-
-    fn finalize_accepted_review_asset(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-        run_id: i64,
-        work_key: &str,
-        mut record: PersistAsset,
-        mut staged_original: Option<Box<dyn StagedOriginal>>,
-    ) -> Result<ReviewProcessingFinalization, PortError> {
-        let mut pending_publication =
-            prepare_and_register_object_publication(self, &mut staged_original)?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let review = transaction
-            .query_row(
-                "SELECT review.id, review.run_id, review.candidate_identity, review.candidate_json,
-                        review.competing_matches_json, review.decision_json, review.status
-                 FROM review_items AS review
-                 INNER JOIN review_processing_leases AS lease
-                    ON lease.review_item_id = review.id
-                 WHERE review.id = ?1 AND review.status = 'processing'
-                   AND lease.lease_token = ?2",
-                params![review_item_id, lease_token],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?
-            .map(decode_review_item_row)
-            .transpose()?;
-        let Some(review) = review else {
-            return Err(PortError(format!(
-                "review item #{review_item_id} lost its accepted processing lease"
-            )));
-        };
-        if review.run_id != run_id {
-            return Err(PortError(format!(
-                "review item #{review_item_id} belongs to run #{}, not run #{run_id}",
-                review.run_id
-            )));
-        }
-
-        if let Some(sibling_decision) =
-            terminal_review_sibling(&transaction, &review)?.and_then(|item| item.decision)
-        {
-            let current_acceptance = match review.decision.as_ref() {
-                Some(ReviewDecision::Accept { release_edition_id }) => Some(*release_edition_id),
-                _ => None,
-            };
-            let same_acceptance = matches!(
-                &sibling_decision,
-                ReviewDecision::Accept { release_edition_id }
-                    if current_acceptance == Some(*release_edition_id)
-            );
-            if !same_acceptance {
-                let (status, outcome, complete_work) = match sibling_decision {
-                    ReviewDecision::Reject => (
-                        ReviewStatus::Rejected,
-                        ReviewProcessingFinalization::Discarded,
-                        true,
-                    ),
-                    ReviewDecision::Accept { release_edition_id } => {
-                        if let Some(accepted_match) = review
-                            .competing_matches
-                            .iter()
-                            .find(|candidate| candidate.release_edition_id == release_edition_id)
-                        {
-                            retarget_asset_for_review_acceptance(&mut record, accepted_match);
-                            let imported = persist_asset_in_transaction(&transaction, record)?;
-                            complete_work_in_transaction(&transaction, run_id, work_key)?;
-                            let decision_json =
-                                serde_json::to_string(&sibling_decision).map_err(|error| {
-                                    PortError(format!(
-                                        "failed to serialize review decision: {error}"
-                                    ))
-                                })?;
-                            transaction
-                                .execute(
-                                    "UPDATE review_items SET decision_json = ?1, status = 'applied' WHERE id = ?2",
-                                    params![decision_json, review_item_id],
-                                )
-                                .map_err(sql_error)?;
-                            transaction
-                                .execute(
-                                    "DELETE FROM review_processing_leases
-                                     WHERE review_item_id = ?1 AND lease_token = ?2",
-                                    params![review_item_id, lease_token],
-                                )
-                                .map_err(sql_error)?;
-                            publish_staged_original(
-                                &mut staged_original,
-                                &imported.object_hash,
-                                imported.byte_len,
-                                pending_publication.as_mut(),
-                            )?;
-                            commit_asset_publication(transaction, &mut pending_publication)?;
-                            return Ok(ReviewProcessingFinalization::Imported(imported));
-                        }
-                        (
-                            ReviewStatus::Superseded,
-                            ReviewProcessingFinalization::Discarded,
-                            true,
-                        )
-                    }
-                    ReviewDecision::Defer => {
-                        unreachable!("deferred reviews are not terminal siblings")
-                    }
-                };
-                let decision_json = serde_json::to_string(&sibling_decision).map_err(|error| {
-                    PortError(format!("failed to serialize review decision: {error}"))
-                })?;
-                transaction
-                    .execute(
-                        "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
-                        params![decision_json, review_status_to_str(status), review_item_id],
-                    )
-                    .map_err(sql_error)?;
-                transaction
-                    .execute(
-                        "DELETE FROM review_processing_leases
-                     WHERE review_item_id = ?1 AND lease_token = ?2",
-                        params![review_item_id, lease_token],
-                    )
-                    .map_err(sql_error)?;
-                if complete_work {
-                    complete_work_in_transaction(&transaction, run_id, work_key)?;
-                }
-                transaction.commit().map_err(sql_error)?;
-                return Ok(outcome);
-            }
-        }
-
-        let imported = persist_asset_in_transaction(&transaction, record)?;
-        complete_work_in_transaction(&transaction, run_id, work_key)?;
-        let changed = transaction
-            .execute(
-                "UPDATE review_items SET status = 'applied'
-                 WHERE id = ?1 AND run_id = ?2 AND status = 'processing'
-                   AND EXISTS (
-                       SELECT 1 FROM review_processing_leases
-                       WHERE review_item_id = ?1 AND lease_token = ?3
-                   )",
-                params![review_item_id, run_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        if changed != 1 {
-            return Err(PortError(format!(
-                "review item #{review_item_id} could not be applied atomically"
-            )));
-        }
-        transaction
-            .execute(
-                "DELETE FROM review_processing_leases
-                 WHERE review_item_id = ?1 AND lease_token = ?2",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        publish_staged_original(
-            &mut staged_original,
-            &imported.object_hash,
-            imported.byte_len,
-            pending_publication.as_mut(),
-        )?;
-        commit_asset_publication(transaction, &mut pending_publication)?;
-        Ok(ReviewProcessingFinalization::Imported(imported))
-    }
-
-    fn refresh_review_processing_and_complete_work(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-        item: NewReviewItem,
-        work_key: &str,
-        status: ReviewStatus,
-    ) -> Result<ReviewItem, PortError> {
-        if !matches!(status, ReviewStatus::Pending | ReviewStatus::Deferred) {
-            return Err(PortError(format!(
-                "invalid restored review processing status: {}",
-                review_status_to_str(status)
-            )));
-        }
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let candidate_json = serde_json::to_string(&item.candidate)
-            .map_err(|error| PortError(format!("failed to serialize review candidate: {error}")))?;
-        let competing_matches_json = serde_json::to_string(&item.competing_matches)
-            .map_err(|error| PortError(format!("failed to serialize review matches: {error}")))?;
-        let changed = transaction
-            .execute(
-                "UPDATE review_items
-                 SET candidate_json = ?1, competing_matches_json = ?2
-                 WHERE id = ?3 AND run_id = ?4 AND candidate_identity = ?5
-                   AND status = 'processing'
-                   AND EXISTS (
-                       SELECT 1 FROM review_processing_leases
-                       WHERE review_item_id = ?3 AND lease_token = ?6
-                   )",
-                params![
-                    candidate_json,
-                    competing_matches_json,
-                    review_item_id,
-                    item.run_id,
-                    item.candidate_identity,
-                    lease_token,
-                ],
-            )
-            .map_err(sql_error)?;
-        if changed != 1 {
-            return Err(PortError(format!(
-                "review item #{review_item_id} lost its processing lease or no longer matches the staged candidate"
-            )));
-        }
-
-        complete_work_in_transaction(&transaction, item.run_id, work_key)?;
-        let restored = transaction
-            .execute(
-                "UPDATE review_items SET status = ?1
-                 WHERE id = ?2 AND status = 'processing'
-                   AND EXISTS (
-                       SELECT 1 FROM review_processing_leases
-                       WHERE review_item_id = ?2 AND lease_token = ?3
-                   )",
-                params![review_status_to_str(status), review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        if restored != 1 {
-            return Err(PortError(format!(
-                "review item #{review_item_id} could not be restored atomically"
-            )));
-        }
-        let final_status =
-            reconcile_restored_review_with_terminal_sibling(&transaction, review_item_id, status)?;
-        if final_status == ReviewStatus::Accepted {
-            requeue_completed_work_in_transaction(&transaction, item.run_id, work_key)?;
-        }
-        transaction
-            .execute(
-                "DELETE FROM review_processing_leases
-                 WHERE review_item_id = ?1 AND lease_token = ?2",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        let refreshed = transaction
-            .query_row(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items WHERE id = ?1",
-                params![review_item_id],
-                review_item_row,
-            )
-            .map_err(sql_error)
-            .and_then(decode_review_item_row)?;
-        transaction.commit().map_err(sql_error)?;
-        Ok(refreshed)
-    }
-
-    fn supersede_review_processing_and_complete_work(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-        run_id: i64,
-        work_key: &str,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let current = transaction
-            .query_row(
-                "SELECT review.id, review.run_id, review.candidate_identity, review.candidate_json,
-                        review.competing_matches_json, review.decision_json, review.status
-                 FROM review_items AS review
-                 INNER JOIN review_processing_leases AS lease ON lease.review_item_id = review.id
-                 WHERE review.id = ?1 AND review.status = 'processing' AND lease.lease_token = ?2",
-                params![review_item_id, lease_token],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?
-            .map(decode_review_item_row)
-            .transpose()?;
-        let Some(current) = current else {
-            return Err(PortError(format!(
-                "review item #{review_item_id} lost its processing lease"
-            )));
-        };
-        if current.run_id != run_id {
-            return Err(PortError(format!(
-                "review item #{review_item_id} belongs to run #{}, not run #{run_id}",
-                current.run_id
-            )));
-        }
-
-        if let Some(decision) =
-            terminal_review_sibling(&transaction, &current)?.and_then(|item| item.decision)
-        {
-            let (status, complete_work) = match decision {
-                ReviewDecision::Reject => (ReviewStatus::Rejected, true),
-                ReviewDecision::Accept { release_edition_id } => {
-                    if current
-                        .competing_matches
-                        .iter()
-                        .any(|candidate| candidate.release_edition_id == release_edition_id)
-                    {
-                        (ReviewStatus::Accepted, false)
-                    } else {
-                        (ReviewStatus::Superseded, true)
-                    }
-                }
-                ReviewDecision::Defer => (ReviewStatus::Superseded, true),
-            };
-            if complete_work {
-                complete_work_in_transaction(&transaction, run_id, work_key)?;
-            }
-            let decision_json = serde_json::to_string(&decision).map_err(|error| {
-                PortError(format!("failed to serialize review decision: {error}"))
-            })?;
-            transaction
-                .execute(
-                    "UPDATE review_items SET decision_json = ?1, status = ?2
-                     WHERE id = ?3 AND status = 'processing'
-                       AND EXISTS (
-                           SELECT 1 FROM review_processing_leases
-                           WHERE review_item_id = ?3 AND lease_token = ?4
-                       )",
-                    params![
-                        decision_json,
-                        review_status_to_str(status),
-                        review_item_id,
-                        lease_token
-                    ],
-                )
-                .map_err(sql_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM review_processing_leases
-                     WHERE review_item_id = ?1 AND lease_token = ?2",
-                    params![review_item_id, lease_token],
-                )
-                .map_err(sql_error)?;
-            transaction.commit().map_err(sql_error)?;
-            drop(connection);
-            return self.get_review_item(review_item_id);
-        }
-
-        complete_work_in_transaction(&transaction, run_id, work_key)?;
-        let changed = transaction
-            .execute(
-                "UPDATE review_items SET status = 'superseded'
-                 WHERE id = ?1 AND status = 'processing'
-                   AND EXISTS (
-                       SELECT 1 FROM review_processing_leases
-                       WHERE review_item_id = ?1 AND lease_token = ?2
-                   )",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        if changed != 1 {
-            return Err(PortError(format!(
-                "review item #{review_item_id} could not be superseded atomically"
-            )));
-        }
-        transaction
-            .execute(
-                "DELETE FROM review_processing_leases
-                 WHERE review_item_id = ?1 AND lease_token = ?2",
-                params![review_item_id, lease_token],
-            )
-            .map_err(sql_error)?;
-        transaction.commit().map_err(sql_error)?;
-        drop(connection);
-        self.get_review_item(review_item_id)
-    }
-
-    fn finish_review_item_processing(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-        status: ReviewStatus,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        if !matches!(
-            status,
-            ReviewStatus::AutoResolved | ReviewStatus::Superseded
-        ) {
-            return Err(PortError(format!(
-                "invalid completed review processing status: {}",
-                review_status_to_str(status)
-            )));
-        }
-        update_review_processing_status(self, review_item_id, lease_token, status)
-    }
-
-    fn restore_review_item_processing(
-        &self,
-        review_item_id: i64,
-        lease_token: &str,
-        status: ReviewStatus,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        if !matches!(
-            status,
-            ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
-        ) {
-            return Err(PortError(format!(
-                "invalid restored review processing status: {}",
-                review_status_to_str(status)
-            )));
-        }
-        update_review_processing_status(self, review_item_id, lease_token, status)
-    }
-
-    fn set_review_decision(
-        &self,
-        review_item_id: i64,
-        decision: ReviewDecision,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        let status = match &decision {
-            ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
-            ReviewDecision::Reject => ReviewStatus::Rejected,
-            ReviewDecision::Defer => ReviewStatus::Deferred,
-        };
-        let decision_json = serde_json::to_string(&decision)
-            .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let target: Option<(String, String)> = transaction
-            .query_row(
-                "SELECT candidate_identity, status FROM review_items WHERE id = ?1",
-                params![review_item_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(sql_error)?;
-        let Some((candidate_identity, current_status)) = target else {
-            return Ok(None);
-        };
-        let current_status = parse_review_status(&current_status)?;
-        if !matches!(
-            current_status,
-            ReviewStatus::Pending | ReviewStatus::Deferred
-        ) {
-            return Err(PortError(format!(
-                "review item #{review_item_id} cannot transition while {}",
-                review_status_to_str(current_status)
-            )));
-        }
-        let decision_seq = next_review_decision_seq(&transaction)?;
-        let changed_target = transaction
-            .execute(
-                "UPDATE review_items SET decision_json = ?1, status = ?2, decision_seq = ?3
-                 WHERE id = ?4 AND status IN ('pending', 'deferred')",
-                params![
-                    decision_json,
-                    review_status_to_str(status),
-                    decision_seq,
-                    review_item_id
-                ],
-            )
-            .map_err(sql_error)?;
-        if changed_target != 1 {
-            return Err(PortError(format!(
-                "review item #{review_item_id} could not be resolved atomically"
-            )));
-        }
-        if decision == ReviewDecision::Reject {
-            transaction
-                .execute(
-                    "UPDATE review_items
-                     SET decision_json = ?1, status = 'rejected', decision_seq = ?2
-                     WHERE candidate_identity = ?3 AND id != ?4
-                       AND status IN ('pending', 'deferred')",
-                    params![
-                        decision_json,
-                        decision_seq,
-                        candidate_identity,
-                        review_item_id
-                    ],
-                )
-                .map_err(sql_error)?;
-        }
-        transaction.commit().map_err(sql_error)?;
-        drop(connection);
-        self.get_review_item(review_item_id)
-    }
-
-    fn accept_review_item_and_requeue(
-        &self,
-        review_item_id: i64,
-        release_edition_id: i64,
-        work_keys: &[&str],
-    ) -> Result<Option<ReviewItem>, PortError> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sql_error)?;
-        let row = transaction
-            .query_row(
-                "SELECT id, run_id, candidate_identity, candidate_json,
-                        competing_matches_json, decision_json, status
-                 FROM review_items
-                 WHERE id = ?1",
-                params![review_item_id],
-                review_item_row,
-            )
-            .optional()
-            .map_err(sql_error)?;
-        let Some(mut item) = row.map(decode_review_item_row).transpose()? else {
-            return Ok(None);
-        };
-        if !matches!(item.status, ReviewStatus::Pending | ReviewStatus::Deferred) {
-            return Err(PortError(format!(
-                "review item #{review_item_id} cannot be resolved while {}",
-                review_status_to_str(item.status)
-            )));
-        }
-        if !item
-            .competing_matches
-            .iter()
-            .any(|candidate| candidate.release_edition_id == release_edition_id)
-        {
-            return Err(PortError(format!(
-                "release edition #{release_edition_id} is not a competing release for review item #{review_item_id}"
-            )));
-        }
-
-        let mut selected_work = None;
-        for &work_key in work_keys {
-            let run_status = transaction
-                .query_row(
-                    "SELECT run.status
-                     FROM acquisition_run_work AS work
-                     INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-                     WHERE work.run_id = ?1 AND work.work_key = ?2",
-                    params![item.run_id, work_key],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(sql_error)?;
-            if let Some(run_status) = run_status {
-                selected_work = Some((work_key, run_status));
-                break;
-            }
-        }
-        let Some((work_key, run_status)) = selected_work else {
-            return Err(PortError(format!(
-                "no compatible acquisition work exists for run #{}",
-                item.run_id
-            )));
-        };
-        if run_status != "cancelled" {
-            requeue_completed_work_in_transaction(&transaction, item.run_id, work_key)?;
-        }
-
-        let decision = ReviewDecision::Accept { release_edition_id };
-        let decision_json = serde_json::to_string(&decision)
-            .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
-        let decision_seq = next_review_decision_seq(&transaction)?;
-        let related_items = {
-            let mut statement = transaction
-                .prepare(
-                    "SELECT id, run_id, candidate_identity, candidate_json,
-                            competing_matches_json, decision_json, status
-                     FROM review_items
-                     WHERE candidate_identity = ?1 AND status IN ('pending', 'deferred')",
-                )
-                .map_err(sql_error)?;
-            let rows = statement
-                .query_map(params![item.candidate_identity], review_item_row)
-                .map_err(sql_error)?;
-            let mut related_items = Vec::new();
-            for row in rows {
-                related_items.push(decode_review_item_row(row.map_err(sql_error)?)?);
-            }
-            related_items
-        };
-        for related_item in related_items {
-            let status = if related_item
-                .competing_matches
-                .iter()
-                .any(|candidate| candidate.release_edition_id == release_edition_id)
-            {
-                ReviewStatus::Accepted
-            } else {
-                ReviewStatus::Superseded
-            };
-            transaction
-                .execute(
-                    "UPDATE review_items
-                     SET decision_json = ?1, status = ?2, decision_seq = ?3
-                     WHERE id = ?4 AND status IN ('pending', 'deferred')",
-                    params![
-                        decision_json,
-                        review_status_to_str(status),
-                        decision_seq,
-                        related_item.id
-                    ],
-                )
-                .map_err(sql_error)?;
-            if status == ReviewStatus::Accepted && related_item.id != review_item_id {
-                let related_work_key = acquisition_work_key(
-                    related_item.candidate.source_id.as_str(),
-                    &related_item.candidate,
-                );
-                let related_run_status: Option<String> = transaction
-                    .query_row(
-                        "SELECT status FROM acquisition_runs WHERE id = ?1",
-                        params![related_item.run_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(sql_error)?;
-                if related_run_status.as_deref() != Some("cancelled") {
-                    requeue_completed_work_in_transaction(
-                        &transaction,
-                        related_item.run_id,
-                        &related_work_key,
-                    )?;
-                }
-            }
-        }
-        transaction.commit().map_err(sql_error)?;
-
-        item.decision = Some(decision);
-        item.status = ReviewStatus::Accepted;
-        Ok(Some(item))
-    }
-
-    fn set_review_status(
-        &self,
-        review_item_id: i64,
-        status: ReviewStatus,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        let connection = self.connect()?;
-        let allowed_source_statuses = if status == ReviewStatus::Applied {
-            "'accepted'"
-        } else {
-            "'pending', 'deferred'"
-        };
-        let changed = connection
-            .execute(
-                &format!(
-                    "UPDATE review_items SET status = ?1
-                     WHERE id = ?2 AND status IN ({allowed_source_statuses})"
-                ),
-                params![review_status_to_str(status), review_item_id],
-            )
-            .map_err(sql_error)?;
-        if changed == 0 {
-            return review_transition_conflict(self, review_item_id);
-        }
-        drop(connection);
-        self.get_review_item(review_item_id)
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
@@ -1847,15 +177,11 @@ impl CatalogPort for SqliteCatalog {
                         r.id, r.platform, r.region, r.edition_name,
                         a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
                         p.source_kind, p.source_asset_label, p.source_location,
-                        m.decision_json
+                        p.match_decision_json
                      FROM release_editions r
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
                      LEFT JOIN asset_provenance p ON p.asset_id = a.id
-                     LEFT JOIN asset_match_decisions m
-                       ON m.asset_id = p.asset_id
-                      AND m.source_kind = p.source_kind
-                      AND m.source_location = p.source_location
                      ORDER BY g.title, r.id, a.id, p.id",
                 )
                 .map_err(sql_error)?;
@@ -1989,475 +315,6 @@ impl CatalogPort for SqliteCatalog {
     }
 }
 
-type ReviewItemRow = (i64, i64, String, String, String, Option<String>, String);
-
-fn update_review_processing_status(
-    catalog: &SqliteCatalog,
-    review_item_id: i64,
-    lease_token: &str,
-    status: ReviewStatus,
-) -> Result<Option<ReviewItem>, PortError> {
-    let mut connection = catalog.connect()?;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(sql_error)?;
-    let changed = transaction
-        .execute(
-            "UPDATE review_items SET status = ?1
-             WHERE id = ?2 AND status = 'processing'
-               AND EXISTS (
-                   SELECT 1 FROM review_processing_leases
-                   WHERE review_item_id = ?2 AND lease_token = ?3
-               )",
-            params![review_status_to_str(status), review_item_id, lease_token],
-        )
-        .map_err(sql_error)?;
-    if changed == 0 {
-        drop(transaction);
-        drop(connection);
-        return review_transition_conflict(catalog, review_item_id);
-    }
-    if matches!(
-        status,
-        ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Accepted
-    ) {
-        reconcile_restored_review_with_terminal_sibling(&transaction, review_item_id, status)?;
-    }
-    transaction
-        .execute(
-            "DELETE FROM review_processing_leases
-             WHERE review_item_id = ?1 AND lease_token = ?2",
-            params![review_item_id, lease_token],
-        )
-        .map_err(sql_error)?;
-    transaction.commit().map_err(sql_error)?;
-    drop(connection);
-    catalog.get_review_item(review_item_id)
-}
-
-fn reconcile_restored_review_with_terminal_sibling(
-    transaction: &Transaction<'_>,
-    review_item_id: i64,
-    restored_status: ReviewStatus,
-) -> Result<ReviewStatus, PortError> {
-    let current = transaction
-        .query_row(
-            "SELECT id, run_id, candidate_identity, candidate_json,
-                    competing_matches_json, decision_json, status
-             FROM review_items WHERE id = ?1",
-            params![review_item_id],
-            review_item_row,
-        )
-        .map_err(sql_error)
-        .and_then(decode_review_item_row)?;
-    let sibling = terminal_review_sibling(transaction, &current)?;
-    let Some(decision) = sibling.and_then(|item| item.decision) else {
-        return Ok(restored_status);
-    };
-
-    let reconciled_status = match decision {
-        ReviewDecision::Reject => ReviewStatus::Rejected,
-        ReviewDecision::Accept { release_edition_id } => {
-            if current
-                .competing_matches
-                .iter()
-                .any(|candidate| candidate.release_edition_id == release_edition_id)
-            {
-                ReviewStatus::Accepted
-            } else if restored_status == ReviewStatus::Accepted {
-                ReviewStatus::Superseded
-            } else {
-                return Ok(restored_status);
-            }
-        }
-        ReviewDecision::Defer => return Ok(restored_status),
-    };
-    let decision_json = serde_json::to_string(&decision)
-        .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
-    transaction
-        .execute(
-            "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
-            params![
-                decision_json,
-                review_status_to_str(reconciled_status),
-                review_item_id
-            ],
-        )
-        .map_err(sql_error)?;
-    Ok(reconciled_status)
-}
-
-fn reconcile_staged_review_with_terminal_sibling(
-    transaction: &Transaction<'_>,
-    review_item_id: i64,
-    staged_status: ReviewStatus,
-) -> Result<ReviewStatus, PortError> {
-    let current = transaction
-        .query_row(
-            "SELECT id, run_id, candidate_identity, candidate_json,
-                    competing_matches_json, decision_json, status
-             FROM review_items WHERE id = ?1",
-            params![review_item_id],
-            review_item_row,
-        )
-        .map_err(sql_error)
-        .and_then(decode_review_item_row)?;
-    let sibling = terminal_review_sibling(transaction, &current)?;
-    let Some(decision) = sibling.and_then(|item| item.decision) else {
-        return Ok(staged_status);
-    };
-
-    let reconciled_status = match decision {
-        ReviewDecision::Reject => ReviewStatus::Rejected,
-        ReviewDecision::Accept { release_edition_id } => {
-            if current
-                .competing_matches
-                .iter()
-                .any(|candidate| candidate.release_edition_id == release_edition_id)
-            {
-                ReviewStatus::Accepted
-            } else {
-                return Ok(staged_status);
-            }
-        }
-        ReviewDecision::Defer => return Ok(staged_status),
-    };
-    let decision_json = serde_json::to_string(&decision)
-        .map_err(|error| PortError(format!("failed to serialize review decision: {error}")))?;
-    transaction
-        .execute(
-            "UPDATE review_items SET decision_json = ?1, status = ?2 WHERE id = ?3",
-            params![
-                decision_json,
-                review_status_to_str(reconciled_status),
-                review_item_id
-            ],
-        )
-        .map_err(sql_error)?;
-    Ok(reconciled_status)
-}
-
-fn terminal_review_sibling(
-    transaction: &Transaction<'_>,
-    current: &ReviewItem,
-) -> Result<Option<ReviewItem>, PortError> {
-    latest_unambiguous_terminal_review(transaction, &current.candidate_identity, Some(current.id))
-}
-
-fn latest_unambiguous_terminal_review(
-    connection: &Connection,
-    candidate_identity: &str,
-    excluded_review_item_id: Option<i64>,
-) -> Result<Option<ReviewItem>, PortError> {
-    let sequenced = connection
-        .query_row(
-            "SELECT id, run_id, candidate_identity, candidate_json,
-                    competing_matches_json, decision_json, status
-             FROM review_items
-             WHERE candidate_identity = ?1
-               AND (?2 IS NULL OR id != ?2)
-               AND decision_seq IS NOT NULL
-               AND (
-                   status IN ('accepted', 'applied', 'rejected')
-                   OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
-               )
-             ORDER BY decision_seq DESC, id DESC
-             LIMIT 1",
-            params![candidate_identity, excluded_review_item_id],
-            review_item_row,
-        )
-        .optional()
-        .map_err(sql_error)?;
-    if let Some(sequenced) = sequenced {
-        return decode_review_item_row(sequenced).map(Some);
-    }
-
-    let mut statement = connection
-        .prepare(
-            "SELECT id, run_id, candidate_identity, candidate_json,
-                    competing_matches_json, decision_json, status
-             FROM review_items
-             WHERE candidate_identity = ?1
-               AND (?2 IS NULL OR id != ?2)
-               AND decision_seq IS NULL
-               AND (
-                   status IN ('accepted', 'applied', 'rejected')
-                   OR (status = 'processing' AND decision_json LIKE '%\"decision\":\"accept\"%')
-               )
-             ORDER BY id DESC",
-        )
-        .map_err(sql_error)?;
-    let rows = statement
-        .query_map(
-            params![candidate_identity, excluded_review_item_id],
-            review_item_row,
-        )
-        .map_err(sql_error)?;
-    let mut representative = None;
-    let mut legacy_decision = None;
-    for row in rows {
-        let item = decode_review_item_row(row.map_err(sql_error)?)?;
-        let Some(decision) = item.decision.clone() else {
-            return Ok(None);
-        };
-        if legacy_decision
-            .as_ref()
-            .is_some_and(|existing| existing != &decision)
-        {
-            return Ok(None);
-        }
-        if legacy_decision.is_none() {
-            legacy_decision = Some(decision);
-            representative = Some(item);
-        }
-    }
-    Ok(representative)
-}
-
-fn next_review_decision_seq(transaction: &Transaction<'_>) -> Result<i64, PortError> {
-    transaction
-        .query_row(
-            "SELECT COALESCE(MAX(decision_seq), 0) + 1 FROM review_items",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)
-}
-
-fn review_transition_conflict(
-    catalog: &SqliteCatalog,
-    review_item_id: i64,
-) -> Result<Option<ReviewItem>, PortError> {
-    match catalog.get_review_item(review_item_id)? {
-        None => Ok(None),
-        Some(item) => Err(PortError(format!(
-            "review item #{review_item_id} cannot transition while {}",
-            review_status_to_str(item.status)
-        ))),
-    }
-}
-
-fn retarget_asset_for_review_acceptance(
-    record: &mut PersistAsset,
-    accepted_match: &ReviewMatchCandidate,
-) {
-    record.existing_game_id = None;
-    record.existing_release_edition_id = Some(accepted_match.release_edition_id);
-    record.match_decision = Some(AssetCandidateMatch {
-        release_edition_id: Some(accepted_match.release_edition_id),
-        score: accepted_match.score,
-        confidence: MatchConfidence::Medium,
-        evidence: accepted_match.evidence.clone(),
-    });
-}
-
-fn publish_staged_original(
-    staged_original: &mut Option<Box<dyn StagedOriginal>>,
-    expected_hash: &str,
-    expected_byte_len: u64,
-    pending_publication: Option<&mut PendingObjectPublicationGuard>,
-) -> Result<(), PortError> {
-    let Some(staged_original) = staged_original.take() else {
-        return Ok(());
-    };
-    let expected = staged_original.stored_object().clone();
-    if expected.hash != expected_hash || expected.byte_len != expected_byte_len {
-        return Err(PortError(
-            "staged original metadata does not match the asset record".to_owned(),
-        ));
-    }
-    if let Some(pending_publication) = pending_publication {
-        pending_publication.mark_publication_started();
-    }
-    let published = staged_original.publish_prepared()?;
-    if published != expected {
-        return Err(PortError(
-            "published original metadata changed after staging".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn commit_asset_publication(
-    transaction: Transaction<'_>,
-    pending_publication: &mut Option<PendingObjectPublicationGuard>,
-) -> Result<(), PortError> {
-    if let Some(pending_publication) = pending_publication.as_ref() {
-        let deleted = transaction
-            .execute(
-                "DELETE FROM pending_object_publications WHERE id = ?1",
-                params![pending_publication.id],
-            )
-            .map_err(sql_error)?;
-        if deleted != 1 {
-            return Err(PortError(format!(
-                "pending object publication #{} disappeared before asset commit",
-                pending_publication.id
-            )));
-        }
-    }
-    transaction.commit().map_err(sql_error)?;
-    if let Some(pending_publication) = pending_publication.as_mut() {
-        pending_publication.mark_commit_succeeded();
-    }
-    Ok(())
-}
-
-fn prepare_staged_original(
-    staged_original: &mut Option<Box<dyn StagedOriginal>>,
-) -> Result<(), PortError> {
-    if let Some(staged_original) = staged_original.as_mut() {
-        staged_original.prepare_publish()?;
-    }
-    Ok(())
-}
-
-fn prepare_and_register_object_publication(
-    catalog: &SqliteCatalog,
-    staged_original: &mut Option<Box<dyn StagedOriginal>>,
-) -> Result<Option<PendingObjectPublicationGuard>, PortError> {
-    let pending_publication = catalog.register_pending_object_publication(staged_original)?;
-    if let Some(pending_publication) = pending_publication.as_ref() {
-        pending_publication.wait_for_prior_publication()?;
-    }
-    prepare_staged_original(staged_original)?;
-    Ok(pending_publication)
-}
-
-fn requeue_completed_work_in_transaction(
-    transaction: &Transaction<'_>,
-    run_id: i64,
-    work_key: &str,
-) -> Result<(), PortError> {
-    let state: Option<(String, i64)> = transaction
-        .query_row(
-            "SELECT run.status, work.completed
-             FROM acquisition_run_work AS work
-             INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-             WHERE work.run_id = ?1 AND work.work_key = ?2",
-            params![run_id, work_key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(sql_error)?;
-    let Some((status, completed)) = state else {
-        return Err(PortError(format!(
-            "acquisition work {work_key:?} does not exist for run #{run_id}"
-        )));
-    };
-    if status == "cancelled" {
-        return Err(PortError(format!(
-            "acquisition run #{run_id} cannot requeue review work while cancelled"
-        )));
-    }
-    if completed == 0 {
-        return Ok(());
-    }
-
-    let changed = transaction
-        .execute(
-            "UPDATE acquisition_run_work
-             SET completed = 0
-             WHERE run_id = ?1 AND work_key = ?2 AND completed = 1",
-            params![run_id, work_key],
-        )
-        .map_err(sql_error)?;
-    if changed == 1 {
-        let updated = transaction
-            .execute(
-                "UPDATE acquisition_runs
-                 SET queued_work = queued_work + 1,
-                     completed_work = completed_work - 1,
-                     status = CASE WHEN status = 'completed' THEN 'running' ELSE status END
-                 WHERE id = ?1 AND completed_work > 0",
-                params![run_id],
-            )
-            .map_err(sql_error)?;
-        if updated != 1 {
-            return Err(PortError(format!(
-                "acquisition run #{run_id} has inconsistent completed work state"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn complete_work_in_transaction(
-    transaction: &Transaction<'_>,
-    run_id: i64,
-    work_key: &str,
-) -> Result<(), PortError> {
-    let completed = transaction
-        .execute(
-            "UPDATE acquisition_run_work SET completed = 1
-             WHERE run_id = ?1 AND work_key = ?2 AND completed = 0",
-            params![run_id, work_key],
-        )
-        .map_err(sql_error)?;
-    if completed == 1 {
-        transaction
-            .execute(
-                "UPDATE acquisition_runs
-                 SET queued_work = queued_work - 1,
-                     completed_work = completed_work + 1
-                 WHERE id = ?1",
-                params![run_id],
-            )
-            .map_err(sql_error)?;
-    }
-    Ok(())
-}
-
-fn review_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewItemRow> {
-    Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-        row.get(5)?,
-        row.get(6)?,
-    ))
-}
-
-fn decode_review_item_row(
-    (
-        id,
-        run_id,
-        candidate_identity,
-        candidate_json,
-        competing_matches_json,
-        decision_json,
-        status,
-    ): ReviewItemRow,
-) -> Result<ReviewItem, PortError> {
-    let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
-        PortError(format!(
-            "catalog contains invalid review candidate: {error}"
-        ))
-    })?;
-    let competing_matches: Vec<ReviewMatchCandidate> =
-        serde_json::from_str(&competing_matches_json).map_err(|error| {
-            PortError(format!("catalog contains invalid review matches: {error}"))
-        })?;
-    let decision: Option<ReviewDecision> = decision_json
-        .map(|json| {
-            serde_json::from_str(&json).map_err(|error| {
-                PortError(format!("catalog contains invalid review decision: {error}"))
-            })
-        })
-        .transpose()?;
-    Ok(ReviewItem {
-        id,
-        run_id,
-        candidate_identity,
-        candidate,
-        competing_matches,
-        decision,
-        status: parse_review_status(&status)?,
-    })
-}
-
 struct ExistingImportLookup<'a> {
     normalized_title: &'a str,
     normalized_platform: &'a str,
@@ -2473,25 +330,13 @@ struct ExistingImportMatch {
     imported: ImportedAsset,
 }
 
+/// Persists an asset and its provenance. `candidate_identity` names the acquisition candidate
+/// the provenance belongs to; direct imports have none.
 fn persist_asset_in_transaction(
     transaction: &Transaction<'_>,
     record: PersistAsset,
+    candidate_identity: Option<&str>,
 ) -> Result<ImportedAsset, PortError> {
-    let recovery_claimed: bool = transaction
-        .query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM object_publication_recovery_claims WHERE object_hash = ?1
-             )",
-            params![record.object_hash],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)?;
-    if recovery_claimed {
-        return Err(PortError(format!(
-            "object {} is being recovered; retry asset persistence",
-            record.object_hash
-        )));
-    }
     let normalized_title = normalize(&record.game_title);
     let normalized_platform = normalize(&record.platform);
     let normalized_region = normalize(&record.region);
@@ -2512,21 +357,13 @@ fn persist_asset_in_transaction(
         release_edition_id: explicit_target.map(|(_, release_edition_id)| release_edition_id),
     };
     if let Some(existing) = find_existing_import(transaction, &record, &lookup)? {
-        normalize_existing_provenance(transaction, &record, source_id, &existing)?;
-        persist_asset_match_decision(
-            transaction,
-            existing.imported.asset_id,
-            existing.imported.release_edition_id,
-            source_id,
-            &record.source_location,
-            record.match_decision.as_ref(),
-        )?;
+        record_provenance(transaction, &existing.imported, &record, candidate_identity)?;
         return Ok(existing.imported);
     }
 
-    persist_new_asset_in_transaction(
+    let imported = persist_new_asset_in_transaction(
         transaction,
-        record,
+        &record,
         normalized_title,
         normalized_platform,
         normalized_region,
@@ -2534,13 +371,15 @@ fn persist_asset_in_transaction(
         asset_type,
         byte_len,
         explicit_target,
-    )
+    )?;
+    record_provenance(transaction, &imported, &record, candidate_identity)?;
+    Ok(imported)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn persist_new_asset_in_transaction(
     transaction: &Transaction<'_>,
-    record: PersistAsset,
+    record: &PersistAsset,
     normalized_title: String,
     normalized_platform: String,
     normalized_region: String,
@@ -2551,7 +390,7 @@ fn persist_new_asset_in_transaction(
 ) -> Result<ImportedAsset, PortError> {
     let game_id = match explicit_target {
         Some((game_id, _)) => game_id,
-        None => resolve_game_id(transaction, &record, &normalized_title)?,
+        None => resolve_game_id(transaction, record, &normalized_title)?,
     };
     let release_edition_id = if let Some((_, release_edition_id)) = explicit_target {
         release_edition_id
@@ -2604,7 +443,7 @@ fn persist_new_asset_in_transaction(
 
 fn persist_new_asset_row(
     transaction: &Transaction<'_>,
-    record: PersistAsset,
+    record: &PersistAsset,
     game_id: i64,
     release_edition_id: i64,
     asset_type: &str,
@@ -2636,39 +475,11 @@ fn persist_new_asset_row(
         )
         .map_err(sql_error)?;
 
-    let source_id = record.source_id.as_str();
-    transaction
-        .execute(
-            "INSERT INTO asset_provenance (
-                asset_id, source_kind, source_asset_label, source_location
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
-                source_asset_label = COALESCE(
-                    excluded.source_asset_label,
-                    asset_provenance.source_asset_label
-                )",
-            params![
-                asset_id,
-                source_id,
-                record.source_asset_label,
-                record.source_location,
-            ],
-        )
-        .map_err(sql_error)?;
-    persist_asset_match_decision(
-        transaction,
-        asset_id,
-        release_edition_id,
-        source_id,
-        &record.source_location,
-        record.match_decision.as_ref(),
-    )?;
-
     Ok(ImportedAsset {
         game_id,
         release_edition_id,
         asset_id,
-        object_hash: record.object_hash,
+        object_hash: record.object_hash.clone(),
         byte_len: record.byte_len,
     })
 }
@@ -2813,84 +624,56 @@ fn canonicalize_location(location: &str) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-fn normalize_existing_provenance(
+/// Records where the asset came from, for one candidate (or the direct import), with the
+/// candidate's own label and match decision. Re-imports keep earlier details they do not carry.
+fn record_provenance(
     transaction: &Transaction<'_>,
+    imported: &ImportedAsset,
     record: &PersistAsset,
-    source_id: &str,
-    existing: &ExistingImportMatch,
+    candidate_identity: Option<&str>,
 ) -> Result<(), PortError> {
+    let decision_json = record
+        .match_decision
+        .as_ref()
+        .map(|decision| {
+            if decision.release_edition_id != Some(imported.release_edition_id) {
+                return Err(PortError(format!(
+                    "asset match decision targets release {:?}, expected #{}",
+                    decision.release_edition_id, imported.release_edition_id
+                )));
+            }
+            serde_json::to_string(decision).map_err(|error| {
+                PortError(format!("failed to serialize asset match decision: {error}"))
+            })
+        })
+        .transpose()?;
     transaction
         .execute(
             "INSERT INTO asset_provenance (
-                asset_id, source_kind, source_asset_label, source_location
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                asset_id, source_kind, source_asset_label, source_location,
+                candidate_identity, match_decision_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(asset_id, source_kind, source_location, candidate_identity)
+             DO UPDATE SET
                 source_asset_label = COALESCE(
                     excluded.source_asset_label,
                     asset_provenance.source_asset_label
+                ),
+                match_decision_json = COALESCE(
+                    excluded.match_decision_json,
+                    asset_provenance.match_decision_json
                 )",
             params![
-                existing.imported.asset_id,
-                source_id,
+                imported.asset_id,
+                record.source_id.as_str(),
                 record.source_asset_label,
                 record.source_location,
+                candidate_identity.unwrap_or(""),
+                decision_json,
             ],
         )
         .map_err(sql_error)?;
     Ok(())
-}
-
-fn persist_asset_match_decision(
-    transaction: &Transaction<'_>,
-    asset_id: i64,
-    release_edition_id: i64,
-    source_id: &str,
-    source_location: &str,
-    match_decision: Option<&AssetCandidateMatch>,
-) -> Result<(), PortError> {
-    let Some(match_decision) = match_decision else {
-        return Ok(());
-    };
-    if match_decision.release_edition_id != Some(release_edition_id) {
-        return Err(PortError(format!(
-            "asset match decision targets release {:?}, expected #{release_edition_id}",
-            match_decision.release_edition_id
-        )));
-    }
-    let decision_json = serde_json::to_string(match_decision)
-        .map_err(|error| PortError(format!("failed to serialize asset match decision: {error}")))?;
-    transaction
-        .execute(
-            "INSERT INTO asset_match_decisions (
-                asset_id, source_kind, source_location, decision_json
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(asset_id, source_kind, source_location)
-             DO UPDATE SET decision_json = excluded.decision_json",
-            params![asset_id, source_id, source_location, decision_json],
-        )
-        .map_err(sql_error)?;
-    Ok(())
-}
-
-fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
-    match value {
-        "running" => Ok(AcquisitionRunStatus::Running),
-        "paused" => Ok(AcquisitionRunStatus::Paused),
-        "cancelled" => Ok(AcquisitionRunStatus::Cancelled),
-        "completed" => Ok(AcquisitionRunStatus::Completed),
-        other => Err(PortError(format!(
-            "unknown acquisition run status: {other}"
-        ))),
-    }
-}
-
-fn run_status_to_str(status: AcquisitionRunStatus) -> &'static str {
-    match status {
-        AcquisitionRunStatus::Running => "running",
-        AcquisitionRunStatus::Paused => "paused",
-        AcquisitionRunStatus::Cancelled => "cancelled",
-        AcquisitionRunStatus::Completed => "completed",
-    }
 }
 
 fn persist_reference_release_in_transaction(
@@ -3048,6 +831,48 @@ fn persist_release_assertions(
     Ok(())
 }
 
+/// Removes the candidate's provenance, except on `keep_release_edition_id`. Assets left without
+/// provenance leave the library while their original objects stay in the store until vault
+/// verification collects them.
+fn detach_candidate_links(
+    transaction: &Transaction<'_>,
+    candidate_identity: &str,
+    keep_release_edition_id: Option<i64>,
+) -> Result<(), PortError> {
+    let detached_assets = transaction
+        .prepare(
+            "SELECT DISTINCT provenance.asset_id
+             FROM asset_provenance AS provenance
+             JOIN assets AS asset ON asset.id = provenance.asset_id
+             WHERE provenance.candidate_identity = ?1
+               AND (?2 IS NULL OR asset.release_edition_id != ?2)",
+        )
+        .map_err(sql_error)?
+        .query_map(
+            params![candidate_identity, keep_release_edition_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    for asset_id in detached_assets {
+        transaction
+            .execute(
+                "DELETE FROM asset_provenance WHERE asset_id = ?1 AND candidate_identity = ?2",
+                params![asset_id, candidate_identity],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM assets WHERE id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM asset_provenance WHERE asset_id = ?1)",
+                params![asset_id],
+            )
+            .map_err(sql_error)?;
+    }
+    Ok(())
+}
+
 fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
 }
@@ -3069,35 +894,6 @@ fn parse_release_assertion_field(value: &str) -> Result<ReleaseAssertionField, P
         "identifier" => Ok(ReleaseAssertionField::Identifier),
         other => Err(PortError(format!(
             "unknown release assertion field in catalog: {other}"
-        ))),
-    }
-}
-
-fn review_status_to_str(status: ReviewStatus) -> &'static str {
-    match status {
-        ReviewStatus::Pending => "pending",
-        ReviewStatus::Deferred => "deferred",
-        ReviewStatus::Processing => "processing",
-        ReviewStatus::Accepted => "accepted",
-        ReviewStatus::Applied => "applied",
-        ReviewStatus::Rejected => "rejected",
-        ReviewStatus::AutoResolved => "auto_resolved",
-        ReviewStatus::Superseded => "superseded",
-    }
-}
-
-fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
-    match value {
-        "pending" => Ok(ReviewStatus::Pending),
-        "deferred" => Ok(ReviewStatus::Deferred),
-        "processing" => Ok(ReviewStatus::Processing),
-        "accepted" => Ok(ReviewStatus::Accepted),
-        "applied" => Ok(ReviewStatus::Applied),
-        "rejected" => Ok(ReviewStatus::Rejected),
-        "auto_resolved" => Ok(ReviewStatus::AutoResolved),
-        "superseded" => Ok(ReviewStatus::Superseded),
-        _ => Err(PortError(format!(
-            "catalog contains invalid review status {value:?}"
         ))),
     }
 }
@@ -3127,7 +923,7 @@ fn sql_error(error: rusqlite::Error) -> PortError {
 mod tests {
     use std::{
         collections::HashSet,
-        sync::{Arc, Condvar, Mutex, OnceLock, mpsc},
+        sync::{Condvar, Mutex, OnceLock},
         thread,
         time::Duration,
     };
@@ -3148,45 +944,6 @@ mod tests {
         true
     }
 
-    struct NeverPublishOriginal {
-        stored: game_media_vault_domain::StoredObject,
-    }
-
-    impl StagedOriginal for NeverPublishOriginal {
-        fn stored_object(&self) -> &game_media_vault_domain::StoredObject {
-            &self.stored
-        }
-
-        fn publish(self: Box<Self>) -> Result<game_media_vault_domain::StoredObject, PortError> {
-            panic!("publication must not start while recovery owns the object hash")
-        }
-    }
-
-    struct JournalObservingOriginal {
-        stored: game_media_vault_domain::StoredObject,
-        catalog_path: PathBuf,
-        journal_seen: Arc<Mutex<bool>>,
-    }
-
-    impl StagedOriginal for JournalObservingOriginal {
-        fn stored_object(&self) -> &game_media_vault_domain::StoredObject {
-            &self.stored
-        }
-
-        fn publish(self: Box<Self>) -> Result<game_media_vault_domain::StoredObject, PortError> {
-            let pending: i64 = Connection::open(&self.catalog_path)
-                .map_err(sql_error)?
-                .query_row(
-                    "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
-                    params![self.stored.hash],
-                    |row| row.get(0),
-                )
-                .map_err(sql_error)?;
-            *self.journal_seen.lock().unwrap() = pending > 0;
-            Ok(self.stored.clone())
-        }
-    }
-
     #[test]
     fn failed_new_catalog_initialization_removes_the_reserved_file() {
         let temp = tempdir().unwrap();
@@ -3199,196 +956,6 @@ mod tests {
 
         assert_eq!(error.to_string(), "forced initialization failure");
         assert!(!catalog_path.exists());
-    }
-
-    #[test]
-    fn ordinary_staged_asset_publication_is_journaled_until_commit() {
-        let temp = tempdir().unwrap();
-        let catalog_path = temp.path().join("catalog.sqlite3");
-        let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-        let object_hash = "cd".repeat(32);
-        let journal_seen = Arc::new(Mutex::new(false));
-
-        let imported = catalog
-            .persist_staged_asset(
-                PersistAsset {
-                    existing_game_id: None,
-                    existing_release_edition_id: None,
-                    match_decision: None,
-                    game_title: "Journaled Import".to_owned(),
-                    platform: "Fixture".to_owned(),
-                    region: "World".to_owned(),
-                    edition_name: "Standard".to_owned(),
-                    asset_type: AssetType::BoxFront,
-                    object_hash: object_hash.clone(),
-                    byte_len: 12,
-                    original_filename: "front.png".to_owned(),
-                    source_id: SourceId::from("fixture"),
-                    source_asset_label: None,
-                    source_location: "fixture://journaled-import".to_owned(),
-                },
-                Box::new(JournalObservingOriginal {
-                    stored: game_media_vault_domain::StoredObject {
-                        hash: object_hash.clone(),
-                        byte_len: 12,
-                    },
-                    catalog_path: catalog_path.clone(),
-                    journal_seen: Arc::clone(&journal_seen),
-                }),
-            )
-            .unwrap();
-
-        assert_eq!(imported.object_hash, object_hash);
-        assert!(*journal_seen.lock().unwrap());
-        let pending: i64 = Connection::open(&catalog_path)
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM pending_object_publications",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending, 0);
-    }
-
-    #[test]
-    fn committed_asset_publication_clears_journal_before_guard_drop() {
-        let temp = tempdir().unwrap();
-        let catalog_path = temp.path().join("catalog.sqlite3");
-        let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-        let stored = game_media_vault_domain::StoredObject {
-            hash: "ef".repeat(32),
-            byte_len: 42,
-        };
-        let staged_original: Option<Box<dyn StagedOriginal>> =
-            Some(Box::new(NeverPublishOriginal {
-                stored: stored.clone(),
-            }));
-        let mut pending_publication = catalog
-            .register_pending_object_publication(&staged_original)
-            .unwrap();
-        let mut connection = catalog.connect().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .unwrap();
-
-        commit_asset_publication(transaction, &mut pending_publication).unwrap();
-
-        assert!(pending_publication.is_some());
-        let pending: i64 = Connection::open(&catalog_path)
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM pending_object_publications WHERE object_hash = ?1",
-                [&stored.hash],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending, 0);
-    }
-
-    #[test]
-    fn recovery_releases_sqlite_before_filesystem_cleanup_and_blocks_same_hash_publication() {
-        let temp = tempdir().unwrap();
-        let vault = temp.path().join("vault");
-        fs::create_dir_all(&vault).unwrap();
-        let catalog_path = vault.join("catalog.sqlite3");
-        SqliteCatalog::open(&catalog_path).unwrap();
-        let object_hash = "ab".repeat(32);
-        let object_path = content_addressed_object_path(&catalog_path, &object_hash).unwrap();
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, b"stale bytes").unwrap();
-        Connection::open(&catalog_path)
-            .unwrap()
-            .execute(
-                "INSERT INTO pending_object_publications (object_hash, byte_len, created_at_unix)
-                 VALUES (?1, 11, 0)",
-                params![object_hash],
-            )
-            .unwrap();
-
-        let (cleanup_started_tx, cleanup_started_rx) = mpsc::channel();
-        let (finish_cleanup_tx, finish_cleanup_rx) = mpsc::channel();
-        let worker_catalog_path = catalog_path.clone();
-        let worker_object_path = object_path.clone();
-        let recovery = thread::spawn(move || {
-            let mut connection = Connection::open(&worker_catalog_path).unwrap();
-            connection
-                .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
-                .unwrap();
-            recover_stale_pending_object_publications_with(
-                &mut connection,
-                &worker_catalog_path,
-                |path| {
-                    assert_eq!(path, worker_object_path);
-                    cleanup_started_tx.send(()).unwrap();
-                    finish_cleanup_rx.recv().unwrap();
-                    fs::remove_file(path)
-                },
-            )
-            .unwrap();
-        });
-
-        cleanup_started_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-
-        let writer = Connection::open(&catalog_path).unwrap();
-        writer.execute_batch("PRAGMA busy_timeout = 100;").unwrap();
-        writer.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").unwrap();
-
-        let catalog = SqliteCatalog {
-            path: catalog_path.clone(),
-            mode: CatalogOpenMode::ExistingOnly,
-            busy_handler: None,
-        };
-        let error = catalog
-            .persist_staged_asset(
-                PersistAsset {
-                    existing_game_id: None,
-                    existing_release_edition_id: None,
-                    match_decision: None,
-                    game_title: "Recovery Race".to_owned(),
-                    platform: "Fixture".to_owned(),
-                    region: "World".to_owned(),
-                    edition_name: "Standard".to_owned(),
-                    asset_type: AssetType::BoxFront,
-                    object_hash: object_hash.clone(),
-                    byte_len: 11,
-                    original_filename: "front.png".to_owned(),
-                    source_id: SourceId::from("fixture"),
-                    source_asset_label: None,
-                    source_location: "fixture://recovery-race".to_owned(),
-                },
-                Box::new(NeverPublishOriginal {
-                    stored: game_media_vault_domain::StoredObject {
-                        hash: object_hash.clone(),
-                        byte_len: 11,
-                    },
-                }),
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("is being recovered"));
-
-        finish_cleanup_tx.send(()).unwrap();
-        recovery.join().unwrap();
-        assert!(!object_path.exists());
-        let connection = Connection::open(&catalog_path).unwrap();
-        let assets: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM assets WHERE object_hash = ?1",
-                params![object_hash],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(assets, 0);
-        let claims: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM object_publication_recovery_claims",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(claims, 0);
     }
 
     #[test]

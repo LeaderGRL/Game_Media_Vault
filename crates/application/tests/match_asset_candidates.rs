@@ -7,7 +7,6 @@ use game_media_vault_domain::{
 fn candidate() -> AssetCandidate {
     AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Super Mario Bros.".to_owned(),
         platform: "Nintendo - Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -151,7 +150,6 @@ fn explicit_edition_conflict_prevents_high_confidence_auto_link() {
 fn missing_region_and_edition_values_do_not_increase_confidence() {
     let sparse_candidate = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         region: "Unknown".to_owned(),
         edition_name: "Unspecified".to_owned(),
         ..candidate()

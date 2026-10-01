@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -6,7 +7,6 @@ import type { ReviewItem } from "./types";
 
 const item: ReviewItem = {
   id: 17,
-  run_id: 7,
   candidate_identity: "connector:review-game",
   candidate: {
     game_title: "Review Game",
@@ -71,10 +71,8 @@ describe("ReviewView", () => {
     expect(screen.getByRole("heading", { name: "Review Game" })).toBeInTheDocument();
     expect(screen.getByText("fixture-provider · front")).toBeInTheDocument();
     expect(screen.getByText("fixture://review/front")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Review Game box front candidate" })).toHaveAttribute(
-      "src",
-      "fixture://review/front",
-    );
+    expect(screen.getByRole("button", { name: "Load preview" })).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(screen.getByText("Standard")).toBeInTheDocument();
     expect(screen.getByText("Score 90")).toBeInTheDocument();
     expect(screen.getByText("Title: +50")).toBeInTheDocument();
@@ -83,7 +81,7 @@ describe("ReviewView", () => {
     expect(screen.getByText("fixture://reference/review-game-standard")).toBeInTheDocument();
   });
 
-  it("loads rediscovery previews through the backend instead of using the persisted locator", async () => {
+  it("loads previews through the backend instead of using the persisted locator", async () => {
     const createObjectUrl = vi.fn(() => "blob:review-preview");
     const revokeObjectUrl = vi.fn();
     Object.defineProperty(URL, "createObjectURL", {
@@ -98,18 +96,17 @@ describe("ReviewView", () => {
       media_type: "image/png",
       bytes: [137, 80, 78, 71],
     });
-    const rediscoveryItem: ReviewItem = {
+    const remoteItem: ReviewItem = {
       ...item,
       candidate: {
         ...item.candidate,
         source_url: "https://example.invalid/review/401",
-        source_url_requires_rediscovery: true,
       },
     };
 
     const { unmount } = render(
       <ReviewView
-        items={[rediscoveryItem]}
+        items={[remoteItem]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
         onLoadPreview={onLoadPreview}
@@ -126,6 +123,34 @@ describe("ReviewView", () => {
 
     unmount();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:review-preview");
+  });
+
+  it("shows a loaded preview under StrictMode", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:strict-preview"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const onLoadPreview = vi.fn().mockResolvedValue({
+      media_type: "image/png",
+      bytes: [137, 80, 78, 71],
+    });
+    render(
+      <StrictMode>
+        <ReviewView
+          items={[item]}
+          resolvingIds={new Set()}
+          onResolve={vi.fn()}
+          onLoadPreview={onLoadPreview}
+        />
+      </StrictMode>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
+
+    expect(
+      await screen.findByRole("img", { name: "Review Game box front candidate" }),
+    ).toHaveAttribute("src", "blob:strict-preview");
   });
 
   it("emits accept reject and defer decisions", () => {
@@ -154,17 +179,16 @@ describe("ReviewView", () => {
 
   it("labels reviews closed by matching re-evaluation", () => {
     const onLoadPreview = vi.fn();
-    const closedRediscoveryItem: ReviewItem = {
+    const closedItem: ReviewItem = {
       ...item,
       status: "auto_resolved",
       candidate: {
         ...item.candidate,
-        source_url_requires_rediscovery: true,
       },
     };
     const { rerender } = render(
       <ReviewView
-        items={[closedRediscoveryItem]}
+        items={[closedItem]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
         onLoadPreview={onLoadPreview}
@@ -186,13 +210,19 @@ describe("ReviewView", () => {
 
     rerender(
       <ReviewView
-        items={[{ ...item, status: "processing" }]}
+        items={[
+          {
+            ...item,
+            status: "accepted",
+            decision: { decision: "accept", release_edition_id: 201 },
+          },
+        ]}
         resolvingIds={new Set()}
         onResolve={vi.fn()}
         onLoadPreview={vi.fn()}
       />,
     );
-    expect(screen.getByText("Processing")).toBeInTheDocument();
+    expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject candidate" })).toBeDisabled();
   });
 });

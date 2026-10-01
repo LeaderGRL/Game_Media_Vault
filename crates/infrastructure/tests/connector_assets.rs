@@ -14,7 +14,7 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     let store = ContentAddressedStore::new(&vault);
     let bytes = b"libretro box front fixture";
 
-    let stored = store.store_original_bytes(bytes).unwrap();
+    let stored = store.store_original(&mut &bytes[..]).unwrap();
     let imported = catalog
         .persist_asset(PersistAsset {
             existing_game_id: None,

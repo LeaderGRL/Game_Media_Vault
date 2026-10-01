@@ -7,14 +7,13 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestValidationError, ApplicationError, CatalogPort, ConnectorPort, PortError,
-    ReferenceCatalogRepositoryPort, acquisition_work_key, complete_acquisition_run,
-    complete_acquisition_work, queue_acquisition_work,
+    AcquisitionRequestValidationError, ApplicationError, ConnectorPort, ParkedReview, PortError,
+    ReferenceCatalogRepositoryPort, ReviewRepositoryPort, RunRepositoryPort, candidate_identity,
 };
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, MatchEvidence,
-    MatchSignal, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
+    AcquisitionRequest, AcquisitionWorkItem, AssetCandidate, AssetType, ConnectorCapabilities,
+    MatchEvidence, MatchSignal, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
     ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewMatchCandidate,
     SourceId,
 };
@@ -38,7 +37,6 @@ impl ConnectorPort for FixtureConnector {
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         Ok(vec![AssetCandidate {
             provider_candidate_id: None,
-            source_url_requires_rediscovery: false,
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
             region: "World".to_owned(),
@@ -89,7 +87,6 @@ fn seed_review_item(vault: &Path) -> i64 {
     let catalog = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
     let candidate = AssetCandidate {
         provider_candidate_id: None,
-        source_url_requires_rediscovery: false,
         game_title: "Review Game".to_owned(),
         platform: "Nintendo Entertainment System".to_owned(),
         region: "USA".to_owned(),
@@ -100,34 +97,47 @@ fn seed_review_item(vault: &Path) -> i64 {
         source_url: "fixture://review/front".to_owned(),
         original_filename: "front.png".to_owned(),
     };
-    let work_key = acquisition_work_key(candidate.source_id.as_str(), &candidate);
-    queue_acquisition_work(&catalog, run_id, work_key.clone()).unwrap();
-    complete_acquisition_work(&catalog, run_id, &work_key).unwrap();
-    complete_acquisition_run(&catalog, run_id).unwrap();
+    let work_key = candidate_identity(candidate.source_id.as_str(), &candidate);
     catalog
-        .persist_review_item(NewReviewItem {
+        .record_discovery(
             run_id,
-            candidate_identity: "connector:cli-review".to_owned(),
-            candidate,
-            competing_matches: vec![ReviewMatchCandidate {
-                game_id: 301,
-                release_edition_id: 201,
-                game_title: "Review Game".to_owned(),
-                platform: "Nintendo Entertainment System".to_owned(),
-                region: "USA".to_owned(),
-                edition_name: "Standard".to_owned(),
-                score: 90,
-                evidence: vec![MatchEvidence {
-                    signal: MatchSignal::Title,
-                    candidate_value: "Review Game".to_owned(),
-                    release_value: "Review Game".to_owned(),
-                    score_delta: 50,
-                }],
-                assertions: Vec::new(),
+            "fixture-provider",
+            &[AcquisitionWorkItem {
+                key: work_key.clone(),
+                candidate: candidate.clone(),
             }],
-        })
+        )
         .unwrap();
-    catalog.list_review_items().unwrap()[0].id
+    let parked = catalog
+        .park_work_for_review(
+            run_id,
+            &work_key,
+            NewReviewItem {
+                candidate_identity: work_key.clone(),
+                candidate,
+                competing_matches: vec![ReviewMatchCandidate {
+                    game_id: 301,
+                    release_edition_id: 201,
+                    game_title: "Review Game".to_owned(),
+                    platform: "Nintendo Entertainment System".to_owned(),
+                    region: "USA".to_owned(),
+                    edition_name: "Standard".to_owned(),
+                    score: 90,
+                    evidence: vec![MatchEvidence {
+                        signal: MatchSignal::Title,
+                        candidate_value: "Review Game".to_owned(),
+                        release_value: "Review Game".to_owned(),
+                        score_delta: 50,
+                    }],
+                    assertions: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+    let ParkedReview::Parked(item) = parked else {
+        panic!("expected a new review item");
+    };
+    item.id
 }
 
 #[test]

@@ -46,8 +46,9 @@ export function App() {
       ) {
         return;
       }
-      setEntries(library);
+      // A decision made meanwhile refreshes both lists itself; this load read them before it.
       if (reviewMutationGeneration.current === reviewGenerationAtLoadStart) {
+        setEntries(library);
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
@@ -99,9 +100,11 @@ export function App() {
       });
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
-      const reviews = await invoke<ReviewItem[]>("list_review_items", {
-        vault_root: resolvingVaultRoot,
-      });
+      // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
+      const [reviews, library] = await Promise.all([
+        invoke<ReviewItem[]>("list_review_items", { vault_root: resolvingVaultRoot }),
+        invoke<LibraryEntry[]>("list_library", { vault_root: resolvingVaultRoot }),
+      ]);
       if (
         activeVaultRoot.current !== resolvingVaultRoot ||
         resolvingRefreshGeneration !== reviewRefreshRequestGeneration.current
@@ -109,6 +112,7 @@ export function App() {
         return;
       }
       setReviewItems(reviews);
+      setEntries(library);
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(String(reason));

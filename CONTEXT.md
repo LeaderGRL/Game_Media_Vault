@@ -71,8 +71,12 @@ _Avoid_: Deduplication policy
 ## Review and Coverage
 
 **Review Item**:
-An uncertain match or conflicting decision that requires human confirmation before it can affect canonical library data.
+An uncertain match or conflicting decision that requires human confirmation before it can affect canonical library data. There is one Review Item per Candidate Identity; accepting or rejecting it is final and applies to every run that meets the same candidate.
 _Avoid_: Error when uncertainty is expected
+
+**Candidate Identity**:
+The stable, source-scoped identity of an Asset Candidate: the provider's own candidate ID when the Source offers one, otherwise its normalized descriptive fields and locator. It lets human Review decisions follow a candidate across Acquisition Runs.
+_Avoid_: URL when the locator may change
 
 **Coverage Profile**:
 The set of Asset Types required to consider a Release Edition complete for a particular purpose, such as 3D packaging, physical archival, or full archival.

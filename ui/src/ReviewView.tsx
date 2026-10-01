@@ -23,14 +23,7 @@ export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: Re
     <section className="review-list" aria-label="Review items">
       {items.map((item) => {
         const busy = resolvingIds.has(item.id);
-        const closed = [
-          "processing",
-          "accepted",
-          "applied",
-          "rejected",
-          "auto_resolved",
-          "superseded",
-        ].includes(item.status);
+        const closed = item.status !== "pending" && item.status !== "deferred";
         return (
           <article className="review-card" key={item.id}>
             <div className="review-heading">
@@ -153,13 +146,14 @@ function CandidatePreview({
   enabled: boolean;
   onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
 }) {
-  const requiresRediscovery = item.candidate.source_url_requires_rediscovery ?? false;
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const active = useRef(true);
 
   useEffect(() => {
+    // StrictMode runs this effect twice, so the setup must undo the previous cleanup.
+    active.current = true;
     return () => {
       active.current = false;
     };
@@ -207,17 +201,6 @@ function CandidatePreview({
     );
   }
 
-  if (!requiresRediscovery) {
-    return (
-      <img
-        className="review-preview"
-        src={item.candidate.source_url}
-        alt={`${item.candidate.game_title} box front candidate`}
-        loading="lazy"
-      />
-    );
-  }
-
   if (previewUrl === null) {
     return (
       <div className="review-preview review-preview-status">
@@ -229,25 +212,18 @@ function CandidatePreview({
     );
   }
 
-  if (previewUrl !== null) {
-    return (
-      <img
-        className="review-preview"
-        src={previewUrl}
-        alt={`${item.candidate.game_title} box front candidate`}
-      />
-    );
-  }
-
-  return null;
+  return (
+    <img
+      className="review-preview"
+      src={previewUrl}
+      alt={`${item.candidate.game_title} box front candidate`}
+    />
+  );
 }
 
 function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | null) {
   if (status === "accepted" && decision?.decision === "accept") {
     return `Accepted · release #${decision.release_edition_id}`;
-  }
-  if (status === "applied" && decision?.decision === "accept") {
-    return `Applied · release #${decision.release_edition_id}`;
   }
   if (status === "rejected") {
     return "Rejected";
@@ -257,9 +233,6 @@ function formatStatus(status: ReviewItem["status"], decision: ReviewDecision | n
   }
   if (status === "auto_resolved") {
     return "Auto-resolved";
-  }
-  if (status === "processing") {
-    return "Processing";
   }
   if (status === "superseded") {
     return "Superseded";

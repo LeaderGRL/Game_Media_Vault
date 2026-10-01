@@ -4,15 +4,16 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, RunRepositoryPort,
-    acquire_run_with_connector,
+    CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
+    RunRepositoryPort, acquire_run_with_connector, resolve_review_item,
 };
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetType, AssetTypeSelector, ConnectorCapabilities, GameSelection,
-    MatchingPolicy, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
-    RetentionPolicy, ReviewStatus, SourceId, SourceSelection,
+    MatchConfidence, MatchingPolicy, ReferenceReleaseRecord, ReleaseAssertion,
+    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewStatus, SourceId,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -114,6 +115,7 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     let imported = acquire_run_with_connector(
         &catalog,
         &catalog,
+        &catalog,
         &object_store,
         &connector,
         run.id,
@@ -169,12 +171,12 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
 }
 
 #[test]
-fn resumes_a_persisted_review_candidate_after_reopening_without_rediscovery() {
+fn accepted_review_is_applied_after_reopening_without_rediscovery() {
     let temp = tempdir().unwrap();
     let catalog_path = temp.path().join("catalog.sqlite3");
     let object_root = temp.path().join("objects");
     let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-    catalog
+    let release = catalog
         .persist_reference_release(ReferenceReleaseRecord {
             game_title: "Super Mario Bros. (World)".to_owned(),
             platform: "Nintendo - Nintendo Entertainment System".to_owned(),
@@ -194,53 +196,65 @@ fn resumes_a_persisted_review_candidate_after_reopening_without_rediscovery() {
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
         requested_urls: Arc::new(Mutex::new(Vec::new())),
     });
+    let stricter_policy = MatchingPolicy {
+        high_confidence_threshold: 90,
+        medium_confidence_threshold: 50,
+    };
 
     let imported = acquire_run_with_connector(
+        &catalog,
         &catalog,
         &catalog,
         &ContentAddressedStore::new(&object_root),
         &connector,
         run.id,
-        MatchingPolicy {
-            high_confidence_threshold: 90,
-            medium_confidence_threshold: 50,
+        stricter_policy,
+    )
+    .unwrap();
+    assert!(imported.is_empty());
+    assert_eq!(
+        catalog
+            .get_run(run.id)
+            .unwrap()
+            .unwrap()
+            .awaiting_review_work,
+        1
+    );
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
+    let review_item_id = reopened.list_review_items().unwrap()[0].id;
+    resolve_review_item(
+        &reopened,
+        review_item_id,
+        ReviewDecision::Accept {
+            release_edition_id: release.release_edition_id,
         },
     )
     .unwrap();
-
-    assert!(imported.is_empty());
-    assert_eq!(
-        catalog.get_run(run.id).unwrap().unwrap().status,
-        AcquisitionRunStatus::Completed
-    );
-    assert_eq!(
-        catalog.list_review_items().unwrap()[0].status,
-        ReviewStatus::Pending
-    );
-
-    drop(catalog);
-    let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
     let imported = acquire_run_with_connector(
+        &reopened,
         &reopened,
         &reopened,
         &ContentAddressedStore::new(&object_root),
         &NoDiscoveryConnector,
         run.id,
-        MatchingPolicy {
-            high_confidence_threshold: 80,
-            medium_confidence_threshold: 50,
-        },
+        stricter_policy,
     )
     .unwrap();
 
     assert_eq!(imported.len(), 1);
-    assert_eq!(
-        reopened.get_run(run.id).unwrap().unwrap().status,
-        AcquisitionRunStatus::Completed
-    );
+    let final_run = reopened.get_run(run.id).unwrap().unwrap();
+    assert_eq!(final_run.status, AcquisitionRunStatus::Completed);
+    assert_eq!(final_run.completed_work, 1);
     assert_eq!(
         reopened.list_review_items().unwrap()[0].status,
-        ReviewStatus::AutoResolved
+        ReviewStatus::Accepted
     );
-    assert_eq!(reopened.list_library().unwrap()[0].assets.len(), 1);
+    let library = reopened.list_library().unwrap();
+    let provenance = &library[0].assets[0].provenance[0];
+    assert_eq!(
+        provenance.match_decision.as_ref().unwrap().confidence,
+        MatchConfidence::Confirmed
+    );
 }

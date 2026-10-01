@@ -41,7 +41,6 @@ const entry: LibraryEntry = {
 
 const reviewItem: ReviewItem = {
   id: 17,
-  run_id: 7,
   candidate_identity: "connector:review-game",
   candidate: {
     game_title: "Review Game",
@@ -74,6 +73,10 @@ const reviewItem: ReviewItem = {
 describe("App", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    // Unscripted library refreshes see an empty library.
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_library" ? [] : undefined),
+    );
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {
@@ -118,7 +121,33 @@ describe("App", () => {
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
   });
 
-  it("loads rediscovery review previews from the vault backend", async () => {
+  it("refreshes the library after a review decision moves assets", async () => {
+    invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    const rejectedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "resolve_review_item"
+          ? rejectedReviewItem
+          : command === "list_review_items"
+            ? [rejectedReviewItem]
+            : [],
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    expect(await screen.findByRole("button", { name: "Library (0)" })).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("list_library", { vault_root: ".game-media-vault" });
+  });
+
+  it("loads review previews from the vault backend", async () => {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
       value: vi.fn(() => "blob:app-review-preview"),
@@ -127,12 +156,11 @@ describe("App", () => {
       configurable: true,
       value: vi.fn(),
     });
-    const rediscoveryReviewItem: ReviewItem = {
+    const remoteReviewItem: ReviewItem = {
       ...reviewItem,
       candidate: {
         ...reviewItem.candidate,
         source_url: "https://example.invalid/review/401",
-        source_url_requires_rediscovery: true,
       },
     };
     invokeMock.mockImplementation((command: string) => {
@@ -140,7 +168,7 @@ describe("App", () => {
         return Promise.resolve([]);
       }
       if (command === "list_review_items") {
-        return Promise.resolve([rediscoveryReviewItem]);
+        return Promise.resolve([remoteReviewItem]);
       }
       if (command === "load_review_preview") {
         return Promise.resolve({ media_type: "image/png", bytes: [137, 80, 78, 71] });
@@ -163,39 +191,39 @@ describe("App", () => {
     expect(preview).not.toHaveAttribute("src", "https://example.invalid/review/401");
   });
 
-  it("refreshes every review occurrence changed by a terminal decision", async () => {
-    const siblingReviewItem: ReviewItem = {
+  it("refreshes the whole review list after a decision", async () => {
+    const otherReviewItem: ReviewItem = {
       ...reviewItem,
       id: 18,
-      run_id: 8,
+      candidate_identity: "candidate:other-review",
     };
     const rejectedReviewItem: ReviewItem = {
       ...reviewItem,
       decision: { decision: "reject" },
       status: "rejected",
     };
-    const rejectedSibling: ReviewItem = {
-      ...siblingReviewItem,
-      decision: { decision: "reject" },
-      status: "rejected",
+    const autoResolvedOther: ReviewItem = {
+      ...otherReviewItem,
+      status: "auto_resolved",
     };
-    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, siblingReviewItem]);
+    invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, otherReviewItem]);
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
     fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
     invokeMock.mockResolvedValueOnce(rejectedReviewItem).mockResolvedValueOnce([
       rejectedReviewItem,
-      rejectedSibling,
+      autoResolvedOther,
     ]);
     fireEvent.click(screen.getAllByRole("button", { name: "Reject candidate" })[0]);
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenLastCalledWith("list_review_items", {
+      expect(invokeMock).toHaveBeenCalledWith("list_review_items", {
         vault_root: ".game-media-vault",
       });
     });
-    expect(await screen.findAllByText("Rejected")).toHaveLength(2);
+    expect(await screen.findByText("Rejected")).toBeInTheDocument();
+    expect(await screen.findByText("Auto-resolved")).toBeInTheDocument();
   });
 
   it("resolves review items against the vault that was actually loaded", async () => {
@@ -482,6 +510,9 @@ describe("App", () => {
         }
         return Promise.reject(new Error("newer refresh failed"));
       }
+      if (command === "list_library") {
+        return Promise.resolve([]);
+      }
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -579,4 +610,43 @@ describe("App", () => {
     });
   });
 
+  it("does not let a late same-vault reload restore the library a decision changed", async () => {
+    let finishResolution: ((item: ReviewItem) => void) | undefined;
+    let finishReloadReviews: ((items: ReviewItem[]) => void) | undefined;
+    const rejectedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem>((resolve) => {
+          finishResolution = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    // The reload reads the library before the decision detaches its asset.
+    invokeMock.mockResolvedValueOnce([entry]).mockImplementationOnce(
+      () =>
+        new Promise<ReviewItem[]>((resolve) => {
+          finishReloadReviews = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    finishResolution?.(rejectedReviewItem);
+    invokeMock.mockResolvedValueOnce([rejectedReviewItem]);
+    expect(await screen.findByText("Rejected")).toBeInTheDocument();
+
+    finishReloadReviews?.([reviewItem]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled();
+    });
+    expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
+  });
 });
