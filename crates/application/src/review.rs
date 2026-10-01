@@ -75,7 +75,7 @@ pub fn load_review_preview(
 ) -> Result<ReviewPreview, ApplicationError> {
     let item = load_review_item(reviews, review_item_id)?;
     if item.candidate.source_id.as_str() != connector.source_id() {
-        return Err(ApplicationError::ConnectorCandidateSourceMismatch {
+        return Err(ApplicationError::PreviewConnectorUnavailable {
             connector_source_id: connector.source_id().to_owned(),
             candidate_source_id: item.candidate.source_id.as_str().to_owned(),
         });

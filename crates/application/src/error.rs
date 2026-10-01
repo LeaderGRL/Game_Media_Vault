@@ -41,6 +41,13 @@ pub enum ApplicationError {
         candidate_source_id: String,
     },
     #[error(
+        "previews of {candidate_source_id} candidates are not available through the {connector_source_id} connector"
+    )]
+    PreviewConnectorUnavailable {
+        connector_source_id: String,
+        candidate_source_id: String,
+    },
+    #[error(
         "connector {source_id} returned a candidate whose locator is not an absolute URL free of userinfo, query and fragment"
     )]
     UnsafeCandidateLocator { source_id: String },
@@ -118,7 +125,8 @@ impl ApplicationError {
             | Self::ReviewItemContended(_) => ErrorKind::Conflict,
             Self::ConnectorNotSelected { .. }
             | Self::ConnectorCannotDownload { .. }
-            | Self::UnsupportedConnectorPlan { .. } => ErrorKind::Unsupported,
+            | Self::UnsupportedConnectorPlan { .. }
+            | Self::PreviewConnectorUnavailable { .. } => ErrorKind::Unsupported,
             Self::ConnectorCandidateSourceMismatch { .. } | Self::UnsafeCandidateLocator { .. } => {
                 ErrorKind::SourceFailure
             }

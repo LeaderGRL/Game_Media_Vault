@@ -539,8 +539,8 @@ Errors are classified into stable kinds shared by every frontend. The desktop sh
 | --- | --- | --- |
 | 0 | — | success |
 | 1 | `external` | storage, network or another port failed |
-| 2 | `invalid_request` | invalid arguments or request (also command-line usage errors) |
-| 3 | `not_found` | unknown run, Review Item or Release Edition |
+| 2 | `invalid_request` | invalid arguments or request, such as accepting a Release Edition the Review Item does not offer (also command-line usage errors) |
+| 3 | `not_found` | unknown run or Review Item, or a missing Release Edition an operation relies on |
 | 4 | `conflict` | the current state forbids the operation |
 | 5 | `unsupported` | valid but not supported for this Source or plan yet |
 | 6 | `source_failure` | a Source broke the connector contract |
