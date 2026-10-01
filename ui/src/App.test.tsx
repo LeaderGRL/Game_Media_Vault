@@ -723,3 +723,135 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
   });
 });
+
+describe("App acquisition", () => {
+  const startedRun = {
+    id: 1,
+    request: {
+      sources: { mode: "explicit", values: ["libretro-thumbnails"] },
+      platforms: ["Nintendo - Game Boy"],
+      games: { mode: "explicit", values: ["Tetris (World) (Rev 1)"] },
+      regions: [],
+      languages: [],
+      asset_types: ["box_front"],
+      quality: null,
+      retention: "keep_everything",
+      limits: {},
+    },
+    status: "running",
+    queued_work: 0,
+    awaiting_review_work: 0,
+    completed_work: 0,
+  };
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openVaultMock.mockReset();
+    openVaultMock.mockResolvedValue(undefined);
+  });
+
+  it("creates a vault when asked instead of only opening an existing one", async () => {
+    invokeMock.mockResolvedValue([]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create vault" }));
+
+    await waitFor(() =>
+      expect(openVaultMock).toHaveBeenCalledWith({
+        vault_root: ".game-media-vault",
+        create: true,
+      }),
+    );
+  });
+
+  it("starts a run from the Acquire view and shows it in the Runs view", async () => {
+    let runs: unknown[] = [];
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "start_acquisition_run") {
+        runs = [startedRun];
+        return Promise.resolve(startedRun);
+      }
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve(runs);
+      }
+      if (command === "list_library" || command === "list_review_items") {
+        return Promise.resolve([]);
+      }
+      return Promise.reject(new Error(`unexpected command: ${command} ${JSON.stringify(args)}`));
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByLabelText("Libretro Thumbnails"));
+    fireEvent.change(screen.getByLabelText("Platforms (one per line)"), {
+      target: { value: "Nintendo - Game Boy" },
+    });
+    fireEvent.change(screen.getByLabelText("Games (one per line, empty for all)"), {
+      target: { value: "Tetris (World) (Rev 1)" },
+    });
+    fireEvent.click(screen.getByLabelText("Box Front"));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("start_acquisition_run", {
+      request: startedRun.request,
+    });
+  });
+
+  it("shows the shared validator message when the backend rejects a request", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "start_acquisition_run") {
+        return Promise.reject({
+          kind: "invalid_request",
+          message: "acquisition request must include at least one source",
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(
+      await screen.findByText("acquisition request must include at least one source"),
+    ).toBeInTheDocument();
+  });
+
+  it("executes a run and refreshes the runs, library and reviews", async () => {
+    let executed = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([
+          executed ? { ...startedRun, status: "completed", completed_work: 1 } : startedRun,
+        ]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve({ ...startedRun, status: "completed", completed_work: 1 });
+      }
+      if (command === "list_library") {
+        return Promise.resolve(executed ? [entry] : []);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("execute_acquisition_run", {
+      run_id: 1,
+      matching_policy: { high_confidence_threshold: 80, medium_confidence_threshold: 50 },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+});

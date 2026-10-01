@@ -1,10 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { FormEvent, useCallback, useRef, useState } from "react";
 
+import { AcquireView } from "./AcquireView";
+import type { AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
+import { RunsView } from "./RunsView";
 import { errorMessage } from "./types";
 import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
+
+type View = "library" | "review" | "acquire" | "runs";
+
+type RunAction = "execute" | "pause" | "resume" | "cancel";
+
+/** Default thresholds used by desktop executions (SPEC §10 keeps them configurable). */
+const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_threshold: 50 };
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
@@ -15,15 +25,17 @@ export function App() {
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
-  const [activeView, setActiveView] = useState<"library" | "review">("library");
+  const [activeView, setActiveView] = useState<View>("library");
   const [loading, setLoading] = useState(false);
   const [resolvingIds, setResolvingIds] = useState<Set<number>>(() => new Set());
+  const [runs, setRuns] = useState<AcquisitionRun[]>([]);
+  const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
+  const [startingRun, setStartingRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${entries.length} ${entries.length === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
 
-  async function loadVault(event?: FormEvent) {
-    event?.preventDefault();
+  async function loadVault(create: boolean) {
     const requestedVaultRoot = vaultRoot;
     activeVaultRoot.current = requestedVaultRoot;
     vaultLoadRequestGeneration.current += 1;
@@ -36,9 +48,11 @@ export function App() {
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
+    setRuns([]);
+    setBusyRunIds(new Set());
     try {
       // The backend keeps the opened vault; later commands never send a path.
-      await invoke("open_vault", { vault_root: requestedVaultRoot, create: false });
+      await invoke("open_vault", { vault_root: requestedVaultRoot, create });
       if (loadGeneration !== vaultLoadRequestGeneration.current) {
         return;
       }
@@ -152,6 +166,80 @@ export function App() {
     }
   }
 
+  async function refreshRuns(expectedVaultRoot: string | null) {
+    const listed = await invoke<AcquisitionRun[]>("list_acquisition_runs");
+    if (activeVaultRoot.current === expectedVaultRoot) {
+      setRuns(listed);
+    }
+  }
+
+  async function refreshVaultData(expectedVaultRoot: string | null) {
+    const [library, reviews] = await Promise.all([
+      invoke<LibraryEntry[]>("list_library"),
+      invoke<ReviewItem[]>("list_review_items"),
+    ]);
+    if (activeVaultRoot.current === expectedVaultRoot) {
+      setEntries(library);
+      setReviewItems(reviews);
+    }
+  }
+
+  async function showRuns() {
+    setActiveView("runs");
+    try {
+      await refreshRuns(loadedVaultRoot);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  }
+
+  async function startRun(request: AcquisitionRequestDraft) {
+    const startingVaultRoot = loadedVaultRoot;
+    setStartingRun(true);
+    setError(null);
+    try {
+      await invoke<AcquisitionRun>("start_acquisition_run", { request });
+      if (activeVaultRoot.current !== startingVaultRoot) {
+        return;
+      }
+      setActiveView("runs");
+      await refreshRuns(startingVaultRoot);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setStartingRun(false);
+    }
+  }
+
+  async function applyRunAction(runId: number, action: RunAction) {
+    const actingVaultRoot = loadedVaultRoot;
+    setBusyRunIds((current) => new Set(current).add(runId));
+    setError(null);
+    try {
+      if (action === "execute") {
+        await invoke<AcquisitionRun>("execute_acquisition_run", {
+          run_id: runId,
+          matching_policy: MATCHING_POLICY,
+        });
+        // Execution imports Assets and opens Review Items.
+        await refreshVaultData(actingVaultRoot);
+      } else {
+        await invoke<AcquisitionRun>(`${action}_acquisition_run`, { run_id: runId });
+      }
+      await refreshRuns(actingVaultRoot);
+    } catch (reason) {
+      if (activeVaultRoot.current === actingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      setBusyRunIds((current) => {
+        const next = new Set(current);
+        next.delete(runId);
+        return next;
+      });
+    }
+  }
+
   const loadReviewPreview = useCallback(
     async (reviewItemId: number): Promise<ArrayBuffer> => {
       if (loadedVaultRoot === null) {
@@ -181,7 +269,13 @@ export function App() {
         </span>
       </header>
 
-      <form className="vault-picker" onSubmit={loadVault}>
+      <form
+        className="vault-picker"
+        onSubmit={(event: FormEvent) => {
+          event.preventDefault();
+          void loadVault(false);
+        }}
+      >
         <label htmlFor="vault-root">Vault path</label>
         <div className="vault-controls">
           <input
@@ -192,6 +286,13 @@ export function App() {
           />
           <button type="submit" disabled={loading || vaultRoot.trim().length === 0}>
             {loading ? "Loading…" : "Load vault"}
+          </button>
+          <button
+            type="button"
+            disabled={loading || vaultRoot.trim().length === 0}
+            onClick={() => void loadVault(true)}
+          >
+            Create vault
           </button>
         </div>
         <p className="hint">Use the same vault path passed to the CLI with --vault.</p>
@@ -213,18 +314,44 @@ export function App() {
         >
           Review ({reviewItems.length})
         </button>
+        <button
+          type="button"
+          className={activeView === "acquire" ? "active" : ""}
+          onClick={() => setActiveView("acquire")}
+        >
+          Acquire
+        </button>
+        <button
+          type="button"
+          className={activeView === "runs" ? "active" : ""}
+          onClick={() => void showRuns()}
+        >
+          Runs
+        </button>
       </nav>
 
-      {activeView === "library" ? (
-        <LibraryView entries={entries} />
-      ) : (
+      {activeView === "library" ? <LibraryView entries={entries} /> : null}
+      {activeView === "review" ? (
         <ReviewView
           items={reviewItems}
           resolvingIds={resolvingIds}
           onResolve={resolveReviewItem}
           onLoadPreview={loadReviewPreview}
         />
-      )}
+      ) : null}
+      {activeView === "acquire" ? (
+        <AcquireView starting={startingRun} onStart={(request) => void startRun(request)} />
+      ) : null}
+      {activeView === "runs" ? (
+        <RunsView
+          runs={runs}
+          busyRunIds={busyRunIds}
+          onExecute={(runId) => void applyRunAction(runId, "execute")}
+          onPause={(runId) => void applyRunAction(runId, "pause")}
+          onResume={(runId) => void applyRunAction(runId, "resume")}
+          onCancel={(runId) => void applyRunAction(runId, "cancel")}
+        />
+      ) : null}
     </main>
   );
 }
