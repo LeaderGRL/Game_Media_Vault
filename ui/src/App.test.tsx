@@ -73,6 +73,10 @@ const reviewItem: ReviewItem = {
 describe("App", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    // Unscripted library refreshes see an empty library.
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_library" ? [] : undefined),
+    );
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {
@@ -115,6 +119,32 @@ describe("App", () => {
       decision: { decision: "accept", release_edition_id: 201 },
     });
     expect(await screen.findByText("Accepted · release #201")).toBeInTheDocument();
+  });
+
+  it("refreshes the library after a review decision moves assets", async () => {
+    invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([reviewItem]);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    const rejectedReviewItem: ReviewItem = {
+      ...reviewItem,
+      decision: { decision: "reject" },
+      status: "rejected",
+    };
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "resolve_review_item"
+          ? rejectedReviewItem
+          : command === "list_review_items"
+            ? [rejectedReviewItem]
+            : [],
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    expect(await screen.findByRole("button", { name: "Library (0)" })).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("list_library", { vault_root: ".game-media-vault" });
   });
 
   it("loads review previews from the vault backend", async () => {
@@ -188,7 +218,7 @@ describe("App", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Reject candidate" })[0]);
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenLastCalledWith("list_review_items", {
+      expect(invokeMock).toHaveBeenCalledWith("list_review_items", {
         vault_root: ".game-media-vault",
       });
     });
@@ -479,6 +509,9 @@ describe("App", () => {
           });
         }
         return Promise.reject(new Error("newer refresh failed"));
+      }
+      if (command === "list_library") {
+        return Promise.resolve([]);
       }
       throw new Error(`unexpected command: ${command}`);
     });
