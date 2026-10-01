@@ -19,6 +19,7 @@ const REVIEW_RACE_ATTEMPTS: usize = 3;
 
 struct Acquisition<'a> {
     runs: &'a dyn RunRepositoryPort,
+    catalog: &'a dyn CatalogPort,
     reviews: &'a dyn ReviewRepositoryPort,
     object_store: &'a dyn ObjectStorePort,
     connector: &'a dyn ConnectorPort,
@@ -61,6 +62,7 @@ pub fn acquire_run_with_connector(
 
     let acquisition = Acquisition {
         runs,
+        catalog,
         reviews,
         object_store,
         connector,
@@ -223,9 +225,9 @@ impl Acquisition<'_> {
             .map(|item| (item.status, &item.decision))
         {
             Some((ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))) => {
-                let release = self.release(*release_edition_id)?;
-                let candidate_match = confirmed_asset_candidate_match(&work.candidate, release);
-                return self.import(work, release, candidate_match);
+                let release = self.accepted_release(*release_edition_id)?;
+                let candidate_match = confirmed_asset_candidate_match(&work.candidate, &release);
+                return self.import(work, &release, candidate_match);
             }
             Some((ReviewStatus::Rejected, _)) => {
                 self.runs.complete_work(self.run_id, &work.key)?;
@@ -276,6 +278,19 @@ impl Acquisition<'_> {
     fn release(&self, release_edition_id: i64) -> Result<&LibraryEntry, ApplicationError> {
         self.releases
             .iter()
+            .find(|release| release.release_edition_id == release_edition_id)
+            .ok_or(ApplicationError::ReleaseEditionMissing(release_edition_id))
+    }
+
+    /// The edition a human accepted, which another process may have imported after this
+    /// execution read the library.
+    fn accepted_release(&self, release_edition_id: i64) -> Result<LibraryEntry, ApplicationError> {
+        if let Ok(release) = self.release(release_edition_id) {
+            return Ok(release.clone());
+        }
+        self.catalog
+            .list_library()?
+            .into_iter()
             .find(|release| release.release_edition_id == release_edition_id)
             .ok_or(ApplicationError::ReleaseEditionMissing(release_edition_id))
     }

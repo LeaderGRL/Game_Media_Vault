@@ -152,6 +152,9 @@ pub struct FakeVault {
     pub review_items: RefCell<Vec<ReviewItem>>,
     pub records: RefCell<Vec<PersistAsset>>,
     pub library: RefCell<Vec<LibraryEntry>>,
+    /// Simulates Release Editions imported by another process right after the next library
+    /// listing.
+    pub library_added_after_next_listing: RefCell<Vec<LibraryEntry>>,
     /// Simulates a human decision committed right before the next automatic review write.
     pub human_decision_before_next_write: RefCell<Option<ReviewDecision>>,
     /// Simulates a human decision on the first Review Item committed right before the run
@@ -601,7 +604,10 @@ impl CatalogPort for FakeVault {
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
-        Ok(self.library.borrow().clone())
+        let listed = self.library.borrow().clone();
+        let added = std::mem::take(&mut *self.library_added_after_next_listing.borrow_mut());
+        self.library.borrow_mut().extend(added);
+        Ok(listed)
     }
 }
 

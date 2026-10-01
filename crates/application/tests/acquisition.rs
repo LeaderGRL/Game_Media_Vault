@@ -325,6 +325,43 @@ fn accepted_decision_is_reused_by_a_later_run_without_a_new_review() {
 }
 
 #[test]
+fn an_acceptance_of_an_edition_imported_after_the_run_started_is_honoured() {
+    let (ambiguous, library) = ambiguous_candidate_and_releases();
+    let vault = FakeVault::with_library(library);
+    park_in_new_run(&vault, &ambiguous, matching_policy());
+    resolve_review_item(
+        &vault,
+        vault.review_item(0).id,
+        ReviewDecision::Accept {
+            release_edition_id: 401,
+        },
+    )
+    .unwrap();
+    // The accepted edition reaches the catalog only after the later run read the library.
+    let accepted = vault
+        .library
+        .borrow()
+        .iter()
+        .find(|release| release.release_edition_id == 401)
+        .cloned()
+        .unwrap();
+    vault
+        .library
+        .borrow_mut()
+        .retain(|release| release.release_edition_id != 401);
+    vault
+        .library_added_after_next_listing
+        .borrow_mut()
+        .push(accepted);
+
+    let later_run = vault.start_run();
+    let imported = execute(&vault, &FakeConnector::new(vec![ambiguous]), later_run).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].release_edition_id, 401);
+}
+
+#[test]
 fn accepted_decision_follows_the_provider_identity_when_metadata_changes() {
     let (ambiguous, library) = ambiguous_candidate_and_releases();
     let ambiguous = AssetCandidate {
