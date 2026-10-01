@@ -33,6 +33,16 @@ describe("previewMediaType", () => {
     expect(previewMediaType(sequence, "cover.jpg")).toBe("image/avif");
   });
 
+  it("recognizes AVIF in an extended-size ftyp box", () => {
+    // size 1, then a 64-bit largesize of 32, major brand avif, minor version, brand mif1.
+    const extended = new Uint8Array([
+      0, 0, 0, 1, ...new TextEncoder().encode("ftyp"), 0, 0, 0, 0, 0, 0, 0, 32,
+      ...new TextEncoder().encode("avif"), 0, 0, 0, 0, ...new TextEncoder().encode("mif1"),
+    ]);
+
+    expect(previewMediaType(extended, "cover.jpg")).toBe("image/avif");
+  });
+
   it("recognizes AVIF declared among the compatible brands", () => {
     // ftyp box: size 24, major brand mif1, minor version, compatible brands miaf and avif.
     const ftyp = new Uint8Array([

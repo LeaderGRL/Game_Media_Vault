@@ -139,15 +139,25 @@ function ftypBrands(bytes: Uint8Array): string[] {
   if (bytes.length < 12 || ascii(bytes, 4, 8) !== "ftyp") {
     return [];
   }
-  const boxSize = Math.min(
-    bytes.length,
-    ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0,
-  );
-  const brands = [ascii(bytes, 8, 12)];
-  for (let offset = 16; offset + 4 <= boxSize; offset += 4) {
+  const size = uint32(bytes, 0);
+  // Size 1 announces a 64-bit size after the type; size 0 extends the box to the end.
+  const headerSize = size === 1 ? 16 : 8;
+  const declaredSize =
+    size === 1 ? uint32(bytes, 8) * 2 ** 32 + uint32(bytes, 12) : size === 0 ? bytes.length : size;
+  const boxSize = Math.min(bytes.length, declaredSize);
+  if (boxSize < headerSize + 4) {
+    return [];
+  }
+  // The major brand, a minor version, then the compatible brands.
+  const brands = [ascii(bytes, headerSize, headerSize + 4)];
+  for (let offset = headerSize + 8; offset + 4 <= boxSize; offset += 4) {
     brands.push(ascii(bytes, offset, offset + 4));
   }
   return brands;
+}
+
+function uint32(bytes: Uint8Array, offset: number) {
+  return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
 }
 
 function ascii(bytes: Uint8Array, start: number, end: number) {
