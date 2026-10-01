@@ -1008,6 +1008,29 @@ fn connector_specific_limits_are_checked_before_a_run_starts() {
 }
 
 #[test]
+fn a_discovered_run_resumes_without_consulting_the_source_for_its_plan() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = vault.start_run();
+    let failing = FakeConnector {
+        failing_downloads: [smb.source_url.clone()].into(),
+        ..FakeConnector::new(vec![smb.clone()])
+    };
+    execute(&vault, &failing, run_id).unwrap_err();
+    assert_eq!(vault.run(run_id).queued_work, 1);
+
+    // The Source cannot be reached for a plan check, but the persisted queue still executes.
+    let unreachable = FakeConnector {
+        plan_check_fails: true,
+        ..FakeConnector::new(vec![smb])
+    };
+    let imported = execute(&vault, &unreachable, run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(*unreachable.discover_calls.borrow(), 0);
+}
+
+#[test]
 fn a_plan_the_connector_cannot_check_starts_no_run() {
     let vault = FakeVault::default();
     let connector = FakeConnector {

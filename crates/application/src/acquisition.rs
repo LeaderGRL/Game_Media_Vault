@@ -54,6 +54,7 @@ pub fn acquire_run_with_connector(
         AcquisitionRunStatus::Running => {
             let capabilities = validate_connector_plan(&run.request, connector)?;
             if !runs.has_discovered(run_id, connector.source_id())? {
+                check_source_plan(&run.request, connector)?;
                 let work = discover_work(&run.request, connector, &capabilities)?;
                 // A cancellation or completion that won the race while discovering stops quietly.
                 if !runs.record_discovery(run_id, connector.source_id(), &work)? {
@@ -109,6 +110,7 @@ pub fn start_acquisition_run_for_connector(
 ) -> Result<AcquisitionRun, ApplicationError> {
     let request = build_acquisition_request(input)?;
     validate_connector_plan(&request, connector)?;
+    check_source_plan(&request, connector)?;
     Ok(runs.create_run(request)?)
 }
 
@@ -157,10 +159,22 @@ fn validate_connector_plan(
             "acquisition limits are not supported by this execution path",
         ));
     }
-    if let Some(reason) = connector.unsupported_request_reason(request)? {
-        return Err(unsupported(&reason));
-    }
     Ok(capabilities)
+}
+
+/// Asks the connector whether its Source can satisfy the plan, which may consult the Source.
+/// Only plans not yet discovered need it: a persisted snapshot executes without the Source.
+fn check_source_plan(
+    request: &AcquisitionRequest,
+    connector: &dyn ConnectorPort,
+) -> Result<(), ApplicationError> {
+    match connector.unsupported_request_reason(request)? {
+        Some(reason) => Err(ApplicationError::UnsupportedConnectorPlan {
+            source_id: connector.source_id().to_owned(),
+            reason,
+        }),
+        None => Ok(()),
+    }
 }
 
 fn discover_work(

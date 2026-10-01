@@ -304,7 +304,7 @@ A single Source may expose multiple connector implementations when useful, such 
 
 Connectors own their transport credentials. Discovered candidates carry a stable, credential-free absolute locator that is persisted with Review Items, work items and provenance; a connector adds API keys, sessions or signed URLs only inside its download step. Candidates whose locator is not an absolute URL free of userinfo, query and fragment are rejected before anything is persisted; connectors that address media with request parameters expose a synthetic, path-based locator instead.
 
-Before a run is persisted, its connector checks the plan against what the Source can satisfy and may consult the Source to do so: Libretro Thumbnails refuses unbounded game selections, region and language filters (it provides no such evidence) and platforms it declares no repository for. A refused plan is `unsupported`; a Source that cannot be reached for the check fails the start without creating a run.
+Before a run is persisted, its connector checks the plan against what the Source can satisfy and may consult the Source to do so: Libretro Thumbnails refuses unbounded game selections, region and language filters (it provides no such evidence) and platforms it declares no repository for. A refused plan is `unsupported`; a Source that cannot be reached for the check fails the start without creating a run. Execution repeats the check only until the Source's discovery is recorded: resuming a discovered run never consults the Source for its plan.
 
 ## 13. Source Registry
 
