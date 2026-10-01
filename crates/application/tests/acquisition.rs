@@ -635,19 +635,16 @@ fn human_acceptance_committed_before_parking_wins() {
 }
 
 #[test]
-fn packaging_selector_acquires_the_supported_box_front() {
-    let smb = candidate("Super Mario Bros.");
-    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
-    let run_id = vault
-        .create_run(request_with(|draft| {
-            draft.asset_types = vec![AssetTypeSelector::Packaging];
-        }))
-        .unwrap()
-        .id;
+fn a_family_is_refused_while_the_connector_supports_only_some_of_its_types() {
+    // Packaging also selects box backs, spines, inserts…, which this connector cannot acquire.
+    let error = plan_error(request_with(|draft| {
+        draft.asset_types = vec![AssetTypeSelector::Packaging];
+    }));
 
-    let imported = execute(&vault, &FakeConnector::new(vec![smb]), run_id).unwrap();
-
-    assert_eq!(imported.len(), 1);
+    assert!(matches!(
+        error,
+        ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
 }
 
 #[test]
