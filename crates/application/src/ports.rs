@@ -24,6 +24,8 @@ pub trait ObjectStorePort {
 pub trait CatalogPort {
     fn persist_asset(&self, record: PersistAsset) -> Result<ImportedAsset, PortError>;
 
+    /// Lists every Release Edition with its Assets and its assertions in recording order, which
+    /// Canonical Value selection relies on.
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
 

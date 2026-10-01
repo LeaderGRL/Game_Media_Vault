@@ -30,7 +30,10 @@ fn loads_an_asset_imported_into_the_selected_vault() {
     let library = game_media_vault_tauri::load_library(&vault).unwrap();
 
     assert_eq!(library.len(), 1);
-    assert_eq!(library[0].game_title, "Metal Gear Solid");
-    assert_eq!(library[0].assets.len(), 1);
-    assert_eq!(library[0].assets[0].original_filename, "cover-front.png");
+    assert_eq!(library[0].entry.game_title, "Metal Gear Solid");
+    assert_eq!(library[0].entry.assets.len(), 1);
+    assert_eq!(
+        library[0].entry.assets[0].original_filename,
+        "cover-front.png"
+    );
 }

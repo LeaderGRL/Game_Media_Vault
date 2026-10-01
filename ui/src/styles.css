@@ -306,6 +306,37 @@ input:focus {
   font-size: 14px;
 }
 
+.canonical-values {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.canonical-value {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 13px;
+}
+
+.canonical-value dt {
+  color: #8e98aa;
+}
+
+.canonical-value dd {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.canonical-support {
+  color: #8e98aa;
+}
+
+.canonical-conflict {
+  color: #e0b25c;
+}
+
 .asset-details {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

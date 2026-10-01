@@ -1,6 +1,11 @@
 import { useState } from "react";
 
-import { filenameMediaType, type LibraryAsset, type LibraryEntry } from "./types";
+import {
+  filenameMediaType,
+  type LibraryAsset,
+  type LibraryEntry,
+  type ReleaseAssertionField,
+} from "./types";
 
 interface LibraryViewProps {
   entries: LibraryEntry[];
@@ -27,6 +32,30 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
             <p className="release-line">
               {entry.platform} · {entry.region} · {entry.edition_name}
             </p>
+            {entry.canonical_values.length > 0 ? (
+              <dl className="canonical-values">
+                {entry.canonical_values.map((canonical) => (
+                  <div className="canonical-value" key={canonical.field + ":" + (canonical.qualifier ?? "")}>
+                    <dt>
+                      {formatField(canonical.field)}
+                      {canonical.qualifier ? " (" + canonical.qualifier + ")" : ""}
+                    </dt>
+                    <dd>
+                      <strong>{canonical.value}</strong>
+                      <span className="canonical-support">
+                        {canonical.confidence}% ·{" "}
+                        {canonical.contributing.map((claim) => claim.source_id).join(", ")}
+                      </span>
+                      {canonical.conflicting.map((claim) => (
+                        <span className="canonical-conflict" key={claim.source_id}>
+                          Conflicts with {claim.source_id}: {claim.value}
+                        </span>
+                      ))}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
           </div>
 
           <div className="release-assets">
@@ -84,6 +113,10 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
       ))}
     </section>
   );
+}
+
+function formatField(field: ReleaseAssertionField) {
+  return field.charAt(0).toUpperCase() + field.slice(1);
 }
 
 interface AssetOriginalProps {

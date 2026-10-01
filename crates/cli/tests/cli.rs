@@ -280,6 +280,46 @@ fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
 }
 
 #[test]
+fn library_lists_canonical_values_with_their_confidence() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let assertion = |field, qualifier: Option<&str>, value: &str| ReleaseAssertion {
+        source_id: SourceId::from("no-intro"),
+        source_location: "C:/catalogs/Nintendo - Game Boy.dat".to_owned(),
+        field,
+        qualifier: qualifier.map(str::to_owned),
+        value: value.to_owned(),
+    };
+    SqliteCatalog::open(vault.join("catalog.sqlite3"))
+        .unwrap()
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Tetris".to_owned(),
+            platform: "Nintendo - Game Boy".to_owned(),
+            region: "World".to_owned(),
+            revision: Some("Rev 1".to_owned()),
+            edition_name: "Rev 1".to_owned(),
+            assertions: vec![
+                assertion(
+                    ReleaseAssertionField::Identifier,
+                    Some("source_record"),
+                    "no-intro:tetris",
+                ),
+                assertion(ReleaseAssertionField::Title, None, "Tetris"),
+            ],
+        })
+        .unwrap();
+
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+
+    let canonical = &library[0]["canonical_values"][0];
+    assert_eq!(canonical["field"], "title");
+    assert_eq!(canonical["value"], "Tetris");
+    assert_eq!(canonical["confidence"], 100);
+    assert_eq!(library[0]["game_title"], "Tetris");
+}
+
+#[test]
 fn cli_adapter_uses_the_configured_matching_thresholds() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");

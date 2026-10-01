@@ -29,6 +29,7 @@ const entry: LibraryEntry = {
   region: "France",
   edition_name: "Original",
   assertions: [],
+  canonical_values: [],
   assets: [
     {
       asset_id: 3,

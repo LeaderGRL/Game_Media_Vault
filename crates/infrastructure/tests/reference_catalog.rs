@@ -106,3 +106,24 @@ fn reference_batch_rolls_back_all_releases_when_one_record_is_invalid() {
     assert!(error.0.contains("source_record"));
     assert!(catalog.list_library().unwrap().is_empty());
 }
+
+#[test]
+fn a_changed_claim_is_recorded_after_the_claim_it_replaces() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+    let mut updated = tetris_release("Rev 1");
+    updated.assertions[0].value = "Tetris DX".to_owned();
+
+    catalog.persist_reference_release(updated).unwrap();
+
+    let titles: Vec<_> = catalog.list_library().unwrap()[0]
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.field == ReleaseAssertionField::Title)
+        .map(|assertion| assertion.value.clone())
+        .collect();
+    assert_eq!(titles, vec!["Tetris", "Tetris DX"]);
+}
