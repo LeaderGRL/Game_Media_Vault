@@ -1,5 +1,6 @@
 use game_media_vault_application::{
-    AcquisitionRequestInput, AcquisitionRequestValidationError, build_acquisition_request,
+    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError,
+    build_acquisition_request,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AssetTypeSelector, GameSelection, RetentionPolicy, SourceSelection,
@@ -23,7 +24,11 @@ fn tauri_uses_the_same_acquisition_request_validation_as_the_application() {
     let actual = game_media_vault_tauri::validate_acquisition_request(input).unwrap_err();
 
     assert_eq!(expected, AcquisitionRequestValidationError::MissingSources);
-    assert_eq!(actual, expected);
+    assert_eq!(actual.kind, "invalid_request");
+    assert_eq!(
+        actual.message,
+        ApplicationError::Validation(expected).to_string()
+    );
 }
 
 #[test]

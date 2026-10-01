@@ -905,3 +905,57 @@ fn libretro_box_front_auto_links_to_an_imported_no_intro_release() {
     assert_eq!(decision["confidence"], "high");
     assert_eq!(decision["score"], 100);
 }
+
+fn run_binary(vault: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_game-media-vault"))
+        .arg("--vault")
+        .arg(vault)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn exit_codes_follow_the_error_kind() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let invalid = run_binary(
+        &vault,
+        &[
+            "acquire",
+            "--platform",
+            "Windows",
+            "--asset-type",
+            "box-front",
+        ],
+    );
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr)
+            .contains("acquisition request must include at least one source")
+    );
+
+    run_binary(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "libretro-thumbnails",
+            "--platform",
+            "Windows",
+            "--asset-type",
+            "box-front",
+        ],
+    );
+    let missing = run_binary(&vault, &["run", "show", "99"]);
+    assert_eq!(missing.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("acquisition run #99 does not exist")
+    );
+
+    let conflict = run_binary(&vault, &["run", "resume", "1"]);
+    assert_eq!(conflict.status.code(), Some(0));
+    run_binary(&vault, &["run", "cancel", "1"]);
+    let conflict = run_binary(&vault, &["run", "pause", "1"]);
+    assert_eq!(conflict.status.code(), Some(4));
+}

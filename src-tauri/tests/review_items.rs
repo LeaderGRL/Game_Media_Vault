@@ -202,3 +202,29 @@ fn tauri_review_preview_returns_backend_media_bytes() {
         &[preview_candidate.source_url]
     );
 }
+
+#[test]
+fn tauri_commands_return_structured_errors() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+
+    let error =
+        game_media_vault_tauri::resolve_review_item_in_vault(&vault, 999, ReviewDecision::Reject)
+            .unwrap_err();
+
+    assert_eq!(
+        error,
+        game_media_vault_tauri::CommandError {
+            kind: "not_found",
+            message: "review item #999 does not exist".to_owned(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&error).unwrap(),
+        serde_json::json!({
+            "kind": "not_found",
+            "message": "review item #999 does not exist"
+        })
+    );
+}

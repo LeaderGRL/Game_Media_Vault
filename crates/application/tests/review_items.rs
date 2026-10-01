@@ -266,7 +266,7 @@ fn review_preview_requires_the_connector_of_the_candidate_source() {
 
     assert!(matches!(
         error,
-        ApplicationError::ConnectorCandidateSourceMismatch { .. }
+        ApplicationError::PreviewConnectorUnavailable { .. }
     ));
     assert!(connector.downloads.borrow().is_empty());
 }

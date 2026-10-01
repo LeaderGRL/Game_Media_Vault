@@ -41,6 +41,13 @@ pub enum ApplicationError {
         candidate_source_id: String,
     },
     #[error(
+        "previews of {candidate_source_id} candidates are not available through the {connector_source_id} connector"
+    )]
+    PreviewConnectorUnavailable {
+        connector_source_id: String,
+        candidate_source_id: String,
+    },
+    #[error(
         "connector {source_id} returned a candidate whose locator is not an absolute URL free of userinfo, query and fragment"
     )]
     UnsafeCandidateLocator { source_id: String },
@@ -66,4 +73,64 @@ pub enum ApplicationError {
     ReleaseEditionMissing(i64),
     #[error("review item #{0} kept changing while acquisition processed its candidate")]
     ReviewItemContended(i64),
+}
+
+/// Stable category of an application error, shared by the CLI (exit codes) and the desktop
+/// shell (structured errors) so frontends never parse messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorKind {
+    /// The request itself is invalid; retrying it unchanged cannot succeed.
+    InvalidRequest,
+    /// A referenced run, Review Item or Release Edition does not exist.
+    NotFound,
+    /// The current state forbids the operation, e.g. an already decided Review Item.
+    Conflict,
+    /// The operation is valid but not implemented for this Source or plan yet.
+    Unsupported,
+    /// A Source returned data that breaks the connector contract.
+    SourceFailure,
+    /// Storage, network or another port failed.
+    External,
+}
+
+impl ErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::Unsupported => "unsupported",
+            Self::SourceFailure => "source_failure",
+            Self::External => "external",
+        }
+    }
+}
+
+impl ApplicationError {
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::MissingSourceFileName
+            | Self::ResolveSourcePath(_)
+            | Self::InvalidReferenceImportLimit
+            | Self::Validation(_)
+            | Self::InvalidMatchingPolicy(_)
+            | Self::ReviewAcceptanceNotCompeting { .. } => ErrorKind::InvalidRequest,
+            Self::RunNotFound(_) | Self::ReviewItemNotFound(_) | Self::ReleaseEditionMissing(_) => {
+                ErrorKind::NotFound
+            }
+            Self::RunHasQueuedWork { .. }
+            | Self::InvalidRunTransition { .. }
+            | Self::RunNotExecutable { .. }
+            | Self::ReviewItemNotActionable { .. }
+            | Self::ReviewItemContended(_) => ErrorKind::Conflict,
+            Self::ConnectorNotSelected { .. }
+            | Self::ConnectorCannotDownload { .. }
+            | Self::UnsupportedConnectorPlan { .. }
+            | Self::PreviewConnectorUnavailable { .. } => ErrorKind::Unsupported,
+            Self::ConnectorCandidateSourceMismatch { .. } | Self::UnsafeCandidateLocator { .. } => {
+                ErrorKind::SourceFailure
+            }
+            Self::Port(_) => ErrorKind::External,
+        }
+    }
 }

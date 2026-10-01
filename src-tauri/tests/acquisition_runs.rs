@@ -252,7 +252,11 @@ fn tauri_adapter_rejects_invalid_matching_threshold_order() {
 
     assert_eq!(
         error,
-        "medium matching threshold cannot be higher than high matching threshold"
+        game_media_vault_tauri::CommandError {
+            kind: "invalid_request",
+            message: "medium matching threshold cannot be higher than high matching threshold"
+                .to_owned(),
+        }
     );
 }
 

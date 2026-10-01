@@ -9,7 +9,7 @@ mod review;
 mod runs;
 
 pub use acquisition::acquire_run_with_connector;
-pub use error::ApplicationError;
+pub use error::{ApplicationError, ErrorKind};
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
     match_asset_candidate_to_release, review_matches_for_asset_candidate,
