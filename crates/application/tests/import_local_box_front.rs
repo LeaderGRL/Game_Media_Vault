@@ -1,7 +1,8 @@
 use std::{cell::RefCell, fs, io::Read, path::Path};
 
 use game_media_vault_application::{
-    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, import_local_box_front,
+    CatalogPort, ErrorKind, ImportLocalBoxFrontRequest, ObjectStorePort, PortError,
+    import_local_box_front,
 };
 use game_media_vault_domain::{
     AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceId, StoredObject,
@@ -94,4 +95,27 @@ fn imports_a_local_box_front_through_the_application_seam() {
             source_location: record.source_location.clone(),
         }
     );
+}
+
+#[test]
+fn a_directory_is_not_a_source_file() {
+    let temp = tempdir().unwrap();
+    let directory = temp.path().join("covers.png");
+    fs::create_dir(&directory).unwrap();
+
+    let error = import_local_box_front(
+        &RecordingCatalog::default(),
+        &FakeObjectStore,
+        ImportLocalBoxFrontRequest {
+            existing_game_id: None,
+            game_title: "Metal Gear Solid".to_owned(),
+            platform: "PlayStation".to_owned(),
+            region: "France".to_owned(),
+            edition_name: "Original".to_owned(),
+            source_path: directory,
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidRequest);
 }

@@ -106,7 +106,14 @@ pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, Appl
 /// Canonical absolute path of a user-provided source, used for reading it. On Windows it keeps
 /// the verbatim prefix so long or unusual file names stay addressable.
 fn resolve_source_path(path: &Path) -> Result<PathBuf, ApplicationError> {
-    fs::canonicalize(path).map_err(source_path_error)
+    let canonical = fs::canonicalize(path).map_err(source_path_error)?;
+    if !canonical.is_file() {
+        return Err(ApplicationError::ResolveSourcePath(format!(
+            "{} is not a file",
+            path.display()
+        )));
+    }
+    Ok(canonical)
 }
 
 /// A path that names no file is an invalid request; other failures, such as denied
