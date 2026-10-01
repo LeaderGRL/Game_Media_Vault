@@ -869,12 +869,28 @@ fn fallback_identity_ignores_case_and_surrounding_whitespace() {
         platform: " NINTENDO - NINTENDO ENTERTAINMENT SYSTEM ".to_owned(),
         region: " usa ".to_owned(),
         edition_name: " STANDARD ".to_owned(),
+        source_asset_label: original
+            .source_asset_label
+            .as_deref()
+            .map(|label| format!(" {} ", label.to_uppercase())),
         ..original.clone()
+    };
+    let unlabelled = AssetCandidate {
+        source_asset_label: None,
+        ..original.clone()
+    };
+    let unlabelled_rediscovered = AssetCandidate {
+        original_filename: format!(" {} ", unlabelled.original_filename.to_uppercase()),
+        ..unlabelled.clone()
     };
 
     assert_eq!(
         candidate_identity(SOURCE_ID, &original),
         candidate_identity(SOURCE_ID, &rediscovered)
+    );
+    assert_eq!(
+        candidate_identity(SOURCE_ID, &unlabelled),
+        candidate_identity(SOURCE_ID, &unlabelled_rediscovered)
     );
 }
 

@@ -4,7 +4,7 @@ use game_media_vault_domain::{AssetCandidate, AssetType};
 /// human decisions follow the candidate across runs.
 ///
 /// A provider candidate ID identifies the candidate when the Source offers one; otherwise the
-/// normalized descriptive fields, label (or filename) and locator do. Parts are length-prefixed
+/// normalized descriptive fields and label (or filename), and the locator do. Parts are length-prefixed
 /// so field values cannot collide through delimiters.
 pub fn candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut identity = "candidate".to_owned();
@@ -30,10 +30,13 @@ pub fn candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String
         normalize(&candidate.region).as_str(),
         normalize(&candidate.edition_name).as_str(),
         asset_type_part(candidate.asset_type),
-        candidate
-            .source_asset_label
-            .as_deref()
-            .unwrap_or(&candidate.original_filename),
+        normalize(
+            candidate
+                .source_asset_label
+                .as_deref()
+                .unwrap_or(&candidate.original_filename),
+        )
+        .as_str(),
         &candidate.source_url,
     ] {
         push_part(&mut identity, part);
