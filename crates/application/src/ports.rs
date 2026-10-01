@@ -75,13 +75,11 @@ pub trait ReviewRepositoryPort {
         item: NewReviewItem,
     ) -> Result<ParkedReview, PortError>;
 
-    /// Closes an undecided item as `AutoResolved` or `Superseded` and completes the work parked
-    /// on it. Returns `false` when the item is no longer undecided.
-    fn close_review_item(
-        &self,
-        review_item_id: i64,
-        status: ReviewStatus,
-    ) -> Result<bool, PortError>;
+    /// Marks the candidate's undecided Review Item `Superseded` and completes the work parked on
+    /// it, reading the item in the same transaction so an item opened concurrently is superseded
+    /// too. Returns `false` when a human decided the item; a candidate without an undecided item
+    /// has nothing to supersede.
+    fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError>;
 
     /// Records a human decision on an undecided item and moves its parked work: accepting
     /// requeues it in runs that are not cancelled (reopening completed runs), rejecting

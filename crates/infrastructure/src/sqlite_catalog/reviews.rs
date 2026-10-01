@@ -126,27 +126,27 @@ impl ReviewRepositoryPort for SqliteCatalog {
         Ok(ParkedReview::Parked(review_item))
     }
 
-    fn close_review_item(
-        &self,
-        review_item_id: i64,
-        status: ReviewStatus,
-    ) -> Result<bool, PortError> {
-        if !matches!(
-            status,
-            ReviewStatus::AutoResolved | ReviewStatus::Superseded
-        ) {
-            return Err(PortError(format!(
-                "review items cannot be closed automatically as {status:?}"
-            )));
-        }
+    fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        if !set_status_if_undecided(&transaction, review_item_id, status, None)? {
-            return Ok(false);
+        let Some(item) = select_review_item(
+            &transaction,
+            "candidate_identity = ?1",
+            params![candidate_identity],
+        )?
+        else {
+            return Ok(true);
+        };
+        match item.status {
+            ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(false),
+            ReviewStatus::Pending | ReviewStatus::Deferred => {
+                set_status_if_undecided(&transaction, item.id, ReviewStatus::Superseded, None)?;
+                complete_parked_work(&transaction, item.id)?;
+            }
+            ReviewStatus::AutoResolved | ReviewStatus::Superseded => {}
         }
-        complete_parked_work(&transaction, review_item_id)?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }

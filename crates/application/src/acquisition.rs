@@ -225,11 +225,6 @@ impl Acquisition<'_> {
             }
             _ => {}
         }
-        let undecided_review_item_id = review_item
-            .as_ref()
-            .filter(|item| item.status.is_undecided())
-            .map(|item| item.id);
-
         let candidate_match =
             match_asset_candidate_to_release(&work.candidate, &self.releases, self.matching_policy);
         match candidate_match.confidence {
@@ -258,24 +253,12 @@ impl Acquisition<'_> {
                 }
             }
             MatchConfidence::Low => {
-                if !self.close_review(undecided_review_item_id, ReviewStatus::Superseded)? {
+                if !self.reviews.supersede_candidate_review(&work.key)? {
                     return Ok(Step::Retry);
                 }
                 self.runs.complete_work(self.run_id, &work.key)?;
                 Ok(Step::Done(None))
             }
-        }
-    }
-
-    /// Closes the undecided Review Item, if any. Returns `false` when a human decided it first.
-    fn close_review(
-        &self,
-        review_item_id: Option<i64>,
-        status: ReviewStatus,
-    ) -> Result<bool, ApplicationError> {
-        match review_item_id {
-            Some(review_item_id) => Ok(self.reviews.close_review_item(review_item_id, status)?),
-            None => Ok(true),
         }
     }
 

@@ -483,7 +483,7 @@ fn rejecting_a_reopened_review_detaches_the_earlier_automatic_link() {
 fn review_opened_by_another_run_during_an_auto_link_is_closed_with_it() {
     let smb = candidate("Super Mario Bros.");
     let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
-    *vault.review_opened_before_next_auto_link.borrow_mut() = Some(NewReviewItem {
+    *vault.review_opened_before_next_write.borrow_mut() = Some(NewReviewItem {
         candidate_identity: candidate_identity(SOURCE_ID, &smb),
         candidate: smb.clone(),
         competing_matches: Vec::new(),
@@ -494,6 +494,28 @@ fn review_opened_by_another_run_during_an_auto_link_is_closed_with_it() {
 
     assert_eq!(imported.len(), 1);
     assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+}
+
+#[test]
+fn review_opened_by_another_run_before_a_supersession_is_superseded_with_it() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    *vault.review_opened_before_next_write.borrow_mut() = Some(NewReviewItem {
+        candidate_identity: candidate_identity(SOURCE_ID, &threshold),
+        candidate: threshold.clone(),
+        competing_matches: Vec::new(),
+    });
+    let run_id = vault.start_run();
+
+    execute_with(
+        &vault,
+        &FakeConnector::new(vec![threshold]),
+        run_id,
+        dismissive_matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(vault.review_item(0).status, ReviewStatus::Superseded);
 }
 
 #[test]

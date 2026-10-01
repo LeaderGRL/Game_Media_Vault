@@ -351,11 +351,7 @@ fn human_decisions_are_final() {
             .recorded(),
         None
     );
-    assert!(
-        !catalog
-            .close_review_item(item.id, ReviewStatus::AutoResolved)
-            .unwrap()
-    );
+    assert!(!catalog.supersede_candidate_review(IDENTITY).unwrap());
     assert_eq!(
         catalog.get_review_item(item.id).unwrap().unwrap().status,
         ReviewStatus::Rejected
@@ -363,21 +359,17 @@ fn human_decisions_are_final() {
 }
 
 #[test]
-fn closing_automatically_completes_parked_work_of_an_undecided_item() {
+fn superseding_completes_parked_work_of_an_undecided_item() {
     let (_temp, catalog) = open_catalog();
     let first_run = start_run(&catalog);
     let item = parked_item(&catalog, first_run);
     let second_run = start_run(&catalog);
     parked_item(&catalog, second_run);
 
-    assert!(
-        catalog
-            .close_review_item(item.id, ReviewStatus::AutoResolved)
-            .unwrap()
-    );
+    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
 
     let closed = catalog.get_review_item(item.id).unwrap().unwrap();
-    assert_eq!(closed.status, ReviewStatus::AutoResolved);
+    assert_eq!(closed.status, ReviewStatus::Superseded);
     assert_eq!(closed.decision, None);
     assert_eq!(counts(&catalog, first_run), (0, 0, 1));
     assert_eq!(counts(&catalog, second_run), (0, 0, 1));
@@ -391,17 +383,12 @@ fn closing_automatically_completes_parked_work_of_an_undecided_item() {
 }
 
 #[test]
-fn only_automatic_outcomes_can_close_an_item_automatically() {
+fn superseding_a_candidate_without_review_item_records_nothing() {
     let (_temp, catalog) = open_catalog();
-    let run_id = start_run(&catalog);
-    let item = parked_item(&catalog, run_id);
 
-    let error = catalog
-        .close_review_item(item.id, ReviewStatus::Accepted)
-        .unwrap_err();
+    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
 
-    assert!(error.to_string().contains("cannot be closed automatically"));
-    assert_eq!(counts(&catalog, run_id), (0, 1, 0));
+    assert!(catalog.list_review_items().unwrap().is_empty());
 }
 
 #[test]
@@ -409,9 +396,7 @@ fn parking_reopens_an_automatically_closed_item() {
     let (_temp, catalog) = open_catalog();
     let first_run = start_run(&catalog);
     let item = parked_item(&catalog, first_run);
-    catalog
-        .close_review_item(item.id, ReviewStatus::Superseded)
-        .unwrap();
+    catalog.supersede_candidate_review(IDENTITY).unwrap();
 
     let reopened = parked_item(&catalog, start_run(&catalog));
 

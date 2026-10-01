@@ -167,7 +167,7 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         unreachable!()
     }
 
-    fn close_review_item(&self, _id: i64, _status: ReviewStatus) -> Result<bool, PortError> {
+    fn supersede_candidate_review(&self, _candidate_identity: &str) -> Result<bool, PortError> {
         unreachable!()
     }
 

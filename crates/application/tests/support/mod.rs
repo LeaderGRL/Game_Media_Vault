@@ -157,8 +157,8 @@ pub struct FakeVault {
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
-    /// automatic link is persisted.
-    pub review_opened_before_next_auto_link: RefCell<Option<NewReviewItem>>,
+    /// automatic write: an auto-link, a supersession or a work completion.
+    pub review_opened_before_next_write: RefCell<Option<NewReviewItem>>,
     /// Release Edition each acquisition candidate is currently linked to.
     pub candidate_links: RefCell<BTreeMap<String, i64>>,
 }
@@ -168,6 +168,20 @@ impl FakeVault {
         Self {
             library: RefCell::new(library),
             ..Self::default()
+        }
+    }
+
+    fn open_scheduled_review(&self) {
+        if let Some(new_item) = self.review_opened_before_next_write.borrow_mut().take() {
+            let id = self.review_items.borrow().len() as i64 + 1;
+            self.review_items.borrow_mut().push(ReviewItem {
+                id,
+                candidate_identity: new_item.candidate_identity,
+                candidate: new_item.candidate,
+                competing_matches: new_item.competing_matches,
+                decision: None,
+                status: ReviewStatus::Pending,
+            });
         }
     }
 
@@ -195,6 +209,22 @@ impl FakeVault {
         if let Some(decision) = self.human_decision_before_next_write.borrow_mut().take() {
             self.decide_review_item(review_item_id, decision).unwrap();
         }
+    }
+
+    /// Closes an undecided or automatically closed item with an automatic outcome.
+    fn close_automatically(&self, review_item_id: i64, status: ReviewStatus) {
+        {
+            let mut review_items = self.review_items.borrow_mut();
+            let item = review_items
+                .iter_mut()
+                .find(|item| item.id == review_item_id)
+                .unwrap();
+            if item.status.is_undecided() {
+                item.status = status;
+                item.decision = None;
+            }
+        }
+        self.move_parked_work(review_item_id, WorkState::Done, true);
     }
 
     fn move_parked_work(&self, review_item_id: i64, target: WorkState, include_cancelled: bool) {
@@ -325,6 +355,7 @@ impl RunRepositoryPort for FakeVault {
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        self.open_scheduled_review();
         let mut runs = self.runs.borrow_mut();
         let run = runs.get_mut(&run_id).unwrap();
         let work = run
@@ -423,30 +454,19 @@ impl ReviewRepositoryPort for FakeVault {
         Ok(ParkedReview::Parked(review_item))
     }
 
-    fn close_review_item(
-        &self,
-        review_item_id: i64,
-        status: ReviewStatus,
-    ) -> Result<bool, PortError> {
-        assert!(matches!(
-            status,
-            ReviewStatus::AutoResolved | ReviewStatus::Superseded
-        ));
-        self.apply_pending_human_decision(review_item_id);
-        {
-            let mut review_items = self.review_items.borrow_mut();
-            let item = review_items
-                .iter_mut()
-                .find(|item| item.id == review_item_id)
-                .unwrap();
-            if !item.status.is_undecided() {
-                return Ok(false);
+    fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError> {
+        self.open_scheduled_review();
+        let Some(existing) = self.find_review_item(candidate_identity)? else {
+            return Ok(true);
+        };
+        self.apply_pending_human_decision(existing.id);
+        match self.get_review_item(existing.id)?.unwrap().status {
+            ReviewStatus::Accepted | ReviewStatus::Rejected => Ok(false),
+            _ => {
+                self.close_automatically(existing.id, ReviewStatus::Superseded);
+                Ok(true)
             }
-            item.status = status;
-            item.decision = None;
         }
-        self.move_parked_work(review_item_id, WorkState::Done, true);
-        Ok(true)
     }
 
     fn decide_review_item(
@@ -505,17 +525,7 @@ impl ReviewRepositoryPort for FakeVault {
         candidate_identity: &str,
         record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError> {
-        if let Some(new_item) = self.review_opened_before_next_auto_link.borrow_mut().take() {
-            let id = self.review_items.borrow().len() as i64 + 1;
-            self.review_items.borrow_mut().push(ReviewItem {
-                id,
-                candidate_identity: new_item.candidate_identity,
-                candidate: new_item.candidate,
-                competing_matches: new_item.competing_matches,
-                decision: None,
-                status: ReviewStatus::Pending,
-            });
-        }
+        self.open_scheduled_review();
         if let Some(existing) = self.find_review_item(candidate_identity)? {
             self.apply_pending_human_decision(existing.id);
             let current = self.get_review_item(existing.id)?.unwrap();
@@ -527,7 +537,7 @@ impl ReviewRepositoryPort for FakeVault {
                     return Ok(None);
                 }
                 (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
-                    self.close_review_item(existing.id, ReviewStatus::AutoResolved)?;
+                    self.close_automatically(existing.id, ReviewStatus::AutoResolved);
                 }
                 _ => {}
             }
