@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
-    ErrorKind, PortError, acquire_run_with_connector as acquire_run_with_connector_use_case,
+    AcquisitionRequestInput, ApplicationError, ConnectorPort, ErrorKind, PortError,
+    acquire_run_with_connector as acquire_run_with_connector_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
@@ -67,14 +67,15 @@ fn open_existing_catalog(vault_root: &Path) -> Result<SqliteCatalog, CommandErro
 
 pub fn validate_acquisition_request(
     request: AcquisitionRequestInput,
-) -> Result<AcquisitionRequest, AcquisitionRequestValidationError> {
+) -> Result<AcquisitionRequest, CommandError> {
     build_acquisition_request_use_case(request)
+        .map_err(|error| ApplicationError::Validation(error).into())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 fn build_acquisition_request(
     request: AcquisitionRequestInput,
-) -> Result<AcquisitionRequest, AcquisitionRequestValidationError> {
+) -> Result<AcquisitionRequest, CommandError> {
     validate_acquisition_request(request)
 }
 
