@@ -107,7 +107,11 @@ pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, Appl
 /// the verbatim prefix so long or unusual file names stay addressable.
 fn resolve_source_path(path: &Path) -> Result<PathBuf, ApplicationError> {
     let canonical = fs::canonicalize(path).map_err(source_path_error)?;
-    if !canonical.is_file() {
+    // Metadata failures keep their own classification; only a readable non-file is invalid.
+    if !fs::metadata(&canonical)
+        .map_err(source_path_error)?
+        .is_file()
+    {
         return Err(ApplicationError::ResolveSourcePath(format!(
             "{} is not a file",
             path.display()
