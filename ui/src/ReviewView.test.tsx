@@ -125,6 +125,32 @@ describe("ReviewView", () => {
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:review-preview");
   });
 
+  it("releases a loaded preview once its review closes", async () => {
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:closing-preview"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
+    const onLoadPreview = vi.fn().mockResolvedValue({
+      media_type: "image/png",
+      bytes: [137, 80, 78, 71],
+    });
+    const props = { resolvingIds: new Set<number>(), onResolve: vi.fn(), onLoadPreview };
+    const { rerender } = render(<ReviewView items={[item]} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
+    await screen.findByRole("img", { name: "Review Game box front candidate" });
+
+    rerender(
+      <ReviewView
+        items={[{ ...item, status: "rejected", decision: { decision: "reject" } }]}
+        {...props}
+      />,
+    );
+
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:closing-preview");
+  });
+
   it("shows a loaded preview under StrictMode", async () => {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,

@@ -150,6 +150,7 @@ function CandidatePreview({
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const active = useRef(true);
+  const enabledRef = useRef(enabled);
 
   useEffect(() => {
     // StrictMode runs this effect twice, so the setup must undo the previous cleanup.
@@ -158,6 +159,14 @@ function CandidatePreview({
       active.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+    if (!enabled) {
+      // A closed review keeps its card in the history; release the preview bytes.
+      setPreviewUrl(null);
+    }
+  }, [enabled]);
 
   useEffect(() => {
     return () => {
@@ -175,7 +184,7 @@ function CandidatePreview({
     setPreviewFailed(false);
     try {
       const preview = await onLoadPreview(item.id);
-      if (!active.current) {
+      if (!active.current || !enabledRef.current) {
         return;
       }
       const objectUrl = URL.createObjectURL(
