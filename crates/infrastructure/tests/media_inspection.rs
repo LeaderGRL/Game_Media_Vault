@@ -83,3 +83,20 @@ fn jpeg_xl_originals_are_recorded_as_images() {
         }
     );
 }
+
+#[test]
+fn icon_originals_are_recorded_as_images() {
+    // ICONDIR header and the directory entry of a 32 x 32 image.
+    let ico = [
+        0, 0, 1, 0, 1, 0, 32, 32, 0, 0, 1, 0, 32, 0, 0x28, 0x04, 0, 0, 0x16, 0, 0, 0,
+    ];
+
+    assert_eq!(
+        stored_media(&ico),
+        MediaInfo {
+            media_type: "image/x-icon".to_owned(),
+            width: Some(32),
+            height: Some(32),
+        }
+    );
+}

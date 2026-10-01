@@ -116,6 +116,7 @@ const PREVIEW_MEDIA_TYPES: Record<string, string> = {
   gif: "image/gif",
   bmp: "image/bmp",
   avif: "image/avif",
+  ico: "image/x-icon",
 };
 
 const PREVIEW_SIGNATURES: [number[], string][] = [
