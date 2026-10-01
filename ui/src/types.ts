@@ -100,12 +100,36 @@ const PREVIEW_MEDIA_TYPES: Record<string, string> = {
   gif: "image/gif",
   bmp: "image/bmp",
   avif: "image/avif",
+  svg: "image/svg+xml",
 };
 
-/** Media type of a preview, derived from the candidate's original filename. */
-export function previewMediaType(filename: string): string {
+const PREVIEW_SIGNATURES: [number[], string][] = [
+  [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "image/png"],
+  [[0xff, 0xd8, 0xff], "image/jpeg"],
+  [[0x47, 0x49, 0x46, 0x38], "image/gif"],
+  [[0x42, 0x4d], "image/bmp"],
+];
+
+/**
+ * Media type of a preview: read from the bytes' signature when it is known, so it always
+ * matches the bytes, otherwise derived from the candidate's original filename.
+ */
+export function previewMediaType(bytes: Uint8Array, filename: string): string {
+  const signature = PREVIEW_SIGNATURES.find(([prefix]) =>
+    prefix.every((byte, index) => bytes[index] === byte),
+  );
+  if (signature) {
+    return signature[1];
+  }
+  if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP") {
+    return "image/webp";
+  }
   const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
   return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number) {
+  return String.fromCharCode(...bytes.subarray(start, end));
 }
 
 /** Error returned by every Tauri command. */

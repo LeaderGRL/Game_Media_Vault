@@ -189,7 +189,9 @@ function CandidatePreview({
         return;
       }
       const objectUrl = URL.createObjectURL(
-        new Blob([preview], { type: previewMediaType(item.candidate.original_filename) }),
+        new Blob([preview], {
+          type: previewMediaType(new Uint8Array(preview), item.candidate.original_filename),
+        }),
       );
       setPreviewUrl(objectUrl);
     } catch {
