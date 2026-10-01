@@ -21,13 +21,22 @@ export const RUN_PROGRESS_REFRESH_MS = 3000;
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
+  // The vault the backend has open, unset while another one opens; commands issued for any
+  // other vault would read the wrong catalog.
+  const openedVaultRoot = useRef<string | null>(null);
   const vaultLoadRequestGeneration = useRef(0);
   const reviewMutationGeneration = useRef(0);
   const reviewRefreshRequestGeneration = useRef(0);
   // Each refresh of these lists takes a new generation; only the newest one is applied.
   const runListGeneration = useRef(0);
+  // Progress polls of the executing runs are ordered among themselves and give way to any full
+  // run list refresh started after them, without discarding it.
+  const runPollGeneration = useRef(0);
   const vaultDataGeneration = useRef(0);
   const activeViewRef = useRef<View>("library");
+  // Executions keep running in the backend while another vault is loaded, so loading their
+  // vault again shows them executing instead of offering to start them a second time.
+  const executionsByVault = useRef(new Map<string | null, Set<number>>());
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
@@ -46,6 +55,7 @@ export function App() {
   async function loadVault(create: boolean) {
     const requestedVaultRoot = vaultRoot;
     activeVaultRoot.current = requestedVaultRoot;
+    openedVaultRoot.current = null;
     vaultLoadRequestGeneration.current += 1;
     const loadGeneration = vaultLoadRequestGeneration.current;
     const reviewGenerationAtLoadStart = reviewMutationGeneration.current;
@@ -58,13 +68,14 @@ export function App() {
     setResolvingIds(new Set());
     setRuns([]);
     setBusyRunIds(new Set());
-    setExecutingRunIds(new Set());
+    setExecutingRunIds(new Set(executionsByVault.current.get(requestedVaultRoot)));
     try {
       // The backend keeps the opened vault; later commands never send a path.
       await invoke("open_vault", { vault_root: requestedVaultRoot, create });
       if (loadGeneration !== vaultLoadRequestGeneration.current) {
         return;
       }
+      openedVaultRoot.current = requestedVaultRoot;
       const [library, reviews] = await Promise.all([
         invoke<LibraryEntry[]>("list_library"),
         invoke<ReviewItem[]>("list_review_items"),
@@ -186,6 +197,9 @@ export function App() {
   }
 
   async function refreshRuns(expectedVaultRoot: string | null) {
+    if (openedVaultRoot.current !== expectedVaultRoot) {
+      return;
+    }
     runListGeneration.current += 1;
     const generation = runListGeneration.current;
     const listed = await invoke<AcquisitionRun[]>("list_acquisition_runs");
@@ -196,12 +210,20 @@ export function App() {
 
   /** Reloads only the executing runs, so progress polling does not list the whole history. */
   async function refreshExecutingRuns(runIds: number[], expectedVaultRoot: string | null) {
-    runListGeneration.current += 1;
-    const generation = runListGeneration.current;
+    if (openedVaultRoot.current !== expectedVaultRoot) {
+      return;
+    }
+    const listGeneration = runListGeneration.current;
+    runPollGeneration.current += 1;
+    const pollGeneration = runPollGeneration.current;
     const loaded = await Promise.all(
       runIds.map((runId) => invoke<AcquisitionRun>("get_acquisition_run", { run_id: runId })),
     );
-    if (activeVaultRoot.current === expectedVaultRoot && generation === runListGeneration.current) {
+    if (
+      activeVaultRoot.current === expectedVaultRoot &&
+      listGeneration === runListGeneration.current &&
+      pollGeneration === runPollGeneration.current
+    ) {
       setRuns((current) =>
         current.map((run) => loaded.find((loadedRun) => loadedRun.id === run.id) ?? run),
       );
@@ -209,6 +231,9 @@ export function App() {
   }
 
   async function refreshVaultData(expectedVaultRoot: string | null) {
+    if (openedVaultRoot.current !== expectedVaultRoot) {
+      return;
+    }
     vaultDataGeneration.current += 1;
     const generation = vaultDataGeneration.current;
     const reviewGenerationAtStart = reviewMutationGeneration.current;
@@ -229,10 +254,14 @@ export function App() {
 
   async function showRuns() {
     showView("runs");
+    const listingLoadGeneration = vaultLoadRequestGeneration.current;
     try {
       await refreshRuns(loadedVaultRoot);
     } catch (reason) {
-      setError(errorMessage(reason));
+      // A vault loaded meanwhile reports its own failures.
+      if (vaultLoadRequestGeneration.current === listingLoadGeneration) {
+        setError(errorMessage(reason));
+      }
     }
   }
 
@@ -287,34 +316,52 @@ export function App() {
     }
   }
 
+  /** Records whether a run of `vaultRoot` executes, showing it when that vault is active. */
+  function trackExecution(vaultRoot: string | null, runId: number, executing: boolean) {
+    const runIds = new Set(executionsByVault.current.get(vaultRoot));
+    if (executing) {
+      runIds.add(runId);
+    } else {
+      runIds.delete(runId);
+    }
+    executionsByVault.current.set(vaultRoot, runIds);
+    if (activeVaultRoot.current === vaultRoot) {
+      setExecutingRunIds(new Set(runIds));
+    }
+  }
+
   async function executeRun(runId: number) {
     const actingVaultRoot = loadedVaultRoot;
-    // A vault loaded while this execution runs tracks its own executions.
-    const actingLoadGeneration = vaultLoadRequestGeneration.current;
     // While executing, the shared poll follows the run's counts; the library and Review Items
     // are refreshed once it ends.
-    setExecutingRunIds((current) => new Set(current).add(runId));
+    trackExecution(actingVaultRoot, runId, true);
     setError(null);
+    let executionError: string | null = null;
     try {
       await invoke<AcquisitionRun>("execute_acquisition_run", {
         run_id: runId,
         matching_policy: MATCHING_POLICY,
       });
     } catch (reason) {
+      executionError = errorMessage(reason);
       if (activeVaultRoot.current === actingVaultRoot) {
-        setError(errorMessage(reason));
+        setError(executionError);
       }
     } finally {
-      if (vaultLoadRequestGeneration.current === actingLoadGeneration) {
-        setExecutingRunIds((current) => withoutRun(current, runId));
-      }
+      trackExecution(actingVaultRoot, runId, false);
     }
     // Executions persist imports, Review Items and progress as they go, even when they fail.
     try {
       await Promise.all([refreshVaultData(actingVaultRoot), refreshRuns(actingVaultRoot)]);
     } catch (reason) {
       if (activeVaultRoot.current === actingVaultRoot) {
-        setError(errorMessage(reason));
+        // Why the execution stopped matters more than the failed refresh after it.
+        const refreshError = errorMessage(reason);
+        setError(
+          executionError === null
+            ? refreshError
+            : `${executionError} (the vault could not be refreshed: ${refreshError})`,
+        );
       }
     }
   }
