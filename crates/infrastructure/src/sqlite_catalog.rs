@@ -160,7 +160,7 @@ impl CatalogPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let imported = persist_asset_in_transaction(&transaction, record)?;
+        let imported = persist_asset_in_transaction(&transaction, record, None)?;
         transaction.commit().map_err(sql_error)?;
         Ok(imported)
     }
@@ -177,15 +177,11 @@ impl CatalogPort for SqliteCatalog {
                         r.id, r.platform, r.region, r.edition_name,
                         a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
                         p.source_kind, p.source_asset_label, p.source_location,
-                        m.decision_json
+                        p.match_decision_json
                      FROM release_editions r
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
                      LEFT JOIN asset_provenance p ON p.asset_id = a.id
-                     LEFT JOIN asset_match_decisions m
-                       ON m.asset_id = p.asset_id
-                      AND m.source_kind = p.source_kind
-                      AND m.source_location = p.source_location
                      ORDER BY g.title, r.id, a.id, p.id",
                 )
                 .map_err(sql_error)?;
@@ -334,9 +330,12 @@ struct ExistingImportMatch {
     imported: ImportedAsset,
 }
 
+/// Persists an asset and its provenance. `candidate_identity` names the acquisition candidate
+/// the provenance belongs to; direct imports have none.
 fn persist_asset_in_transaction(
     transaction: &Transaction<'_>,
     record: PersistAsset,
+    candidate_identity: Option<&str>,
 ) -> Result<ImportedAsset, PortError> {
     let normalized_title = normalize(&record.game_title);
     let normalized_platform = normalize(&record.platform);
@@ -358,21 +357,13 @@ fn persist_asset_in_transaction(
         release_edition_id: explicit_target.map(|(_, release_edition_id)| release_edition_id),
     };
     if let Some(existing) = find_existing_import(transaction, &record, &lookup)? {
-        normalize_existing_provenance(transaction, &record, source_id, &existing)?;
-        persist_asset_match_decision(
-            transaction,
-            existing.imported.asset_id,
-            existing.imported.release_edition_id,
-            source_id,
-            &record.source_location,
-            record.match_decision.as_ref(),
-        )?;
+        record_provenance(transaction, &existing.imported, &record, candidate_identity)?;
         return Ok(existing.imported);
     }
 
-    persist_new_asset_in_transaction(
+    let imported = persist_new_asset_in_transaction(
         transaction,
-        record,
+        &record,
         normalized_title,
         normalized_platform,
         normalized_region,
@@ -380,13 +371,15 @@ fn persist_asset_in_transaction(
         asset_type,
         byte_len,
         explicit_target,
-    )
+    )?;
+    record_provenance(transaction, &imported, &record, candidate_identity)?;
+    Ok(imported)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn persist_new_asset_in_transaction(
     transaction: &Transaction<'_>,
-    record: PersistAsset,
+    record: &PersistAsset,
     normalized_title: String,
     normalized_platform: String,
     normalized_region: String,
@@ -397,7 +390,7 @@ fn persist_new_asset_in_transaction(
 ) -> Result<ImportedAsset, PortError> {
     let game_id = match explicit_target {
         Some((game_id, _)) => game_id,
-        None => resolve_game_id(transaction, &record, &normalized_title)?,
+        None => resolve_game_id(transaction, record, &normalized_title)?,
     };
     let release_edition_id = if let Some((_, release_edition_id)) = explicit_target {
         release_edition_id
@@ -450,7 +443,7 @@ fn persist_new_asset_in_transaction(
 
 fn persist_new_asset_row(
     transaction: &Transaction<'_>,
-    record: PersistAsset,
+    record: &PersistAsset,
     game_id: i64,
     release_edition_id: i64,
     asset_type: &str,
@@ -482,39 +475,11 @@ fn persist_new_asset_row(
         )
         .map_err(sql_error)?;
 
-    let source_id = record.source_id.as_str();
-    transaction
-        .execute(
-            "INSERT INTO asset_provenance (
-                asset_id, source_kind, source_asset_label, source_location
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
-                source_asset_label = COALESCE(
-                    excluded.source_asset_label,
-                    asset_provenance.source_asset_label
-                )",
-            params![
-                asset_id,
-                source_id,
-                record.source_asset_label,
-                record.source_location,
-            ],
-        )
-        .map_err(sql_error)?;
-    persist_asset_match_decision(
-        transaction,
-        asset_id,
-        release_edition_id,
-        source_id,
-        &record.source_location,
-        record.match_decision.as_ref(),
-    )?;
-
     Ok(ImportedAsset {
         game_id,
         release_edition_id,
         asset_id,
-        object_hash: record.object_hash,
+        object_hash: record.object_hash.clone(),
         byte_len: record.byte_len,
     })
 }
@@ -659,60 +624,53 @@ fn canonicalize_location(location: &str) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-fn normalize_existing_provenance(
+/// Records where the asset came from, for one candidate (or the direct import), with the
+/// candidate's own label and match decision. Re-imports keep earlier details they do not carry.
+fn record_provenance(
     transaction: &Transaction<'_>,
+    imported: &ImportedAsset,
     record: &PersistAsset,
-    source_id: &str,
-    existing: &ExistingImportMatch,
+    candidate_identity: Option<&str>,
 ) -> Result<(), PortError> {
+    let decision_json = record
+        .match_decision
+        .as_ref()
+        .map(|decision| {
+            if decision.release_edition_id != Some(imported.release_edition_id) {
+                return Err(PortError(format!(
+                    "asset match decision targets release {:?}, expected #{}",
+                    decision.release_edition_id, imported.release_edition_id
+                )));
+            }
+            serde_json::to_string(decision).map_err(|error| {
+                PortError(format!("failed to serialize asset match decision: {error}"))
+            })
+        })
+        .transpose()?;
     transaction
         .execute(
             "INSERT INTO asset_provenance (
-                asset_id, source_kind, source_asset_label, source_location
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(asset_id, source_kind, source_location) DO UPDATE SET
+                asset_id, source_kind, source_asset_label, source_location,
+                candidate_identity, match_decision_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(asset_id, source_kind, source_location, candidate_identity)
+             DO UPDATE SET
                 source_asset_label = COALESCE(
                     excluded.source_asset_label,
                     asset_provenance.source_asset_label
+                ),
+                match_decision_json = COALESCE(
+                    excluded.match_decision_json,
+                    asset_provenance.match_decision_json
                 )",
             params![
-                existing.imported.asset_id,
-                source_id,
+                imported.asset_id,
+                record.source_id.as_str(),
                 record.source_asset_label,
                 record.source_location,
+                candidate_identity.unwrap_or(""),
+                decision_json,
             ],
-        )
-        .map_err(sql_error)?;
-    Ok(())
-}
-
-fn persist_asset_match_decision(
-    transaction: &Transaction<'_>,
-    asset_id: i64,
-    release_edition_id: i64,
-    source_id: &str,
-    source_location: &str,
-    match_decision: Option<&AssetCandidateMatch>,
-) -> Result<(), PortError> {
-    let Some(match_decision) = match_decision else {
-        return Ok(());
-    };
-    if match_decision.release_edition_id != Some(release_edition_id) {
-        return Err(PortError(format!(
-            "asset match decision targets release {:?}, expected #{release_edition_id}",
-            match_decision.release_edition_id
-        )));
-    }
-    let decision_json = serde_json::to_string(match_decision)
-        .map_err(|error| PortError(format!("failed to serialize asset match decision: {error}")))?;
-    transaction
-        .execute(
-            "INSERT INTO asset_match_decisions (
-                asset_id, source_kind, source_location, decision_json
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(asset_id, source_kind, source_location)
-             DO UPDATE SET decision_json = excluded.decision_json",
-            params![asset_id, source_id, source_location, decision_json],
         )
         .map_err(sql_error)?;
     Ok(())
@@ -873,91 +831,35 @@ fn persist_release_assertions(
     Ok(())
 }
 
-/// Records that an acquisition candidate supports a provenance row. Distinct candidates can
-/// share one row when they point at the same locator and bytes.
-fn tag_candidate_provenance(
-    transaction: &Transaction<'_>,
-    imported: &ImportedAsset,
-    record_source_id: &str,
-    record_source_location: &str,
-    candidate_identity: &str,
-) -> Result<(), PortError> {
-    transaction
-        .execute(
-            "INSERT OR IGNORE INTO asset_provenance_candidates (provenance_id, candidate_identity)
-             SELECT id, ?1 FROM asset_provenance
-             WHERE asset_id = ?2 AND source_kind = ?3 AND source_location = ?4",
-            params![
-                candidate_identity,
-                imported.asset_id,
-                record_source_id,
-                record_source_location
-            ],
-        )
-        .map_err(sql_error)?;
-    Ok(())
-}
-
-/// Removes the candidate's acquisition links, except to `keep_release_edition_id`. Provenance
-/// still supported by another candidate stays; assets left without provenance leave the
-/// library while their original objects stay in the store until vault verification collects
-/// them.
+/// Removes the candidate's provenance, except on `keep_release_edition_id`. Assets left without
+/// provenance leave the library while their original objects stay in the store until vault
+/// verification collects them.
 fn detach_candidate_links(
     transaction: &Transaction<'_>,
     candidate_identity: &str,
     keep_release_edition_id: Option<i64>,
 ) -> Result<(), PortError> {
-    let detached = transaction
+    let detached_assets = transaction
         .prepare(
-            "SELECT link.provenance_id, provenance.asset_id
-             FROM asset_provenance_candidates AS link
-             JOIN asset_provenance AS provenance ON provenance.id = link.provenance_id
+            "SELECT DISTINCT provenance.asset_id
+             FROM asset_provenance AS provenance
              JOIN assets AS asset ON asset.id = provenance.asset_id
-             WHERE link.candidate_identity = ?1
+             WHERE provenance.candidate_identity = ?1
                AND (?2 IS NULL OR asset.release_edition_id != ?2)",
         )
         .map_err(sql_error)?
         .query_map(
             params![candidate_identity, keep_release_edition_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            |row| row.get::<_, i64>(0),
         )
         .map_err(sql_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql_error)?;
-    for (provenance_id, asset_id) in detached {
+    for asset_id in detached_assets {
         transaction
             .execute(
-                "DELETE FROM asset_provenance_candidates
-                 WHERE provenance_id = ?1 AND candidate_identity = ?2",
-                params![provenance_id, candidate_identity],
-            )
-            .map_err(sql_error)?;
-        let still_supported: bool = transaction
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM asset_provenance_candidates WHERE provenance_id = ?1
-                 )",
-                params![provenance_id],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
-        if still_supported {
-            continue;
-        }
-        transaction
-            .execute(
-                "DELETE FROM asset_match_decisions
-                 WHERE (asset_id, source_kind, source_location) IN (
-                     SELECT asset_id, source_kind, source_location
-                     FROM asset_provenance WHERE id = ?1
-                 )",
-                params![provenance_id],
-            )
-            .map_err(sql_error)?;
-        transaction
-            .execute(
-                "DELETE FROM asset_provenance WHERE id = ?1",
-                params![provenance_id],
+                "DELETE FROM asset_provenance WHERE asset_id = ?1 AND candidate_identity = ?2",
+                params![asset_id, candidate_identity],
             )
             .map_err(sql_error)?;
         transaction

@@ -7,10 +7,7 @@ use game_media_vault_domain::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use super::{
-    SqliteCatalog, detach_candidate_links, persist_asset_in_transaction, sql_error,
-    tag_candidate_provenance,
-};
+use super::{SqliteCatalog, detach_candidate_links, persist_asset_in_transaction, sql_error};
 
 const REVIEW_ITEM_COLUMNS: &str =
     "id, candidate_identity, candidate_json, competing_matches_json, decision_json, status";
@@ -241,16 +238,8 @@ impl ReviewRepositoryPort for SqliteCatalog {
                 _ => {}
             }
         }
-        let source_id = record.source_id.clone();
-        let source_location = record.source_location.clone();
-        let imported = persist_asset_in_transaction(&transaction, record)?;
-        tag_candidate_provenance(
-            &transaction,
-            &imported,
-            source_id.as_str(),
-            &source_location,
-            candidate_identity,
-        )?;
+        let imported =
+            persist_asset_in_transaction(&transaction, record, Some(candidate_identity))?;
         detach_candidate_links(
             &transaction,
             candidate_identity,

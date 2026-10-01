@@ -731,31 +731,32 @@ fn accepting_an_edition_the_item_no_longer_offers_is_refused_atomically() {
     assert_eq!(counts(&catalog, run_id), (0, 1, 0));
 }
 
-#[test]
-fn candidates_sharing_one_provenance_are_detached_independently() {
-    let (_temp, catalog) = open_catalog();
+const OTHER_IDENTITY: &str = "candidate:fixture-provider:same-locator";
+
+/// Links IDENTITY, then another candidate serving the same locator and bytes for the same
+/// edition with its own `label`, and returns the reopened Review Item of the second one.
+fn link_two_candidates_sharing_a_locator(catalog: &SqliteCatalog, label: &str) -> ReviewItem {
     let first = catalog
         .persist_candidate_asset(IDENTITY, auto_linked_record())
         .unwrap()
         .unwrap();
-    // Another provider record serving the same locator and bytes for the same edition.
-    let other_identity = "candidate:fixture-provider:same-locator";
     catalog
         .persist_candidate_asset(
-            other_identity,
+            OTHER_IDENTITY,
             PersistAsset {
                 existing_release_edition_id: Some(first.release_edition_id),
+                source_asset_label: Some(label.to_owned()),
                 ..auto_linked_record()
             },
         )
         .unwrap();
-    let run_id = start_run(&catalog);
+    let run_id = start_run(catalog);
     catalog
         .record_discovery(
             run_id,
             SOURCE_ID,
             &[AcquisitionWorkItem {
-                key: other_identity.to_owned(),
+                key: OTHER_IDENTITY.to_owned(),
                 candidate: candidate(),
             }],
         )
@@ -763,9 +764,9 @@ fn candidates_sharing_one_provenance_are_detached_independently() {
     let ParkedReview::Parked(other_item) = catalog
         .park_work_for_review(
             run_id,
-            other_identity,
+            OTHER_IDENTITY,
             NewReviewItem {
-                candidate_identity: other_identity.to_owned(),
+                candidate_identity: OTHER_IDENTITY.to_owned(),
                 ..new_item(vec![competing_match(201, "Standard")])
             },
         )
@@ -773,6 +774,13 @@ fn candidates_sharing_one_provenance_are_detached_independently() {
     else {
         panic!("expected a pending review item");
     };
+    other_item
+}
+
+#[test]
+fn candidates_sharing_one_locator_are_detached_independently() {
+    let (_temp, catalog) = open_catalog();
+    let other_item = link_two_candidates_sharing_a_locator(&catalog, "front");
 
     catalog
         .decide_review_item(other_item.id, ReviewDecision::Reject)
@@ -788,4 +796,22 @@ fn candidates_sharing_one_provenance_are_detached_independently() {
         .decide_review_item(item.id, ReviewDecision::Reject)
         .unwrap();
     assert_eq!(library_asset_count(&catalog), 0);
+}
+
+#[test]
+fn a_detached_candidate_takes_its_provenance_details_along() {
+    let (_temp, catalog) = open_catalog();
+    let other_item = link_two_candidates_sharing_a_locator(&catalog, "rejected label");
+
+    catalog
+        .decide_review_item(other_item.id, ReviewDecision::Reject)
+        .unwrap();
+
+    let library = catalog.list_library().unwrap();
+    let labels: Vec<_> = library[0].assets[0]
+        .provenance
+        .iter()
+        .map(|provenance| provenance.source_asset_label.as_deref())
+        .collect();
+    assert_eq!(labels, vec![Some("front")]);
 }
