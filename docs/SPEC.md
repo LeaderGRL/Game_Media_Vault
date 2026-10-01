@@ -409,7 +409,7 @@ vault/
     ...
 ```
 
-The database records MIME type, byte length, dimensions/duration where applicable, original filename, source relationships, integrity information, and object hash. The object store reads the media type and pixel size of each original while storing it (from its first bytes, and for JPEG from its frame header wherever metadata segments put it), so they describe the bytes rather than a file extension; originals whose format is unknown are kept as `application/octet-stream`. Assets recorded before media inspection (vaults upgraded from schema version 2) keep unknown media until vault verification inspects their objects again; meanwhile the desktop Library decides their thumbnails from the file name.
+The database records MIME type, byte length, dimensions/duration where applicable, original filename, source relationships, integrity information, and object hash. The object store reads the media type and pixel size of each original while storing it (from its first bytes, from a JPEG frame header wherever metadata segments put it, and from the first TIFF image file directory wherever the header points), so they describe the bytes rather than a file extension; originals whose format is unknown are kept as `application/octet-stream`. Assets recorded before media inspection (vaults upgraded from schema version 2) keep unknown media until vault verification inspects their objects again; meanwhile the desktop Library decides their thumbnails from the file name.
 
 Identical files from multiple Sources reuse one physical object while retaining each provenance record.
 

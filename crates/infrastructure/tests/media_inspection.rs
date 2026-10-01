@@ -120,3 +120,30 @@ fn jpeg_frames_after_large_metadata_still_give_the_pixel_size() {
         }
     );
 }
+
+#[test]
+fn tiff_directories_past_the_inspected_prefix_still_give_the_pixel_size() {
+    // Little-endian TIFF whose first image file directory starts at byte 300 000.
+    let directory_offset: u32 = 300_000;
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&directory_offset.to_le_bytes());
+    tiff.resize(directory_offset as usize, 0);
+    tiff.extend_from_slice(&2_u16.to_le_bytes());
+    for (tag, value) in [(256_u16, 1800_u16), (257, 2400)] {
+        tiff.extend_from_slice(&tag.to_le_bytes());
+        tiff.extend_from_slice(&3_u16.to_le_bytes()); // SHORT
+        tiff.extend_from_slice(&1_u32.to_le_bytes());
+        tiff.extend_from_slice(&value.to_le_bytes());
+        tiff.extend_from_slice(&[0, 0]);
+    }
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+
+    assert_eq!(
+        stored_media(&tiff),
+        MediaInfo {
+            media_type: "image/tiff".to_owned(),
+            width: Some(1800),
+            height: Some(2400),
+        }
+    );
+}
