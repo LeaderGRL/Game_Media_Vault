@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fs, path::Path};
+use std::{cell::RefCell, fs, io::Read, path::Path};
 
 use game_media_vault_application::{
     CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, PortError, import_local_box_front,
@@ -8,24 +8,19 @@ use game_media_vault_domain::{
 };
 use tempfile::tempdir;
 
-struct FakeObjectStore {
-    expected_source: std::path::PathBuf,
-}
+struct FakeObjectStore;
 
 impl ObjectStorePort for FakeObjectStore {
-    fn store_original(&self, source: &Path) -> Result<StoredObject, PortError> {
-        assert_eq!(source, self.expected_source);
+    fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| PortError(error.to_string()))?;
+        assert_eq!(bytes, b"cover bytes");
         Ok(StoredObject {
             hash: "abc123".to_owned(),
             byte_len: 4096,
         })
-    }
-
-    fn store_original_reader(
-        &self,
-        _reader: &mut dyn std::io::Read,
-    ) -> Result<StoredObject, PortError> {
-        unreachable!()
     }
 }
 
@@ -69,14 +64,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
         source_path: request_source.clone(),
     };
 
-    let imported = import_local_box_front(
-        &catalog,
-        &FakeObjectStore {
-            expected_source: fs::canonicalize(&source).unwrap(),
-        },
-        request,
-    )
-    .unwrap();
+    let imported = import_local_box_front(&catalog, &FakeObjectStore, request).unwrap();
 
     assert_eq!(imported.asset_id, 3);
     let persisted = catalog.persisted.into_inner();

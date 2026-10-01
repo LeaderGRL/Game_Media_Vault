@@ -4,13 +4,16 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ReferenceCatalogRepositoryPort, RunRepositoryPort, acquire_run_with_connector,
+    CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
+    RunRepositoryPort, acquire_run_with_connector, resolve_review_item,
 };
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
-    AssetType, AssetTypeSelector, GameSelection, MatchingPolicy, ReferenceReleaseRecord,
-    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceId, SourceSelection,
+    AssetCandidate, AssetType, AssetTypeSelector, ConnectorCapabilities, GameSelection,
+    MatchConfidence, MatchingPolicy, ReferenceReleaseRecord, ReleaseAssertion,
+    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewStatus, SourceId,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -39,6 +42,29 @@ impl HttpTransport for FixtureTransport {
         } else {
             Ok(Box::new(Cursor::new(BOX_FRONT_BYTES.to_vec())))
         }
+    }
+}
+
+struct NoDiscoveryConnector;
+
+impl ConnectorPort for NoDiscoveryConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(BOX_FRONT_BYTES.to_vec())))
     }
 }
 
@@ -87,6 +113,7 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
 
     let run = catalog.create_run(request()).unwrap();
     let imported = acquire_run_with_connector(
+        &catalog,
         &catalog,
         &catalog,
         &object_store,
@@ -141,4 +168,93 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
     let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
     let reopened_library = reopened.list_library().unwrap();
     assert_eq!(reopened_library, library);
+}
+
+#[test]
+fn accepted_review_is_applied_after_reopening_without_rediscovery() {
+    let temp = tempdir().unwrap();
+    let catalog_path = temp.path().join("catalog.sqlite3");
+    let object_root = temp.path().join("objects");
+    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
+    let release = catalog
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "Unknown".to_owned(),
+            revision: None,
+            edition_name: "Unspecified".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
+    let run = catalog.create_run(request()).unwrap();
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
+        requested_urls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let stricter_policy = MatchingPolicy {
+        high_confidence_threshold: 90,
+        medium_confidence_threshold: 50,
+    };
+
+    let imported = acquire_run_with_connector(
+        &catalog,
+        &catalog,
+        &catalog,
+        &ContentAddressedStore::new(&object_root),
+        &connector,
+        run.id,
+        stricter_policy,
+    )
+    .unwrap();
+    assert!(imported.is_empty());
+    assert_eq!(
+        catalog
+            .get_run(run.id)
+            .unwrap()
+            .unwrap()
+            .awaiting_review_work,
+        1
+    );
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
+    let review_item_id = reopened.list_review_items().unwrap()[0].id;
+    resolve_review_item(
+        &reopened,
+        review_item_id,
+        ReviewDecision::Accept {
+            release_edition_id: release.release_edition_id,
+        },
+    )
+    .unwrap();
+    let imported = acquire_run_with_connector(
+        &reopened,
+        &reopened,
+        &reopened,
+        &ContentAddressedStore::new(&object_root),
+        &NoDiscoveryConnector,
+        run.id,
+        stricter_policy,
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    let final_run = reopened.get_run(run.id).unwrap().unwrap();
+    assert_eq!(final_run.status, AcquisitionRunStatus::Completed);
+    assert_eq!(final_run.completed_work, 1);
+    assert_eq!(
+        reopened.list_review_items().unwrap()[0].status,
+        ReviewStatus::Accepted
+    );
+    let library = reopened.list_library().unwrap();
+    let provenance = &library[0].assets[0].provenance[0];
+    assert_eq!(
+        provenance.match_decision.as_ref().unwrap().confidence,
+        MatchConfidence::Confirmed
+    );
 }

@@ -302,6 +302,8 @@ Connector families:
 
 A single Source may expose multiple connector implementations when useful, such as API plus public dataset.
 
+Connectors own their transport credentials. Discovered candidates carry a stable, credential-free absolute locator that is persisted with Review Items, work items and provenance; a connector adds API keys, sessions or signed URLs only inside its download step. Candidates whose locator is not an absolute URL free of userinfo, query and fragment are rejected before anything is persisted; connectors that address media with request parameters expose a synthetic, path-based locator instead.
+
 ## 13. Source Registry
 
 The registry stores source capabilities and policy metadata separately from connector code.
@@ -384,6 +386,8 @@ Every stage must be restartable from persisted state. Connector failures must no
 ### Metadata
 
 SQLite is the initial local catalog because the primary product is a single-user desktop/CLI tool. Database access must stay behind repository interfaces so a future server deployment can migrate to PostgreSQL without leaking SQL concerns into the domain.
+
+Catalog files are identified by a Game Media Vault SQLite application id and versioned with `user_version`. Opening a vault refuses foreign databases and catalogs written by a newer version without modifying them; older supported versions are upgraded through ordered, transactional migrations.
 
 ### Media Objects
 

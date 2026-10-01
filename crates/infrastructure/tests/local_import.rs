@@ -9,8 +9,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
-use rusqlite::{Connection, params};
-use tempfile::{tempdir, tempdir_in};
+use tempfile::tempdir;
 
 #[test]
 fn opening_a_missing_catalog_for_reading_does_not_create_a_vault() {
@@ -43,8 +42,12 @@ fn stores_identical_original_bytes_only_once() {
     fs::write(&source, b"same original bytes").unwrap();
     let store = ContentAddressedStore::new(temp.path().join("vault"));
 
-    let first = store.store_original(&source).unwrap();
-    let second = store.store_original(&source).unwrap();
+    let first = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
+    let second = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
 
     assert_eq!(first, second);
     assert_eq!(
@@ -60,11 +63,15 @@ fn reimport_rejects_a_corrupted_existing_object() {
     fs::write(&source, b"trusted original bytes").unwrap();
     let store = ContentAddressedStore::new(temp.path().join("vault"));
 
-    let stored = store.store_original(&source).unwrap();
+    let stored = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
     let object_path = store.object_path(&stored.hash);
     fs::write(&object_path, b"corrupted bytes").unwrap();
 
-    let error = store.store_original(&source).unwrap_err();
+    let error = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap_err();
 
     assert!(error.0.contains("integrity"));
     assert_eq!(fs::read(object_path).unwrap(), b"corrupted bytes");
@@ -280,251 +287,4 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
     assert_eq!(second.game_id, first.game_id);
     assert_eq!(second.release_edition_id, first.release_edition_id);
     assert_ne!(second.asset_id, first.asset_id);
-}
-
-#[test]
-fn legacy_relative_provenance_is_not_rebased_to_the_current_working_directory() {
-    let current_dir = std::env::current_dir().unwrap();
-    let temp = tempdir_in(&current_dir).unwrap();
-    let source_dir = temp.path().join("previous-session");
-    fs::create_dir_all(&source_dir).unwrap();
-    let source = source_dir.join("legacy-front.png");
-    fs::write(&source, b"legacy cover bytes").unwrap();
-    let relative_source = source.strip_prefix(&current_dir).unwrap().to_path_buf();
-    let vault = temp.path().join("vault");
-    let catalog_path = vault.join("catalog.sqlite3");
-    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-    let store = ContentAddressedStore::new(&vault);
-    let stored = store.store_original(&source).unwrap();
-
-    let connection = Connection::open(&catalog_path).unwrap();
-    connection
-        .execute(
-            "INSERT INTO games (id, title, normalized_title) VALUES (1, 'Legacy Game', 'legacy game')",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO release_editions (
-                id, game_id, platform, normalized_platform, region, normalized_region,
-                edition_name, normalized_edition_name
-             ) VALUES (1, 1, 'Windows', 'windows', 'Worldwide', 'worldwide', 'Standard', 'standard')",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO assets (
-                id, release_edition_id, asset_type, object_hash, byte_len, original_filename
-             ) VALUES (1, 1, 'box_front', ?1, ?2, 'legacy-front.png')",
-            params![stored.hash, i64::try_from(stored.byte_len).unwrap()],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO asset_provenance (id, asset_id, source_kind, source_location)
-             VALUES (1, 1, 'local_import', ?1)",
-            params![relative_source.to_string_lossy()],
-        )
-        .unwrap();
-    drop(connection);
-
-    let imported = import_local_box_front(
-        &catalog,
-        &store,
-        ImportLocalBoxFrontRequest {
-            existing_game_id: None,
-            game_title: "Legacy Game".to_owned(),
-            platform: "Windows".to_owned(),
-            region: "Worldwide".to_owned(),
-            edition_name: "Standard".to_owned(),
-            source_path: source.clone(),
-        },
-    )
-    .unwrap();
-
-    assert_ne!(imported.game_id, 1);
-    assert_ne!(imported.asset_id, 1);
-
-    let repeated = import_local_box_front(
-        &catalog,
-        &store,
-        ImportLocalBoxFrontRequest {
-            existing_game_id: None,
-            game_title: "Legacy Game".to_owned(),
-            platform: "Windows".to_owned(),
-            region: "Worldwide".to_owned(),
-            edition_name: "Standard".to_owned(),
-            source_path: source.clone(),
-        },
-    )
-    .unwrap();
-    assert_eq!(repeated.asset_id, imported.asset_id);
-
-    let library = list_library(&catalog).unwrap();
-    assert_eq!(library.len(), 2);
-    let legacy = library
-        .iter()
-        .flat_map(|entry| entry.assets.iter())
-        .find(|asset| asset.asset_id == 1)
-        .unwrap();
-    assert_eq!(legacy.provenance.len(), 1);
-    assert_eq!(
-        legacy.provenance[0].source_location,
-        relative_source.to_string_lossy()
-    );
-    let current = library
-        .iter()
-        .flat_map(|entry| entry.assets.iter())
-        .find(|asset| asset.asset_id == imported.asset_id)
-        .unwrap();
-    assert_eq!(current.provenance.len(), 1);
-    let current_location = std::path::Path::new(&current.provenance[0].source_location);
-    assert!(current_location.is_absolute());
-    assert_eq!(
-        fs::canonicalize(current_location).unwrap(),
-        fs::canonicalize(&source).unwrap()
-    );
-}
-
-#[test]
-fn unresolved_legacy_relative_provenance_does_not_merge_same_named_distinct_games() {
-    let temp = tempdir().unwrap();
-    let source_dir = temp.path().join("second-copy");
-    fs::create_dir_all(&source_dir).unwrap();
-    let source = source_dir.join("front.png");
-    fs::write(&source, b"shared legacy bytes").unwrap();
-    let vault = temp.path().join("vault");
-    let catalog_path = vault.join("catalog.sqlite3");
-    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-    let store = ContentAddressedStore::new(&vault);
-    let stored = store.store_original(&source).unwrap();
-
-    let connection = Connection::open(&catalog_path).unwrap();
-    for (game_id, relative_source) in [
-        (1_i64, "first-copy/front.png"),
-        (2_i64, "second-copy/front.png"),
-    ] {
-        connection
-            .execute(
-                "INSERT INTO games (id, title, normalized_title)
-                 VALUES (?1, 'Same Legacy Title', 'same legacy title')",
-                params![game_id],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO release_editions (
-                    id, game_id, platform, normalized_platform, region, normalized_region,
-                    edition_name, normalized_edition_name
-                 ) VALUES (?1, ?1, 'Windows', 'windows', 'Worldwide', 'worldwide', 'Standard', 'standard')",
-                params![game_id],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO assets (
-                    id, release_edition_id, asset_type, object_hash, byte_len, original_filename
-                 ) VALUES (?1, ?1, 'box_front', ?2, ?3, 'front.png')",
-                params![
-                    game_id,
-                    stored.hash,
-                    i64::try_from(stored.byte_len).unwrap()
-                ],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO asset_provenance (id, asset_id, source_kind, source_location)
-                 VALUES (?1, ?1, 'local_import', ?2)",
-                params![game_id, relative_source],
-            )
-            .unwrap();
-    }
-    drop(connection);
-
-    let imported = import_local_box_front(
-        &catalog,
-        &store,
-        ImportLocalBoxFrontRequest {
-            existing_game_id: None,
-            game_title: "Same Legacy Title".to_owned(),
-            platform: "Windows".to_owned(),
-            region: "Worldwide".to_owned(),
-            edition_name: "Standard".to_owned(),
-            source_path: source,
-        },
-    )
-    .unwrap();
-
-    assert_ne!(imported.game_id, 1);
-    assert_ne!(imported.game_id, 2);
-    assert_ne!(imported.asset_id, 1);
-    assert_ne!(imported.asset_id, 2);
-}
-
-#[test]
-fn opening_a_legacy_catalog_removes_title_only_game_identity() {
-    let temp = tempdir().unwrap();
-    let vault = temp.path().join("vault");
-    fs::create_dir_all(&vault).unwrap();
-    let catalog_path = vault.join("catalog.sqlite3");
-    let connection = Connection::open(&catalog_path).unwrap();
-    connection
-        .execute_batch(
-            "PRAGMA foreign_keys = ON;
-             CREATE TABLE games (
-                 id INTEGER PRIMARY KEY,
-                 title TEXT NOT NULL,
-                 normalized_title TEXT NOT NULL UNIQUE
-             );
-             CREATE TABLE release_editions (
-                 id INTEGER PRIMARY KEY,
-                 game_id INTEGER NOT NULL REFERENCES games(id),
-                 platform TEXT NOT NULL,
-                 normalized_platform TEXT NOT NULL,
-                 region TEXT NOT NULL,
-                 normalized_region TEXT NOT NULL,
-                 edition_name TEXT NOT NULL,
-                 normalized_edition_name TEXT NOT NULL,
-                 UNIQUE(game_id, normalized_platform, normalized_region, normalized_edition_name)
-             );
-             INSERT INTO games (id, title, normalized_title)
-             VALUES (1, 'Same Name', 'same name');
-             INSERT INTO release_editions (
-                 id, game_id, platform, normalized_platform, region, normalized_region,
-                 edition_name, normalized_edition_name
-             ) VALUES (1, 1, 'Windows', 'windows', 'Worldwide', 'worldwide', 'Standard', 'standard');",
-        )
-        .unwrap();
-    drop(connection);
-
-    let catalog = SqliteCatalog::open(&catalog_path).unwrap();
-    let store = ContentAddressedStore::new(&vault);
-    let source = temp.path().join("new-front.png");
-    fs::write(&source, b"different same-title game").unwrap();
-
-    let imported = import_local_box_front(
-        &catalog,
-        &store,
-        ImportLocalBoxFrontRequest {
-            existing_game_id: None,
-            game_title: "Same Name".to_owned(),
-            platform: "Windows".to_owned(),
-            region: "Worldwide".to_owned(),
-            edition_name: "Standard".to_owned(),
-            source_path: source,
-        },
-    )
-    .unwrap();
-
-    assert_ne!(imported.game_id, 1);
-    let migrated = Connection::open(&catalog_path).unwrap();
-    let foreign_key_errors: i64 = migrated
-        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(foreign_key_errors, 0);
 }

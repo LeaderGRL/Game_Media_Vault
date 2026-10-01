@@ -1,7 +1,7 @@
 use std::fs;
 
-use game_media_vault_application::ObjectStorePort;
-use game_media_vault_infrastructure::ContentAddressedStore;
+use game_media_vault_application::{CatalogPort, ObjectStorePort};
+use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
 #[test]
@@ -17,28 +17,15 @@ fn stale_staging_file_does_not_block_a_new_process_import() {
     fs::write(&source, b"fresh cover bytes").unwrap();
     let store = ContentAddressedStore::new(&vault);
 
-    let stored = store.store_original(&source).unwrap();
+    let stored = store
+        .store_original(&mut fs::File::open(&source).unwrap())
+        .unwrap();
 
     assert_eq!(
         fs::read(store.object_path(&stored.hash)).unwrap(),
         b"fresh cover bytes"
     );
     assert_eq!(fs::read(stale_path).unwrap(), b"interrupted import");
-}
-
-#[test]
-fn missing_source_does_not_leave_a_staging_file() {
-    let temp = tempdir().unwrap();
-    let vault = temp.path().join("vault");
-    let source = temp.path().join("missing.png");
-    let store = ContentAddressedStore::new(&vault);
-
-    assert!(store.store_original(&source).is_err());
-
-    let staging = vault.join("staging");
-    if staging.exists() {
-        assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
-    }
 }
 
 #[test]
@@ -51,8 +38,33 @@ fn failed_publish_does_not_leave_a_staging_file() {
     fs::write(&source, b"cover bytes").unwrap();
     let store = ContentAddressedStore::new(&vault);
 
-    assert!(store.store_original(&source).is_err());
+    assert!(
+        store
+            .store_original(&mut fs::File::open(&source).unwrap())
+            .is_err()
+    );
 
     let staging = vault.join("staging");
     assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+}
+
+#[test]
+fn reopening_a_vault_keeps_unreferenced_objects_for_verification() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog_path = vault.join("catalog.sqlite3");
+    SqliteCatalog::open(&catalog_path).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    // An import interrupted after publication leaves an object no catalog row references.
+    let stored = store
+        .store_original(&mut &b"interrupted import bytes"[..])
+        .unwrap();
+
+    let reopened = SqliteCatalog::open_existing(&catalog_path).unwrap();
+
+    assert!(reopened.list_library().unwrap().is_empty());
+    assert_eq!(
+        fs::read(store.object_path(&stored.hash)).unwrap(),
+        b"interrupted import bytes"
+    );
 }

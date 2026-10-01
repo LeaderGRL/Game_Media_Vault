@@ -4,7 +4,6 @@ use game_media_vault_domain::{
     SourceId,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
-use rusqlite::params;
 use tempfile::tempdir;
 
 #[test]
@@ -15,7 +14,7 @@ fn stores_connector_bytes_and_round_trips_a_data_driven_source_id() {
     let store = ContentAddressedStore::new(&vault);
     let bytes = b"libretro box front fixture";
 
-    let stored = store.store_original_bytes(bytes).unwrap();
+    let stored = store.store_original(&mut &bytes[..]).unwrap();
     let imported = catalog
         .persist_asset(PersistAsset {
             existing_game_id: None,
@@ -333,71 +332,5 @@ fn deduplicated_asset_preserves_match_decision_per_provenance() {
             .match_decision
             .as_ref(),
         Some(&second_decision)
-    );
-}
-
-#[test]
-fn opening_asset_scoped_match_decisions_migrates_them_to_provenance() {
-    let temp = tempdir().unwrap();
-    let path = temp.path().join("catalog.sqlite3");
-    let catalog = SqliteCatalog::open(&path).unwrap();
-    let match_decision = AssetCandidateMatch {
-        release_edition_id: Some(1),
-        score: 100,
-        confidence: MatchConfidence::High,
-        evidence: vec![MatchEvidence {
-            signal: MatchSignal::Title,
-            candidate_value: "Target Game".to_owned(),
-            release_value: "Target Game".to_owned(),
-            score_delta: 50,
-        }],
-    };
-    let imported = catalog
-        .persist_asset(PersistAsset {
-            existing_game_id: None,
-            existing_release_edition_id: None,
-            match_decision: Some(match_decision.clone()),
-            game_title: "Target Game".to_owned(),
-            platform: "Nintendo Entertainment System".to_owned(),
-            region: "USA".to_owned(),
-            edition_name: "Standard".to_owned(),
-            asset_type: AssetType::BoxFront,
-            object_hash: "legacy-match-hash".to_owned(),
-            byte_len: 11,
-            original_filename: "matched.png".to_owned(),
-            source_id: SourceId::from("legacy-provider"),
-            source_asset_label: None,
-            source_location: "fixture://legacy-provider/matched".to_owned(),
-        })
-        .unwrap();
-    drop(catalog);
-
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute_batch(
-            "DROP TABLE asset_match_decisions;
-             CREATE TABLE asset_match_decisions (
-                 asset_id INTEGER PRIMARY KEY REFERENCES assets(id),
-                 decision_json TEXT NOT NULL
-             );",
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO asset_match_decisions (asset_id, decision_json) VALUES (?1, ?2)",
-            params![
-                imported.asset_id,
-                serde_json::to_string(&match_decision).unwrap()
-            ],
-        )
-        .unwrap();
-    drop(connection);
-
-    let reopened = SqliteCatalog::open_existing(&path).unwrap();
-    let library = reopened.list_library().unwrap();
-
-    assert_eq!(
-        library[0].assets[0].provenance[0].match_decision.as_ref(),
-        Some(&match_decision)
     );
 }

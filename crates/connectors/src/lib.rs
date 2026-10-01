@@ -140,6 +140,10 @@ where
                     })?;
                 let source_url = box_front_url(repository, &original_filename)?;
                 Ok(AssetCandidate {
+                    provider_candidate_id: Some(format!(
+                        "{}/Named_Boxarts/{game_title}",
+                        repository.repository
+                    )),
                     game_title,
                     platform,
                     region: "Unknown".to_owned(),

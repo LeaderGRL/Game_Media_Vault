@@ -76,6 +76,10 @@ fn declares_box_front_capability_and_downloads_the_discovered_fixture() {
     let candidate = &candidates[0];
     assert_eq!(candidate.asset_type, AssetType::BoxFront);
     assert_eq!(candidate.source_id, SourceId::from("libretro-thumbnails"));
+    assert_eq!(
+        candidate.provider_candidate_id.as_deref(),
+        Some("Nintendo_-_Nintendo_Entertainment_System/Named_Boxarts/Super Mario Bros. (World)")
+    );
     assert_eq!(candidate.original_filename, "Super Mario Bros. (World).png");
     assert_eq!(
         candidate.source_url,
