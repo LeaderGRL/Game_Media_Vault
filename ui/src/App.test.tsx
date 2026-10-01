@@ -1178,6 +1178,32 @@ describe("App acquisition", () => {
     }
   });
 
+  it("shows a run action that succeeded even when the run list cannot be refreshed", async () => {
+    let paused = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return paused
+          ? Promise.reject({ kind: "external", message: "catalog busy" })
+          : Promise.resolve([startedRun]);
+      }
+      if (command === "pause_acquisition_run") {
+        paused = true;
+        return Promise.resolve({ ...startedRun, status: "paused" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+
+    expect(await screen.findByText("Paused")).toBeInTheDocument();
+    expect(
+      screen.getByText("Run #1 is paused, but the run list could not be refreshed: catalog busy"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps another vault's run action pending when an older one finishes", async () => {
     const pauses: Array<() => void> = [];
     invokeMock.mockImplementation((command: string) => {

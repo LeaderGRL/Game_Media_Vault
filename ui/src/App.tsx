@@ -373,8 +373,23 @@ export function App() {
     setBusyRunIds((current) => new Set(current).add(runId));
     setError(null);
     try {
-      await invoke<AcquisitionRun>(`${action}_acquisition_run`, { run_id: runId });
-      await refreshRuns(actingVaultRoot);
+      const updated = await invoke<AcquisitionRun>(`${action}_acquisition_run`, {
+        run_id: runId,
+      });
+      if (activeVaultRoot.current !== actingVaultRoot) {
+        return;
+      }
+      // The transition is persisted from here on: show it even if the list refresh fails.
+      setRuns((current) => current.map((run) => (run.id === updated.id ? updated : run)));
+      try {
+        await refreshRuns(actingVaultRoot);
+      } catch (reason) {
+        if (activeVaultRoot.current === actingVaultRoot) {
+          setError(
+            `Run #${runId} is ${updated.status}, but the run list could not be refreshed: ${errorMessage(reason)}`,
+          );
+        }
+      }
     } catch (reason) {
       if (activeVaultRoot.current === actingVaultRoot) {
         setError(errorMessage(reason));
