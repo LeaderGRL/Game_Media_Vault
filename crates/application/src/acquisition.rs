@@ -50,14 +50,17 @@ pub fn acquire_run_with_connector(
     let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
     match run.status {
-        AcquisitionRunStatus::Running => {}
-        AcquisitionRunStatus::Completed => return Ok(Vec::new()),
+        AcquisitionRunStatus::Running => {
+            let capabilities = validate_connector_plan(&run, connector)?;
+            if !runs.has_discovered(run_id, connector.source_id())? {
+                let work = discover_work(&run.request, connector, &capabilities)?;
+                runs.record_discovery(run_id, connector.source_id(), &work)?;
+            }
+        }
+        // Nothing is left to discover, but an acceptance may reopen the run right after this
+        // read; the drain below executes whatever work it requeued.
+        AcquisitionRunStatus::Completed => {}
         status => return Err(ApplicationError::RunNotExecutable { status }),
-    }
-    let capabilities = validate_connector_plan(&run, connector)?;
-    if !runs.has_discovered(run_id, connector.source_id())? {
-        let work = discover_work(&run.request, connector, &capabilities)?;
-        runs.record_discovery(run_id, connector.source_id(), &work)?;
     }
 
     let acquisition = Acquisition {

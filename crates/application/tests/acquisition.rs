@@ -929,3 +929,21 @@ fn reviews_with_a_colliding_source_url_keep_independent_decisions() {
     assert_eq!(vault.review_item(1).status, ReviewStatus::Pending);
     assert_eq!(vault.run(run_id).awaiting_review_work, 1);
 }
+
+#[test]
+fn an_acceptance_reopening_a_run_read_as_completed_is_executed() {
+    let (ambiguous, library) = ambiguous_candidate_and_releases();
+    let vault = FakeVault::with_library(library);
+    let connector = FakeConnector::new(vec![ambiguous]);
+    let run_id = vault.start_run();
+    execute(&vault, &connector, run_id).unwrap();
+    assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
+    *vault.decision_after_next_run_read.borrow_mut() = Some(ReviewDecision::Accept {
+        release_edition_id: 402,
+    });
+
+    let imported = execute(&vault, &connector, run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
+}

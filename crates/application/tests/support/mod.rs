@@ -160,6 +160,9 @@ pub struct FakeVault {
     /// Simulates a human decision on the first Review Item committed right before the run
     /// completes.
     pub decision_before_completion: RefCell<Option<ReviewDecision>>,
+    /// Simulates a human decision on the first Review Item committed right after the next run
+    /// read.
+    pub decision_after_next_run_read: RefCell<Option<ReviewDecision>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
@@ -271,7 +274,7 @@ impl RunRepositoryPort for FakeVault {
     }
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
-        Ok(self.runs.borrow().get(&run_id).map(|run| {
+        let run = self.runs.borrow().get(&run_id).map(|run| {
             let count = |predicate: fn(&WorkState) -> bool| {
                 run.work
                     .iter()
@@ -286,7 +289,12 @@ impl RunRepositoryPort for FakeVault {
                 awaiting_review_work: count(|state| matches!(state, WorkState::Parked(_))),
                 completed_work: count(|state| *state == WorkState::Done),
             }
-        }))
+        });
+        if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
+            let review_item_id = self.review_items.borrow()[0].id;
+            self.decide_review_item(review_item_id, decision)?;
+        }
+        Ok(run)
     }
 
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
