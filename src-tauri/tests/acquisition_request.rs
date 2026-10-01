@@ -59,3 +59,41 @@ fn tauri_accepts_partial_quality_requirements() {
     );
     assert_eq!(serialized["quality"]["best_available"], false);
 }
+
+#[test]
+fn the_desktop_request_draft_deserializes_into_the_shared_request_model() {
+    // Shape produced by ui/src/acquisition.ts::buildAcquisitionRequest.
+    let draft = serde_json::json!({
+        "sources": { "mode": "explicit", "values": ["libretro-thumbnails"] },
+        "platforms": ["Nintendo - Game Boy"],
+        "games": { "mode": "explicit", "values": ["Tetris (World) (Rev 1)"] },
+        "regions": ["Europe"],
+        "languages": [],
+        "asset_types": ["box_front", "box_3d_model", "3d_model", "other_family"],
+        "quality": null,
+        "retention": "keep_best_per_type",
+        "limits": {}
+    });
+
+    let input: AcquisitionRequestInput = serde_json::from_value(draft).unwrap();
+    let request = game_media_vault_tauri::validate_acquisition_request(input).unwrap();
+
+    assert!(request.selects_only_source("libretro-thumbnails"));
+    assert_eq!(request.platforms(), ["Nintendo - Game Boy"]);
+    assert_eq!(request.retention(), RetentionPolicy::KeepBestPerType);
+    assert_eq!(request.limits(), &AcquisitionLimits::default());
+    let all_games: AcquisitionRequestInput = serde_json::from_value(serde_json::json!({
+        "sources": { "mode": "auto" },
+        "platforms": ["Windows"],
+        "games": { "mode": "all" },
+        "regions": [],
+        "languages": [],
+        "asset_types": ["packaging"],
+        "quality": null,
+        "retention": "keep_everything",
+        "limits": {}
+    }))
+    .unwrap();
+    assert_eq!(all_games.games, GameSelection::All);
+    assert_eq!(all_games.sources, SourceSelection::Auto);
+}
