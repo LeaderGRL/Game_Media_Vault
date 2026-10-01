@@ -16,6 +16,9 @@ type RunAction = "pause" | "resume" | "cancel";
 /** Default thresholds used by desktop executions (SPEC §10 keeps them configurable). */
 const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_threshold: 50 };
 
+/** How often run counts are refreshed while a run executes. */
+export const RUN_PROGRESS_REFRESH_MS = 3000;
+
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
   const vaultLoadRequestGeneration = useRef(0);
@@ -125,9 +128,11 @@ export function App() {
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
       // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
-      const [reviews, library] = await Promise.all([
+      const [reviews, library, runList] = await Promise.all([
         invoke<ReviewItem[]>("list_review_items"),
         invoke<LibraryEntry[]>("list_library"),
+        // Accepting requeues parked work and may reopen completed runs.
+        invoke<AcquisitionRun[]>("list_acquisition_runs"),
       ]);
       if (
         activeVaultRoot.current !== resolvingVaultRoot ||
@@ -137,6 +142,7 @@ export function App() {
       }
       setReviewItems(reviews);
       setEntries(library);
+      setRuns(runList);
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(errorMessage(reason));
@@ -231,6 +237,13 @@ export function App() {
     const actingLoadGeneration = vaultLoadRequestGeneration.current;
     setExecutingRunIds((current) => new Set(current).add(runId));
     setError(null);
+    // Run counts are cheap to list, so they follow the execution; the library and Review
+    // Items are refreshed once it ends.
+    const progressRefresh = setInterval(() => {
+      refreshRuns(actingVaultRoot).catch(() => {
+        // The next refresh or the final one reports a persistent failure.
+      });
+    }, RUN_PROGRESS_REFRESH_MS);
     try {
       await invoke<AcquisitionRun>("execute_acquisition_run", {
         run_id: runId,
@@ -241,6 +254,7 @@ export function App() {
         setError(errorMessage(reason));
       }
     } finally {
+      clearInterval(progressRefresh);
       if (vaultLoadRequestGeneration.current === actingLoadGeneration) {
         setExecutingRunIds((current) => withoutRun(current, runId));
       }
@@ -257,6 +271,8 @@ export function App() {
 
   async function applyRunAction(runId: number, action: RunAction) {
     const actingVaultRoot = loadedVaultRoot;
+    // A vault loaded while this action runs tracks its own pending actions.
+    const actingLoadGeneration = vaultLoadRequestGeneration.current;
     setBusyRunIds((current) => new Set(current).add(runId));
     setError(null);
     try {
@@ -267,7 +283,9 @@ export function App() {
         setError(errorMessage(reason));
       }
     } finally {
-      setBusyRunIds((current) => withoutRun(current, runId));
+      if (vaultLoadRequestGeneration.current === actingLoadGeneration) {
+        setBusyRunIds((current) => withoutRun(current, runId));
+      }
     }
   }
 
