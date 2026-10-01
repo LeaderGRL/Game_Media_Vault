@@ -285,6 +285,22 @@ fn accepting_a_review_requeues_its_work_and_the_next_execution_imports_the_confi
 }
 
 #[test]
+fn work_requeued_while_the_run_finishes_is_executed_before_completing() {
+    let (ambiguous, library) = ambiguous_candidate_and_releases();
+    let vault = FakeVault::with_library(library);
+    *vault.decision_before_completion.borrow_mut() = Some(ReviewDecision::Accept {
+        release_edition_id: 402,
+    });
+    let run_id = vault.start_run();
+
+    let imported = execute(&vault, &FakeConnector::new(vec![ambiguous]), run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].release_edition_id, 402);
+    assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
 fn accepted_decision_is_reused_by_a_later_run_without_a_new_review() {
     let (ambiguous, library) = ambiguous_candidate_and_releases();
     let vault = FakeVault::with_library(library);

@@ -69,17 +69,25 @@ pub fn acquire_run_with_connector(
         releases: catalog.list_library()?,
     };
     let mut imported_assets = Vec::new();
-    while let Some(work) = runs.next_queued_work(run_id)? {
-        if let Some(imported) = acquisition.process(&work)? {
-            imported_assets.push(imported);
+    loop {
+        while let Some(work) = runs.next_queued_work(run_id)? {
+            if let Some(imported) = acquisition.process(&work)? {
+                imported_assets.push(imported);
+            }
+        }
+        if runs.compare_and_set_run_status(
+            run_id,
+            AcquisitionRunStatus::Running,
+            AcquisitionRunStatus::Completed,
+        )? {
+            break;
+        }
+        // A pause or cancellation that won the race keeps its status; otherwise a decision
+        // requeued work after the queue looked empty, and it is executed too.
+        if load_acquisition_run(runs, run_id)?.status != AcquisitionRunStatus::Running {
+            break;
         }
     }
-    // A pause or cancellation that won the race keeps its status.
-    runs.compare_and_set_run_status(
-        run_id,
-        AcquisitionRunStatus::Running,
-        AcquisitionRunStatus::Completed,
-    )?;
     Ok(imported_assets)
 }
 

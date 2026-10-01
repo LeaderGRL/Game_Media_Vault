@@ -154,6 +154,9 @@ pub struct FakeVault {
     pub library: RefCell<Vec<LibraryEntry>>,
     /// Simulates a human decision committed right before the next automatic review write.
     pub human_decision_before_next_write: RefCell<Option<ReviewDecision>>,
+    /// Simulates a human decision on the first Review Item committed right before the run
+    /// completes.
+    pub decision_before_completion: RefCell<Option<ReviewDecision>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
@@ -294,6 +297,13 @@ impl RunRepositoryPort for FakeVault {
         expected: AcquisitionRunStatus,
         target: AcquisitionRunStatus,
     ) -> Result<bool, PortError> {
+        let decision = self.decision_before_completion.borrow_mut().take();
+        if target == AcquisitionRunStatus::Completed
+            && let Some(decision) = decision
+        {
+            let review_item_id = self.review_items.borrow()[0].id;
+            self.decide_review_item(review_item_id, decision)?;
+        }
         let mut runs = self.runs.borrow_mut();
         let run = runs.get_mut(&run_id).unwrap();
         let has_queued_work = run.work.iter().any(|work| work.state == WorkState::Queued);
