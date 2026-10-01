@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 mod canonical;
+mod preference;
 mod quality;
 
 pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
+pub use preference::{AssetPreference, PreferenceReason, PreferredAsset, preferred_assets};
 pub use quality::QualityShortfall;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

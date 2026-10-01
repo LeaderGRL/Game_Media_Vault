@@ -211,6 +211,8 @@ The best accepted Asset for the matching Release Edition and Asset Type becomes 
 
 Preference scoring is explainable. The UI must be able to show why one candidate outranked another.
 
+The Preferred Asset of each Release Edition and Asset Type is derived from its retained Assets whenever the library is read: the original with the most pixels wins (an unknown pixel size ranks below every known one), then the one with more bytes at the same pixel count, which usually means less compression, then the one acquired first. Each other Asset of the type carries the reason it ranks lower.
+
 ## 9. Release Edition Identity
 
 A Release Edition is distinct when one or more materially collectible properties differ, including:
