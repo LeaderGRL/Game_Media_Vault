@@ -127,6 +127,11 @@ export function previewMediaType(bytes: Uint8Array, filename: string): string {
   if (ftypBrands(bytes).some((brand) => brand === "avif" || brand === "avis")) {
     return "image/avif";
   }
+  return filenameMediaType(filename);
+}
+
+/** Media type suggested by a filename extension, for media whose bytes are not at hand. */
+export function filenameMediaType(filename: string): string {
   const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
   return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
 }

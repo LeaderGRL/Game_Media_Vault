@@ -11,6 +11,8 @@ const { invokeMock, openVaultMock } = vi.hoisted(() => ({
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them.
 vi.mock("@tauri-apps/api/core", () => ({
+  // Mirrors how Tauri addresses custom protocols on Windows.
+  convertFileSrc: (path: string, protocol: string) => "http://" + protocol + ".localhost/" + path,
   invoke: (command: string, args?: Record<string, unknown>) =>
     command === "open_vault"
       ? openVaultMock(args)
@@ -120,6 +122,10 @@ describe("App", () => {
     expect(openVaultMock).toHaveBeenCalledWith({ vault_root: "D:/vaults/main", create: false });
     expect(invokeMock).toHaveBeenCalledWith("list_library");
     expect(invokeMock).toHaveBeenCalledWith("list_review_items");
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
+      "src",
+      "http://gmv-object.localhost/abc123",
+    );
   });
 
   it("shows the message of a structured backend error", async () => {

@@ -1,10 +1,14 @@
-import type { LibraryEntry } from "./types";
+import { useState } from "react";
+
+import { filenameMediaType, type LibraryAsset, type LibraryEntry } from "./types";
 
 interface LibraryViewProps {
   entries: LibraryEntry[];
+  /** URL under which the desktop shell serves the original object with this hash. */
+  objectUrl: (objectHash: string) => string;
 }
 
-export function LibraryView({ entries }: LibraryViewProps) {
+export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
   if (entries.length === 0) {
     return (
       <section className="empty-state" aria-live="polite">
@@ -31,6 +35,11 @@ export function LibraryView({ entries }: LibraryViewProps) {
             ) : (
               entry.assets.map((asset) => (
                 <div className="asset-record" key={asset.asset_id}>
+                  <AssetOriginal
+                    asset={asset}
+                    description={formatAssetType(asset.asset_type) + " of " + entry.game_title}
+                    objectUrl={objectUrl}
+                  />
                   <div className="asset-details">
                     <div>
                       <span className="detail-label">Asset</span>
@@ -74,6 +83,33 @@ export function LibraryView({ entries }: LibraryViewProps) {
         </article>
       ))}
     </section>
+  );
+}
+
+interface AssetOriginalProps {
+  asset: LibraryAsset;
+  description: string;
+  objectUrl: (objectHash: string) => string;
+}
+
+/** Thumbnail of an image original, or a placeholder when the vault cannot serve it. */
+function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
+  const [unavailable, setUnavailable] = useState(false);
+
+  if (!filenameMediaType(asset.original_filename).startsWith("image/")) {
+    return null;
+  }
+  if (unavailable) {
+    return <p className="asset-original unavailable">Original unavailable</p>;
+  }
+  return (
+    <img
+      className="asset-original"
+      src={objectUrl(asset.object_hash)}
+      alt={description}
+      loading="lazy"
+      onError={() => setUnavailable(true)}
+    />
   );
 }
 

@@ -1,0 +1,77 @@
+use game_media_vault_application::ObjectStorePort;
+use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use game_media_vault_tauri::{VaultSession, object_response};
+use tempfile::{TempDir, tempdir};
+
+const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nfixture box front";
+
+fn open_vault_with_object() -> (TempDir, VaultSession, String) {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let stored = ContentAddressedStore::new(&vault)
+        .store_original(&mut &PNG_BYTES[..])
+        .unwrap();
+    let session = VaultSession::default();
+    session.open(&vault, false).unwrap();
+    (temp, session, stored.hash)
+}
+
+#[test]
+fn serves_an_original_object_of_the_open_vault() {
+    let (_temp, session, hash) = open_vault_with_object();
+
+    let response = object_response(&session, &format!("/{hash}"));
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(
+        response.headers()["cache-control"],
+        "private, max-age=31536000, immutable"
+    );
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(response.body().as_slice(), PNG_BYTES);
+}
+
+#[test]
+fn labels_objects_with_the_media_type_of_their_signature() {
+    let (temp, session, _hash) = open_vault_with_object();
+    let store = ContentAddressedStore::new(temp.path().join("vault"));
+
+    for (bytes, media_type) in [
+        (&b"\xff\xd8\xff\xe0 jpeg"[..], "image/jpeg"),
+        (b"GIF89a gif", "image/gif"),
+        (b"RIFF\0\0\0\0WEBPVP8 ", "image/webp"),
+        (b"BM bitmap", "image/bmp"),
+        (b"\0\0\0\x1cftypavif", "image/avif"),
+        (b"%PDF-1.7", "application/pdf"),
+        (b"<html><script>", "application/octet-stream"),
+    ] {
+        let stored = store.store_original(&mut &bytes[..]).unwrap();
+
+        let response = object_response(&session, &format!("/{}", stored.hash));
+
+        assert_eq!(response.headers()["content-type"], media_type);
+    }
+}
+
+#[test]
+fn refuses_paths_that_are_not_object_hashes() {
+    let (_temp, session, _hash) = open_vault_with_object();
+
+    for path in ["/../catalog.sqlite3", "/ABC", "/", "/objects/aa/bb/x"] {
+        assert_eq!(object_response(&session, path).status(), 400, "{path}");
+    }
+}
+
+#[test]
+fn reports_missing_objects_and_closed_vaults() {
+    let (_temp, session, _hash) = open_vault_with_object();
+    let unknown = format!("/{}", "0".repeat(64));
+
+    assert_eq!(object_response(&session, &unknown).status(), 404);
+    assert_eq!(
+        object_response(&VaultSession::default(), &unknown).status(),
+        409
+    );
+}
