@@ -2,7 +2,10 @@ import type { AcquisitionRun, AcquisitionRunStatus } from "./acquisition";
 
 interface RunsViewProps {
   runs: AcquisitionRun[];
+  /** Runs with a pause, resume or cancel request in flight. */
   busyRunIds: ReadonlySet<number>;
+  /** Runs being executed; they can still be paused or cancelled. */
+  executingRunIds: ReadonlySet<number>;
   onExecute: (runId: number) => void;
   onPause: (runId: number) => void;
   onResume: (runId: number) => void;
@@ -17,7 +20,15 @@ const STATUS_LABELS: Record<AcquisitionRunStatus, string> = {
 };
 
 /** Persisted Acquisition Runs with the actions their status allows. */
-export function RunsView({ runs, busyRunIds, onExecute, onPause, onResume, onCancel }: RunsViewProps) {
+export function RunsView({
+  runs,
+  busyRunIds,
+  executingRunIds,
+  onExecute,
+  onPause,
+  onResume,
+  onCancel,
+}: RunsViewProps) {
   if (runs.length === 0) {
     return (
       <section className="empty-state" aria-live="polite">
@@ -31,6 +42,7 @@ export function RunsView({ runs, busyRunIds, onExecute, onPause, onResume, onCan
     <section className="run-list" aria-label="Acquisition runs">
       {runs.map((run) => {
         const busy = busyRunIds.has(run.id);
+        const executing = executingRunIds.has(run.id);
         const title = `Run #${run.id}`;
         return (
           <article className="run-card" key={run.id} aria-label={title}>
@@ -48,8 +60,12 @@ export function RunsView({ runs, busyRunIds, onExecute, onPause, onResume, onCan
             <div className="run-actions">
               {run.status === "running" ? (
                 <>
-                  <button type="button" disabled={busy} onClick={() => onExecute(run.id)}>
-                    Execute
+                  <button
+                    type="button"
+                    disabled={busy || executing}
+                    onClick={() => onExecute(run.id)}
+                  >
+                    {executing ? "Executing…" : "Execute"}
                   </button>
                   <button type="button" disabled={busy} onClick={() => onPause(run.id)}>
                     Pause

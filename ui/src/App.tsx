@@ -11,7 +11,7 @@ import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 type View = "library" | "review" | "acquire" | "runs";
 
-type RunAction = "execute" | "pause" | "resume" | "cancel";
+type RunAction = "pause" | "resume" | "cancel";
 
 /** Default thresholds used by desktop executions (SPEC §10 keeps them configurable). */
 const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_threshold: 50 };
@@ -30,6 +30,7 @@ export function App() {
   const [resolvingIds, setResolvingIds] = useState<Set<number>>(() => new Set());
   const [runs, setRuns] = useState<AcquisitionRun[]>([]);
   const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
+  const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
   const [startingRun, setStartingRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${entries.length} ${entries.length === 1 ? "release" : "releases"}`;
@@ -50,6 +51,7 @@ export function App() {
     setResolvingIds(new Set());
     setRuns([]);
     setBusyRunIds(new Set());
+    setExecutingRunIds(new Set());
     try {
       // The backend keeps the opened vault; later commands never send a path.
       await invoke("open_vault", { vault_root: requestedVaultRoot, create });
@@ -174,11 +176,16 @@ export function App() {
   }
 
   async function refreshVaultData(expectedVaultRoot: string | null) {
+    const reviewGenerationAtStart = reviewMutationGeneration.current;
     const [library, reviews] = await Promise.all([
       invoke<LibraryEntry[]>("list_library"),
       invoke<ReviewItem[]>("list_review_items"),
     ]);
-    if (activeVaultRoot.current === expectedVaultRoot) {
+    // A review decision made meanwhile refreshed both lists after this read.
+    if (
+      activeVaultRoot.current === expectedVaultRoot &&
+      reviewMutationGeneration.current === reviewGenerationAtStart
+    ) {
       setEntries(library);
       setReviewItems(reviews);
     }
@@ -194,6 +201,10 @@ export function App() {
   }
 
   async function startRun(request: AcquisitionRequestDraft) {
+    if (loadedVaultRoot === null) {
+      setError("Load a vault before starting an acquisition.");
+      return;
+    }
     const startingVaultRoot = loadedVaultRoot;
     setStartingRun(true);
     setError(null);
@@ -211,32 +222,45 @@ export function App() {
     }
   }
 
+  async function executeRun(runId: number) {
+    const actingVaultRoot = loadedVaultRoot;
+    setExecutingRunIds((current) => new Set(current).add(runId));
+    setError(null);
+    try {
+      await invoke<AcquisitionRun>("execute_acquisition_run", {
+        run_id: runId,
+        matching_policy: MATCHING_POLICY,
+      });
+    } catch (reason) {
+      if (activeVaultRoot.current === actingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      setExecutingRunIds((current) => withoutRun(current, runId));
+    }
+    // Executions persist imports, Review Items and progress as they go, even when they fail.
+    try {
+      await Promise.all([refreshVaultData(actingVaultRoot), refreshRuns(actingVaultRoot)]);
+    } catch (reason) {
+      if (activeVaultRoot.current === actingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    }
+  }
+
   async function applyRunAction(runId: number, action: RunAction) {
     const actingVaultRoot = loadedVaultRoot;
     setBusyRunIds((current) => new Set(current).add(runId));
     setError(null);
     try {
-      if (action === "execute") {
-        await invoke<AcquisitionRun>("execute_acquisition_run", {
-          run_id: runId,
-          matching_policy: MATCHING_POLICY,
-        });
-        // Execution imports Assets and opens Review Items.
-        await refreshVaultData(actingVaultRoot);
-      } else {
-        await invoke<AcquisitionRun>(`${action}_acquisition_run`, { run_id: runId });
-      }
+      await invoke<AcquisitionRun>(`${action}_acquisition_run`, { run_id: runId });
       await refreshRuns(actingVaultRoot);
     } catch (reason) {
       if (activeVaultRoot.current === actingVaultRoot) {
         setError(errorMessage(reason));
       }
     } finally {
-      setBusyRunIds((current) => {
-        const next = new Set(current);
-        next.delete(runId);
-        return next;
-      });
+      setBusyRunIds((current) => withoutRun(current, runId));
     }
   }
 
@@ -346,7 +370,8 @@ export function App() {
         <RunsView
           runs={runs}
           busyRunIds={busyRunIds}
-          onExecute={(runId) => void applyRunAction(runId, "execute")}
+          executingRunIds={executingRunIds}
+          onExecute={(runId) => void executeRun(runId)}
           onPause={(runId) => void applyRunAction(runId, "pause")}
           onResume={(runId) => void applyRunAction(runId, "resume")}
           onCancel={(runId) => void applyRunAction(runId, "cancel")}
@@ -354,4 +379,10 @@ export function App() {
       ) : null}
     </main>
   );
+}
+
+function withoutRun(runIds: Set<number>, runId: number) {
+  const next = new Set(runIds);
+  next.delete(runId);
+  return next;
 }

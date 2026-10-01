@@ -23,14 +23,25 @@ const run: AcquisitionRun = {
   completed_work: 4,
 };
 
-function renderRuns(runs: AcquisitionRun[], busyRunIds = new Set<number>()) {
+function renderRuns(
+  runs: AcquisitionRun[],
+  busyRunIds = new Set<number>(),
+  executingRunIds = new Set<number>(),
+) {
   const handlers = {
     onExecute: vi.fn(),
     onPause: vi.fn(),
     onResume: vi.fn(),
     onCancel: vi.fn(),
   };
-  render(<RunsView runs={runs} busyRunIds={busyRunIds} {...handlers} />);
+  render(
+    <RunsView
+      runs={runs}
+      busyRunIds={busyRunIds}
+      executingRunIds={executingRunIds}
+      {...handlers}
+    />,
+  );
   return handlers;
 }
 
@@ -70,6 +81,18 @@ describe("RunsView", () => {
     expect(within(busy).getByRole("button", { name: "Execute" })).toBeDisabled();
     const completed = screen.getByRole("article", { name: "Run #5" });
     expect(within(completed).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("keeps pause and cancel available while a run executes", () => {
+    const handlers = renderRuns([run], new Set(), new Set([3]));
+
+    const executing = screen.getByRole("article", { name: "Run #3" });
+    expect(within(executing).getByRole("button", { name: "Executing…" })).toBeDisabled();
+    fireEvent.click(within(executing).getByRole("button", { name: "Pause" }));
+    fireEvent.click(within(executing).getByRole("button", { name: "Cancel" }));
+
+    expect(handlers.onPause).toHaveBeenCalledWith(3);
+    expect(handlers.onCancel).toHaveBeenCalledWith(3);
   });
 
   it("explains how to start when there is no run", () => {
