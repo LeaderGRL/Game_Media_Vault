@@ -9,7 +9,8 @@ describe("previewMediaType", () => {
     expect(previewMediaType(noBytes, "Tetris (World) (Rev 1).PNG")).toBe("image/png");
     expect(previewMediaType(noBytes, "scan.jpeg")).toBe("image/jpeg");
     expect(previewMediaType(noBytes, "cover.webp")).toBe("image/webp");
-    expect(previewMediaType(noBytes, "logo.svg")).toBe("image/svg+xml");
+    // SVG can carry script, so untrusted SVG previews stay inert bytes.
+    expect(previewMediaType(noBytes, "logo.svg")).toBe("application/octet-stream");
     expect(previewMediaType(noBytes, "manual.pdf")).toBe("application/octet-stream");
     expect(previewMediaType(noBytes, "no-extension")).toBe("application/octet-stream");
   });

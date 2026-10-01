@@ -100,7 +100,6 @@ const PREVIEW_MEDIA_TYPES: Record<string, string> = {
   gif: "image/gif",
   bmp: "image/bmp",
   avif: "image/avif",
-  svg: "image/svg+xml",
 };
 
 const PREVIEW_SIGNATURES: [number[], string][] = [
@@ -112,7 +111,8 @@ const PREVIEW_SIGNATURES: [number[], string][] = [
 
 /**
  * Media type of a preview: read from the bytes' signature when it is known, so it always
- * matches the bytes, otherwise derived from the candidate's original filename.
+ * matches the bytes, otherwise derived from the candidate's original filename. SVG is never
+ * labelled as an image: blob URLs share the app origin and SVG can carry script.
  */
 export function previewMediaType(bytes: Uint8Array, filename: string): string {
   const signature = PREVIEW_SIGNATURES.find(([prefix]) =>
