@@ -32,4 +32,20 @@ describe("previewMediaType", () => {
     expect(previewMediaType(avif, "cover.jpg")).toBe("image/avif");
     expect(previewMediaType(sequence, "cover.jpg")).toBe("image/avif");
   });
+
+  it("recognizes AVIF declared among the compatible brands", () => {
+    // ftyp box: size 24, major brand mif1, minor version, compatible brands miaf and avif.
+    const ftyp = new Uint8Array([
+      0, 0, 0, 24, ...new TextEncoder().encode("ftypmif1"), 0, 0, 0, 0,
+      ...new TextEncoder().encode("miafavif"),
+    ]);
+    const heic = new Uint8Array([
+      0, 0, 0, 20, ...new TextEncoder().encode("ftypmif1"), 0, 0, 0, 0,
+      ...new TextEncoder().encode("heic"), ...new TextEncoder().encode("avif"),
+    ]);
+
+    expect(previewMediaType(ftyp, "cover.jpg")).toBe("image/avif");
+    // Brands past the declared box size belong to the next box.
+    expect(previewMediaType(heic, "cover.jpg")).toBe("image/jpeg");
+  });
 });

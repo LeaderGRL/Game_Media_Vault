@@ -124,12 +124,30 @@ export function previewMediaType(bytes: Uint8Array, filename: string): string {
   if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP") {
     return "image/webp";
   }
-  // ISO-BMFF images start with an `ftyp` box naming their brand.
-  if (bytes.length >= 12 && ascii(bytes, 4, 8) === "ftyp" && ["avif", "avis"].includes(ascii(bytes, 8, 12))) {
+  if (ftypBrands(bytes).some((brand) => brand === "avif" || brand === "avis")) {
     return "image/avif";
   }
   const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
   return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
+}
+
+/**
+ * Brands of the `ftyp` box ISO-BMFF images start with: the major brand, then the compatible
+ * brands up to the declared box size.
+ */
+function ftypBrands(bytes: Uint8Array): string[] {
+  if (bytes.length < 12 || ascii(bytes, 4, 8) !== "ftyp") {
+    return [];
+  }
+  const boxSize = Math.min(
+    bytes.length,
+    ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0,
+  );
+  const brands = [ascii(bytes, 8, 12)];
+  for (let offset = 16; offset + 4 <= boxSize; offset += 4) {
+    brands.push(ascii(bytes, offset, offset + 4));
+  }
+  return brands;
 }
 
 function ascii(bytes: Uint8Array, start: number, end: number) {
