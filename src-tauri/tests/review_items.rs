@@ -195,8 +195,7 @@ fn tauri_review_preview_returns_backend_media_bytes() {
     )
     .unwrap();
 
-    assert_eq!(preview.media_type, "image/png");
-    assert_eq!(preview.bytes, b"preview bytes");
+    assert_eq!(preview, b"preview bytes");
     assert_eq!(
         connector.downloads.borrow().as_slice(),
         &[preview_candidate.source_url]

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
+import { previewMediaType } from "./types";
+import type { ReviewDecision, ReviewItem } from "./types";
 
 interface ReviewViewProps {
   items: ReviewItem[];
   resolvingIds: ReadonlySet<number>;
   onResolve: (reviewItemId: number, decision: ReviewDecision) => void;
-  onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
+  onLoadPreview: (reviewItemId: number) => Promise<ArrayBuffer>;
 }
 
 export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: ReviewViewProps) {
@@ -144,7 +145,7 @@ function CandidatePreview({
 }: {
   item: ReviewItem;
   enabled: boolean;
-  onLoadPreview: (reviewItemId: number) => Promise<ReviewPreviewPayload>;
+  onLoadPreview: (reviewItemId: number) => Promise<ArrayBuffer>;
 }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -188,7 +189,9 @@ function CandidatePreview({
         return;
       }
       const objectUrl = URL.createObjectURL(
-        new Blob([Uint8Array.from(preview.bytes)], { type: preview.media_type }),
+        new Blob([preview], {
+          type: previewMediaType(new Uint8Array(preview), item.candidate.original_filename),
+        }),
       );
       setPreviewUrl(objectUrl);
     } catch {
@@ -226,6 +229,11 @@ function CandidatePreview({
       className="review-preview"
       src={previewUrl}
       alt={`${item.candidate.game_title} box front candidate`}
+      onError={() => {
+        // The bytes loaded but the webview cannot decode them; offer a retry instead.
+        setPreviewUrl(null);
+        setPreviewFailed(true);
+      }}
     />
   );
 }

@@ -92,9 +92,76 @@ export interface ReviewItem {
   status: ReviewStatus;
 }
 
-export interface ReviewPreviewPayload {
-  media_type: string;
-  bytes: number[];
+const PREVIEW_MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  avif: "image/avif",
+};
+
+const PREVIEW_SIGNATURES: [number[], string][] = [
+  [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "image/png"],
+  [[0xff, 0xd8, 0xff], "image/jpeg"],
+  [[0x47, 0x49, 0x46, 0x38], "image/gif"],
+  [[0x42, 0x4d], "image/bmp"],
+];
+
+/**
+ * Media type of a preview: read from the bytes' signature when it is known, so it always
+ * matches the bytes, otherwise derived from the candidate's original filename. SVG is never
+ * labelled as an image: blob URLs share the app origin and SVG can carry script.
+ */
+export function previewMediaType(bytes: Uint8Array, filename: string): string {
+  const signature = PREVIEW_SIGNATURES.find(([prefix]) =>
+    prefix.every((byte, index) => bytes[index] === byte),
+  );
+  if (signature) {
+    return signature[1];
+  }
+  if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP") {
+    return "image/webp";
+  }
+  if (ftypBrands(bytes).some((brand) => brand === "avif" || brand === "avis")) {
+    return "image/avif";
+  }
+  const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
+  return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
+}
+
+/**
+ * Brands of the `ftyp` box ISO-BMFF images start with: the major brand, then the compatible
+ * brands up to the declared box size.
+ */
+function ftypBrands(bytes: Uint8Array): string[] {
+  if (bytes.length < 12 || ascii(bytes, 4, 8) !== "ftyp") {
+    return [];
+  }
+  const size = uint32(bytes, 0);
+  // Size 1 announces a 64-bit size after the type; size 0 extends the box to the end.
+  const headerSize = size === 1 ? 16 : 8;
+  const declaredSize =
+    size === 1 ? uint32(bytes, 8) * 2 ** 32 + uint32(bytes, 12) : size === 0 ? bytes.length : size;
+  const boxSize = Math.min(bytes.length, declaredSize);
+  if (boxSize < headerSize + 4) {
+    return [];
+  }
+  // The major brand, a minor version, then the compatible brands.
+  const brands = [ascii(bytes, headerSize, headerSize + 4)];
+  for (let offset = headerSize + 8; offset + 4 <= boxSize; offset += 4) {
+    brands.push(ascii(bytes, offset, offset + 4));
+  }
+  return brands;
+}
+
+function uint32(bytes: Uint8Array, offset: number) {
+  return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number) {
+  return String.fromCharCode(...bytes.subarray(start, end));
 }
 
 /** Error returned by every Tauri command. */

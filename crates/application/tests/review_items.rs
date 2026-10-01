@@ -270,3 +270,47 @@ fn review_preview_requires_the_connector_of_the_candidate_source() {
     ));
     assert!(connector.downloads.borrow().is_empty());
 }
+
+struct OversizedPreviewConnector;
+
+impl game_media_vault_application::ConnectorPort for OversizedPreviewConnector {
+    fn source_id(&self) -> &'static str {
+        SOURCE_ID
+    }
+
+    fn capabilities(&self) -> game_media_vault_domain::ConnectorCapabilities {
+        FakeConnector::new(Vec::new()).capabilities()
+    }
+
+    fn discover(
+        &self,
+        _request: &game_media_vault_domain::AcquisitionRequest,
+    ) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn download(
+        &self,
+        _candidate: &AssetCandidate,
+    ) -> Result<Box<dyn std::io::Read + Send>, PortError> {
+        use std::io::Read;
+        Ok(Box::new(std::io::repeat(0).take(
+            game_media_vault_application::MAX_REVIEW_PREVIEW_BYTES + 1,
+        )))
+    }
+}
+
+#[test]
+fn oversized_review_previews_are_refused() {
+    let vault = vault_with(review_item());
+
+    let error = load_review_preview(&vault, &OversizedPreviewConnector, 17).unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::ReviewPreviewTooLarge {
+            review_item_id: 17,
+            max_bytes: game_media_vault_application::MAX_REVIEW_PREVIEW_BYTES,
+        }
+    );
+}

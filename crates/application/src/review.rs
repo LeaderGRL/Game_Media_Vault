@@ -6,6 +6,9 @@ use crate::{
     ApplicationError, ConnectorPort, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
 };
 
+/// Largest candidate media loaded into memory for a Review preview.
+pub const MAX_REVIEW_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewPreview {
     pub original_filename: String,
@@ -86,11 +89,18 @@ pub fn load_review_preview(
         });
     }
 
-    let mut stream = connector.download(&item.candidate)?;
+    let stream = connector.download(&item.candidate)?;
     let mut bytes = Vec::new();
     stream
+        .take(MAX_REVIEW_PREVIEW_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| PortError(error.to_string()))?;
+    if bytes.len() as u64 > MAX_REVIEW_PREVIEW_BYTES {
+        return Err(ApplicationError::ReviewPreviewTooLarge {
+            review_item_id,
+            max_bytes: MAX_REVIEW_PREVIEW_BYTES,
+        });
+    }
     Ok(ReviewPreview {
         original_filename: item.candidate.original_filename,
         bytes,

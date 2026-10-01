@@ -73,6 +73,8 @@ pub enum ApplicationError {
     ReleaseEditionMissing(i64),
     #[error("review item #{0} kept changing while acquisition processed its candidate")]
     ReviewItemContended(i64),
+    #[error("review item #{review_item_id} media exceeds the {max_bytes}-byte preview limit")]
+    ReviewPreviewTooLarge { review_item_id: i64, max_bytes: u64 },
 }
 
 /// Stable category of an application error, shared by the CLI (exit codes) and the desktop
@@ -126,7 +128,8 @@ impl ApplicationError {
             Self::ConnectorNotSelected { .. }
             | Self::ConnectorCannotDownload { .. }
             | Self::UnsupportedConnectorPlan { .. }
-            | Self::PreviewConnectorUnavailable { .. } => ErrorKind::Unsupported,
+            | Self::PreviewConnectorUnavailable { .. }
+            | Self::ReviewPreviewTooLarge { .. } => ErrorKind::Unsupported,
             Self::ConnectorCandidateSourceMismatch { .. } | Self::UnsafeCandidateLocator { .. } => {
                 ErrorKind::SourceFailure
             }

@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useRef, useState } from "react";
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { errorMessage } from "./types";
-import type { LibraryEntry, ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
+import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
@@ -37,9 +37,14 @@ export function App() {
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
     try {
+      // The backend keeps the opened vault; later commands never send a path.
+      await invoke("open_vault", { vault_root: requestedVaultRoot, create: false });
+      if (loadGeneration !== vaultLoadRequestGeneration.current) {
+        return;
+      }
       const [library, reviews] = await Promise.all([
-        invoke<LibraryEntry[]>("list_library", { vault_root: requestedVaultRoot }),
-        invoke<ReviewItem[]>("list_review_items", { vault_root: requestedVaultRoot }),
+        invoke<LibraryEntry[]>("list_library"),
+        invoke<ReviewItem[]>("list_review_items"),
       ]);
       if (
         activeVaultRoot.current !== requestedVaultRoot ||
@@ -84,7 +89,6 @@ export function App() {
     const resolvingVaultRoot = loadedVaultRoot;
     try {
       const resolvedReviewItem = await invoke<ReviewItem>("resolve_review_item", {
-        vault_root: resolvingVaultRoot,
         review_item_id: reviewItemId,
         decision,
       });
@@ -103,8 +107,8 @@ export function App() {
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
       // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
       const [reviews, library] = await Promise.all([
-        invoke<ReviewItem[]>("list_review_items", { vault_root: resolvingVaultRoot }),
-        invoke<LibraryEntry[]>("list_library", { vault_root: resolvingVaultRoot }),
+        invoke<ReviewItem[]>("list_review_items"),
+        invoke<LibraryEntry[]>("list_library"),
       ]);
       if (
         activeVaultRoot.current !== resolvingVaultRoot ||
@@ -123,8 +127,8 @@ export function App() {
         const refusalRefreshGeneration = reviewRefreshRequestGeneration.current;
         try {
           const [reviews, library] = await Promise.all([
-            invoke<ReviewItem[]>("list_review_items", { vault_root: resolvingVaultRoot }),
-            invoke<LibraryEntry[]>("list_library", { vault_root: resolvingVaultRoot }),
+            invoke<ReviewItem[]>("list_review_items"),
+            invoke<LibraryEntry[]>("list_library"),
           ]);
           if (
             activeVaultRoot.current === resolvingVaultRoot &&
@@ -149,13 +153,12 @@ export function App() {
   }
 
   const loadReviewPreview = useCallback(
-    async (reviewItemId: number): Promise<ReviewPreviewPayload> => {
+    async (reviewItemId: number): Promise<ArrayBuffer> => {
       if (loadedVaultRoot === null) {
         throw new Error("Load a vault before loading review previews.");
       }
       const previewVaultRoot = loadedVaultRoot;
-      const preview = await invoke<ReviewPreviewPayload>("load_review_preview", {
-        vault_root: previewVaultRoot,
+      const preview = await invoke<ArrayBuffer>("load_review_preview", {
         review_item_id: reviewItemId,
       });
       if (activeVaultRoot.current !== previewVaultRoot) {

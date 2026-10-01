@@ -3,12 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReviewItem } from "./types";
 
-const { invokeMock } = vi.hoisted(() => ({
+const { invokeMock, openVaultMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
+  openVaultMock: vi.fn(),
 }));
 
+// Opening the vault session is mocked separately so each test can script the data commands
+// in the order the App issues them.
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: invokeMock,
+  invoke: (command: string, args?: Record<string, unknown>) =>
+    command === "open_vault"
+      ? openVaultMock(args)
+      : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App } from "./App";
@@ -77,6 +83,8 @@ describe("App", () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(command === "list_library" ? [] : undefined),
     );
+    openVaultMock.mockReset();
+    openVaultMock.mockResolvedValue(undefined);
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {
@@ -90,11 +98,26 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Vault path"), {
       target: { value: "missing-vault" },
     });
-    invokeMock.mockRejectedValueOnce(new Error("catalog does not exist"));
+    openVaultMock.mockRejectedValueOnce({ kind: "external", message: "catalog does not exist" });
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
 
     expect(await screen.findByText(/catalog does not exist/)).toBeInTheDocument();
     expect(screen.queryByText("Metal Gear Solid")).not.toBeInTheDocument();
+  });
+
+  it("opens the typed vault in the backend session before listing it", async () => {
+    invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([]);
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "D:/vaults/main" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(openVaultMock).toHaveBeenCalledWith({ vault_root: "D:/vaults/main", create: false });
+    expect(invokeMock).toHaveBeenCalledWith("list_library");
+    expect(invokeMock).toHaveBeenCalledWith("list_review_items");
   });
 
   it("shows the message of a structured backend error", async () => {
@@ -135,7 +158,6 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 
     expect(invokeMock).toHaveBeenCalledWith("resolve_review_item", {
-      vault_root: ".game-media-vault",
       review_item_id: 17,
       decision: { decision: "accept", release_edition_id: 201 },
     });
@@ -165,7 +187,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
 
     expect(await screen.findByRole("button", { name: "Library (0)" })).toBeInTheDocument();
-    expect(invokeMock).toHaveBeenCalledWith("list_library", { vault_root: ".game-media-vault" });
+    expect(invokeMock).toHaveBeenCalledWith("list_library");
   });
 
   it("loads review previews from the vault backend", async () => {
@@ -192,7 +214,7 @@ describe("App", () => {
         return Promise.resolve([remoteReviewItem]);
       }
       if (command === "load_review_preview") {
-        return Promise.resolve({ media_type: "image/png", bytes: [137, 80, 78, 71] });
+        return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
       }
       return Promise.reject(new Error(`unexpected command: ${command}`));
     });
@@ -204,7 +226,6 @@ describe("App", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("load_review_preview", expect.anything());
     fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
     expect(invokeMock).toHaveBeenCalledWith("load_review_preview", {
-      vault_root: ".game-media-vault",
       review_item_id: 17,
     });
     const preview = await screen.findByRole("img", { name: "Review Game box front candidate" });
@@ -269,9 +290,7 @@ describe("App", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Reject candidate" })[0]);
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("list_review_items", {
-        vault_root: ".game-media-vault",
-      });
+      expect(invokeMock).toHaveBeenCalledWith("list_review_items");
     });
     expect(await screen.findByText("Rejected")).toBeInTheDocument();
     expect(await screen.findByText("Auto-resolved")).toBeInTheDocument();
@@ -296,10 +315,10 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 
     expect(invokeMock).toHaveBeenCalledWith("resolve_review_item", {
-      vault_root: ".game-media-vault",
       review_item_id: 17,
       decision: { decision: "accept", release_edition_id: 201 },
     });
+    expect(openVaultMock).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a review resolution that returns after another vault is loaded", async () => {
