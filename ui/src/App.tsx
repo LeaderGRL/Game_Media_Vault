@@ -116,18 +116,21 @@ export function App() {
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(String(reason));
-        // A refused decision usually means the item changed elsewhere; show its current state.
+        // A refused decision usually means the item changed elsewhere, possibly linking or
+        // detaching its asset; show the current reviews and library.
         reviewRefreshRequestGeneration.current += 1;
         const refusalRefreshGeneration = reviewRefreshRequestGeneration.current;
         try {
-          const reviews = await invoke<ReviewItem[]>("list_review_items", {
-            vault_root: resolvingVaultRoot,
-          });
+          const [reviews, library] = await Promise.all([
+            invoke<ReviewItem[]>("list_review_items", { vault_root: resolvingVaultRoot }),
+            invoke<LibraryEntry[]>("list_library", { vault_root: resolvingVaultRoot }),
+          ]);
           if (
             activeVaultRoot.current === resolvingVaultRoot &&
             refusalRefreshGeneration === reviewRefreshRequestGeneration.current
           ) {
             setReviewItems(reviews);
+            setEntries(library);
           }
         } catch {
           // The refused decision stays the reported error.

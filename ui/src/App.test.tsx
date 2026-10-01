@@ -202,6 +202,10 @@ describe("App", () => {
       if (command === "list_review_items") {
         return Promise.resolve([refused ? autoResolved : reviewItem]);
       }
+      if (command === "list_library") {
+        // The item was auto-linked elsewhere, so the library changed too.
+        return Promise.resolve(refused ? [entry] : []);
+      }
       return Promise.resolve([]);
     });
     render(<App />);
@@ -214,6 +218,7 @@ describe("App", () => {
       await screen.findByText("review item #17 cannot be resolved while AutoResolved"),
     ).toBeInTheDocument();
     expect(await screen.findByText("Auto-resolved")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Library (1)" })).toBeInTheDocument();
   });
 
   it("refreshes the whole review list after a decision", async () => {
