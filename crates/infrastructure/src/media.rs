@@ -37,6 +37,7 @@ fn image_media_type(image_type: ImageType) -> Option<&'static str> {
         ImageType::Webp => Some("image/webp"),
         ImageType::Bmp => Some("image/bmp"),
         ImageType::Tiff => Some("image/tiff"),
+        ImageType::Jxl => Some("image/jxl"),
         ImageType::Heif(Compression::Av1) => Some("image/avif"),
         ImageType::Heif(Compression::Hevc) => Some("image/heic"),
         // Texture and editing formats are kept as opaque originals.

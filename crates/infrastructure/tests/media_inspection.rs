@@ -68,3 +68,18 @@ fn originals_that_are_not_images_have_no_pixel_size() {
         }
     );
 }
+
+#[test]
+fn jpeg_xl_originals_are_recorded_as_images() {
+    // JPEG XL codestream signature and a size header for a 64 x 64 image.
+    let jxl = [0xff, 0x0a, 0x4f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    assert_eq!(
+        stored_media(&jxl),
+        MediaInfo {
+            media_type: "image/jxl".to_owned(),
+            width: Some(64),
+            height: Some(64),
+        }
+    );
+}
