@@ -124,10 +124,11 @@ fn select(
     }
 }
 
+/// Comparison key of a claimed value: case and whitespace do not distinguish values.
 fn comparable(value: &str) -> String {
     value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
 }

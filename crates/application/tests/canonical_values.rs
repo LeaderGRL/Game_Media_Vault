@@ -80,6 +80,18 @@ fn a_source_contributes_its_latest_claim_and_keeps_its_history() {
 }
 
 #[test]
+fn claims_differing_only_in_spacing_agree() {
+    let spaced = claim("no-intro", Region, "USA, Europe");
+    let compact = claim("redump", Region, "USA,Europe");
+
+    let values = canonical_values(vec![spaced.clone(), compact.clone()]);
+
+    assert_eq!(values[0].value, "USA, Europe");
+    assert_eq!(values[0].confidence, 100);
+    assert_eq!(values[0].contributing, vec![spaced, compact]);
+}
+
+#[test]
 fn a_tie_keeps_the_value_observed_first() {
     let first = claim("no-intro", Revision, "Rev 1");
     let second = claim("redump", Revision, "Rev A");
