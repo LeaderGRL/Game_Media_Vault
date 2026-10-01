@@ -166,17 +166,17 @@ fn persist_release_assertions(
             ));
         }
         let qualifier = assertion.qualifier.as_deref().unwrap_or("");
-        // Recording order is observation order: a claim observed again moves after the claims
-        // it may have replaced meanwhile, so a source reverting a correction is its latest word.
+        // Recording order is observation order: a claim observed again, possibly from a moved
+        // or renamed catalog, moves after the claims it may have replaced meanwhile, so a
+        // source reverting a correction is its latest word.
         transaction
             .execute(
                 "DELETE FROM release_assertions
-                 WHERE release_edition_id = ?1 AND source_id = ?2 AND source_location = ?3
-                   AND field = ?4 AND qualifier = ?5 AND value = ?6",
+                 WHERE release_edition_id = ?1 AND source_id = ?2
+                   AND field = ?3 AND qualifier = ?4 AND value = ?5",
                 params![
                     release_edition_id,
                     assertion.source_id.as_str(),
-                    assertion.source_location,
                     assertion_field_to_str(assertion.field),
                     qualifier,
                     assertion.value,

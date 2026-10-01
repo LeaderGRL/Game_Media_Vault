@@ -152,3 +152,29 @@ fn a_claim_observed_again_becomes_the_latest_one() {
         .collect();
     assert_eq!(titles, vec!["Tetris DX", "Tetris"]);
 }
+
+#[test]
+fn a_catalog_imported_again_from_another_path_moves_its_claims() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+    let mut moved = tetris_release("Rev 1");
+    for assertion in &mut moved.assertions {
+        assertion.source_location = "D:/archive/Nintendo - Game Boy.dat".to_owned();
+    }
+
+    let reimported = catalog.persist_reference_release(moved).unwrap();
+
+    let library = catalog.list_library().unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].release_edition_id, reimported.release_edition_id);
+    assert_eq!(library[0].assertions.len(), 5);
+    assert!(
+        library[0]
+            .assertions
+            .iter()
+            .all(|assertion| assertion.source_location == "D:/archive/Nintendo - Game Boy.dat")
+    );
+}
