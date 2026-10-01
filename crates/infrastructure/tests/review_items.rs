@@ -392,6 +392,38 @@ fn superseding_a_candidate_without_review_item_records_nothing() {
 }
 
 #[test]
+fn superseding_an_auto_linked_candidate_detaches_its_asset() {
+    let (_temp, catalog) = open_catalog();
+    catalog
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+
+    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
+
+    assert_eq!(library_asset_count(&catalog), 0);
+    assert!(catalog.list_review_items().unwrap().is_empty());
+}
+
+#[test]
+fn superseding_an_auto_resolved_item_marks_it_superseded() {
+    let (_temp, catalog) = open_catalog();
+    let item = parked_item(&catalog, start_run(&catalog));
+    catalog
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+
+    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
+
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Superseded
+    );
+    assert_eq!(library_asset_count(&catalog), 0);
+}
+
+#[test]
 fn parking_reopens_an_automatically_closed_item() {
     let (_temp, catalog) = open_catalog();
     let first_run = start_run(&catalog);

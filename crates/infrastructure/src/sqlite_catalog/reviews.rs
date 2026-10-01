@@ -131,22 +131,29 @@ impl ReviewRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let Some(item) = select_review_item(
+        let review_item = select_review_item(
             &transaction,
             "candidate_identity = ?1",
             params![candidate_identity],
-        )?
-        else {
-            return Ok(true);
-        };
-        match item.status {
-            ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(false),
-            ReviewStatus::Pending | ReviewStatus::Deferred => {
-                set_status_if_undecided(&transaction, item.id, ReviewStatus::Superseded, None)?;
-                complete_parked_work(&transaction, item.id)?;
+        )?;
+        if let Some(item) = review_item {
+            match item.status {
+                ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(false),
+                ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::AutoResolved => {
+                    transaction
+                        .execute(
+                            "UPDATE review_items SET status = ?1, decision_json = NULL
+                             WHERE id = ?2",
+                            params![review_status_to_str(ReviewStatus::Superseded), item.id],
+                        )
+                        .map_err(sql_error)?;
+                    complete_parked_work(&transaction, item.id)?;
+                }
+                ReviewStatus::Superseded => {}
             }
-            ReviewStatus::AutoResolved | ReviewStatus::Superseded => {}
         }
+        // The engine no longer believes in the candidate, so its automatic link goes too.
+        detach_candidate_links(&transaction, candidate_identity, None)?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }

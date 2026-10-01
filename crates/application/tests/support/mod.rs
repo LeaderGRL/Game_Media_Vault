@@ -456,17 +456,23 @@ impl ReviewRepositoryPort for FakeVault {
 
     fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError> {
         self.open_scheduled_review();
-        let Some(existing) = self.find_review_item(candidate_identity)? else {
-            return Ok(true);
-        };
-        self.apply_pending_human_decision(existing.id);
-        match self.get_review_item(existing.id)?.unwrap().status {
-            ReviewStatus::Accepted | ReviewStatus::Rejected => Ok(false),
-            _ => {
-                self.close_automatically(existing.id, ReviewStatus::Superseded);
-                Ok(true)
+        if let Some(existing) = self.find_review_item(candidate_identity)? {
+            self.apply_pending_human_decision(existing.id);
+            match self.get_review_item(existing.id)?.unwrap().status {
+                ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(false),
+                ReviewStatus::AutoResolved => {
+                    self.review_items
+                        .borrow_mut()
+                        .iter_mut()
+                        .find(|item| item.id == existing.id)
+                        .unwrap()
+                        .status = ReviewStatus::Superseded;
+                }
+                _ => self.close_automatically(existing.id, ReviewStatus::Superseded),
             }
         }
+        self.candidate_links.borrow_mut().remove(candidate_identity);
+        Ok(true)
     }
 
     fn decide_review_item(
