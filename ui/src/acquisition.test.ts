@@ -28,6 +28,18 @@ describe("buildAcquisitionRequest", () => {
     });
   });
 
+  it("adds the minimum pixel size as quality requirements", () => {
+    const base = { ...emptyAcquisitionForm(), assetTypes: ["box_front"] };
+
+    expect(buildAcquisitionRequest({ ...base, minWidth: " 1000 ", minHeight: "" }).quality).toEqual({
+      min_width: 1000,
+    });
+    expect(buildAcquisitionRequest({ ...base, minWidth: "", minHeight: "1600" }).quality).toEqual({
+      min_height: 1600,
+    });
+    expect(buildAcquisitionRequest(base).quality).toBeNull();
+  });
+
   it("targets all games when no game is listed and keeps Auto explicit", () => {
     const request = buildAcquisitionRequest({
       ...emptyAcquisitionForm(),

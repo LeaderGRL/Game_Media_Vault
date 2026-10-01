@@ -31,6 +31,21 @@ describe("AcquireView", () => {
     });
   });
 
+  it("submits minimum pixel sizes as quality requirements", () => {
+    const onStart = vi.fn();
+    render(<AcquireView starting={false} onStart={onStart} />);
+
+    fireEvent.change(screen.getByLabelText("Minimum width (px, empty for any)"), {
+      target: { value: "1000" },
+    });
+    fireEvent.change(screen.getByLabelText("Minimum height (px, empty for any)"), {
+      target: { value: "1400" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(onStart.mock.calls[0][0].quality).toEqual({ min_width: 1000, min_height: 1400 });
+  });
+
   it("lets a whole asset type family be selected independently of its types", () => {
     const onStart = vi.fn();
     render(<AcquireView starting={false} onStart={onStart} />);

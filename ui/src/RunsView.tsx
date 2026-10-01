@@ -56,6 +56,7 @@ export function RunsView({
             <p className="run-counts">
               {run.queued_work} queued · {run.awaiting_review_work} awaiting review ·{" "}
               {run.completed_work} completed
+              {run.below_quality_work > 0 ? ` (${run.below_quality_work} below quality)` : ""}
             </p>
             <div className="run-actions">
               {run.status === "running" ? (

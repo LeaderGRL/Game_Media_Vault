@@ -6,7 +6,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetTypeSelector, GameSelection, RetentionPolicy, SourceSelection,
+    AcquisitionWorkItem, AssetTypeSelector, GameSelection, QualityShortfall, RetentionPolicy,
+    SourceSelection,
 };
 use serde_json::json;
 
@@ -35,6 +36,7 @@ impl RunRepositoryPort for RecordingRunRepository {
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
+            below_quality_work: 0,
         })
     }
 
@@ -63,6 +65,15 @@ impl RunRepositoryPort for RecordingRunRepository {
     }
 
     fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn complete_work_below_quality(
+        &self,
+        _run_id: i64,
+        _work_key: &str,
+        _shortfalls: &[QualityShortfall],
+    ) -> Result<(), PortError> {
         Ok(())
     }
 
@@ -171,6 +182,7 @@ impl RacingRunRepository {
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
+            below_quality_work: 0,
         }
     }
 }
@@ -205,6 +217,15 @@ impl RunRepositoryPort for RacingRunRepository {
     }
 
     fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn complete_work_below_quality(
+        &self,
+        _run_id: i64,
+        _work_key: &str,
+        _shortfalls: &[QualityShortfall],
+    ) -> Result<(), PortError> {
         Ok(())
     }
 

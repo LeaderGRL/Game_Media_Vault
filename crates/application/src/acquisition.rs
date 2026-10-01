@@ -2,8 +2,8 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch,
     ConnectorCapabilities, ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy,
-    NewReviewItem, PersistAsset, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
-    StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
+    NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
     match_asset_candidate_to_release, review_matches_for_asset_candidate,
 };
 use url::Url;
@@ -27,6 +27,7 @@ struct Acquisition<'a> {
     run_id: i64,
     matching_policy: ValidatedMatchingPolicy,
     releases: Vec<LibraryEntry>,
+    quality: Option<QualityRequirements>,
 }
 
 enum Step {
@@ -77,6 +78,7 @@ pub fn acquire_run_with_connector(
         run_id,
         matching_policy,
         releases: catalog.list_library()?,
+        quality: run.request.quality().cloned(),
     };
     let mut imported_assets = Vec::new();
     loop {
@@ -144,10 +146,11 @@ fn validate_connector_plan(
             "one or more requested asset types are not supported by this connector",
         ));
     }
-    if request.quality().is_some() {
-        return Err(unsupported(
-            "quality requirements are not supported by this execution path",
-        ));
+    if let Some(reason) = request
+        .quality()
+        .and_then(QualityRequirements::unsupported_requirement)
+    {
+        return Err(unsupported(reason));
     }
     if request.retention() != RetentionPolicy::KeepEverything {
         return Err(unsupported(
@@ -340,6 +343,18 @@ impl Acquisition<'_> {
         candidate_match: AssetCandidateMatch,
     ) -> Result<Step, ApplicationError> {
         let stored = self.store_original(work)?;
+        // Quality is measured on the stored bytes; an original below it is not linked, and its
+        // object stays unreferenced until vault verification collects it.
+        let shortfalls = self
+            .quality
+            .as_ref()
+            .map(|quality| quality.shortfalls(&stored.media))
+            .unwrap_or_default();
+        if !shortfalls.is_empty() {
+            self.runs
+                .complete_work_below_quality(self.run_id, &work.key, &shortfalls)?;
+            return Ok(Step::Done(None));
+        }
         let record = self.asset_record(work, release, candidate_match, stored);
         match self
             .reviews

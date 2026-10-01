@@ -1,7 +1,7 @@
 use game_media_vault_application::{PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem,
+    AcquisitionWorkItem, QualityShortfall,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -30,6 +30,7 @@ impl RunRepositoryPort for SqliteCatalog {
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
+            below_quality_work: 0,
         })
     }
 
@@ -172,12 +173,36 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        self.complete_queued_work(run_id, work_key, None)
+    }
+
+    fn complete_work_below_quality(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<(), PortError> {
+        let shortfalls_json = serde_json::to_string(shortfalls).map_err(|error| {
+            PortError(format!("failed to serialize quality shortfalls: {error}"))
+        })?;
+        self.complete_queued_work(run_id, work_key, Some(&shortfalls_json))
+    }
+}
+
+impl SqliteCatalog {
+    /// Completes queued work; work already settled by another execution is left unchanged.
+    fn complete_queued_work(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        quality_shortfalls_json: Option<&str>,
+    ) -> Result<(), PortError> {
         let connection = self.connect()?;
         connection
             .execute(
-                "UPDATE acquisition_run_work SET state = 'done'
+                "UPDATE acquisition_run_work SET state = 'done', quality_shortfalls_json = ?3
                  WHERE run_id = ?1 AND work_key = ?2 AND state = 'queued'",
-                params![run_id, work_key],
+                params![run_id, work_key, quality_shortfalls_json],
             )
             .map_err(sql_error)?;
         let exists: bool = connection
@@ -205,7 +230,8 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
             "SELECT run.request_json, run.request_schema_version, run.status,
                     COUNT(work.id) FILTER (WHERE work.state = 'queued'),
                     COUNT(work.id) FILTER (WHERE work.state = 'parked'),
-                    COUNT(work.id) FILTER (WHERE work.state = 'done')
+                    COUNT(work.id) FILTER (WHERE work.state = 'done'),
+                    COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL)
              FROM acquisition_runs AS run
              LEFT JOIN acquisition_run_work AS work ON work.run_id = run.id
              WHERE run.id = ?1
@@ -219,12 +245,15 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
         .optional()
         .map_err(sql_error)?;
-    let Some((request_json, request_schema_version, status, queued, parked, done)) = row else {
+    let Some((request_json, request_schema_version, status, queued, parked, done, below_quality)) =
+        row
+    else {
         return Ok(None);
     };
     if request_schema_version != ACQUISITION_REQUEST_SCHEMA_VERSION {
@@ -243,6 +272,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         queued_work: count(queued),
         awaiting_review_work: count(parked),
         completed_work: count(done),
+        below_quality_work: count(below_quality),
     }))
 }
 

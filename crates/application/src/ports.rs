@@ -3,7 +3,8 @@ use std::{io::Read, path::Path};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
-    PersistAsset, ReferenceReleaseRecord, ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
+    PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReviewDecision, ReviewItem,
+    ReviewStatus, StoredObject,
 };
 use thiserror::Error;
 
@@ -151,6 +152,15 @@ pub trait RunRepositoryPort {
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
+
+    /// Completes queued work whose downloaded original fell short of the request's quality
+    /// requirements, recording how so the candidate stays explainable.
+    fn complete_work_below_quality(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<(), PortError>;
 }
 
 /// Source-specific integration that discovers and downloads Asset Candidates.

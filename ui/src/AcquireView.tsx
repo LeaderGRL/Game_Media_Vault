@@ -86,6 +86,22 @@ export function AcquireView({ starting, onStart }: AcquireViewProps) {
           />
         </label>
         <label>
+          Minimum width (px, empty for any)
+          <input
+            inputMode="numeric"
+            value={form.minWidth}
+            onChange={(event) => update({ minWidth: event.target.value })}
+          />
+        </label>
+        <label>
+          Minimum height (px, empty for any)
+          <input
+            inputMode="numeric"
+            value={form.minHeight}
+            onChange={(event) => update({ minHeight: event.target.value })}
+          />
+        </label>
+        <label>
           Retention policy
           <select
             value={form.retention}

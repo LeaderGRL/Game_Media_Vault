@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 3;
+const VAULT_SCHEMA_VERSION: i32 = 4;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -17,7 +17,15 @@ const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
 type Migration = fn(&Transaction<'_>) -> Result<(), PortError>;
 
 /// Entry `i` upgrades a catalog from `OLDEST_SUPPORTED_SCHEMA_VERSION + i` to the next version.
-const MIGRATIONS: &[Migration] = &[add_asset_media];
+const MIGRATIONS: &[Migration] = &[add_asset_media, add_work_quality_shortfalls];
+
+/// Version 4 records how completed work fell short of its run's quality requirements. The
+/// column matches the `acquisition_run_work` layout of `SCHEMA`.
+fn add_work_quality_shortfalls(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch("ALTER TABLE acquisition_run_work ADD COLUMN quality_shortfalls_json TEXT;")
+        .map_err(sql_error)
+}
 
 /// Version 3 records what each original is. Assets imported before keep unknown media until
 /// vault verification inspects their objects again. The columns match the `assets` layout of
@@ -121,6 +129,7 @@ const SCHEMA: &str = "
         candidate_json TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('queued', 'parked', 'done')),
         review_item_id INTEGER REFERENCES review_items(id),
+        quality_shortfalls_json TEXT,
         UNIQUE(run_id, work_key),
         CHECK((state = 'parked') = (review_item_id IS NOT NULL))
     );

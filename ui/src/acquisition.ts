@@ -6,6 +6,12 @@ export type GameSelection = { mode: "all" } | { mode: "explicit"; values: string
 
 export type RetentionPolicy = "keep_everything" | "keep_best_per_type";
 
+/** Optional quality requirements; omitted fields impose nothing (Rust `QualityRequirements`). */
+export interface QualityRequirementsDraft {
+  min_width?: number;
+  min_height?: number;
+}
+
 export interface AcquisitionRequestDraft {
   sources: SourceSelection;
   platforms: string[];
@@ -13,7 +19,7 @@ export interface AcquisitionRequestDraft {
   regions: string[];
   languages: string[];
   asset_types: string[];
-  quality: null;
+  quality: QualityRequirementsDraft | null;
   retention: RetentionPolicy;
   limits: Record<string, never>;
 }
@@ -27,6 +33,8 @@ export interface AcquisitionRun {
   queued_work: number;
   awaiting_review_work: number;
   completed_work: number;
+  /** Completed work whose original fell short of the quality requirements. */
+  below_quality_work: number;
 }
 
 /** Sources the desktop app can currently execute. */
@@ -145,6 +153,10 @@ export interface AcquisitionForm {
   languages: string;
   assetTypes: string[];
   retention: RetentionPolicy;
+  /** Minimum width in pixels; empty imposes none. */
+  minWidth: string;
+  /** Minimum height in pixels; empty imposes none. */
+  minHeight: string;
 }
 
 export function emptyAcquisitionForm(): AcquisitionForm {
@@ -157,6 +169,8 @@ export function emptyAcquisitionForm(): AcquisitionForm {
     languages: "",
     assetTypes: [],
     retention: "keep_everything",
+    minWidth: "",
+    minHeight: "",
   };
 }
 
@@ -180,8 +194,21 @@ export function buildAcquisitionRequest(form: AcquisitionForm): AcquisitionReque
     regions: entries(form.regions, ","),
     languages: entries(form.languages, ","),
     asset_types: form.assetTypes,
-    quality: null,
+    quality: qualityRequirements(form),
     retention: form.retention,
     limits: {},
   };
+}
+
+function qualityRequirements(form: AcquisitionForm): QualityRequirementsDraft | null {
+  const quality: QualityRequirementsDraft = {};
+  const minWidth = form.minWidth.trim();
+  const minHeight = form.minHeight.trim();
+  if (minWidth.length > 0) {
+    quality.min_width = Number(minWidth);
+  }
+  if (minHeight.length > 0) {
+    quality.min_height = Number(minHeight);
+  }
+  return Object.keys(quality).length > 0 ? quality : null;
 }
