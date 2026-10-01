@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     path::Path,
+    sync::OnceLock,
 };
 
 use game_media_vault_application::{ConnectorPort, PortError, ReferenceCatalogSourcePort};
@@ -69,6 +70,8 @@ impl HttpTransport for ReqwestHttpTransport {
 
 pub struct LibretroThumbnailsConnector<T = ReqwestHttpTransport> {
     transport: T,
+    /// Repository catalog read once per connector, shared by plan checks and discovery.
+    repositories: OnceLock<Vec<LibretroRepository>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +95,10 @@ impl Default for LibretroThumbnailsConnector<ReqwestHttpTransport> {
 
 impl<T> LibretroThumbnailsConnector<T> {
     pub fn with_transport(transport: T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            repositories: OnceLock::new(),
+        }
     }
 }
 
@@ -111,25 +117,35 @@ where
         }
     }
 
-    fn unsupported_request_reason(&self, request: &AcquisitionRequest) -> Option<String> {
-        let reason = if matches!(request.games(), GameSelection::All) {
-            "Libretro Thumbnails requires an explicit bounded game selection"
-        } else if !request.regions().is_empty() {
-            "Libretro Thumbnails cannot satisfy region filters because the source provides no region evidence"
-        } else if !request.languages().is_empty() {
-            "Libretro Thumbnails cannot satisfy language filters because the source provides no language evidence"
-        } else {
-            return None;
-        };
-        Some(reason.to_owned())
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        if let Some(reason) = unsupported_selection_reason(request) {
+            return Ok(Some(reason.to_owned()));
+        }
+        // Discovery needs a repository for every targeted platform; a run whose platforms
+        // Libretro does not declare could never execute.
+        let repositories = self.repository_catalog()?;
+        Ok(acquisition_targets(request)?
+            .into_iter()
+            .map(|(platform, _)| platform)
+            .find(|platform| {
+                !repositories
+                    .iter()
+                    .any(|repository| &repository.platform == platform)
+            })
+            .map(|platform| {
+                format!("Libretro Thumbnails does not declare a repository for platform {platform}")
+            }))
     }
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         if !request.requests_asset_type(AssetType::BoxFront) {
             return Ok(Vec::new());
         }
-        if let Some(reason) = self.unsupported_request_reason(request) {
-            return Err(PortError(reason));
+        if let Some(reason) = unsupported_selection_reason(request) {
+            return Err(PortError(reason.to_owned()));
         }
 
         let repositories = self.repository_catalog()?;
@@ -178,11 +194,32 @@ impl<T> LibretroThumbnailsConnector<T>
 where
     T: HttpTransport,
 {
-    fn repository_catalog(&self) -> Result<Vec<LibretroRepository>, PortError> {
+    fn repository_catalog(&self) -> Result<&[LibretroRepository], PortError> {
+        if let Some(repositories) = self.repositories.get() {
+            return Ok(repositories);
+        }
         let bytes = self.transport.get_bytes(LIBRETRO_GITMODULES_URL)?;
         let manifest = std::str::from_utf8(&bytes)
             .map_err(|error| PortError(format!("invalid Libretro repository metadata: {error}")))?;
-        parse_repository_catalog(manifest)
+        let repositories = parse_repository_catalog(manifest)?;
+        Ok(self.repositories.get_or_init(|| repositories))
+    }
+}
+
+/// Selections Libretro cannot satisfy whatever its repositories hold.
+fn unsupported_selection_reason(request: &AcquisitionRequest) -> Option<&'static str> {
+    if matches!(request.games(), GameSelection::All) {
+        Some("Libretro Thumbnails requires an explicit bounded game selection")
+    } else if !request.regions().is_empty() {
+        Some(
+            "Libretro Thumbnails cannot satisfy region filters because the source provides no region evidence",
+        )
+    } else if !request.languages().is_empty() {
+        Some(
+            "Libretro Thumbnails cannot satisfy language filters because the source provides no language evidence",
+        )
+    } else {
+        None
     }
 }
 

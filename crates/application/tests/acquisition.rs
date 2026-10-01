@@ -1,8 +1,9 @@
 mod support;
 
 use game_media_vault_application::{
-    ApplicationError, ReviewRepositoryPort, RunRepositoryPort, acquire_run_with_connector,
-    candidate_identity, resolve_review_item, start_acquisition_run_for_connector,
+    ApplicationError, ErrorKind, ReviewRepositoryPort, RunRepositoryPort,
+    acquire_run_with_connector, candidate_identity, resolve_review_item,
+    start_acquisition_run_for_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
@@ -1003,6 +1004,21 @@ fn connector_specific_limits_are_checked_before_a_run_starts() {
             reason: "this source needs an explicit game selection".to_owned(),
         }
     );
+    assert!(vault.runs.borrow().is_empty());
+}
+
+#[test]
+fn a_plan_the_connector_cannot_check_starts_no_run() {
+    let vault = FakeVault::default();
+    let connector = FakeConnector {
+        plan_check_fails: true,
+        ..FakeConnector::new(Vec::new())
+    };
+
+    let error =
+        start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::External);
     assert!(vault.runs.borrow().is_empty());
 }
 

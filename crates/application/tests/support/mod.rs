@@ -655,6 +655,8 @@ pub struct FakeConnector {
     pub downloads: RefCell<Vec<String>>,
     /// Why the connector refuses every request, if it does.
     pub unsupported_reason: Option<String>,
+    /// Whether checking a plan fails, as when the source cannot be reached.
+    pub plan_check_fails: bool,
 }
 
 impl FakeConnector {
@@ -666,6 +668,7 @@ impl FakeConnector {
             discover_calls: RefCell::new(0),
             downloads: RefCell::new(Vec::new()),
             unsupported_reason: None,
+            plan_check_fails: false,
         }
     }
 }
@@ -682,8 +685,14 @@ impl ConnectorPort for FakeConnector {
         }
     }
 
-    fn unsupported_request_reason(&self, _request: &AcquisitionRequest) -> Option<String> {
-        self.unsupported_reason.clone()
+    fn unsupported_request_reason(
+        &self,
+        _request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        if self.plan_check_fails {
+            return Err(PortError("fixture source unreachable".to_owned()));
+        }
+        Ok(self.unsupported_reason.clone())
     }
 
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {

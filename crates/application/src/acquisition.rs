@@ -157,7 +157,7 @@ fn validate_connector_plan(
             "acquisition limits are not supported by this execution path",
         ));
     }
-    if let Some(reason) = connector.unsupported_request_reason(request) {
+    if let Some(reason) = connector.unsupported_request_reason(request)? {
         return Err(unsupported(&reason));
     }
     Ok(capabilities)
