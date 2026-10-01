@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use game_media_vault_application::{
     AcquisitionRequestInput, ApplicationError, ConnectorPort, ErrorKind, PortError,
@@ -20,6 +23,7 @@ use game_media_vault_domain::{
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use serde::Serialize;
+use tauri::State;
 
 /// Error returned by every command: a stable `kind` the frontend can branch on and a
 /// human-readable `message`.
@@ -50,6 +54,44 @@ impl CommandError {
             kind: ErrorKind::External.as_str(),
             message: format!("{worker} worker failed: {error}"),
         }
+    }
+}
+
+/// The vault opened by the desktop user. Commands act on it instead of trusting a path sent by
+/// the webview with every call.
+#[derive(Debug, Default)]
+pub struct VaultSession {
+    root: Mutex<Option<PathBuf>>,
+}
+
+impl VaultSession {
+    /// Opens an existing vault, or initializes one when `create` is set. A failed open closes
+    /// the previous vault so commands cannot silently keep acting on it.
+    pub fn open(&self, vault_root: &Path, create: bool) -> Result<(), CommandError> {
+        let mut root = self.lock();
+        *root = None;
+        let catalog_path = vault_root.join("catalog.sqlite3");
+        if create {
+            SqliteCatalog::open(catalog_path)?;
+        } else {
+            SqliteCatalog::open_existing(catalog_path)?;
+        }
+        *root = Some(vault_root.to_path_buf());
+        Ok(())
+    }
+
+    pub fn root(&self) -> Result<PathBuf, CommandError> {
+        self.lock().clone().ok_or_else(|| CommandError {
+            kind: ErrorKind::InvalidRequest.as_str(),
+            message: "no vault is open".to_owned(),
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<PathBuf>> {
+        // The guarded path stays consistent even if a holder panicked.
+        self.root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -128,31 +170,40 @@ pub async fn load_review_preview_in_vault_with_connector_async(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_library(vault_root: String) -> Result<Vec<LibraryEntry>, CommandError> {
-    load_library(Path::new(&vault_root))
+fn list_library(session: State<'_, VaultSession>) -> Result<Vec<LibraryEntry>, CommandError> {
+    load_library(&session.root()?)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_review_items(vault_root: String) -> Result<Vec<ReviewItem>, CommandError> {
-    load_review_items(Path::new(&vault_root))
+fn list_review_items(session: State<'_, VaultSession>) -> Result<Vec<ReviewItem>, CommandError> {
+    load_review_items(&session.root()?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn open_vault(
+    session: State<'_, VaultSession>,
+    vault_root: String,
+    create: bool,
+) -> Result<(), CommandError> {
+    session.open(Path::new(&vault_root), create)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 fn resolve_review_item(
-    vault_root: String,
+    session: State<'_, VaultSession>,
     review_item_id: i64,
     decision: ReviewDecision,
 ) -> Result<ReviewItem, CommandError> {
-    resolve_review_item_in_vault(Path::new(&vault_root), review_item_id, decision)
+    resolve_review_item_in_vault(&session.root()?, review_item_id, decision)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn load_review_preview(
-    vault_root: String,
+    session: State<'_, VaultSession>,
     review_item_id: i64,
 ) -> Result<ReviewPreviewPayload, CommandError> {
     load_review_preview_in_vault_with_connector_async(
-        PathBuf::from(vault_root),
+        session.root()?,
         review_item_id,
         Box::new(LibretroThumbnailsConnector::new()),
     )
@@ -255,20 +306,20 @@ pub fn cancel_acquisition_run_in_vault(
 
 #[tauri::command(rename_all = "snake_case")]
 fn start_acquisition_run(
-    vault_root: String,
+    session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionRun, CommandError> {
-    start_acquisition_run_in_vault(Path::new(&vault_root), request)
+    start_acquisition_run_in_vault(&session.root()?, request)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn execute_acquisition_run(
-    vault_root: String,
+    session: State<'_, VaultSession>,
     run_id: i64,
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CommandError> {
     execute_acquisition_run_in_vault_with_connector_async(
-        PathBuf::from(vault_root),
+        session.root()?,
         run_id,
         Box::new(LibretroThumbnailsConnector::new()),
         matching_policy,
@@ -277,33 +328,49 @@ async fn execute_acquisition_run(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn get_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
-    load_acquisition_run_from_vault(Path::new(&vault_root), run_id)
+fn get_acquisition_run(
+    session: State<'_, VaultSession>,
+    run_id: i64,
+) -> Result<AcquisitionRun, CommandError> {
+    load_acquisition_run_from_vault(&session.root()?, run_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_acquisition_runs(vault_root: String) -> Result<Vec<AcquisitionRun>, CommandError> {
-    list_acquisition_runs_from_vault(Path::new(&vault_root))
+fn list_acquisition_runs(
+    session: State<'_, VaultSession>,
+) -> Result<Vec<AcquisitionRun>, CommandError> {
+    list_acquisition_runs_from_vault(&session.root()?)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn pause_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
-    pause_acquisition_run_in_vault(Path::new(&vault_root), run_id)
+fn pause_acquisition_run(
+    session: State<'_, VaultSession>,
+    run_id: i64,
+) -> Result<AcquisitionRun, CommandError> {
+    pause_acquisition_run_in_vault(&session.root()?, run_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn resume_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
-    resume_acquisition_run_in_vault(Path::new(&vault_root), run_id)
+fn resume_acquisition_run(
+    session: State<'_, VaultSession>,
+    run_id: i64,
+) -> Result<AcquisitionRun, CommandError> {
+    resume_acquisition_run_in_vault(&session.root()?, run_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn cancel_acquisition_run(vault_root: String, run_id: i64) -> Result<AcquisitionRun, CommandError> {
-    cancel_acquisition_run_in_vault(Path::new(&vault_root), run_id)
+fn cancel_acquisition_run(
+    session: State<'_, VaultSession>,
+    run_id: i64,
+) -> Result<AcquisitionRun, CommandError> {
+    cancel_acquisition_run_in_vault(&session.root()?, run_id)
 }
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(VaultSession::default())
         .invoke_handler(tauri::generate_handler![
+            open_vault,
             list_library,
             list_review_items,
             resolve_review_item,

@@ -17,5 +17,8 @@ fn the_webview_runs_under_a_restrictive_content_security_policy() {
     assert!(csp.contains("img-src 'self' blob:"), "{csp}");
     assert!(csp.contains("object-src 'none'"), "{csp}");
     assert!(!csp.contains("unsafe-eval"), "{csp}");
-    assert!(!csp.contains("http:") || csp.contains("http://ipc.localhost"), "{csp}");
+    assert!(
+        !csp.contains("http:") || csp.contains("http://ipc.localhost"),
+        "{csp}"
+    );
 }
