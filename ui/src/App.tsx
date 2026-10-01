@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FormEvent, useCallback, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
 import type { AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
@@ -24,6 +24,10 @@ export function App() {
   const vaultLoadRequestGeneration = useRef(0);
   const reviewMutationGeneration = useRef(0);
   const reviewRefreshRequestGeneration = useRef(0);
+  // Each refresh of these lists takes a new generation; only the newest one is applied.
+  const runListGeneration = useRef(0);
+  const vaultDataGeneration = useRef(0);
+  const activeViewRef = useRef<View>("library");
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
@@ -77,7 +81,7 @@ export function App() {
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
-      if (activeView === "runs") {
+      if (activeViewRef.current === "runs") {
         await refreshRuns(requestedVaultRoot);
       }
     } catch (reason) {
@@ -128,11 +132,11 @@ export function App() {
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
       // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
-      const [reviews, library, runList] = await Promise.all([
+      const [reviews, library] = await Promise.all([
         invoke<ReviewItem[]>("list_review_items"),
         invoke<LibraryEntry[]>("list_library"),
         // Accepting requeues parked work and may reopen completed runs.
-        invoke<AcquisitionRun[]>("list_acquisition_runs"),
+        refreshRuns(resolvingVaultRoot),
       ]);
       if (
         activeVaultRoot.current !== resolvingVaultRoot ||
@@ -142,7 +146,6 @@ export function App() {
       }
       setReviewItems(reviews);
       setEntries(library);
-      setRuns(runList);
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(errorMessage(reason));
@@ -177,22 +180,46 @@ export function App() {
     }
   }
 
+  function showView(view: View) {
+    activeViewRef.current = view;
+    setActiveView(view);
+  }
+
   async function refreshRuns(expectedVaultRoot: string | null) {
+    runListGeneration.current += 1;
+    const generation = runListGeneration.current;
     const listed = await invoke<AcquisitionRun[]>("list_acquisition_runs");
-    if (activeVaultRoot.current === expectedVaultRoot) {
+    if (activeVaultRoot.current === expectedVaultRoot && generation === runListGeneration.current) {
       setRuns(listed);
     }
   }
 
+  /** Reloads only the executing runs, so progress polling does not list the whole history. */
+  async function refreshExecutingRuns(runIds: number[], expectedVaultRoot: string | null) {
+    runListGeneration.current += 1;
+    const generation = runListGeneration.current;
+    const loaded = await Promise.all(
+      runIds.map((runId) => invoke<AcquisitionRun>("get_acquisition_run", { run_id: runId })),
+    );
+    if (activeVaultRoot.current === expectedVaultRoot && generation === runListGeneration.current) {
+      setRuns((current) =>
+        current.map((run) => loaded.find((loadedRun) => loadedRun.id === run.id) ?? run),
+      );
+    }
+  }
+
   async function refreshVaultData(expectedVaultRoot: string | null) {
+    vaultDataGeneration.current += 1;
+    const generation = vaultDataGeneration.current;
     const reviewGenerationAtStart = reviewMutationGeneration.current;
     const [library, reviews] = await Promise.all([
       invoke<LibraryEntry[]>("list_library"),
       invoke<ReviewItem[]>("list_review_items"),
     ]);
-    // A review decision made meanwhile refreshed both lists after this read.
+    // A newer refresh or a review decision made meanwhile read both lists after this one.
     if (
       activeVaultRoot.current === expectedVaultRoot &&
+      generation === vaultDataGeneration.current &&
       reviewMutationGeneration.current === reviewGenerationAtStart
     ) {
       setEntries(library);
@@ -201,13 +228,28 @@ export function App() {
   }
 
   async function showRuns() {
-    setActiveView("runs");
+    showView("runs");
     try {
       await refreshRuns(loadedVaultRoot);
     } catch (reason) {
       setError(errorMessage(reason));
     }
   }
+
+  // One shared poll follows every executing run of the vault they were started in.
+  useEffect(() => {
+    if (executingRunIds.size === 0) {
+      return;
+    }
+    const runIds = [...executingRunIds];
+    const pollingVaultRoot = activeVaultRoot.current;
+    const timer = setInterval(() => {
+      refreshExecutingRuns(runIds, pollingVaultRoot).catch(() => {
+        // The next poll or the final refresh after the execution reports persistent failures.
+      });
+    }, RUN_PROGRESS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [executingRunIds]);
 
   async function startRun(request: AcquisitionRequestDraft) {
     if (loadedVaultRoot === null) {
@@ -217,17 +259,31 @@ export function App() {
     const startingVaultRoot = loadedVaultRoot;
     setStartingRun(true);
     setError(null);
+    let started: AcquisitionRun;
     try {
-      await invoke<AcquisitionRun>("start_acquisition_run", { request });
-      if (activeVaultRoot.current !== startingVaultRoot) {
-        return;
-      }
-      setActiveView("runs");
-      await refreshRuns(startingVaultRoot);
+      started = await invoke<AcquisitionRun>("start_acquisition_run", { request });
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (activeVaultRoot.current === startingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+      return;
     } finally {
       setStartingRun(false);
+    }
+    if (activeVaultRoot.current !== startingVaultRoot) {
+      return;
+    }
+    // The run is persisted from here on: show it even if the list refresh fails.
+    setRuns((current) => [...current.filter((run) => run.id !== started.id), started]);
+    showView("runs");
+    try {
+      await refreshRuns(startingVaultRoot);
+    } catch (reason) {
+      if (activeVaultRoot.current === startingVaultRoot) {
+        setError(
+          `Run #${started.id} started, but the run list could not be refreshed: ${errorMessage(reason)}`,
+        );
+      }
     }
   }
 
@@ -235,15 +291,10 @@ export function App() {
     const actingVaultRoot = loadedVaultRoot;
     // A vault loaded while this execution runs tracks its own executions.
     const actingLoadGeneration = vaultLoadRequestGeneration.current;
+    // While executing, the shared poll follows the run's counts; the library and Review Items
+    // are refreshed once it ends.
     setExecutingRunIds((current) => new Set(current).add(runId));
     setError(null);
-    // Run counts are cheap to list, so they follow the execution; the library and Review
-    // Items are refreshed once it ends.
-    const progressRefresh = setInterval(() => {
-      refreshRuns(actingVaultRoot).catch(() => {
-        // The next refresh or the final one reports a persistent failure.
-      });
-    }, RUN_PROGRESS_REFRESH_MS);
     try {
       await invoke<AcquisitionRun>("execute_acquisition_run", {
         run_id: runId,
@@ -254,7 +305,6 @@ export function App() {
         setError(errorMessage(reason));
       }
     } finally {
-      clearInterval(progressRefresh);
       if (vaultLoadRequestGeneration.current === actingLoadGeneration) {
         setExecutingRunIds((current) => withoutRun(current, runId));
       }
@@ -352,21 +402,21 @@ export function App() {
         <button
           type="button"
           className={activeView === "library" ? "active" : ""}
-          onClick={() => setActiveView("library")}
+          onClick={() => showView("library")}
         >
           Library ({entries.length})
         </button>
         <button
           type="button"
           className={activeView === "review" ? "active" : ""}
-          onClick={() => setActiveView("review")}
+          onClick={() => showView("review")}
         >
           Review ({reviewItems.length})
         </button>
         <button
           type="button"
           className={activeView === "acquire" ? "active" : ""}
-          onClick={() => setActiveView("acquire")}
+          onClick={() => showView("acquire")}
         >
           Acquire
         </button>
