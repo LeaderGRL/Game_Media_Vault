@@ -224,7 +224,7 @@ A Release Edition is distinct when one or more materially collectible properties
 - meaningful printed-language variant;
 - known reissue or print run when identifiable.
 
-No single provider is treated as absolute truth. Source-specific claims are stored as Release Assertions. Canonical values are derived with provenance and confidence when the library is read, so assertions are never rewritten. For each single-valued field (title, region, revision), every Source takes part with its most recently recorded claim; the value most Sources agree on (ignoring case and spacing) is selected, a tie keeps the value claimed first, and the confidence is the share of Sources that agree. The contributing and conflicting claims are kept with the selection. Identifiers are multi-valued and remain plain assertions.
+No single provider is treated as absolute truth. Source-specific claims are stored as Release Assertions. Canonical values are derived with provenance and confidence when the library is read, so assertions are never rewritten. For each single-valued field (title, region, revision), every Source takes part with its most recently observed claim (re-importing a claim makes it the latest again); the value most Sources agree on (ignoring case and spacing) is selected, a tie keeps the value claimed first, and the confidence is the share of Sources that agree. The contributing and conflicting claims are kept with the selection. Identifiers are multi-valued and remain plain assertions.
 
 ## 10. Matching and Confidence
 

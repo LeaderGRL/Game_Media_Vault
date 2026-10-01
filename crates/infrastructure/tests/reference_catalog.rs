@@ -127,3 +127,28 @@ fn a_changed_claim_is_recorded_after_the_claim_it_replaces() {
         .collect();
     assert_eq!(titles, vec!["Tetris", "Tetris DX"]);
 }
+
+#[test]
+fn a_claim_observed_again_becomes_the_latest_one() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let mut corrected = tetris_release("Rev 1");
+    corrected.assertions[0].value = "Tetris DX".to_owned();
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+    catalog.persist_reference_release(corrected).unwrap();
+
+    // The source reverts its correction.
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+
+    let titles: Vec<_> = catalog.list_library().unwrap()[0]
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.field == ReleaseAssertionField::Title)
+        .map(|assertion| assertion.value.clone())
+        .collect();
+    assert_eq!(titles, vec!["Tetris DX", "Tetris"]);
+}

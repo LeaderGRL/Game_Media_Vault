@@ -166,9 +166,26 @@ fn persist_release_assertions(
             ));
         }
         let qualifier = assertion.qualifier.as_deref().unwrap_or("");
+        // Recording order is observation order: a claim observed again moves after the claims
+        // it may have replaced meanwhile, so a source reverting a correction is its latest word.
         transaction
             .execute(
-                "INSERT OR IGNORE INTO release_assertions (
+                "DELETE FROM release_assertions
+                 WHERE release_edition_id = ?1 AND source_id = ?2 AND source_location = ?3
+                   AND field = ?4 AND qualifier = ?5 AND value = ?6",
+                params![
+                    release_edition_id,
+                    assertion.source_id.as_str(),
+                    assertion.source_location,
+                    assertion_field_to_str(assertion.field),
+                    qualifier,
+                    assertion.value,
+                ],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "INSERT INTO release_assertions (
                     release_edition_id,
                     source_id,
                     source_location,

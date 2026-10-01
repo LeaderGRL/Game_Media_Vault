@@ -44,8 +44,8 @@ impl From<LibraryEntry> for LibraryRelease {
     }
 }
 
-/// Derives the Canonical Values of single-valued fields from assertions listed in recording
-/// order. Each Source takes part with its most recently recorded claim; the value most Sources
+/// Derives the Canonical Values of single-valued fields from assertions listed in observation
+/// order. Each Source takes part with its most recently observed claim; the value most Sources
 /// agree on (ignoring case and spacing) wins, and a tie keeps the value claimed first.
 pub fn canonical_values(assertions: &[ReleaseAssertion]) -> Vec<CanonicalValue> {
     let mut values = Vec::new();
@@ -72,7 +72,7 @@ pub fn canonical_values(assertions: &[ReleaseAssertion]) -> Vec<CanonicalValue> 
     values
 }
 
-/// The latest claim of each Source, in recording order.
+/// The latest claim of each Source, in observation order.
 fn current_claims<'a>(claims: &[&'a ReleaseAssertion]) -> Vec<&'a ReleaseAssertion> {
     claims
         .iter()
