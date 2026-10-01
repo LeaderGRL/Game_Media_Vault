@@ -401,6 +401,29 @@ fn later_run_supersedes_a_pending_review_that_became_low_confidence() {
 }
 
 #[test]
+fn later_run_auto_resolves_a_review_superseded_earlier() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    let connector = FakeConnector::new(vec![threshold]);
+    let dismissing_run = vault.start_run();
+    execute_with(
+        &vault,
+        &connector,
+        dismissing_run,
+        dismissive_matching_policy(),
+    )
+    .unwrap();
+    assert_eq!(vault.review_item(0).status, ReviewStatus::Superseded);
+
+    let linking_run = vault.start_run();
+    let imported = execute(&vault, &connector, linking_run).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+}
+
+#[test]
 fn automatically_closed_review_reopens_when_the_candidate_is_uncertain_again() {
     let (threshold, release) = threshold_candidate_and_release();
     let vault = FakeVault::with_library(vec![release]);

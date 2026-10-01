@@ -235,6 +235,15 @@ impl ReviewRepositoryPort for SqliteCatalog {
                     )?;
                     complete_parked_work(&transaction, item.id)?;
                 }
+                // The candidate became high confidence after a run had dismissed it.
+                (ReviewStatus::Superseded, _) => {
+                    transaction
+                        .execute(
+                            "UPDATE review_items SET status = ?1 WHERE id = ?2",
+                            params![review_status_to_str(ReviewStatus::AutoResolved), item.id],
+                        )
+                        .map_err(sql_error)?;
+                }
                 _ => {}
             }
         }

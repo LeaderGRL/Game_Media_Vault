@@ -539,6 +539,14 @@ impl ReviewRepositoryPort for FakeVault {
                 (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
                     self.close_automatically(existing.id, ReviewStatus::AutoResolved);
                 }
+                (ReviewStatus::Superseded, _) => {
+                    let mut review_items = self.review_items.borrow_mut();
+                    let item = review_items
+                        .iter_mut()
+                        .find(|item| item.id == existing.id)
+                        .unwrap();
+                    item.status = ReviewStatus::AutoResolved;
+                }
                 _ => {}
             }
         }

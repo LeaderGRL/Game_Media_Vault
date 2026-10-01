@@ -522,6 +522,23 @@ fn auto_linking_persists_the_asset_and_closes_the_undecided_item_together() {
 }
 
 #[test]
+fn auto_linking_a_superseded_candidate_marks_its_item_auto_resolved() {
+    let (_temp, catalog) = open_catalog();
+    let item = parked_item(&catalog, start_run(&catalog));
+    catalog.supersede_candidate_review(IDENTITY).unwrap();
+
+    catalog
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::AutoResolved
+    );
+}
+
+#[test]
 fn auto_linking_persists_nothing_once_a_human_decided() {
     let (_temp, catalog) = open_catalog();
     let item = parked_item(&catalog, start_run(&catalog));
