@@ -229,6 +229,11 @@ function CandidatePreview({
       className="review-preview"
       src={previewUrl}
       alt={`${item.candidate.game_title} box front candidate`}
+      onError={() => {
+        // The bytes loaded but the webview cannot decode them; offer a retry instead.
+        setPreviewUrl(null);
+        setPreviewFailed(true);
+      }}
     />
   );
 }

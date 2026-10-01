@@ -132,10 +132,7 @@ describe("ReviewView", () => {
       value: vi.fn(() => "blob:closing-preview"),
     });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
-    const onLoadPreview = vi.fn().mockResolvedValue({
-      media_type: "image/png",
-      bytes: [137, 80, 78, 71],
-    });
+    const onLoadPreview = vi.fn().mockResolvedValue(new Uint8Array([137, 80, 78, 71]).buffer);
     const props = { resolvingIds: new Set<number>(), onResolve: vi.fn(), onLoadPreview };
     const { rerender } = render(<ReviewView items={[item]} {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
@@ -149,6 +146,30 @@ describe("ReviewView", () => {
     );
 
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:closing-preview");
+  });
+
+  it("reports a preview the webview cannot decode as unavailable", async () => {
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:undecodable-preview"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
+    render(
+      <ReviewView
+        items={[item]}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer)}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
+
+    fireEvent.error(await screen.findByRole("img", { name: "Review Game box front candidate" }));
+
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load preview" })).toBeEnabled();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:undecodable-preview");
   });
 
   it("shows a loaded preview under StrictMode", async () => {
