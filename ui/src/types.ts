@@ -92,9 +92,20 @@ export interface ReviewItem {
   status: ReviewStatus;
 }
 
-export interface ReviewPreviewPayload {
-  media_type: string;
-  bytes: number[];
+const PREVIEW_MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  avif: "image/avif",
+};
+
+/** Media type of a preview, derived from the candidate's original filename. */
+export function previewMediaType(filename: string): string {
+  const extension = filename.includes(".") ? filename.split(".").pop()?.toLowerCase() : undefined;
+  return (extension && PREVIEW_MEDIA_TYPES[extension]) || "application/octet-stream";
 }
 
 /** Error returned by every Tauri command. */

@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useRef, useState } from "react";
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { errorMessage } from "./types";
-import type { LibraryEntry, ReviewDecision, ReviewItem, ReviewPreviewPayload } from "./types";
+import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
@@ -153,12 +153,12 @@ export function App() {
   }
 
   const loadReviewPreview = useCallback(
-    async (reviewItemId: number): Promise<ReviewPreviewPayload> => {
+    async (reviewItemId: number): Promise<ArrayBuffer> => {
       if (loadedVaultRoot === null) {
         throw new Error("Load a vault before loading review previews.");
       }
       const previewVaultRoot = loadedVaultRoot;
-      const preview = await invoke<ReviewPreviewPayload>("load_review_preview", {
+      const preview = await invoke<ArrayBuffer>("load_review_preview", {
         review_item_id: reviewItemId,
       });
       if (activeVaultRoot.current !== previewVaultRoot) {

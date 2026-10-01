@@ -214,7 +214,7 @@ describe("App", () => {
         return Promise.resolve([remoteReviewItem]);
       }
       if (command === "load_review_preview") {
-        return Promise.resolve({ media_type: "image/png", bytes: [137, 80, 78, 71] });
+        return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
       }
       return Promise.reject(new Error(`unexpected command: ${command}`));
     });

@@ -82,7 +82,7 @@ describe("ReviewView", () => {
   });
 
   it("loads previews through the backend instead of using the persisted locator", async () => {
-    const createObjectUrl = vi.fn(() => "blob:review-preview");
+    const createObjectUrl = vi.fn((_blob: Blob) => "blob:review-preview");
     const revokeObjectUrl = vi.fn();
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
@@ -92,10 +92,7 @@ describe("ReviewView", () => {
       configurable: true,
       value: revokeObjectUrl,
     });
-    const onLoadPreview = vi.fn().mockResolvedValue({
-      media_type: "image/png",
-      bytes: [137, 80, 78, 71],
-    });
+    const onLoadPreview = vi.fn().mockResolvedValue(new Uint8Array([137, 80, 78, 71]).buffer);
     const remoteItem: ReviewItem = {
       ...item,
       candidate: {
@@ -120,6 +117,9 @@ describe("ReviewView", () => {
     expect(preview).toHaveAttribute("src", "blob:review-preview");
     expect(preview).not.toHaveAttribute("src", "https://example.invalid/review/401");
     expect(createObjectUrl).toHaveBeenCalledOnce();
+    const previewBlob = createObjectUrl.mock.calls[0][0];
+    expect(previewBlob.type).toBe("image/png");
+    expect(previewBlob.size).toBe(4);
 
     unmount();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:review-preview");

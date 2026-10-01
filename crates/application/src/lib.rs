@@ -24,7 +24,10 @@ pub use ports::{
     ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReviewDecisionOutcome,
     ReviewRepositoryPort, RunRepositoryPort,
 };
-pub use review::{ReviewPreview, list_review_items, load_review_preview, resolve_review_item};
+pub use review::{
+    MAX_REVIEW_PREVIEW_BYTES, ReviewPreview, list_review_items, load_review_preview,
+    resolve_review_item,
+};
 pub use runs::{
     build_acquisition_request, cancel_acquisition_run, complete_acquisition_run,
     list_acquisition_runs, load_acquisition_run, pause_acquisition_run, resume_acquisition_run,
