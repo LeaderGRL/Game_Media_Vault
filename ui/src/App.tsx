@@ -127,8 +127,8 @@ export function App() {
         const refusalRefreshGeneration = reviewRefreshRequestGeneration.current;
         try {
           const [reviews, library] = await Promise.all([
-            invoke<ReviewItem[]>("list_review_items", { vault_root: resolvingVaultRoot }),
-            invoke<LibraryEntry[]>("list_library", { vault_root: resolvingVaultRoot }),
+            invoke<ReviewItem[]>("list_review_items"),
+            invoke<LibraryEntry[]>("list_library"),
           ]);
           if (
             activeVaultRoot.current === resolvingVaultRoot &&
