@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -122,6 +123,34 @@ describe("ReviewView", () => {
 
     unmount();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:review-preview");
+  });
+
+  it("shows a loaded preview under StrictMode", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:strict-preview"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const onLoadPreview = vi.fn().mockResolvedValue({
+      media_type: "image/png",
+      bytes: [137, 80, 78, 71],
+    });
+    render(
+      <StrictMode>
+        <ReviewView
+          items={[item]}
+          resolvingIds={new Set()}
+          onResolve={vi.fn()}
+          onLoadPreview={onLoadPreview}
+        />
+      </StrictMode>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Load preview" }));
+
+    expect(
+      await screen.findByRole("img", { name: "Review Game box front candidate" }),
+    ).toHaveAttribute("src", "blob:strict-preview");
   });
 
   it("emits accept reject and defer decisions", () => {

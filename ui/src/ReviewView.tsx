@@ -152,6 +152,8 @@ function CandidatePreview({
   const active = useRef(true);
 
   useEffect(() => {
+    // StrictMode runs this effect twice, so the setup must undo the previous cleanup.
+    active.current = true;
     return () => {
       active.current = false;
     };
