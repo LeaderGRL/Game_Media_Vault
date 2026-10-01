@@ -167,7 +167,11 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         unreachable!()
     }
 
-    fn supersede_candidate_review(&self, _candidate_identity: &str) -> Result<bool, PortError> {
+    fn supersede_candidate_review(
+        &self,
+        _run_id: i64,
+        _candidate_identity: &str,
+    ) -> Result<bool, PortError> {
         unreachable!()
     }
 
@@ -181,6 +185,7 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
 
     fn persist_candidate_asset(
         &self,
+        _run_id: i64,
         _candidate_identity: &str,
         _record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError> {

@@ -116,6 +116,20 @@ impl ReviewRepositoryPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
         if !parked_here {
+            let settled: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM acquisition_run_work
+                         WHERE run_id = ?1 AND work_key = ?2 AND state = 'done'
+                     )",
+                    params![run_id, work_key],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
+            // Returning without committing rolls back the item changes made above.
+            if settled {
+                return Ok(ParkedReview::Settled);
+            }
             return Err(PortError(format!(
                 "acquisition run #{run_id} has no queued work {work_key:?} to park"
             )));
@@ -126,7 +140,11 @@ impl ReviewRepositoryPort for SqliteCatalog {
         Ok(ParkedReview::Parked(review_item))
     }
 
-    fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError> {
+    fn supersede_candidate_review(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+    ) -> Result<bool, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -154,6 +172,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
         }
         // The engine no longer believes in the candidate, so its automatic link goes too.
         detach_candidate_links(&transaction, candidate_identity, None)?;
+        complete_run_work(&transaction, run_id, candidate_identity)?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -213,6 +232,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
 
     fn persist_candidate_asset(
         &self,
+        run_id: i64,
         candidate_identity: &str,
         record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError> {
@@ -261,9 +281,27 @@ impl ReviewRepositoryPort for SqliteCatalog {
             candidate_identity,
             Some(imported.release_edition_id),
         )?;
+        complete_run_work(&transaction, run_id, candidate_identity)?;
         transaction.commit().map_err(sql_error)?;
         Ok(Some(imported))
     }
+}
+
+/// Completes the candidate's work in `run_id`, whether queued or parked, so the outcome and the
+/// work settle together.
+fn complete_run_work(
+    transaction: &Transaction<'_>,
+    run_id: i64,
+    candidate_identity: &str,
+) -> Result<(), PortError> {
+    transaction
+        .execute(
+            "UPDATE acquisition_run_work SET state = 'done', review_item_id = NULL
+             WHERE run_id = ?1 AND work_key = ?2",
+            params![run_id, candidate_identity],
+        )
+        .map_err(sql_error)?;
+    Ok(())
 }
 
 fn set_status_if_undecided(

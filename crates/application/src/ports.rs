@@ -55,6 +55,8 @@ pub enum ParkedReview {
     Parked(ReviewItem),
     /// A human already decided the item; the work was left queued.
     AlreadyDecided(ReviewItem),
+    /// Another execution of the run already settled the work; no item was opened.
+    Settled,
 }
 
 /// Review Items, one per candidate identity. Every method is atomic.
@@ -66,7 +68,8 @@ pub trait ReviewRepositoryPort {
     fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError>;
 
     /// Opens or refreshes the undecided Review Item for the candidate identity and parks the
-    /// queued run work on it; parking work already parked on the item is a no-op. An item
+    /// queued run work on it; parking work already parked on the item is a no-op, and work
+    /// another execution completed is reported `Settled` without touching the item. An item
     /// closed by re-evaluation is reopened as pending.
     fn park_work_for_review(
         &self,
@@ -76,10 +79,15 @@ pub trait ReviewRepositoryPort {
     ) -> Result<ParkedReview, PortError>;
 
     /// Dismisses the candidate after a low-confidence evaluation: its Review Item becomes
-    /// `Superseded` with its parked work completed, and its automatic links are detached. The
-    /// item is read in the same transaction, so an item opened concurrently is superseded too.
-    /// Returns `false`, changing nothing, when a human decided the item.
-    fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError>;
+    /// `Superseded` with its parked work completed, its automatic links are detached, and its
+    /// work in `run_id` is completed. The item is read in the same transaction, so an item
+    /// opened concurrently is superseded too. Returns `false`, changing nothing, when a human
+    /// decided the item.
+    fn supersede_candidate_review(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+    ) -> Result<bool, PortError>;
 
     /// Records a human decision on an undecided item and moves its parked work: accepting
     /// requeues it in runs that are not cancelled (reopening completed runs), rejecting
@@ -93,11 +101,13 @@ pub trait ReviewRepositoryPort {
 
     /// Persists an Asset acquired for the candidate with this identity, in one transaction that
     /// keeps the candidate linked to a single Release Edition: links of the same candidate to
-    /// other editions are removed, and an undecided Review Item is closed as `AutoResolved`
-    /// (completing the work parked on it). Persists nothing and returns `None` when a human
-    /// rejected the candidate or accepted another Release Edition.
+    /// other editions are removed, an undecided Review Item is closed as `AutoResolved`
+    /// (completing the work parked on it), and the candidate's work in `run_id` is completed.
+    /// Persists nothing and returns `None` when a human rejected the candidate or accepted
+    /// another Release Edition.
     fn persist_candidate_asset(
         &self,
+        run_id: i64,
         candidate_identity: &str,
         record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError>;

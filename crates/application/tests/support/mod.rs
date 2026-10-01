@@ -400,6 +400,13 @@ impl ReviewRepositoryPort for FakeVault {
         work_key: &str,
         new_item: NewReviewItem,
     ) -> Result<ParkedReview, PortError> {
+        let settled = self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .any(|work| work.item.key == work_key && work.state == WorkState::Done);
+        if settled {
+            return Ok(ParkedReview::Settled);
+        }
         if let Some(existing) = self.find_review_item(&new_item.candidate_identity)? {
             self.apply_pending_human_decision(existing.id);
         }
@@ -454,7 +461,11 @@ impl ReviewRepositoryPort for FakeVault {
         Ok(ParkedReview::Parked(review_item))
     }
 
-    fn supersede_candidate_review(&self, candidate_identity: &str) -> Result<bool, PortError> {
+    fn supersede_candidate_review(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+    ) -> Result<bool, PortError> {
         self.open_scheduled_review();
         if let Some(existing) = self.find_review_item(candidate_identity)? {
             self.apply_pending_human_decision(existing.id);
@@ -472,6 +483,7 @@ impl ReviewRepositoryPort for FakeVault {
             }
         }
         self.candidate_links.borrow_mut().remove(candidate_identity);
+        self.complete_work(run_id, candidate_identity)?;
         Ok(true)
     }
 
@@ -528,6 +540,7 @@ impl ReviewRepositoryPort for FakeVault {
 
     fn persist_candidate_asset(
         &self,
+        run_id: i64,
         candidate_identity: &str,
         record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError> {
@@ -560,6 +573,7 @@ impl ReviewRepositoryPort for FakeVault {
         self.candidate_links
             .borrow_mut()
             .insert(candidate_identity.to_owned(), imported.release_edition_id);
+        self.complete_work(run_id, candidate_identity)?;
         Ok(Some(imported))
     }
 }

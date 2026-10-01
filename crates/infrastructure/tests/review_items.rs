@@ -88,8 +88,8 @@ fn new_item(competing_matches: Vec<ReviewMatchCandidate>) -> NewReviewItem {
     }
 }
 
-/// Discovers the review candidate in `run_id` and parks its work on the Review Item.
-fn park(catalog: &SqliteCatalog, run_id: i64) -> ParkedReview {
+/// Discovers the review candidate as queued work of `run_id`.
+fn discover(catalog: &SqliteCatalog, run_id: i64) {
     catalog
         .record_discovery(
             run_id,
@@ -100,6 +100,11 @@ fn park(catalog: &SqliteCatalog, run_id: i64) -> ParkedReview {
             }],
         )
         .unwrap();
+}
+
+/// Discovers the review candidate in `run_id` and parks its work on the Review Item.
+fn park(catalog: &SqliteCatalog, run_id: i64) -> ParkedReview {
+    discover(catalog, run_id);
     catalog
         .park_work_for_review(
             run_id,
@@ -351,7 +356,11 @@ fn human_decisions_are_final() {
             .recorded(),
         None
     );
-    assert!(!catalog.supersede_candidate_review(IDENTITY).unwrap());
+    assert!(
+        !catalog
+            .supersede_candidate_review(start_run(&catalog), IDENTITY)
+            .unwrap()
+    );
     assert_eq!(
         catalog.get_review_item(item.id).unwrap().unwrap().status,
         ReviewStatus::Rejected
@@ -366,7 +375,11 @@ fn superseding_completes_parked_work_of_an_undecided_item() {
     let second_run = start_run(&catalog);
     parked_item(&catalog, second_run);
 
-    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
+    assert!(
+        catalog
+            .supersede_candidate_review(start_run(&catalog), IDENTITY)
+            .unwrap()
+    );
 
     let closed = catalog.get_review_item(item.id).unwrap().unwrap();
     assert_eq!(closed.status, ReviewStatus::Superseded);
@@ -386,7 +399,11 @@ fn superseding_completes_parked_work_of_an_undecided_item() {
 fn superseding_a_candidate_without_review_item_records_nothing() {
     let (_temp, catalog) = open_catalog();
 
-    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
+    assert!(
+        catalog
+            .supersede_candidate_review(start_run(&catalog), IDENTITY)
+            .unwrap()
+    );
 
     assert!(catalog.list_review_items().unwrap().is_empty());
 }
@@ -395,11 +412,15 @@ fn superseding_a_candidate_without_review_item_records_nothing() {
 fn superseding_an_auto_linked_candidate_detaches_its_asset() {
     let (_temp, catalog) = open_catalog();
     catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap()
         .unwrap();
 
-    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
+    assert!(
+        catalog
+            .supersede_candidate_review(start_run(&catalog), IDENTITY)
+            .unwrap()
+    );
 
     assert_eq!(library_asset_count(&catalog), 0);
     assert!(catalog.list_review_items().unwrap().is_empty());
@@ -410,11 +431,15 @@ fn superseding_an_auto_resolved_item_marks_it_superseded() {
     let (_temp, catalog) = open_catalog();
     let item = parked_item(&catalog, start_run(&catalog));
     catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap()
         .unwrap();
 
-    assert!(catalog.supersede_candidate_review(IDENTITY).unwrap());
+    assert!(
+        catalog
+            .supersede_candidate_review(start_run(&catalog), IDENTITY)
+            .unwrap()
+    );
 
     assert_eq!(
         catalog.get_review_item(item.id).unwrap().unwrap().status,
@@ -424,11 +449,65 @@ fn superseding_an_auto_resolved_item_marks_it_superseded() {
 }
 
 #[test]
+fn superseding_settles_the_run_work_with_the_dismissal() {
+    let (_temp, catalog) = open_catalog();
+    let run_id = start_run(&catalog);
+    discover(&catalog, run_id);
+
+    assert!(
+        catalog
+            .supersede_candidate_review(run_id, IDENTITY)
+            .unwrap()
+    );
+
+    assert_eq!(counts(&catalog, run_id), (0, 0, 1));
+}
+
+#[test]
+fn auto_linking_settles_the_run_work_with_the_link() {
+    let (_temp, catalog) = open_catalog();
+    let run_id = start_run(&catalog);
+    discover(&catalog, run_id);
+
+    catalog
+        .persist_candidate_asset(run_id, IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(counts(&catalog, run_id), (0, 0, 1));
+}
+
+#[test]
+fn parking_work_another_execution_settled_opens_no_review_item() {
+    let (_temp, catalog) = open_catalog();
+    let run_id = start_run(&catalog);
+    discover(&catalog, run_id);
+    catalog
+        .persist_candidate_asset(run_id, IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+
+    let parked = catalog
+        .park_work_for_review(
+            run_id,
+            IDENTITY,
+            new_item(vec![competing_match(201, "Standard")]),
+        )
+        .unwrap();
+
+    assert_eq!(parked, ParkedReview::Settled);
+    assert!(catalog.list_review_items().unwrap().is_empty());
+    assert_eq!(counts(&catalog, run_id), (0, 0, 1));
+}
+
+#[test]
 fn parking_reopens_an_automatically_closed_item() {
     let (_temp, catalog) = open_catalog();
     let first_run = start_run(&catalog);
     let item = parked_item(&catalog, first_run);
-    catalog.supersede_candidate_review(IDENTITY).unwrap();
+    catalog
+        .supersede_candidate_review(start_run(&catalog), IDENTITY)
+        .unwrap();
 
     let reopened = parked_item(&catalog, start_run(&catalog));
 
@@ -543,7 +622,7 @@ fn auto_linking_persists_the_asset_and_closes_the_undecided_item_together() {
     let item = parked_item(&catalog, parked_run);
 
     let imported = catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap();
 
     assert!(imported.is_some());
@@ -557,10 +636,12 @@ fn auto_linking_persists_the_asset_and_closes_the_undecided_item_together() {
 fn auto_linking_a_superseded_candidate_marks_its_item_auto_resolved() {
     let (_temp, catalog) = open_catalog();
     let item = parked_item(&catalog, start_run(&catalog));
-    catalog.supersede_candidate_review(IDENTITY).unwrap();
+    catalog
+        .supersede_candidate_review(start_run(&catalog), IDENTITY)
+        .unwrap();
 
     catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap()
         .unwrap();
 
@@ -579,7 +660,7 @@ fn auto_linking_persists_nothing_once_a_human_decided() {
         .unwrap();
 
     let imported = catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap();
 
     assert_eq!(imported, None);
@@ -595,7 +676,7 @@ fn auto_linking_a_candidate_without_review_item_only_persists_the_asset() {
     let (_temp, catalog) = open_catalog();
 
     let imported = catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap();
 
     assert!(imported.is_some());
@@ -624,11 +705,19 @@ fn assets_by_edition(catalog: &SqliteCatalog) -> Vec<(String, usize)> {
 fn a_later_link_moves_the_candidate_to_its_new_edition() {
     let (_temp, catalog) = open_catalog();
     catalog
-        .persist_candidate_asset(IDENTITY, record_for_edition("Standard", "first-bytes"))
+        .persist_candidate_asset(
+            start_run(&catalog),
+            IDENTITY,
+            record_for_edition("Standard", "first-bytes"),
+        )
         .unwrap();
 
     catalog
-        .persist_candidate_asset(IDENTITY, record_for_edition("Deluxe", "second-bytes"))
+        .persist_candidate_asset(
+            start_run(&catalog),
+            IDENTITY,
+            record_for_edition("Deluxe", "second-bytes"),
+        )
         .unwrap();
 
     assert_eq!(
@@ -641,7 +730,7 @@ fn a_later_link_moves_the_candidate_to_its_new_edition() {
 fn rejecting_a_reopened_candidate_detaches_its_earlier_automatic_link() {
     let (_temp, catalog) = open_catalog();
     catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap();
     let item = parked_item(&catalog, start_run(&catalog));
 
@@ -656,11 +745,12 @@ fn rejecting_a_reopened_candidate_detaches_its_earlier_automatic_link() {
 fn detaching_a_candidate_keeps_identical_bytes_linked_by_another_candidate() {
     let (_temp, catalog) = open_catalog();
     let first = catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap()
         .unwrap();
     catalog
         .persist_candidate_asset(
+            start_run(&catalog),
             "candidate:fixture-provider:mirror",
             PersistAsset {
                 existing_release_edition_id: Some(first.release_edition_id),
@@ -687,7 +777,11 @@ fn detaching_a_candidate_keeps_identical_bytes_linked_by_another_candidate() {
 fn an_accepted_candidate_is_not_linked_to_another_edition() {
     let (_temp, catalog) = open_catalog();
     let standard = catalog
-        .persist_candidate_asset(IDENTITY, record_for_edition("Standard", "standard-bytes"))
+        .persist_candidate_asset(
+            start_run(&catalog),
+            IDENTITY,
+            record_for_edition("Standard", "standard-bytes"),
+        )
         .unwrap()
         .unwrap();
     let run_id = start_run(&catalog);
@@ -726,10 +820,15 @@ fn an_accepted_candidate_is_not_linked_to_another_edition() {
         .unwrap();
 
     let elsewhere = catalog
-        .persist_candidate_asset(IDENTITY, record_for_edition("Deluxe", "deluxe-bytes"))
+        .persist_candidate_asset(
+            start_run(&catalog),
+            IDENTITY,
+            record_for_edition("Deluxe", "deluxe-bytes"),
+        )
         .unwrap();
     let again = catalog
         .persist_candidate_asset(
+            start_run(&catalog),
             IDENTITY,
             PersistAsset {
                 existing_release_edition_id: Some(standard.release_edition_id),
@@ -771,11 +870,12 @@ const OTHER_IDENTITY: &str = "candidate:fixture-provider:same-locator";
 /// edition with its own `label`, and returns the reopened Review Item of the second one.
 fn link_two_candidates_sharing_a_locator(catalog: &SqliteCatalog, label: &str) -> ReviewItem {
     let first = catalog
-        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(start_run(catalog), IDENTITY, auto_linked_record())
         .unwrap()
         .unwrap();
     catalog
         .persist_candidate_asset(
+            start_run(catalog),
             OTHER_IDENTITY,
             PersistAsset {
                 existing_release_edition_id: Some(first.release_edition_id),

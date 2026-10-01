@@ -248,16 +248,19 @@ impl Acquisition<'_> {
                     .reviews
                     .park_work_for_review(self.run_id, &work.key, review)?
                 {
-                    ParkedReview::Parked(_) => Ok(Step::Done(None)),
+                    ParkedReview::Parked(_) | ParkedReview::Settled => Ok(Step::Done(None)),
                     ParkedReview::AlreadyDecided(_) => Ok(Step::Retry),
                 }
             }
             MatchConfidence::Low => {
-                if !self.reviews.supersede_candidate_review(&work.key)? {
-                    return Ok(Step::Retry);
+                if self
+                    .reviews
+                    .supersede_candidate_review(self.run_id, &work.key)?
+                {
+                    Ok(Step::Done(None))
+                } else {
+                    Ok(Step::Retry)
                 }
-                self.runs.complete_work(self.run_id, &work.key)?;
-                Ok(Step::Done(None))
             }
         }
     }
@@ -269,9 +272,9 @@ impl Acquisition<'_> {
             .ok_or(ApplicationError::ReleaseEditionMissing(release_edition_id))
     }
 
-    /// Stores the candidate's original and links it to `release`. The repository checks the
-    /// candidate's Review Item in the same transaction; a conflicting human decision makes the
-    /// caller retry with that decision.
+    /// Stores the candidate's original, links it to `release` and completes the work. The
+    /// repository checks the candidate's Review Item in the same transaction; a conflicting
+    /// human decision makes the caller retry with that decision.
     fn import(
         &self,
         work: &AcquisitionWorkItem,
@@ -280,11 +283,11 @@ impl Acquisition<'_> {
     ) -> Result<Step, ApplicationError> {
         let stored = self.store_original(work)?;
         let record = self.asset_record(work, release, candidate_match, stored);
-        match self.reviews.persist_candidate_asset(&work.key, record)? {
-            Some(imported) => {
-                self.runs.complete_work(self.run_id, &work.key)?;
-                Ok(Step::Done(Some(imported)))
-            }
+        match self
+            .reviews
+            .persist_candidate_asset(self.run_id, &work.key, record)?
+        {
+            Some(imported) => Ok(Step::Done(Some(imported))),
             None => Ok(Step::Retry),
         }
     }
