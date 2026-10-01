@@ -809,6 +809,22 @@ fn distinct_provider_candidates_with_identical_metadata_keep_distinct_work_items
 }
 
 #[test]
+fn blank_provider_candidate_ids_fall_back_to_the_descriptive_identity() {
+    let first = AssetCandidate {
+        provider_candidate_id: Some(String::new()),
+        ..candidate("First Game")
+    };
+    let second = AssetCandidate {
+        provider_candidate_id: Some(String::new()),
+        ..candidate("Second Game")
+    };
+
+    let (vault, _) = acquire_both(first, second);
+
+    assert_eq!(vault.records.borrow().len(), 2);
+}
+
+#[test]
 fn fallback_identity_ignores_case_and_surrounding_whitespace() {
     let original = candidate("Shared Game");
     let rediscovered = AssetCandidate {

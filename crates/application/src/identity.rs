@@ -8,7 +8,12 @@ use game_media_vault_domain::{AssetCandidate, AssetType};
 /// so field values cannot collide through delimiters.
 pub fn candidate_identity(source_id: &str, candidate: &AssetCandidate) -> String {
     let mut identity = "candidate".to_owned();
-    if let Some(provider_candidate_id) = candidate.provider_candidate_id.as_deref() {
+    // A blank provider ID identifies nothing, so it falls back to the descriptive fields.
+    if let Some(provider_candidate_id) = candidate
+        .provider_candidate_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+    {
         for part in [
             source_id,
             provider_candidate_id,
