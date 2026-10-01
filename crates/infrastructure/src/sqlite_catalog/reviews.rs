@@ -134,6 +134,9 @@ impl ReviewRepositoryPort for SqliteCatalog {
                 "acquisition run #{run_id} has no queued work {work_key:?} to park"
             )));
         }
+        // An uncertain match must not affect the library before a human confirms it, so an
+        // earlier automatic link of the candidate goes until the decision.
+        detach_candidate_links(&transaction, &item.candidate_identity, None)?;
         let review_item = select_review_item(&transaction, "id = ?1", params![review_item_id])?
             .ok_or_else(|| PortError(format!("review item #{review_item_id} disappeared")))?;
         transaction.commit().map_err(sql_error)?;

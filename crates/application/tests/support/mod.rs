@@ -471,6 +471,9 @@ impl ReviewRepositoryPort for FakeVault {
             })
             .ok_or_else(|| PortError(format!("queued work {work_key} does not exist")))?;
         work.state = WorkState::Parked(review_item.id);
+        self.candidate_links
+            .borrow_mut()
+            .remove(&review_item.candidate_identity);
         Ok(ParkedReview::Parked(review_item))
     }
 

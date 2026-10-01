@@ -727,16 +727,14 @@ fn a_later_link_moves_the_candidate_to_its_new_edition() {
 }
 
 #[test]
-fn rejecting_a_reopened_candidate_detaches_its_earlier_automatic_link() {
+fn parking_an_uncertain_candidate_detaches_its_earlier_automatic_link() {
     let (_temp, catalog) = open_catalog();
     catalog
         .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
         .unwrap();
-    let item = parked_item(&catalog, start_run(&catalog));
 
-    catalog
-        .decide_review_item(item.id, ReviewDecision::Reject)
-        .unwrap();
+    // An uncertain match must not affect the library before a human confirms it.
+    parked_item(&catalog, start_run(&catalog));
 
     assert_eq!(library_asset_count(&catalog), 0);
 }
