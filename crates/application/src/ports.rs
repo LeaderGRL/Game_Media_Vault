@@ -71,6 +71,16 @@ pub trait ReviewRepositoryPort {
         review_item_id: i64,
         decision: ReviewDecision,
     ) -> Result<Option<ReviewItem>, PortError>;
+
+    /// Persists an Asset that acquisition matched automatically to the candidate with this
+    /// identity and, in the same transaction, closes the candidate's undecided Review Item as
+    /// `AutoResolved`, completing the work parked on it. Persists nothing and returns `None`
+    /// when a human already accepted or rejected the candidate.
+    fn persist_auto_linked_asset(
+        &self,
+        candidate_identity: &str,
+        record: PersistAsset,
+    ) -> Result<Option<ImportedAsset>, PortError>;
 }
 
 /// Persisted Acquisition Runs and their work queue.

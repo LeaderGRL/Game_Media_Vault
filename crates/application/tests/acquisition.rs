@@ -7,8 +7,8 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetTypeSelector, ImportedAsset, LibraryEntry, MatchConfidence,
-    MatchingPolicy, QualityRequirements, RetentionPolicy, ReviewDecision, ReviewStatus, SourceId,
-    SourceSelection,
+    MatchingPolicy, NewReviewItem, QualityRequirements, RetentionPolicy, ReviewDecision,
+    ReviewStatus, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -444,20 +444,36 @@ fn later_run_refreshes_competing_matches_of_a_pending_review() {
 }
 
 #[test]
-fn human_rejection_committed_before_auto_resolution_wins() {
+fn human_rejection_committed_before_the_auto_link_wins() {
     let (threshold, release) = threshold_candidate_and_release();
     let vault = FakeVault::with_library(vec![release]);
     park_in_new_run(&vault, &threshold, stricter_matching_policy());
     *vault.human_decision_before_next_write.borrow_mut() = Some(ReviewDecision::Reject);
 
     let later_run = vault.start_run();
-    let connector = FakeConnector::new(vec![threshold]);
-    let imported = execute(&vault, &connector, later_run).unwrap();
+    let imported = execute(&vault, &FakeConnector::new(vec![threshold]), later_run).unwrap();
 
     assert!(imported.is_empty());
-    assert!(connector.downloads.borrow().is_empty());
+    assert!(vault.records.borrow().is_empty());
     assert_eq!(vault.review_item(0).status, ReviewStatus::Rejected);
     assert_eq!(vault.run(later_run).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn review_opened_by_another_run_during_an_auto_link_is_closed_with_it() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    *vault.review_opened_before_next_auto_link.borrow_mut() = Some(NewReviewItem {
+        candidate_identity: candidate_identity(SOURCE_ID, &smb),
+        candidate: smb.clone(),
+        competing_matches: Vec::new(),
+    });
+    let run_id = vault.start_run();
+
+    let imported = execute(&vault, &FakeConnector::new(vec![smb]), run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
 }
 
 #[test]

@@ -156,6 +156,9 @@ pub struct FakeVault {
     pub human_decision_before_next_write: RefCell<Option<ReviewDecision>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
+    /// Simulates another run opening a Review Item for the candidate right before the next
+    /// automatic link is persisted.
+    pub review_opened_before_next_auto_link: RefCell<Option<NewReviewItem>>,
 }
 
 impl FakeVault {
@@ -474,6 +477,36 @@ impl ReviewRepositoryPort for FakeVault {
             ReviewDecision::Defer => {}
         }
         Ok(Some(decided))
+    }
+
+    fn persist_auto_linked_asset(
+        &self,
+        candidate_identity: &str,
+        record: PersistAsset,
+    ) -> Result<Option<ImportedAsset>, PortError> {
+        if let Some(new_item) = self.review_opened_before_next_auto_link.borrow_mut().take() {
+            let id = self.review_items.borrow().len() as i64 + 1;
+            self.review_items.borrow_mut().push(ReviewItem {
+                id,
+                candidate_identity: new_item.candidate_identity,
+                candidate: new_item.candidate,
+                competing_matches: new_item.competing_matches,
+                decision: None,
+                status: ReviewStatus::Pending,
+            });
+        }
+        if let Some(existing) = self.find_review_item(candidate_identity)? {
+            self.apply_pending_human_decision(existing.id);
+            let status = self.get_review_item(existing.id)?.unwrap().status;
+            match status {
+                ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(None),
+                ReviewStatus::Pending | ReviewStatus::Deferred => {
+                    self.close_review_item(existing.id, ReviewStatus::AutoResolved)?;
+                }
+                ReviewStatus::AutoResolved | ReviewStatus::Superseded => {}
+            }
+        }
+        self.persist_asset(record).map(Some)
     }
 }
 

@@ -1,12 +1,12 @@
 use game_media_vault_application::{
-    AcquisitionRequestInput, ParkedReview, ReviewRepositoryPort, RunRepositoryPort,
+    AcquisitionRequestInput, CatalogPort, ParkedReview, ReviewRepositoryPort, RunRepositoryPort,
     cancel_acquisition_run, load_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal, NewReviewItem, ReleaseAssertion,
-    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem, ReviewMatchCandidate,
-    ReviewStatus, SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset,
+    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::{TempDir, tempdir};
@@ -480,4 +480,82 @@ fn parking_work_already_parked_on_the_same_item_is_idempotent() {
     };
     assert_eq!(parked.id, item.id);
     assert_eq!(counts(&catalog, run_id), (0, 1, 0));
+}
+
+fn auto_linked_record() -> PersistAsset {
+    PersistAsset {
+        existing_game_id: None,
+        existing_release_edition_id: None,
+        match_decision: None,
+        game_title: "Review Game".to_owned(),
+        platform: "Nintendo Entertainment System".to_owned(),
+        region: "USA".to_owned(),
+        edition_name: "Standard".to_owned(),
+        asset_type: AssetType::BoxFront,
+        object_hash: "auto-linked-object".to_owned(),
+        byte_len: 12,
+        original_filename: "front.png".to_owned(),
+        source_id: SourceId::from(SOURCE_ID),
+        source_asset_label: Some("front".to_owned()),
+        source_location: candidate().source_url,
+    }
+}
+
+fn library_asset_count(catalog: &SqliteCatalog) -> usize {
+    catalog
+        .list_library()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.assets.len())
+        .sum()
+}
+
+#[test]
+fn auto_linking_persists_the_asset_and_closes_the_undecided_item_together() {
+    let (_temp, catalog) = open_catalog();
+    let parked_run = start_run(&catalog);
+    let item = parked_item(&catalog, parked_run);
+
+    let imported = catalog
+        .persist_auto_linked_asset(IDENTITY, auto_linked_record())
+        .unwrap();
+
+    assert!(imported.is_some());
+    assert_eq!(library_asset_count(&catalog), 1);
+    let closed = catalog.get_review_item(item.id).unwrap().unwrap();
+    assert_eq!(closed.status, ReviewStatus::AutoResolved);
+    assert_eq!(counts(&catalog, parked_run), (0, 0, 1));
+}
+
+#[test]
+fn auto_linking_persists_nothing_once_a_human_decided() {
+    let (_temp, catalog) = open_catalog();
+    let item = parked_item(&catalog, start_run(&catalog));
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+
+    let imported = catalog
+        .persist_auto_linked_asset(IDENTITY, auto_linked_record())
+        .unwrap();
+
+    assert_eq!(imported, None);
+    assert_eq!(library_asset_count(&catalog), 0);
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Rejected
+    );
+}
+
+#[test]
+fn auto_linking_a_candidate_without_review_item_only_persists_the_asset() {
+    let (_temp, catalog) = open_catalog();
+
+    let imported = catalog
+        .persist_auto_linked_asset(IDENTITY, auto_linked_record())
+        .unwrap();
+
+    assert!(imported.is_some());
+    assert_eq!(library_asset_count(&catalog), 1);
+    assert!(catalog.list_review_items().unwrap().is_empty());
 }

@@ -1,10 +1,11 @@
 use game_media_vault_application::{ParkedReview, PortError, ReviewRepositoryPort};
 use game_media_vault_domain::{
-    NewReviewItem, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus,
+    ImportedAsset, NewReviewItem, PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate,
+    ReviewStatus,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use super::{SqliteCatalog, sql_error};
+use super::{SqliteCatalog, persist_asset_in_transaction, sql_error};
 
 const REVIEW_ITEM_COLUMNS: &str =
     "id, candidate_identity, candidate_json, competing_matches_json, decision_json, status";
@@ -174,6 +175,40 @@ impl ReviewRepositoryPort for SqliteCatalog {
         let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?;
         transaction.commit().map_err(sql_error)?;
         Ok(decided)
+    }
+
+    fn persist_auto_linked_asset(
+        &self,
+        candidate_identity: &str,
+        record: PersistAsset,
+    ) -> Result<Option<ImportedAsset>, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let review_item = select_review_item(
+            &transaction,
+            "candidate_identity = ?1",
+            params![candidate_identity],
+        )?;
+        if let Some(item) = review_item {
+            match item.status {
+                ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(None),
+                ReviewStatus::Pending | ReviewStatus::Deferred => {
+                    set_status_if_undecided(
+                        &transaction,
+                        item.id,
+                        ReviewStatus::AutoResolved,
+                        None,
+                    )?;
+                    complete_parked_work(&transaction, item.id)?;
+                }
+                ReviewStatus::AutoResolved | ReviewStatus::Superseded => {}
+            }
+        }
+        let imported = persist_asset_in_transaction(&transaction, record)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(Some(imported))
     }
 }
 

@@ -7,8 +7,8 @@ use game_media_vault_application::{
     load_review_preview, resolve_review_item,
 };
 use game_media_vault_domain::{
-    AssetCandidate, MatchEvidence, MatchSignal, NewReviewItem, ReviewDecision, ReviewItem,
-    ReviewMatchCandidate, ReviewStatus, SourceId,
+    AssetCandidate, ImportedAsset, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset,
+    ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 use support::*;
 
@@ -177,6 +177,14 @@ impl ReviewRepositoryPort for ClosedDuringDecision {
     ) -> Result<Option<ReviewItem>, PortError> {
         self.item.borrow_mut().status = ReviewStatus::AutoResolved;
         Ok(None)
+    }
+
+    fn persist_auto_linked_asset(
+        &self,
+        _candidate_identity: &str,
+        _record: PersistAsset,
+    ) -> Result<Option<ImportedAsset>, PortError> {
+        unreachable!()
     }
 }
 

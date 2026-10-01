@@ -2,7 +2,7 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, ConnectorCapabilities, ImportedAsset,
     LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset, RetentionPolicy,
-    ReviewDecision, ReviewItem, ReviewStatus, ValidatedMatchingPolicy,
+    ReviewDecision, ReviewItem, ReviewStatus, StoredObject, ValidatedMatchingPolicy,
     confirmed_asset_candidate_match, match_asset_candidate_to_release,
     review_matches_for_asset_candidate,
 };
@@ -219,7 +219,9 @@ impl Acquisition<'_> {
             Some((ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))) => {
                 let release = self.release(*release_edition_id)?;
                 let candidate_match = confirmed_asset_candidate_match(&work.candidate, release);
-                return self.import(work, release, candidate_match).map(Step::Done);
+                return self
+                    .import_confirmed(work, release, candidate_match)
+                    .map(Step::Done);
             }
             Some((ReviewStatus::Rejected, _)) => {
                 self.runs.complete_work(self.run_id, &work.key)?;
@@ -236,14 +238,20 @@ impl Acquisition<'_> {
             match_asset_candidate_to_release(&work.candidate, &self.releases, self.matching_policy);
         match candidate_match.confidence {
             MatchConfidence::High | MatchConfidence::Confirmed => {
-                if !self.close_review(undecided_review_item_id, ReviewStatus::AutoResolved)? {
-                    return Ok(Step::Retry);
-                }
                 // The matcher only links Release Editions taken from `self.releases`.
                 let release =
                     self.release(candidate_match.release_edition_id.unwrap_or_default())?;
-                self.import(work, release, candidate_match.clone())
-                    .map(Step::Done)
+                let stored = self.store_original(work)?;
+                let record = self.asset_record(work, release, candidate_match.clone(), stored);
+                // Closing the candidate's Review Item and persisting the Asset happen in one
+                // transaction, so a review opened or decided concurrently cannot be bypassed.
+                match self.reviews.persist_auto_linked_asset(&work.key, record)? {
+                    Some(imported) => {
+                        self.runs.complete_work(self.run_id, &work.key)?;
+                        Ok(Step::Done(Some(imported)))
+                    }
+                    None => Ok(Step::Retry),
+                }
             }
             MatchConfidence::Medium => {
                 let review = NewReviewItem {
@@ -292,16 +300,38 @@ impl Acquisition<'_> {
             .ok_or(ApplicationError::ReleaseEditionMissing(release_edition_id))
     }
 
-    fn import(
+    /// Imports a candidate whose match a human accepted; that decision is final.
+    fn import_confirmed(
         &self,
         work: &AcquisitionWorkItem,
         release: &LibraryEntry,
         candidate_match: AssetCandidateMatch,
     ) -> Result<Option<ImportedAsset>, ApplicationError> {
+        let stored = self.store_original(work)?;
+        let imported = self.catalog.persist_asset(self.asset_record(
+            work,
+            release,
+            candidate_match,
+            stored,
+        ))?;
+        self.runs.complete_work(self.run_id, &work.key)?;
+        Ok(Some(imported))
+    }
+
+    fn store_original(&self, work: &AcquisitionWorkItem) -> Result<StoredObject, ApplicationError> {
+        let mut stream = self.connector.download(&work.candidate)?;
+        Ok(self.object_store.store_original(stream.as_mut())?)
+    }
+
+    fn asset_record(
+        &self,
+        work: &AcquisitionWorkItem,
+        release: &LibraryEntry,
+        candidate_match: AssetCandidateMatch,
+        stored: StoredObject,
+    ) -> PersistAsset {
         let candidate = &work.candidate;
-        let mut stream = self.connector.download(candidate)?;
-        let stored = self.object_store.store_original(stream.as_mut())?;
-        let imported = self.catalog.persist_asset(PersistAsset {
+        PersistAsset {
             existing_game_id: Some(release.game_id),
             existing_release_edition_id: Some(release.release_edition_id),
             match_decision: Some(candidate_match),
@@ -316,8 +346,6 @@ impl Acquisition<'_> {
             source_id: candidate.source_id.clone(),
             source_asset_label: candidate.source_asset_label.clone(),
             source_location: candidate.source_url.clone(),
-        })?;
-        self.runs.complete_work(self.run_id, &work.key)?;
-        Ok(Some(imported))
+        }
     }
 }
