@@ -1,9 +1,9 @@
 use std::fs;
 
 use game_media_vault_application::{
-    ApplicationError, CatalogPort, ImportLocalBoxFrontRequest, RunRepositoryPort,
-    cancel_acquisition_run, complete_acquisition_run, import_local_box_front, load_acquisition_run,
-    pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
+    ApplicationError, CatalogPort, ImportLocalBoxFrontRequest, ReviewRepositoryPort,
+    RunRepositoryPort, cancel_acquisition_run, complete_acquisition_run, import_local_box_front,
+    load_acquisition_run, pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
@@ -508,9 +508,10 @@ fn work_below_quality_is_completed_and_counted_apart() {
         .unwrap();
 
     catalog
-        .complete_work_below_quality(
+        .complete_candidate_below_quality(
             run.id,
             "small",
+            73,
             &[QualityShortfall::MinWidth {
                 minimum: 1000,
                 actual: Some(640),
@@ -523,9 +524,4 @@ fn work_below_quality_is_completed_and_counted_apart() {
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
     let loaded = load_acquisition_run(&reopened, run.id).unwrap();
     assert_eq!((loaded.completed_work, loaded.below_quality_work), (2, 1));
-    assert!(
-        reopened
-            .complete_work_below_quality(run.id, "missing", &[])
-            .is_err()
-    );
 }

@@ -333,9 +333,10 @@ impl Acquisition<'_> {
             .ok_or(ApplicationError::ReleaseEditionMissing(release_edition_id))
     }
 
-    /// Stores the candidate's original, links it to `release` and completes the work. The
-    /// repository checks the candidate's Review Item in the same transaction; a conflicting
-    /// human decision makes the caller retry with that decision.
+    /// Stores the candidate's original, links it to `release` (unless it falls short of the
+    /// quality requirements) and completes the work. The repository settles the candidate's
+    /// Review Item in the same transaction; a conflicting human decision makes the caller retry
+    /// with that decision.
     fn import(
         &self,
         work: &AcquisitionWorkItem,
@@ -351,9 +352,17 @@ impl Acquisition<'_> {
             .map(|quality| quality.shortfalls(&stored.media))
             .unwrap_or_default();
         if !shortfalls.is_empty() {
-            self.runs
-                .complete_work_below_quality(self.run_id, &work.key, &shortfalls)?;
-            return Ok(Step::Done(None));
+            let settled = self.reviews.complete_candidate_below_quality(
+                self.run_id,
+                &work.key,
+                release.release_edition_id,
+                &shortfalls,
+            )?;
+            return Ok(if settled {
+                Step::Done(None)
+            } else {
+                Step::Retry
+            });
         }
         let record = self.asset_record(work, release, candidate_match, stored);
         match self

@@ -115,6 +115,21 @@ pub trait ReviewRepositoryPort {
         candidate_identity: &str,
         record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError>;
+
+    /// Completes the candidate's work in `run_id` without linking its original, which fell
+    /// short of the run's quality requirements, and records the shortfalls so the candidate
+    /// stays explainable. The match to `release_edition_id` still settles the candidate in the
+    /// same transaction: its links to other editions are removed and an undecided or superseded
+    /// Review Item is closed as `AutoResolved`, requeueing the work parked on it so every run
+    /// applies its own requirements. Changes nothing and returns `false` when a human rejected
+    /// the candidate or accepted another Release Edition.
+    fn complete_candidate_below_quality(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+        release_edition_id: i64,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError>;
 }
 
 /// Persisted Acquisition Runs and their work queue.
@@ -152,15 +167,6 @@ pub trait RunRepositoryPort {
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
-
-    /// Completes queued work whose downloaded original fell short of the request's quality
-    /// requirements, recording how so the candidate stays explainable.
-    fn complete_work_below_quality(
-        &self,
-        run_id: i64,
-        work_key: &str,
-        shortfalls: &[QualityShortfall],
-    ) -> Result<(), PortError>;
 }
 
 /// Source-specific integration that discovers and downloads Asset Candidates.

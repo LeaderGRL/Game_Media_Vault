@@ -1,7 +1,7 @@
 use game_media_vault_application::{PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, QualityShortfall,
+    AcquisitionWorkItem,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -173,36 +173,12 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        self.complete_queued_work(run_id, work_key, None)
-    }
-
-    fn complete_work_below_quality(
-        &self,
-        run_id: i64,
-        work_key: &str,
-        shortfalls: &[QualityShortfall],
-    ) -> Result<(), PortError> {
-        let shortfalls_json = serde_json::to_string(shortfalls).map_err(|error| {
-            PortError(format!("failed to serialize quality shortfalls: {error}"))
-        })?;
-        self.complete_queued_work(run_id, work_key, Some(&shortfalls_json))
-    }
-}
-
-impl SqliteCatalog {
-    /// Completes queued work; work already settled by another execution is left unchanged.
-    fn complete_queued_work(
-        &self,
-        run_id: i64,
-        work_key: &str,
-        quality_shortfalls_json: Option<&str>,
-    ) -> Result<(), PortError> {
         let connection = self.connect()?;
         connection
             .execute(
-                "UPDATE acquisition_run_work SET state = 'done', quality_shortfalls_json = ?3
+                "UPDATE acquisition_run_work SET state = 'done'
                  WHERE run_id = ?1 AND work_key = ?2 AND state = 'queued'",
-                params![run_id, work_key, quality_shortfalls_json],
+                params![run_id, work_key],
             )
             .map_err(sql_error)?;
         let exists: bool = connection

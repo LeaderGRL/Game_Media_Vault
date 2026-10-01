@@ -8,7 +8,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AssetCandidate, ImportedAsset, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset,
-    ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
+    QualityShortfall, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 use support::*;
 
@@ -189,6 +189,16 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         _candidate_identity: &str,
         _record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError> {
+        unreachable!()
+    }
+
+    fn complete_candidate_below_quality(
+        &self,
+        _run_id: i64,
+        _candidate_identity: &str,
+        _release_edition_id: i64,
+        _shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError> {
         unreachable!()
     }
 }

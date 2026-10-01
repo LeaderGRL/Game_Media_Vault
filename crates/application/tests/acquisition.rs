@@ -880,6 +880,62 @@ fn an_original_of_an_unaccepted_media_type_is_not_linked() {
 }
 
 #[test]
+fn a_below_quality_original_still_settles_the_review_of_a_now_certain_match() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    let first_run = park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    let strict_run = quality_run(
+        &vault,
+        QualityRequirements {
+            min_width: Some(1000),
+            ..QualityRequirements::default()
+        },
+    );
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![threshold]),
+        strict_run,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert_eq!(vault.run(strict_run).below_quality_work, 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+    // Nothing was linked, so the parked run applies its own requirements to the candidate.
+    assert_eq!(vault.work_states(first_run), vec![WorkState::Queued]);
+    assert_eq!(vault.run(first_run).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn a_human_decision_landing_before_a_below_quality_completion_wins() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    let strict_run = quality_run(
+        &vault,
+        QualityRequirements {
+            min_width: Some(1000),
+            ..QualityRequirements::default()
+        },
+    );
+    *vault.human_decision_before_next_write.borrow_mut() = Some(ReviewDecision::Reject);
+
+    execute_storing(
+        &vault,
+        &FakeConnector::new(vec![threshold]),
+        strict_run,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert_eq!(vault.review_item(0).status, ReviewStatus::Rejected);
+    assert_eq!(vault.work_states(strict_run), vec![WorkState::Done]);
+    assert!(vault.quality_shortfalls(strict_run).is_empty());
+}
+
+#[test]
 fn rejects_acquisition_limits_until_the_scheduler_slice_can_enforce_them() {
     let error = plan_error(request_with(|draft| {
         draft.limits = AcquisitionLimits {

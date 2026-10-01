@@ -411,25 +411,6 @@ impl RunRepositoryPort for FakeVault {
         }
         Ok(())
     }
-
-    fn complete_work_below_quality(
-        &self,
-        run_id: i64,
-        work_key: &str,
-        shortfalls: &[QualityShortfall],
-    ) -> Result<(), PortError> {
-        self.complete_work(run_id, work_key)?;
-        let mut runs = self.runs.borrow_mut();
-        let work = runs
-            .get_mut(&run_id)
-            .unwrap()
-            .work
-            .iter_mut()
-            .find(|work| work.item.key == work_key)
-            .unwrap();
-        work.shortfalls = shortfalls.to_vec();
-        Ok(())
-    }
 }
 
 impl ReviewRepositoryPort for FakeVault {
@@ -639,6 +620,59 @@ impl ReviewRepositoryPort for FakeVault {
             .insert(candidate_identity.to_owned(), imported.release_edition_id);
         self.complete_work(run_id, candidate_identity)?;
         Ok(Some(imported))
+    }
+
+    fn complete_candidate_below_quality(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+        release_edition_id: i64,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError> {
+        self.open_scheduled_review();
+        if let Some(existing) = self.find_review_item(candidate_identity)? {
+            self.apply_pending_human_decision(existing.id);
+            let current = self.get_review_item(existing.id)?.unwrap();
+            match (current.status, current.decision) {
+                (ReviewStatus::Rejected, _) => return Ok(false),
+                (
+                    ReviewStatus::Accepted,
+                    Some(ReviewDecision::Accept {
+                        release_edition_id: accepted,
+                    }),
+                ) if accepted != release_edition_id => return Ok(false),
+                (ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Superseded, _) => {
+                    {
+                        let mut review_items = self.review_items.borrow_mut();
+                        let item = review_items
+                            .iter_mut()
+                            .find(|item| item.id == existing.id)
+                            .unwrap();
+                        item.status = ReviewStatus::AutoResolved;
+                        item.decision = None;
+                    }
+                    self.move_parked_work(existing.id, WorkState::Queued, false);
+                }
+                _ => {}
+            }
+        }
+        {
+            let mut links = self.candidate_links.borrow_mut();
+            if links.get(candidate_identity) != Some(&release_edition_id) {
+                links.remove(candidate_identity);
+            }
+        }
+        self.complete_work(run_id, candidate_identity)?;
+        let mut runs = self.runs.borrow_mut();
+        let work = runs
+            .get_mut(&run_id)
+            .unwrap()
+            .work
+            .iter_mut()
+            .find(|work| work.item.key == candidate_identity)
+            .unwrap();
+        work.shortfalls = shortfalls.to_vec();
+        Ok(true)
     }
 }
 
