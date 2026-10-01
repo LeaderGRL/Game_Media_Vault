@@ -159,6 +159,8 @@ pub struct FakeVault {
     /// Simulates another run opening a Review Item for the candidate right before the next
     /// automatic link is persisted.
     pub review_opened_before_next_auto_link: RefCell<Option<NewReviewItem>>,
+    /// Release Edition each acquisition candidate is currently linked to.
+    pub candidate_links: RefCell<BTreeMap<String, i64>>,
 }
 
 impl FakeVault {
@@ -469,17 +471,26 @@ impl ReviewRepositoryPort for FakeVault {
             item.decision = Some(decision.clone());
             item.clone()
         };
+        let mut links = self.candidate_links.borrow_mut();
         match decision {
-            ReviewDecision::Accept { .. } => {
+            ReviewDecision::Accept { release_edition_id } => {
+                if links.get(&decided.candidate_identity) != Some(&release_edition_id) {
+                    links.remove(&decided.candidate_identity);
+                }
+                drop(links);
                 self.move_parked_work(review_item_id, WorkState::Queued, false)
             }
-            ReviewDecision::Reject => self.move_parked_work(review_item_id, WorkState::Done, true),
+            ReviewDecision::Reject => {
+                links.remove(&decided.candidate_identity);
+                drop(links);
+                self.move_parked_work(review_item_id, WorkState::Done, true)
+            }
             ReviewDecision::Defer => {}
         }
         Ok(Some(decided))
     }
 
-    fn persist_auto_linked_asset(
+    fn persist_candidate_asset(
         &self,
         candidate_identity: &str,
         record: PersistAsset,
@@ -497,16 +508,25 @@ impl ReviewRepositoryPort for FakeVault {
         }
         if let Some(existing) = self.find_review_item(candidate_identity)? {
             self.apply_pending_human_decision(existing.id);
-            let status = self.get_review_item(existing.id)?.unwrap().status;
-            match status {
-                ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(None),
-                ReviewStatus::Pending | ReviewStatus::Deferred => {
+            let current = self.get_review_item(existing.id)?.unwrap();
+            match (current.status, current.decision) {
+                (ReviewStatus::Rejected, _) => return Ok(None),
+                (ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))
+                    if record.existing_release_edition_id != Some(release_edition_id) =>
+                {
+                    return Ok(None);
+                }
+                (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
                     self.close_review_item(existing.id, ReviewStatus::AutoResolved)?;
                 }
-                ReviewStatus::AutoResolved | ReviewStatus::Superseded => {}
+                _ => {}
             }
         }
-        self.persist_asset(record).map(Some)
+        let imported = self.persist_asset(record)?;
+        self.candidate_links
+            .borrow_mut()
+            .insert(candidate_identity.to_owned(), imported.release_edition_id);
+        Ok(Some(imported))
     }
 }
 

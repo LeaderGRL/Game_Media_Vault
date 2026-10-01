@@ -20,7 +20,6 @@ const REVIEW_RACE_ATTEMPTS: usize = 3;
 struct Acquisition<'a> {
     runs: &'a dyn RunRepositoryPort,
     reviews: &'a dyn ReviewRepositoryPort,
-    catalog: &'a dyn CatalogPort,
     object_store: &'a dyn ObjectStorePort,
     connector: &'a dyn ConnectorPort,
     run_id: i64,
@@ -63,7 +62,6 @@ pub fn acquire_run_with_connector(
     let acquisition = Acquisition {
         runs,
         reviews,
-        catalog,
         object_store,
         connector,
         run_id,
@@ -219,9 +217,7 @@ impl Acquisition<'_> {
             Some((ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))) => {
                 let release = self.release(*release_edition_id)?;
                 let candidate_match = confirmed_asset_candidate_match(&work.candidate, release);
-                return self
-                    .import_confirmed(work, release, candidate_match)
-                    .map(Step::Done);
+                return self.import(work, release, candidate_match);
             }
             Some((ReviewStatus::Rejected, _)) => {
                 self.runs.complete_work(self.run_id, &work.key)?;
@@ -241,17 +237,7 @@ impl Acquisition<'_> {
                 // The matcher only links Release Editions taken from `self.releases`.
                 let release =
                     self.release(candidate_match.release_edition_id.unwrap_or_default())?;
-                let stored = self.store_original(work)?;
-                let record = self.asset_record(work, release, candidate_match.clone(), stored);
-                // Closing the candidate's Review Item and persisting the Asset happen in one
-                // transaction, so a review opened or decided concurrently cannot be bypassed.
-                match self.reviews.persist_auto_linked_asset(&work.key, record)? {
-                    Some(imported) => {
-                        self.runs.complete_work(self.run_id, &work.key)?;
-                        Ok(Step::Done(Some(imported)))
-                    }
-                    None => Ok(Step::Retry),
-                }
+                self.import(work, release, candidate_match.clone())
             }
             MatchConfidence::Medium => {
                 let review = NewReviewItem {
@@ -300,22 +286,24 @@ impl Acquisition<'_> {
             .ok_or(ApplicationError::ReleaseEditionMissing(release_edition_id))
     }
 
-    /// Imports a candidate whose match a human accepted; that decision is final.
-    fn import_confirmed(
+    /// Stores the candidate's original and links it to `release`. The repository checks the
+    /// candidate's Review Item in the same transaction; a conflicting human decision makes the
+    /// caller retry with that decision.
+    fn import(
         &self,
         work: &AcquisitionWorkItem,
         release: &LibraryEntry,
         candidate_match: AssetCandidateMatch,
-    ) -> Result<Option<ImportedAsset>, ApplicationError> {
+    ) -> Result<Step, ApplicationError> {
         let stored = self.store_original(work)?;
-        let imported = self.catalog.persist_asset(self.asset_record(
-            work,
-            release,
-            candidate_match,
-            stored,
-        ))?;
-        self.runs.complete_work(self.run_id, &work.key)?;
-        Ok(Some(imported))
+        let record = self.asset_record(work, release, candidate_match, stored);
+        match self.reviews.persist_candidate_asset(&work.key, record)? {
+            Some(imported) => {
+                self.runs.complete_work(self.run_id, &work.key)?;
+                Ok(Step::Done(Some(imported)))
+            }
+            None => Ok(Step::Retry),
+        }
     }
 
     fn store_original(&self, work: &AcquisitionWorkItem) -> Result<StoredObject, ApplicationError> {

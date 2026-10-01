@@ -64,19 +64,20 @@ pub trait ReviewRepositoryPort {
 
     /// Records a human decision on an undecided item and moves its parked work: accepting
     /// requeues it in runs that are not cancelled (reopening completed runs), rejecting
-    /// completes it, deferring keeps it parked. Returns `None` when the item is no longer
-    /// undecided.
+    /// completes it and detaches the Assets linked to the candidate, deferring keeps it parked.
+    /// Returns `None` when the item is no longer undecided.
     fn decide_review_item(
         &self,
         review_item_id: i64,
         decision: ReviewDecision,
     ) -> Result<Option<ReviewItem>, PortError>;
 
-    /// Persists an Asset that acquisition matched automatically to the candidate with this
-    /// identity and, in the same transaction, closes the candidate's undecided Review Item as
-    /// `AutoResolved`, completing the work parked on it. Persists nothing and returns `None`
-    /// when a human already accepted or rejected the candidate.
-    fn persist_auto_linked_asset(
+    /// Persists an Asset acquired for the candidate with this identity, in one transaction that
+    /// keeps the candidate linked to a single Release Edition: links of the same candidate to
+    /// other editions are removed, and an undecided Review Item is closed as `AutoResolved`
+    /// (completing the work parked on it). Persists nothing and returns `None` when a human
+    /// rejected the candidate or accepted another Release Edition.
+    fn persist_candidate_asset(
         &self,
         candidate_identity: &str,
         record: PersistAsset,

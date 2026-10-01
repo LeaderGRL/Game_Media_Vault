@@ -5,7 +5,10 @@ use game_media_vault_domain::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use super::{SqliteCatalog, persist_asset_in_transaction, sql_error};
+use super::{
+    SqliteCatalog, detach_candidate_links, persist_asset_in_transaction, sql_error,
+    tag_candidate_provenance,
+};
 
 const REVIEW_ITEM_COLUMNS: &str =
     "id, candidate_identity, candidate_json, competing_matches_json, decision_json, status";
@@ -167,17 +170,29 @@ impl ReviewRepositoryPort for SqliteCatalog {
         if !set_status_if_undecided(&transaction, review_item_id, status, Some(&decision_json))? {
             return Ok(None);
         }
-        match status {
-            ReviewStatus::Accepted => requeue_parked_work(&transaction, review_item_id)?,
-            ReviewStatus::Rejected => complete_parked_work(&transaction, review_item_id)?,
-            _ => {}
+        let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?
+            .ok_or_else(|| PortError(format!("review item #{review_item_id} disappeared")))?;
+        match decision {
+            ReviewDecision::Accept { release_edition_id } => {
+                requeue_parked_work(&transaction, review_item_id)?;
+                detach_candidate_links(
+                    &transaction,
+                    &decided.candidate_identity,
+                    Some(release_edition_id),
+                )?;
+            }
+            ReviewDecision::Reject => {
+                complete_parked_work(&transaction, review_item_id)?;
+                detach_candidate_links(&transaction, &decided.candidate_identity, None)?;
+            }
+            ReviewDecision::Defer => {}
         }
-        let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?;
+        let decided = Some(decided);
         transaction.commit().map_err(sql_error)?;
         Ok(decided)
     }
 
-    fn persist_auto_linked_asset(
+    fn persist_candidate_asset(
         &self,
         candidate_identity: &str,
         record: PersistAsset,
@@ -192,9 +207,14 @@ impl ReviewRepositoryPort for SqliteCatalog {
             params![candidate_identity],
         )?;
         if let Some(item) = review_item {
-            match item.status {
-                ReviewStatus::Accepted | ReviewStatus::Rejected => return Ok(None),
-                ReviewStatus::Pending | ReviewStatus::Deferred => {
+            match (item.status, item.decision) {
+                (ReviewStatus::Rejected, _) => return Ok(None),
+                (ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))
+                    if record.existing_release_edition_id != Some(release_edition_id) =>
+                {
+                    return Ok(None);
+                }
+                (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
                     set_status_if_undecided(
                         &transaction,
                         item.id,
@@ -203,10 +223,24 @@ impl ReviewRepositoryPort for SqliteCatalog {
                     )?;
                     complete_parked_work(&transaction, item.id)?;
                 }
-                ReviewStatus::AutoResolved | ReviewStatus::Superseded => {}
+                _ => {}
             }
         }
+        let source_id = record.source_id.clone();
+        let source_location = record.source_location.clone();
         let imported = persist_asset_in_transaction(&transaction, record)?;
+        tag_candidate_provenance(
+            &transaction,
+            &imported,
+            source_id.as_str(),
+            &source_location,
+            candidate_identity,
+        )?;
+        detach_candidate_links(
+            &transaction,
+            candidate_identity,
+            Some(imported.release_edition_id),
+        )?;
         transaction.commit().map_err(sql_error)?;
         Ok(Some(imported))
     }

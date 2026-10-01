@@ -179,7 +179,7 @@ impl ReviewRepositoryPort for ClosedDuringDecision {
         Ok(None)
     }
 
-    fn persist_auto_linked_asset(
+    fn persist_candidate_asset(
         &self,
         _candidate_identity: &str,
         _record: PersistAsset,

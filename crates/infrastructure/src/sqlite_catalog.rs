@@ -873,6 +873,81 @@ fn persist_release_assertions(
     Ok(())
 }
 
+/// Records which acquisition candidate produced a provenance row.
+fn tag_candidate_provenance(
+    transaction: &Transaction<'_>,
+    imported: &ImportedAsset,
+    record_source_id: &str,
+    record_source_location: &str,
+    candidate_identity: &str,
+) -> Result<(), PortError> {
+    transaction
+        .execute(
+            "UPDATE asset_provenance SET candidate_identity = ?1
+             WHERE asset_id = ?2 AND source_kind = ?3 AND source_location = ?4",
+            params![
+                candidate_identity,
+                imported.asset_id,
+                record_source_id,
+                record_source_location
+            ],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
+/// Removes the candidate's acquisition links, except to `keep_release_edition_id`. Assets left
+/// without provenance leave the library; their original objects stay in the store until vault
+/// verification collects them.
+fn detach_candidate_links(
+    transaction: &Transaction<'_>,
+    candidate_identity: &str,
+    keep_release_edition_id: Option<i64>,
+) -> Result<(), PortError> {
+    let detached = transaction
+        .prepare(
+            "SELECT provenance.id, provenance.asset_id
+             FROM asset_provenance AS provenance
+             JOIN assets AS asset ON asset.id = provenance.asset_id
+             WHERE provenance.candidate_identity = ?1
+               AND (?2 IS NULL OR asset.release_edition_id != ?2)",
+        )
+        .map_err(sql_error)?
+        .query_map(
+            params![candidate_identity, keep_release_edition_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    for (provenance_id, asset_id) in detached {
+        transaction
+            .execute(
+                "DELETE FROM asset_match_decisions
+                 WHERE (asset_id, source_kind, source_location) IN (
+                     SELECT asset_id, source_kind, source_location
+                     FROM asset_provenance WHERE id = ?1
+                 )",
+                params![provenance_id],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM asset_provenance WHERE id = ?1",
+                params![provenance_id],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM assets WHERE id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM asset_provenance WHERE asset_id = ?1)",
+                params![asset_id],
+            )
+            .map_err(sql_error)?;
+    }
+    Ok(())
+}
+
 fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
 }

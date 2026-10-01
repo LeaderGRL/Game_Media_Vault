@@ -517,7 +517,7 @@ fn auto_linking_persists_the_asset_and_closes_the_undecided_item_together() {
     let item = parked_item(&catalog, parked_run);
 
     let imported = catalog
-        .persist_auto_linked_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
         .unwrap();
 
     assert!(imported.is_some());
@@ -536,7 +536,7 @@ fn auto_linking_persists_nothing_once_a_human_decided() {
         .unwrap();
 
     let imported = catalog
-        .persist_auto_linked_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
         .unwrap();
 
     assert_eq!(imported, None);
@@ -552,10 +552,124 @@ fn auto_linking_a_candidate_without_review_item_only_persists_the_asset() {
     let (_temp, catalog) = open_catalog();
 
     let imported = catalog
-        .persist_auto_linked_asset(IDENTITY, auto_linked_record())
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
         .unwrap();
 
     assert!(imported.is_some());
     assert_eq!(library_asset_count(&catalog), 1);
     assert!(catalog.list_review_items().unwrap().is_empty());
+}
+
+fn record_for_edition(edition_name: &str, object_hash: &str) -> PersistAsset {
+    PersistAsset {
+        edition_name: edition_name.to_owned(),
+        object_hash: object_hash.to_owned(),
+        ..auto_linked_record()
+    }
+}
+
+fn assets_by_edition(catalog: &SqliteCatalog) -> Vec<(String, usize)> {
+    catalog
+        .list_library()
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.edition_name, entry.assets.len()))
+        .collect()
+}
+
+#[test]
+fn a_later_link_moves_the_candidate_to_its_new_edition() {
+    let (_temp, catalog) = open_catalog();
+    catalog
+        .persist_candidate_asset(IDENTITY, record_for_edition("Standard", "first-bytes"))
+        .unwrap();
+
+    catalog
+        .persist_candidate_asset(IDENTITY, record_for_edition("Deluxe", "second-bytes"))
+        .unwrap();
+
+    assert_eq!(
+        assets_by_edition(&catalog),
+        vec![("Standard".to_owned(), 0), ("Deluxe".to_owned(), 1)]
+    );
+}
+
+#[test]
+fn rejecting_a_reopened_candidate_detaches_its_earlier_automatic_link() {
+    let (_temp, catalog) = open_catalog();
+    catalog
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .unwrap();
+    let item = parked_item(&catalog, start_run(&catalog));
+
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+
+    assert_eq!(library_asset_count(&catalog), 0);
+}
+
+#[test]
+fn detaching_a_candidate_keeps_identical_bytes_linked_by_another_candidate() {
+    let (_temp, catalog) = open_catalog();
+    let first = catalog
+        .persist_candidate_asset(IDENTITY, auto_linked_record())
+        .unwrap()
+        .unwrap();
+    catalog
+        .persist_candidate_asset(
+            "candidate:fixture-provider:mirror",
+            PersistAsset {
+                existing_release_edition_id: Some(first.release_edition_id),
+                source_location: "https://example.invalid/mirror/front.png".to_owned(),
+                ..auto_linked_record()
+            },
+        )
+        .unwrap();
+    let item = parked_item(&catalog, start_run(&catalog));
+
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+
+    let library = catalog.list_library().unwrap();
+    assert_eq!(library[0].assets.len(), 1);
+    assert_eq!(
+        library[0].assets[0].provenance[0].source_location,
+        "https://example.invalid/mirror/front.png"
+    );
+}
+
+#[test]
+fn an_accepted_candidate_is_not_linked_to_another_edition() {
+    let (_temp, catalog) = open_catalog();
+    let standard = catalog
+        .persist_candidate_asset(IDENTITY, record_for_edition("Standard", "standard-bytes"))
+        .unwrap()
+        .unwrap();
+    let item = parked_item(&catalog, start_run(&catalog));
+    catalog
+        .decide_review_item(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: standard.release_edition_id,
+            },
+        )
+        .unwrap();
+
+    let elsewhere = catalog
+        .persist_candidate_asset(IDENTITY, record_for_edition("Deluxe", "deluxe-bytes"))
+        .unwrap();
+    let again = catalog
+        .persist_candidate_asset(
+            IDENTITY,
+            PersistAsset {
+                existing_release_edition_id: Some(standard.release_edition_id),
+                ..record_for_edition("Standard", "standard-bytes")
+            },
+        )
+        .unwrap();
+
+    assert_eq!(elsewhere, None);
+    assert!(again.is_some());
 }

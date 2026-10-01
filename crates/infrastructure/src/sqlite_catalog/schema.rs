@@ -67,6 +67,7 @@ const SCHEMA: &str = "
         source_kind TEXT NOT NULL,
         source_location TEXT NOT NULL,
         source_asset_label TEXT,
+        candidate_identity TEXT,
         UNIQUE(asset_id, source_kind, source_location)
     );
     CREATE TABLE asset_match_decisions (
@@ -120,6 +121,8 @@ const SCHEMA: &str = "
     CREATE INDEX idx_game_normalized_title ON games(normalized_title);
     CREATE INDEX idx_asset_release ON assets(release_edition_id);
     CREATE INDEX idx_provenance_asset ON asset_provenance(asset_id);
+    CREATE INDEX idx_provenance_candidate ON asset_provenance(candidate_identity)
+        WHERE candidate_identity IS NOT NULL;
     CREATE INDEX idx_run_work_state ON acquisition_run_work(run_id, state, id);
     CREATE INDEX idx_run_work_review ON acquisition_run_work(review_item_id)
         WHERE review_item_id IS NOT NULL;

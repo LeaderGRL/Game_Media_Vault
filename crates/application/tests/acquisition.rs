@@ -460,6 +460,26 @@ fn human_rejection_committed_before_the_auto_link_wins() {
 }
 
 #[test]
+fn rejecting_a_reopened_review_detaches_the_earlier_automatic_link() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let identity = candidate_identity(SOURCE_ID, &threshold);
+    let vault = FakeVault::with_library(vec![release]);
+    let linking_run = vault.start_run();
+    execute(
+        &vault,
+        &FakeConnector::new(vec![threshold.clone()]),
+        linking_run,
+    )
+    .unwrap();
+    assert_eq!(vault.candidate_links.borrow().get(&identity), Some(&501));
+
+    park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    resolve_review_item(&vault, vault.review_item(0).id, ReviewDecision::Reject).unwrap();
+
+    assert_eq!(vault.candidate_links.borrow().get(&identity), None);
+}
+
+#[test]
 fn review_opened_by_another_run_during_an_auto_link_is_closed_with_it() {
     let smb = candidate("Super Mario Bros.");
     let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
