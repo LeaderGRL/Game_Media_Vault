@@ -46,6 +46,21 @@ describe("AcquireView", () => {
     expect(onStart.mock.calls[0][0].quality).toEqual({ min_width: 1000, min_height: 1400 });
   });
 
+  it("refuses a pixel size that is not a whole number of pixels", () => {
+    const onStart = vi.fn();
+    render(<AcquireView starting={false} onStart={onStart} />);
+
+    fireEvent.change(screen.getByLabelText("Minimum width (px, empty for any)"), {
+      target: { value: "12.5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(onStart).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Minimum width must be a whole number of pixels",
+    );
+  });
+
   it("lets a whole asset type family be selected independently of its types", () => {
     const onStart = vi.fn();
     render(<AcquireView starting={false} onStart={onStart} />);

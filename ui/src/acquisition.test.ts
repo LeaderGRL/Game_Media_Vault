@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { ASSET_TYPE_FAMILIES, buildAcquisitionRequest, emptyAcquisitionForm } from "./acquisition";
+import {
+  ASSET_TYPE_FAMILIES,
+  buildAcquisitionRequest,
+  emptyAcquisitionForm,
+  pixelSizeProblem,
+} from "./acquisition";
 
 describe("buildAcquisitionRequest", () => {
   it("turns the form into the shared Acquisition Request draft", () => {
@@ -38,6 +43,18 @@ describe("buildAcquisitionRequest", () => {
       min_height: 1600,
     });
     expect(buildAcquisitionRequest(base).quality).toBeNull();
+  });
+
+  it("explains pixel sizes the vault cannot store", () => {
+    const base = emptyAcquisitionForm();
+
+    // Pixel sizes are unsigned 32-bit integers in the vault.
+    for (const value of ["abc", "-5", "12.5", "1e3", "4294967296"]) {
+      expect(pixelSizeProblem({ ...base, minHeight: value })).toBe(
+        "Minimum height must be a whole number of pixels up to 4294967295.",
+      );
+    }
+    expect(pixelSizeProblem({ ...base, minWidth: " 4294967295 ", minHeight: "" })).toBeNull();
   });
 
   it("targets all games when no game is listed and keeps Auto explicit", () => {
