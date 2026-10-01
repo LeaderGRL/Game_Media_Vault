@@ -2,7 +2,9 @@ use std::io::Read;
 
 use game_media_vault_domain::{ReviewDecision, ReviewItem};
 
-use crate::{ApplicationError, ConnectorPort, PortError, ReviewRepositoryPort};
+use crate::{
+    ApplicationError, ConnectorPort, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewPreview {
@@ -40,13 +42,28 @@ pub fn resolve_review_item(
             release_edition_id,
         });
     }
-    match reviews.decide_review_item(review_item_id, decision)? {
-        Some(decided) => Ok(decided),
-        // Acquisition closed the item after it was read.
-        None => Err(ApplicationError::ReviewItemNotActionable {
-            review_item_id,
-            status: load_review_item(reviews, review_item_id)?.status,
-        }),
+    // The checks above give fast feedback; the repository repeats them atomically because
+    // acquisition may close or refresh the item in between.
+    match reviews.decide_review_item(review_item_id, decision.clone())? {
+        ReviewDecisionOutcome::Recorded(decided) => Ok(*decided),
+        ReviewDecisionOutcome::NotFound => {
+            Err(ApplicationError::ReviewItemNotFound(review_item_id))
+        }
+        ReviewDecisionOutcome::NotUndecided(status) => {
+            Err(ApplicationError::ReviewItemNotActionable {
+                review_item_id,
+                status,
+            })
+        }
+        ReviewDecisionOutcome::NotCompeting => {
+            Err(ApplicationError::ReviewAcceptanceNotCompeting {
+                review_item_id,
+                release_edition_id: match decision {
+                    ReviewDecision::Accept { release_edition_id } => release_edition_id,
+                    _ => 0,
+                },
+            })
+        }
     }
 }
 

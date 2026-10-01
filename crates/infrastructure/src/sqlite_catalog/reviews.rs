@@ -1,4 +1,6 @@
-use game_media_vault_application::{ParkedReview, PortError, ReviewRepositoryPort};
+use game_media_vault_application::{
+    ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
+};
 use game_media_vault_domain::{
     ImportedAsset, NewReviewItem, PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate,
     ReviewStatus,
@@ -156,7 +158,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
         &self,
         review_item_id: i64,
         decision: ReviewDecision,
-    ) -> Result<Option<ReviewItem>, PortError> {
+    ) -> Result<ReviewDecisionOutcome, PortError> {
         let decision_json = to_json(&decision, "review decision")?;
         let status = match decision {
             ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
@@ -167,9 +169,23 @@ impl ReviewRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        if !set_status_if_undecided(&transaction, review_item_id, status, Some(&decision_json))? {
-            return Ok(None);
+        // The write lock is held from here on, so the checked state is the decided state.
+        let Some(current) = select_review_item(&transaction, "id = ?1", params![review_item_id])?
+        else {
+            return Ok(ReviewDecisionOutcome::NotFound);
+        };
+        if !current.status.is_undecided() {
+            return Ok(ReviewDecisionOutcome::NotUndecided(current.status));
         }
+        if let ReviewDecision::Accept { release_edition_id } = decision
+            && !current
+                .competing_matches
+                .iter()
+                .any(|candidate| candidate.release_edition_id == release_edition_id)
+        {
+            return Ok(ReviewDecisionOutcome::NotCompeting);
+        }
+        set_status_if_undecided(&transaction, review_item_id, status, Some(&decision_json))?;
         let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?
             .ok_or_else(|| PortError(format!("review item #{review_item_id} disappeared")))?;
         match decision {
@@ -187,9 +203,8 @@ impl ReviewRepositoryPort for SqliteCatalog {
             }
             ReviewDecision::Defer => {}
         }
-        let decided = Some(decided);
         transaction.commit().map_err(sql_error)?;
-        Ok(decided)
+        Ok(ReviewDecisionOutcome::Recorded(Box::new(decided)))
     }
 
     fn persist_candidate_asset(

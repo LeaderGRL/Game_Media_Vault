@@ -3,8 +3,8 @@ mod support;
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    ApplicationError, ParkedReview, PortError, ReviewRepositoryPort, list_review_items,
-    load_review_preview, resolve_review_item,
+    ApplicationError, ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
+    list_review_items, load_review_preview, resolve_review_item,
 };
 use game_media_vault_domain::{
     AssetCandidate, ImportedAsset, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset,
@@ -139,12 +139,13 @@ fn resolving_an_unknown_item_reports_it_missing() {
     assert_eq!(error, ApplicationError::ReviewItemNotFound(99));
 }
 
-/// Review repository where acquisition closes the item between the read and the decision.
-struct ClosedDuringDecision {
+/// Review repository where acquisition changes the item between the read and the decision.
+struct ChangedDuringDecision {
+    outcome: ReviewDecisionOutcome,
     item: RefCell<ReviewItem>,
 }
 
-impl ReviewRepositoryPort for ClosedDuringDecision {
+impl ReviewRepositoryPort for ChangedDuringDecision {
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError> {
         Ok(vec![self.item.borrow().clone()])
     }
@@ -174,9 +175,8 @@ impl ReviewRepositoryPort for ClosedDuringDecision {
         &self,
         _review_item_id: i64,
         _decision: ReviewDecision,
-    ) -> Result<Option<ReviewItem>, PortError> {
-        self.item.borrow_mut().status = ReviewStatus::AutoResolved;
-        Ok(None)
+    ) -> Result<ReviewDecisionOutcome, PortError> {
+        Ok(self.outcome.clone())
     }
 
     fn persist_candidate_asset(
@@ -190,8 +190,9 @@ impl ReviewRepositoryPort for ClosedDuringDecision {
 
 #[test]
 fn decision_losing_a_race_with_acquisition_reports_the_new_status() {
-    let reviews = ClosedDuringDecision {
+    let reviews = ChangedDuringDecision {
         item: RefCell::new(review_item()),
+        outcome: ReviewDecisionOutcome::NotUndecided(ReviewStatus::AutoResolved),
     };
 
     let error = resolve_review_item(&reviews, 17, ReviewDecision::Reject).unwrap_err();
@@ -201,6 +202,31 @@ fn decision_losing_a_race_with_acquisition_reports_the_new_status() {
         ApplicationError::ReviewItemNotActionable {
             review_item_id: 17,
             status: ReviewStatus::AutoResolved,
+        }
+    );
+}
+
+#[test]
+fn acceptance_of_an_edition_dropped_by_a_concurrent_refresh_is_refused() {
+    let reviews = ChangedDuringDecision {
+        item: RefCell::new(review_item()),
+        outcome: ReviewDecisionOutcome::NotCompeting,
+    };
+
+    let error = resolve_review_item(
+        &reviews,
+        17,
+        ReviewDecision::Accept {
+            release_edition_id: 201,
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::ReviewAcceptanceNotCompeting {
+            review_item_id: 17,
+            release_edition_id: 201,
         }
     );
 }

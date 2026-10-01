@@ -1,6 +1,7 @@
 use game_media_vault_application::{
-    AcquisitionRequestInput, CatalogPort, ParkedReview, ReviewRepositoryPort, RunRepositoryPort,
-    cancel_acquisition_run, load_acquisition_run, start_acquisition_run,
+    AcquisitionRequestInput, CatalogPort, ParkedReview, ReviewDecisionOutcome,
+    ReviewRepositoryPort, RunRepositoryPort, cancel_acquisition_run, load_acquisition_run,
+    start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
@@ -234,6 +235,7 @@ fn accepting_requeues_parked_work_and_reopens_completed_runs() {
             },
         )
         .unwrap()
+        .recorded()
         .unwrap();
 
     assert_eq!(accepted.status, ReviewStatus::Accepted);
@@ -269,6 +271,7 @@ fn accepting_leaves_parked_work_of_cancelled_runs_untouched() {
             },
         )
         .unwrap()
+        .recorded()
         .unwrap();
 
     let run = load_acquisition_run(&catalog, run_id).unwrap();
@@ -288,6 +291,7 @@ fn rejecting_completes_parked_work_in_every_run() {
     let rejected = catalog
         .decide_review_item(item.id, ReviewDecision::Reject)
         .unwrap()
+        .recorded()
         .unwrap();
 
     assert_eq!(rejected.status, ReviewStatus::Rejected);
@@ -310,6 +314,7 @@ fn deferring_keeps_work_parked_until_a_final_decision() {
     let deferred = catalog
         .decide_review_item(item.id, ReviewDecision::Defer)
         .unwrap()
+        .recorded()
         .unwrap();
     assert_eq!(deferred.status, ReviewStatus::Deferred);
     assert_eq!(counts(&catalog, run_id), (0, 1, 0));
@@ -317,6 +322,7 @@ fn deferring_keeps_work_parked_until_a_final_decision() {
     let rejected = catalog
         .decide_review_item(item.id, ReviewDecision::Reject)
         .unwrap()
+        .recorded()
         .unwrap();
     assert_eq!(rejected.status, ReviewStatus::Rejected);
     assert_eq!(counts(&catalog, run_id), (0, 0, 1));
@@ -330,6 +336,7 @@ fn human_decisions_are_final() {
     catalog
         .decide_review_item(item.id, ReviewDecision::Reject)
         .unwrap()
+        .recorded()
         .unwrap();
 
     assert_eq!(
@@ -340,7 +347,8 @@ fn human_decisions_are_final() {
                     release_edition_id: 201
                 }
             )
-            .unwrap(),
+            .unwrap()
+            .recorded(),
         None
     );
     assert!(
@@ -376,7 +384,8 @@ fn closing_automatically_completes_parked_work_of_an_undecided_item() {
     assert_eq!(
         catalog
             .decide_review_item(item.id, ReviewDecision::Reject)
-            .unwrap(),
+            .unwrap()
+            .recorded(),
         None
     );
 }
@@ -647,7 +656,30 @@ fn an_accepted_candidate_is_not_linked_to_another_edition() {
         .persist_candidate_asset(IDENTITY, record_for_edition("Standard", "standard-bytes"))
         .unwrap()
         .unwrap();
-    let item = parked_item(&catalog, start_run(&catalog));
+    let run_id = start_run(&catalog);
+    catalog
+        .record_discovery(
+            run_id,
+            SOURCE_ID,
+            &[AcquisitionWorkItem {
+                key: IDENTITY.to_owned(),
+                candidate: candidate(),
+            }],
+        )
+        .unwrap();
+    let ParkedReview::Parked(item) = catalog
+        .park_work_for_review(
+            run_id,
+            IDENTITY,
+            new_item(vec![competing_match(
+                standard.release_edition_id,
+                "Standard",
+            )]),
+        )
+        .unwrap()
+    else {
+        panic!("expected a pending review item");
+    };
     catalog
         .decide_review_item(
             item.id,
@@ -655,6 +687,8 @@ fn an_accepted_candidate_is_not_linked_to_another_edition() {
                 release_edition_id: standard.release_edition_id,
             },
         )
+        .unwrap()
+        .recorded()
         .unwrap();
 
     let elsewhere = catalog
@@ -672,4 +706,27 @@ fn an_accepted_candidate_is_not_linked_to_another_edition() {
 
     assert_eq!(elsewhere, None);
     assert!(again.is_some());
+}
+
+#[test]
+fn accepting_an_edition_the_item_no_longer_offers_is_refused_atomically() {
+    let (_temp, catalog) = open_catalog();
+    let run_id = start_run(&catalog);
+    let item = parked_item(&catalog, run_id);
+
+    let outcome = catalog
+        .decide_review_item(
+            item.id,
+            ReviewDecision::Accept {
+                release_edition_id: 999,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(outcome, ReviewDecisionOutcome::NotCompeting);
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Pending
+    );
+    assert_eq!(counts(&catalog, run_id), (0, 1, 0));
 }

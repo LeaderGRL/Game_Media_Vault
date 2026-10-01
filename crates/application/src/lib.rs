@@ -21,8 +21,8 @@ pub use imports::{
 };
 pub use ports::{
     CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
-    ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReviewRepositoryPort,
-    RunRepositoryPort,
+    ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReviewDecisionOutcome,
+    ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{ReviewPreview, list_review_items, load_review_preview, resolve_review_item};
 pub use runs::{

@@ -27,6 +27,27 @@ pub trait CatalogPort {
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
 }
 
+/// Outcome of recording a human decision on a Review Item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewDecisionOutcome {
+    Recorded(Box<ReviewItem>),
+    NotFound,
+    /// The item was already decided or closed automatically.
+    NotUndecided(ReviewStatus),
+    /// The accepted Release Edition is not among the item's current competing matches.
+    NotCompeting,
+}
+
+impl ReviewDecisionOutcome {
+    /// The decided item, if the decision was recorded.
+    pub fn recorded(self) -> Option<ReviewItem> {
+        match self {
+            Self::Recorded(item) => Some(*item),
+            _ => None,
+        }
+    }
+}
+
 /// Outcome of parking run work on the Review Item of its candidate identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParkedReview {
@@ -65,12 +86,12 @@ pub trait ReviewRepositoryPort {
     /// Records a human decision on an undecided item and moves its parked work: accepting
     /// requeues it in runs that are not cancelled (reopening completed runs), rejecting
     /// completes it and detaches the Assets linked to the candidate, deferring keeps it parked.
-    /// Returns `None` when the item is no longer undecided.
+    /// The item's state and evidence are checked in the same transaction as the decision.
     fn decide_review_item(
         &self,
         review_item_id: i64,
         decision: ReviewDecision,
-    ) -> Result<Option<ReviewItem>, PortError>;
+    ) -> Result<ReviewDecisionOutcome, PortError>;
 
     /// Persists an Asset acquired for the candidate with this identity, in one transaction that
     /// keeps the candidate linked to a single Release Edition: links of the same candidate to

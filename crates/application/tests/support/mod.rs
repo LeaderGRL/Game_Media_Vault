@@ -8,8 +8,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError, ReviewRepositoryPort,
-    RunRepositoryPort,
+    CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError, ReviewDecisionOutcome,
+    ReviewRepositoryPort, RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -451,17 +451,25 @@ impl ReviewRepositoryPort for FakeVault {
         &self,
         review_item_id: i64,
         decision: ReviewDecision,
-    ) -> Result<Option<ReviewItem>, PortError> {
+    ) -> Result<ReviewDecisionOutcome, PortError> {
         let decided = {
             let mut review_items = self.review_items.borrow_mut();
             let Some(item) = review_items
                 .iter_mut()
                 .find(|item| item.id == review_item_id)
             else {
-                return Ok(None);
+                return Ok(ReviewDecisionOutcome::NotFound);
             };
             if !item.status.is_undecided() {
-                return Ok(None);
+                return Ok(ReviewDecisionOutcome::NotUndecided(item.status));
+            }
+            if let ReviewDecision::Accept { release_edition_id } = decision
+                && !item
+                    .competing_matches
+                    .iter()
+                    .any(|candidate| candidate.release_edition_id == release_edition_id)
+            {
+                return Ok(ReviewDecisionOutcome::NotCompeting);
             }
             item.status = match decision {
                 ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
@@ -487,7 +495,7 @@ impl ReviewRepositoryPort for FakeVault {
             }
             ReviewDecision::Defer => {}
         }
-        Ok(Some(decided))
+        Ok(ReviewDecisionOutcome::Recorded(Box::new(decided)))
     }
 
     fn persist_candidate_asset(
