@@ -83,6 +83,33 @@ fn persist_reference_release_in_transaction(
         });
     }
 
+    // Another source may already describe this release: its assertions then join that edition,
+    // with the evidence of the link.
+    let edition = NormalizedEdition {
+        title: &normalized_title,
+        platform: &normalized_platform,
+        region: &normalized_region,
+        edition: &normalized_edition,
+    };
+    if let Some((game_id, release_edition_id, evidence)) =
+        linked_release_edition(transaction, &source_id, &record, &edition)?
+    {
+        let link = ReleaseAssertion {
+            source_id: identity.source_id.clone(),
+            source_location: identity.source_location.clone(),
+            field: ReleaseAssertionField::Identifier,
+            qualifier: Some("linked_by".to_owned()),
+            value: evidence.to_owned(),
+        };
+        persist_release_assertions(transaction, release_edition_id, &record.assertions)?;
+        persist_release_assertions(transaction, release_edition_id, &[link])?;
+        return Ok(ImportedReleaseEdition {
+            game_id,
+            release_edition_id,
+        });
+    }
+
+    // The Game this source titled so before, else the one any source titled so on this platform.
     let game_id = match transaction
         .query_row(
             "SELECT r.game_id
@@ -99,7 +126,24 @@ fn persist_reference_release_in_transaction(
         )
         .optional()
         .map_err(sql_error)?
-    {
+        .map_or_else(
+            || {
+                transaction
+                    .query_row(
+                        "SELECT r.game_id
+                         FROM release_editions r
+                         JOIN games g ON g.id = r.game_id
+                         WHERE g.normalized_title = ?1 AND r.normalized_platform = ?2
+                         ORDER BY r.id
+                         LIMIT 1",
+                        params![normalized_title, normalized_platform],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(sql_error)
+            },
+            |game_id| Ok(Some(game_id)),
+        )? {
         Some(game_id) => game_id,
         None => {
             transaction
@@ -154,6 +198,98 @@ fn persist_reference_release_in_transaction(
         game_id,
         release_edition_id,
     })
+}
+
+/// Dump checksums strong enough that two records sharing one describe the same dump.
+const DUMP_CHECKSUMS: [&str; 3] = ["sha1", "sha256", "md5"];
+
+/// The normalized identity of the release edition a record describes.
+struct NormalizedEdition<'a> {
+    title: &'a str,
+    platform: &'a str,
+    region: &'a str,
+    edition: &'a str,
+}
+
+/// The release edition another source asserts that `record` describes too, with the evidence
+/// that links them: a dump checksum it shares with exactly one edition of its platform, else
+/// the same title, platform, region and edition. Evidence pointing at several editions links
+/// none of them.
+fn linked_release_edition(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    record: &ReferenceReleaseRecord,
+    edition: &NormalizedEdition<'_>,
+) -> Result<Option<(i64, i64, &'static str)>, PortError> {
+    for qualifier in DUMP_CHECKSUMS {
+        let checksums: Vec<String> = record
+            .assertions
+            .iter()
+            .filter(|assertion| {
+                assertion.field == ReleaseAssertionField::Identifier
+                    && assertion.qualifier.as_deref() == Some(qualifier)
+            })
+            .map(|assertion| normalize(&assertion.value))
+            .collect();
+        if checksums.is_empty() {
+            continue;
+        }
+        let checksums_json = serde_json::to_string(&checksums)
+            .map_err(|error| PortError::new(format!("failed to serialize checksums: {error}")))?;
+        let editions = editions_where(
+            transaction,
+            "SELECT DISTINCT r.game_id, r.id
+             FROM release_assertions a
+             JOIN release_editions r ON r.id = a.release_edition_id
+             WHERE a.field = 'identifier'
+               AND a.qualifier = ?1
+               AND a.normalized_value IN (SELECT value FROM json_each(?2))
+               AND r.normalized_platform = ?3
+               AND a.source_id != ?4",
+            params![qualifier, checksums_json, edition.platform, source_id],
+        )?;
+        if let [(game_id, release_edition_id)] = editions.as_slice() {
+            return Ok(Some((*game_id, *release_edition_id, qualifier)));
+        }
+    }
+    let editions = editions_where(
+        transaction,
+        "SELECT r.game_id, r.id
+         FROM release_editions r
+         JOIN games g ON g.id = r.game_id
+         WHERE g.normalized_title = ?1
+           AND r.normalized_platform = ?2
+           AND r.normalized_region = ?3
+           AND r.normalized_edition_name = ?4
+           AND EXISTS (
+               SELECT 1 FROM release_assertions a
+               WHERE a.release_edition_id = r.id AND a.source_id != ?5
+           )",
+        params![
+            edition.title,
+            edition.platform,
+            edition.region,
+            edition.edition,
+            source_id
+        ],
+    )?;
+    Ok(match editions.as_slice() {
+        [(game_id, release_edition_id)] => Some((*game_id, *release_edition_id, "title")),
+        _ => None,
+    })
+}
+
+fn editions_where(
+    transaction: &Transaction<'_>,
+    query: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<Vec<(i64, i64)>, PortError> {
+    let mut statement = transaction.prepare(query).map_err(sql_error)?;
+    statement
+        .query_map(parameters, |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_error)
 }
 
 fn persist_release_assertions(
