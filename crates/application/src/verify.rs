@@ -147,9 +147,10 @@ pub fn verify_vault(
     // An output several Derived Assets share is checked once, and stays in use while any of
     // them belongs to a referenced original.
     let mut outputs: Vec<&str> = Vec::new();
+    let mut recorded: HashSet<&str> = HashSet::new();
     let mut in_use: HashSet<&str> = HashSet::new();
     for derivative in &derivatives {
-        if !outputs.contains(&derivative.object_hash.as_str()) {
+        if recorded.insert(&derivative.object_hash) {
             outputs.push(&derivative.object_hash);
         }
         if referenced.contains(derivative.original_hash.as_str()) {
@@ -171,7 +172,7 @@ pub fn verify_vault(
         .chain(
             stored_derived
                 .into_iter()
-                .filter(|hash| !outputs.contains(&hash.as_str())),
+                .filter(|hash| !recorded.contains(hash.as_str())),
         )
         .collect();
 

@@ -1,8 +1,12 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use game_media_vault_application::{
@@ -13,6 +17,17 @@ use game_media_vault_domain::{MediaInfo, StoredObject};
 use crate::media::MediaInspector;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Staging files of the stores this process is running, which verification must not take for
+/// interrupted ones.
+static STAGING_IN_PROGRESS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+fn staging_in_progress() -> MutexGuard<'static, BTreeSet<PathBuf>> {
+    // The set stays consistent even if a holder panicked.
+    STAGING_IN_PROGRESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// BLAKE3-addressed store of immutable original bytes (ADR 0002).
 pub struct ContentAddressedStore {
@@ -149,13 +164,13 @@ impl VaultStorePort for ContentAddressedStore {
         }
     }
 
-    /// Staging files of this process belong to stores still in progress, so only those of other
-    /// processes are listed.
+    /// Staging files of the stores this process is running are left out; any other is listed.
     fn staging_files(&self) -> Result<Vec<String>, PortError> {
-        let own_prefix = format!("{}-", std::process::id());
-        Ok(file_names(&self.root.join("staging"))?
+        let staging_dir = self.root.join("staging");
+        let in_progress = staging_in_progress();
+        Ok(file_names(&staging_dir)?
             .into_iter()
-            .filter(|name| !name.starts_with(&own_prefix))
+            .filter(|name| !in_progress.contains(&staging_dir.join(name)))
             .collect())
     }
 }
@@ -185,6 +200,7 @@ impl Drop for StagedObject {
     fn drop(&mut self) {
         // Already moved when publication succeeded.
         let _ = fs::remove_file(&self.staging_path);
+        staging_in_progress().remove(&self.staging_path);
     }
 }
 
@@ -280,7 +296,10 @@ fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError>
             .write(true)
             .open(&staging_path)
         {
-            Ok(file) => return Ok((staging_path, file)),
+            Ok(file) => {
+                staging_in_progress().insert(staging_path.clone());
+                return Ok((staging_path, file));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
         }

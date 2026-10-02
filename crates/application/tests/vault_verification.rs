@@ -272,3 +272,26 @@ fn an_original_stored_while_verifying_is_not_reported_unreferenced() {
 
     assert!(report.is_healthy(), "{report:?}");
 }
+
+#[test]
+fn a_derived_output_that_cannot_be_read_is_reported() {
+    let mut derived = intact(&[]);
+    derived.insert("thumb-aaa".to_owned(), UNREADABLE.to_owned());
+    let vault = FakeVault {
+        referenced: vec!["aaa".to_owned()],
+        derivatives: vec![derivative("aaa", "thumb-aaa")],
+        originals: intact(&["aaa"]),
+        derived,
+        ..FakeVault::default()
+    };
+
+    let report = verify_vault(&vault, &vault).unwrap();
+
+    assert_eq!(
+        report.unreadable_derived,
+        [UnreadableObject {
+            hash: "thumb-aaa".to_owned(),
+            reason: "permission denied".to_owned(),
+        }]
+    );
+}

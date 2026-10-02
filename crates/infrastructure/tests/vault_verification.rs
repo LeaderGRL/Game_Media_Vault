@@ -4,7 +4,7 @@ use game_media_vault_application::{
     CatalogPort, CorruptObject, DerivativeRepositoryPort, DerivedStorePort, ObjectStorePort,
     verify_vault,
 };
-use game_media_vault_domain::{AssetType, DerivationRecipe, PersistAsset, SourceId};
+use game_media_vault_domain::{AssetType, DerivationRecipe, PersistAsset, SourceId, StoredObject};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
@@ -120,23 +120,72 @@ fn objects_that_cannot_be_read_or_are_not_named_by_a_hash_are_reported_unreadabl
     assert!(report.missing_originals.is_empty());
 }
 
+/// Reads like an original while noting which staging files verification would report then.
+struct InspectingReader<'a> {
+    store: &'a ContentAddressedStore,
+    staging_seen: Option<Vec<String>>,
+    sent: bool,
+}
+
+impl std::io::Read for InspectingReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.sent {
+            return Ok(0);
+        }
+        self.staging_seen =
+            Some(game_media_vault_application::VaultStorePort::staging_files(self.store).unwrap());
+        self.sent = true;
+        buffer[..5].copy_from_slice(b"cover");
+        Ok(5)
+    }
+}
+
 #[test]
-fn staging_files_of_this_process_are_stores_in_progress() {
+fn a_store_in_progress_is_not_reported_but_a_left_over_file_of_this_process_is() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
     let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
     let store = ContentAddressedStore::new(&vault);
+    // Left by an earlier process that had this process id.
+    let left_over = format!("{}-999999.tmp", std::process::id());
     fs::create_dir_all(vault.join("staging")).unwrap();
-    fs::write(
-        vault
-            .join("staging")
-            .join(format!("{}-0.tmp", std::process::id())),
-        b"storing",
-    )
-    .unwrap();
-    fs::write(vault.join("staging").join("4242-0.tmp"), b"interrupted").unwrap();
+    fs::write(vault.join("staging").join(&left_over), b"interrupted").unwrap();
+    let mut reader = InspectingReader {
+        store: &store,
+        staging_seen: None,
+        sent: false,
+    };
+
+    store.store_original(&mut reader).unwrap();
+
+    assert_eq!(reader.staging_seen.unwrap(), [left_over.clone()]);
+    assert_eq!(
+        verify_vault(&catalog, &store).unwrap().interrupted_staging,
+        [left_over]
+    );
+}
+
+#[test]
+fn a_derived_record_not_named_by_a_hash_is_reported_unreadable() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let original = store.store_original(&mut &b"kept cover"[..]).unwrap();
+    catalog
+        .persist_asset(box_front("Kept", &original.hash, original.byte_len))
+        .unwrap();
+    let tampered = StoredObject {
+        hash: "../../outside".to_owned(),
+        byte_len: 1,
+        media: game_media_vault_domain::MediaInfo::unknown(),
+    };
+    catalog
+        .record_derivative(&original.hash, &THUMBNAIL, &tampered)
+        .unwrap();
 
     let report = verify_vault(&catalog, &store).unwrap();
 
-    assert_eq!(report.interrupted_staging, ["4242-0.tmp"]);
+    assert_eq!(report.unreadable_derived.len(), 1);
+    assert_eq!(report.unreadable_derived[0].hash, "../../outside");
 }
