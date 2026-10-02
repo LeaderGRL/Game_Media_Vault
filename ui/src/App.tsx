@@ -12,12 +12,15 @@ import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
 import { SourcesView } from "./SourcesView";
+import { ReferenceImportForm } from "./ReferenceImportForm";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
   DerivationSummary,
   LibraryEntry,
   LibraryFilters,
   LibraryPage,
+  ReferenceImportInput,
+  ReferenceImportSummary,
   ReviewDecision,
   ReviewItem,
 } from "./types";
@@ -85,6 +88,8 @@ export function App() {
   const renderingThumbnailVaults = useRef(new Set<string>());
   const [renderingThumbnails, setRenderingThumbnails] = useState(false);
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
+  const [importingReference, setImportingReference] = useState(false);
+  const [referenceImportStatus, setReferenceImportStatus] = useState<string | null>(null);
   // The registered Sources, read the first time the Sources view is shown; they need no vault.
   const [sources, setSources] = useState<SourceDescription[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -246,6 +251,9 @@ export function App() {
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
     setRenderingThumbnails(renderingThumbnailVaults.current.has(vaultKey));
+    // An import keeps running in the vault it started in, which reports it alone.
+    setImportingReference(false);
+    setReferenceImportStatus(null);
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -466,6 +474,35 @@ export function App() {
    * Renders the thumbnails the Library lacks, one rendering per vault, then shows them, even
    * after a failure that left some rendered.
    */
+  /** Imports a reference catalog file into the opened vault, then shows its releases. */
+  async function importReferenceCatalog(input: ReferenceImportInput) {
+    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+      return;
+    }
+    const importingVaultRoot = loadedVaultRoot;
+    setImportingReference(true);
+    setReferenceImportStatus(null);
+    setError(null);
+    try {
+      const summary = await invoke<ReferenceImportSummary>("import_reference_catalog", {
+        input,
+      });
+      if (activeVaultRoot.current !== importingVaultRoot) {
+        return;
+      }
+      setReferenceImportStatus(describeReferenceImport(summary));
+      await refreshVaultData(importingVaultRoot);
+    } catch (reason) {
+      if (activeVaultRoot.current === importingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      if (activeVaultRoot.current === importingVaultRoot) {
+        setImportingReference(false);
+      }
+    }
+  }
+
   async function renderThumbnails() {
     if (
       loadedVaultRoot === null ||
@@ -810,6 +847,14 @@ export function App() {
       </nav>
 
       {activeView === "library" ? (
+        <>
+          {loadedVaultRoot === null ? null : (
+            <ReferenceImportForm
+              importing={importingReference}
+              status={referenceImportStatus}
+              onImport={(input) => void importReferenceCatalog(input)}
+            />
+          )}
         <LibraryView
           entries={entries}
           objectUrl={originalObjectUrl}
@@ -828,6 +873,7 @@ export function App() {
           renderingThumbnails={renderingThumbnails}
           thumbnailStatus={thumbnailStatus}
         />
+        </>
       ) : null}
       {activeView === "review" ? (
         <ReviewView
@@ -869,6 +915,17 @@ function withoutRun(runIds: Set<number>, runId: number) {
 /** Original objects are served by the desktop shell's `gmv-object` protocol. */
 function originalObjectUrl(objectHash: string) {
   return convertFileSrc(objectHash, "gmv-object");
+}
+
+function describeReferenceImport(summary: ReferenceImportSummary) {
+  const imported = `Imported ${summary.imported_releases} ${
+    summary.imported_releases === 1 ? "release" : "releases"
+  }`;
+  if (summary.skipped_records === 0) {
+    return `${imported}.`;
+  }
+  const skipped = summary.skipped_records === 1 ? "record" : "records";
+  return `${imported}; ${summary.skipped_records} malformed ${skipped} skipped.`;
 }
 
 function describeThumbnailRendering(summary: DerivationSummary) {

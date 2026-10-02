@@ -6,11 +6,13 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
-    ErrorKind, LibraryPage, LibraryQuery, PortError, SourceDescription, VaultReport,
+    ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, PortError,
+    ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     derive_assets as derive_assets_use_case, describe_sources,
+    import_reference_catalog as import_reference_catalog_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
@@ -22,7 +24,9 @@ use game_media_vault_application::{
     search_library as search_library_use_case, start_acquisition_run_with_connectors,
     verify_vault as verify_vault_use_case,
 };
-use game_media_vault_connectors::registered_connectors;
+use game_media_vault_connectors::{
+    MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
+};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, DerivationRecipe, LibraryRelease, MatchingPolicy,
     ReviewDecision, ReviewItem,
@@ -30,7 +34,7 @@ use game_media_vault_domain::{
 use game_media_vault_infrastructure::{
     ContentAddressedStore, ImageTransformer, SqliteCatalog, inspect_media,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, http, ipc::Response};
 
 /// Error returned by every command: a stable `kind` the frontend can branch on and a
@@ -211,6 +215,14 @@ fn list_sources() -> Vec<SourceDescription> {
     list_registered_sources()
 }
 
+#[tauri::command]
+async fn import_reference_catalog(
+    session: State<'_, VaultSession>,
+    input: ReferenceImportInput,
+) -> Result<ReferenceImportSummary, CommandError> {
+    import_reference_catalog_in_vault_async(session.root()?, input).await
+}
+
 pub fn load_review_preview_in_vault(
     vault_root: &Path,
     review_item_id: i64,
@@ -329,6 +341,65 @@ pub async fn plan_acquisition_async(
     })
     .await
     .map_err(|error| CommandError::worker_failed("acquisition planning", error))?
+}
+
+/// The kinds of reference catalog files the desktop imports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceCatalogKind {
+    NoIntro,
+    Redump,
+    MameSoftwareList,
+}
+
+/// A reference catalog file to import into the opened vault.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ReferenceImportInput {
+    pub kind: ReferenceCatalogKind,
+    pub file: String,
+    pub max_games: usize,
+    /// The MAME release a software list came with, which the list does not record itself.
+    #[serde(default)]
+    pub mame_version: Option<String>,
+}
+
+/// Imports up to `input.max_games` releases of a reference catalog file, as the CLI imports.
+pub fn import_reference_catalog_in_vault(
+    vault_root: &Path,
+    input: ReferenceImportInput,
+) -> Result<ReferenceImportSummary, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    let source: Box<dyn ReferenceCatalogSourcePort> = match input.kind {
+        ReferenceCatalogKind::NoIntro => Box::new(NoIntroReferenceCatalog::new()),
+        ReferenceCatalogKind::Redump => Box::new(RedumpReferenceCatalog::new()),
+        ReferenceCatalogKind::MameSoftwareList => Box::new(
+            input
+                .mame_version
+                .as_deref()
+                .map(MameSoftwareListCatalog::with_mame_version)
+                .unwrap_or_default(),
+        ),
+    };
+    Ok(import_reference_catalog_use_case(
+        &catalog,
+        source.as_ref(),
+        ImportReferenceCatalogRequest {
+            source_path: PathBuf::from(input.file),
+            max_games: input.max_games,
+        },
+    )?)
+}
+
+/// Imports on a blocking worker, since reading a large catalog takes a while.
+pub async fn import_reference_catalog_in_vault_async(
+    vault_root: PathBuf,
+    input: ReferenceImportInput,
+) -> Result<ReferenceImportSummary, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_reference_catalog_in_vault(&vault_root, input)
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("reference import", error))?
 }
 
 /// Starts a run on a blocking worker, since checking the plan may reach the Source.
@@ -584,7 +655,8 @@ pub fn run() {
             pause_acquisition_run,
             resume_acquisition_run,
             cancel_acquisition_run,
-            list_sources
+            list_sources,
+            import_reference_catalog
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Game Media Vault");

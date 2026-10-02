@@ -652,6 +652,58 @@ describe("App", () => {
     expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
   });
 
+  it("imports a reference catalog into the opened vault and shows its releases", async () => {
+    let imported = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "import_reference_catalog") {
+        imported = true;
+        return Promise.resolve({ imported_releases: 1, skipped_records: 2 });
+      }
+      return Promise.resolve(command === "list_library" && imported ? [entry] : []);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+      target: { value: "D:/dats/nes.dat" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
+
+    expect(
+      await screen.findByText("Imported 1 release; 2 malformed records skipped."),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("import_reference_catalog", {
+      input: { kind: "no_intro", file: "D:/dats/nes.dat", max_games: 5000, mame_version: null },
+    });
+  });
+
+  it("reports a reference catalog it could not import and keeps the Library", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      command === "import_reference_catalog"
+        ? Promise.reject({ kind: "source_failure", message: "invalid No-Intro XML: broken" })
+        : Promise.resolve(command === "list_library" ? [entry] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Catalog file"), { target: { value: "broken.dat" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
+
+    expect(await screen.findByText("invalid No-Intro XML: broken")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import catalog" })).toBeEnabled();
+  });
+
+  it("offers no reference catalog import before a vault is loaded", () => {
+    render(<App />);
+
+    expect(
+      screen.queryByRole("form", { name: "Reference catalog import" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("offers no Library search before a vault is loaded", () => {
     render(<App />);
 
