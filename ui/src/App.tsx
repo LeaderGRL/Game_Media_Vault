@@ -35,6 +35,19 @@ const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_thres
 
 const EMPTY_LIBRARY_PAGE: LibraryPage = { releases: [], total: 0, next_after: null, as_of: 0 };
 
+/** A long Library task the backend runs for one vault, such as rendering its thumbnails. */
+interface VaultLibraryTask<Summary> {
+  /**
+   * Vaults running this task: the backend keeps running a vault's task while another vault is
+   * loaded, so loading it again shows the task still running instead of offering another.
+   */
+  runningVaults: { current: Set<string> };
+  setRunning: (running: boolean) => void;
+  setStatus: (status: string | null) => void;
+  run: () => Promise<Summary>;
+  describe: (summary: Summary) => string;
+}
+
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
 
@@ -485,177 +498,97 @@ export function App() {
     }
   }
 
+  /**
+   * Runs a long Library task of the opened vault, one at a time per vault and kind, then shows
+   * the Library again, even after a failure that left part of the task's work recorded. The
+   * task's vault reports it, even while it reopens; another vault loaded meanwhile neither
+   * shows nor reports it.
+   */
+  async function runVaultLibraryTask<Summary>(task: VaultLibraryTask<Summary>) {
+    if (
+      loadedVaultRoot === null ||
+      openedVaultRoot.current !== loadedVaultRoot ||
+      task.runningVaults.current.has(loadedVaultRoot)
+    ) {
+      return;
+    }
+    const taskVaultRoot = loadedVaultRoot;
+    task.runningVaults.current.add(taskVaultRoot);
+    const reportsHere = () => activeVaultRoot.current === taskVaultRoot;
+    task.setRunning(true);
+    task.setStatus(null);
+    setError(null);
+    let failure: { reason: unknown } | null = null;
+    try {
+      const summary = await task.run();
+      if (reportsHere()) {
+        task.setStatus(task.describe(summary));
+      }
+    } catch (reason) {
+      failure = { reason };
+    } finally {
+      // The task is over; showing what it recorded is not part of it.
+      task.runningVaults.current.delete(taskVaultRoot);
+      if (reportsHere()) {
+        task.setRunning(false);
+      }
+    }
+    if (!reportsHere()) {
+      return;
+    }
+    if (failure !== null) {
+      setError(errorMessage(failure.reason));
+    }
+    // A reopening of the vault searches the Library itself once the vault is open.
+    if (openedVaultRoot.current !== taskVaultRoot) {
+      return;
+    }
+    try {
+      await showChangedLibrary(taskVaultRoot);
+    } catch (reason) {
+      if (reportsHere()) {
+        setError(errorMessage((failure ?? { reason }).reason));
+      }
+      return;
+    }
+    // A search shown meanwhile cleared the task failure.
+    if (failure !== null && reportsHere()) {
+      setError(errorMessage(failure.reason));
+    }
+  }
+
   /** Imports a reference catalog file into the opened vault, then shows its releases. */
-  async function importReferenceCatalog(input: ReferenceImportInput) {
-    if (
-      loadedVaultRoot === null ||
-      openedVaultRoot.current !== loadedVaultRoot ||
-      importingReferenceVaults.current.has(loadedVaultRoot)
-    ) {
-      return;
-    }
-    const importingVaultRoot = loadedVaultRoot;
-    importingReferenceVaults.current.add(importingVaultRoot);
-    setImportingReference(true);
-    setReferenceImportStatus(null);
-    setError(null);
-    const reportsHere = () => activeVaultRoot.current === importingVaultRoot;
-    let failure: { reason: unknown } | null = null;
-    try {
-      const summary = await invoke<ReferenceImportSummary>("import_reference_catalog", {
-        input,
-      });
-      if (reportsHere()) {
-        setReferenceImportStatus(describeReferenceImport(summary));
-      }
-    } catch (reason) {
-      failure = { reason };
-    } finally {
-      importingReferenceVaults.current.delete(importingVaultRoot);
-      if (reportsHere()) {
-        setImportingReference(false);
-      }
-    }
-    if (!reportsHere()) {
-      return;
-    }
-    if (failure !== null) {
-      setError(errorMessage(failure.reason));
-    }
-    // A failed import may have persisted earlier batches before failing.
-    try {
-      await showChangedLibrary(importingVaultRoot);
-    } catch (reason) {
-      if (reportsHere()) {
-        setError(errorMessage((failure ?? { reason }).reason));
-      }
-      return;
-    }
-    // A search shown meanwhile cleared the import failure.
-    if (failure !== null && reportsHere()) {
-      setError(errorMessage(failure.reason));
-    }
+  function importReferenceCatalog(input: ReferenceImportInput) {
+    return runVaultLibraryTask({
+      runningVaults: importingReferenceVaults,
+      setRunning: setImportingReference,
+      setStatus: setReferenceImportStatus,
+      run: () => invoke<ReferenceImportSummary>("import_reference_catalog", { input }),
+      describe: describeReferenceImport,
+    });
   }
 
-  /**
-   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them, even
-   * after a failure that left some rendered.
-   */
-  async function renderThumbnails() {
-    if (
-      loadedVaultRoot === null ||
-      openedVaultRoot.current !== loadedVaultRoot ||
-      renderingThumbnailVaults.current.has(loadedVaultRoot)
-    ) {
-      return;
-    }
-    const renderingVaultRoot = loadedVaultRoot;
-    renderingThumbnailVaults.current.add(renderingVaultRoot);
-    // The rendering's vault reports it, even while it reopens; another vault loaded meanwhile
-    // neither shows nor reports it.
-    const reportsHere = () => activeVaultRoot.current === renderingVaultRoot;
-    setRenderingThumbnails(true);
-    setThumbnailStatus(null);
-    setError(null);
-    let failure: { reason: unknown } | null = null;
-    try {
-      const summary = await invoke<DerivationSummary>("derive_thumbnails", {
-        max_edge: LIBRARY_THUMBNAIL_EDGE,
-      });
-      if (reportsHere()) {
-        setThumbnailStatus(describeThumbnailRendering(summary));
-      }
-    } catch (reason) {
-      failure = { reason };
-    } finally {
-      // The rendering is over; showing its thumbnails is not part of it.
-      renderingThumbnailVaults.current.delete(renderingVaultRoot);
-      if (activeVaultRoot.current === renderingVaultRoot) {
-        setRenderingThumbnails(false);
-      }
-    }
-    if (!reportsHere()) {
-      return;
-    }
-    if (failure !== null) {
-      setError(errorMessage(failure.reason));
-    }
-    // A reopening of the vault searches the Library itself once the vault is open.
-    if (openedVaultRoot.current !== renderingVaultRoot) {
-      return;
-    }
-    // Even a failed rendering may have recorded thumbnails before failing.
-    try {
-      await showChangedLibrary(renderingVaultRoot);
-    } catch (reason) {
-      if (reportsHere()) {
-        setError(errorMessage((failure ?? { reason }).reason));
-      }
-      return;
-    }
-    // A search shown meanwhile cleared the rendering failure.
-    if (failure !== null && reportsHere()) {
-      setError(errorMessage(failure.reason));
-    }
+  /** Renders the thumbnails the Library lacks, then shows them. */
+  function renderThumbnails() {
+    return runVaultLibraryTask({
+      runningVaults: renderingThumbnailVaults,
+      setRunning: setRenderingThumbnails,
+      setStatus: setThumbnailStatus,
+      run: () =>
+        invoke<DerivationSummary>("derive_thumbnails", { max_edge: LIBRARY_THUMBNAIL_EDGE }),
+      describe: describeThumbnailRendering,
+    });
   }
 
-  /**
-   * Builds the packaging models complete releases lack, one build per vault, then shows them,
-   * even after a failure that left some built.
-   */
-  async function buildPackagingModels() {
-    if (
-      loadedVaultRoot === null ||
-      openedVaultRoot.current !== loadedVaultRoot ||
-      buildingModelVaults.current.has(loadedVaultRoot)
-    ) {
-      return;
-    }
-    const buildingVaultRoot = loadedVaultRoot;
-    buildingModelVaults.current.add(buildingVaultRoot);
-    // The build's vault reports it, even while it reopens; another vault loaded meanwhile
-    // neither shows nor reports it.
-    const reportsHere = () => activeVaultRoot.current === buildingVaultRoot;
-    setBuildingModels(true);
-    setModelStatus(null);
-    setError(null);
-    let failure: { reason: unknown } | null = null;
-    try {
-      const summary = await invoke<PackagingModelSummary>("derive_packaging_models");
-      if (reportsHere()) {
-        setModelStatus(describePackagingModels(summary));
-      }
-    } catch (reason) {
-      failure = { reason };
-    } finally {
-      buildingModelVaults.current.delete(buildingVaultRoot);
-      if (reportsHere()) {
-        setBuildingModels(false);
-      }
-    }
-    if (!reportsHere()) {
-      return;
-    }
-    if (failure !== null) {
-      setError(errorMessage(failure.reason));
-    }
-    // A reopening of the vault searches the Library itself once the vault is open.
-    if (openedVaultRoot.current !== buildingVaultRoot) {
-      return;
-    }
-    // Even a failed build may have recorded models before failing.
-    try {
-      await showChangedLibrary(buildingVaultRoot);
-    } catch (reason) {
-      if (reportsHere()) {
-        setError(errorMessage((failure ?? { reason }).reason));
-      }
-      return;
-    }
-    // A search shown meanwhile cleared the build failure.
-    if (failure !== null && reportsHere()) {
-      setError(errorMessage(failure.reason));
-    }
+  /** Builds the packaging models complete releases lack, then shows them. */
+  function buildPackagingModels() {
+    return runVaultLibraryTask({
+      runningVaults: buildingModelVaults,
+      setRunning: setBuildingModels,
+      setStatus: setModelStatus,
+      run: () => invoke<PackagingModelSummary>("derive_packaging_models"),
+      describe: describePackagingModels,
+    });
   }
 
   /**
