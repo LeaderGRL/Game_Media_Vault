@@ -470,10 +470,6 @@ export function App() {
     }
   }
 
-  /**
-   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them, even
-   * after a failure that left some rendered.
-   */
   /** Imports a reference catalog file into the opened vault, then shows its releases. */
   async function importReferenceCatalog(input: ReferenceImportInput) {
     if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
@@ -503,6 +499,10 @@ export function App() {
     }
   }
 
+  /**
+   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them, even
+   * after a failure that left some rendered.
+   */
   async function renderThumbnails() {
     if (
       loadedVaultRoot === null ||
