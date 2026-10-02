@@ -473,7 +473,7 @@ where
             Ok(serde_json::to_string_pretty(&derive_assets(
                 &catalog,
                 &store,
-                &ImageTransformer,
+                &ImageTransformer::new(),
                 &DerivationRecipe::Thumbnail { max_edge },
             )?)?)
         }

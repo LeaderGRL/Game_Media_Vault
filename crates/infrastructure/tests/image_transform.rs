@@ -24,7 +24,7 @@ fn thumbnail(original: &[u8]) -> image::DynamicImage {
 }
 
 fn thumbnail_of(original: &[u8], media_type: &str) -> image::DynamicImage {
-    let output = ImageTransformer
+    let output = ImageTransformer::new()
         .transform(&mut &original[..], media_type, &THUMBNAIL)
         .unwrap();
     image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap()
@@ -44,10 +44,10 @@ fn smaller_images_keep_their_size() {
 #[test]
 fn the_same_original_always_gives_the_same_thumbnail() {
     let original = png(400, 300);
-    let first = ImageTransformer
+    let first = ImageTransformer::new()
         .transform(&mut &original[..], "image/png", &THUMBNAIL)
         .unwrap();
-    let second = ImageTransformer
+    let second = ImageTransformer::new()
         .transform(&mut &original[..], "image/png", &THUMBNAIL)
         .unwrap();
 
@@ -56,12 +56,12 @@ fn the_same_original_always_gives_the_same_thumbnail() {
 
 #[test]
 fn only_decodable_images_are_transformed() {
-    assert!(ImageTransformer.can_transform("image/png", &THUMBNAIL));
-    assert!(ImageTransformer.can_transform("image/jpeg", &THUMBNAIL));
-    assert!(!ImageTransformer.can_transform("application/pdf", &THUMBNAIL));
-    assert!(!ImageTransformer.can_transform("image/jxl", &THUMBNAIL));
+    assert!(ImageTransformer::new().can_transform("image/png", &THUMBNAIL));
+    assert!(ImageTransformer::new().can_transform("image/jpeg", &THUMBNAIL));
+    assert!(!ImageTransformer::new().can_transform("application/pdf", &THUMBNAIL));
+    assert!(!ImageTransformer::new().can_transform("image/jxl", &THUMBNAIL));
     assert!(
-        ImageTransformer
+        ImageTransformer::new()
             .transform(&mut &b"not an image"[..], "image/png", &THUMBNAIL)
             .is_err()
     );
@@ -75,5 +75,21 @@ fn originals_without_a_signature_decode_with_their_recorded_format() {
     assert_eq!(
         thumbnail_of(&original, "image/x-tga").dimensions(),
         (100, 75)
+    );
+}
+
+#[test]
+fn originals_beyond_the_size_bound_are_refused_before_being_read_whole() {
+    let original = png(400, 300);
+    let transformer = ImageTransformer::with_max_original_bytes(original.len() as u64 - 1);
+
+    let error = transformer
+        .transform(&mut &original[..], "image/png", &THUMBNAIL)
+        .unwrap_err();
+
+    assert!(
+        error.message().contains("larger than"),
+        "{}",
+        error.message()
     );
 }
