@@ -166,3 +166,33 @@ fn a_list_that_is_not_well_formed_is_invalid_source_data() {
 
     assert!(error.is_invalid_source_data(), "{error}");
 }
+
+#[test]
+fn a_list_without_a_description_is_named_by_its_list_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let named = temp.path().join("named.xml");
+    std::fs::write(
+        &named,
+        r#"<softwarelist name="foo_cart">
+  <software name="demo"><description>Demo (World)</description></software>
+</softwarelist>"#,
+    )
+    .unwrap();
+    let anonymous = temp.path().join("anonymous.xml");
+    std::fs::write(
+        &anonymous,
+        r#"<softwarelist>
+  <software name="demo"><description>Demo (World)</description></software>
+</softwarelist>"#,
+    )
+    .unwrap();
+    let catalog = MameSoftwareListCatalog::new();
+
+    let named = catalog.read_releases(&named, 10).unwrap();
+    let anonymous = catalog.read_releases(&anonymous, 10).unwrap();
+
+    assert_eq!(named.releases[0].platform, "foo_cart");
+    // A list naming neither its system nor itself places its software on no platform.
+    assert!(anonymous.releases.is_empty());
+    assert_eq!(anonymous.skipped_records, 1);
+}

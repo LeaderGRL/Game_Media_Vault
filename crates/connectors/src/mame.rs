@@ -341,11 +341,19 @@ fn finish_software(
     }
     let name = entry.name?;
     let description = entry.description?;
+    // A list this importer does not name is placed by its description, else by its name; one
+    // naming neither places its software on no platform.
     let platform = LIST_PLATFORMS
         .iter()
         .find(|(list, _)| *list == list_name)
         .map(|(_, platform)| (*platform).to_owned())
-        .unwrap_or_else(|| list_description.trim().to_owned());
+        .or_else(|| {
+            [list_description, list_name]
+                .into_iter()
+                .map(str::trim)
+                .find(|name| !name.is_empty())
+                .map(str::to_owned)
+        })?;
     let release = mame_release_name(&description);
     let assertion = |field, qualifier: Option<&str>, value: &str| ReleaseAssertion {
         source_id: SourceId::from(MAME_SOFTWARE_LISTS_SOURCE_ID),
