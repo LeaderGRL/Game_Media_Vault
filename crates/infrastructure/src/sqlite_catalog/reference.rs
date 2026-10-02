@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use game_media_vault_application::{PortError, ReferenceCatalogRepositoryPort};
 use game_media_vault_domain::{
@@ -125,61 +125,42 @@ fn persist_reference_release_in_transaction(
         });
     }
 
-    // The Game this source titled so before, else the one any source titled so on this platform.
+    // The Game a source titled so on this platform, this source's own first. Never one holding
+    // this edition with another source's claims: the record was not linked to that edition, so
+    // joining it would merge them without evidence.
     let game_id = match transaction
         .query_row(
             "SELECT r.game_id
-             FROM release_assertions a
-             JOIN release_editions r ON r.id = a.release_edition_id
-             WHERE a.source_id = ?1
-               AND a.field = 'title'
-               AND a.normalized_value = ?2
-               AND r.normalized_platform = ?3
-             ORDER BY r.id
+             FROM release_editions r
+             JOIN release_assertions t ON t.release_edition_id = r.id
+             WHERE r.normalized_platform = ?2
+               AND t.field = 'title'
+               AND t.qualifier = ''
+               AND t.normalized_value = ?1
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM release_editions e
+                   JOIN release_assertions x ON x.release_edition_id = e.id
+                   WHERE e.game_id = r.game_id
+                     AND e.normalized_platform = ?2
+                     AND e.normalized_region = ?3
+                     AND e.normalized_edition_name = ?4
+                     AND x.source_id != ?5
+               )
+             ORDER BY t.source_id = ?5 DESC, r.id
              LIMIT 1",
-            params![source_id, normalized_title, normalized_platform],
+            params![
+                normalized_title,
+                normalized_platform,
+                normalized_region,
+                normalized_edition,
+                source_id
+            ],
             |row| row.get(0),
         )
         .optional()
         .map_err(sql_error)?
-        .map_or_else(
-            || {
-                transaction
-                    .query_row(
-                        // Never one already holding this edition: the record was not linked to
-                        // it, so joining that Game would merge them without evidence.
-                        "SELECT r.game_id
-                         FROM release_editions r
-                         WHERE r.normalized_platform = ?2
-                           AND EXISTS (
-                               SELECT 1 FROM release_assertions t
-                               WHERE t.release_edition_id = r.id
-                                 AND t.field = 'title'
-                                 AND t.qualifier = ''
-                                 AND t.normalized_value = ?1
-                           )
-                           AND NOT EXISTS (
-                               SELECT 1 FROM release_editions e
-                               WHERE e.game_id = r.game_id
-                                 AND e.normalized_platform = ?2
-                                 AND e.normalized_region = ?3
-                                 AND e.normalized_edition_name = ?4
-                           )
-                         ORDER BY r.id
-                         LIMIT 1",
-                        params![
-                            normalized_title,
-                            normalized_platform,
-                            normalized_region,
-                            normalized_edition
-                        ],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(sql_error)
-            },
-            |game_id| Ok(Some(game_id)),
-        )? {
+    {
         Some(game_id) => game_id,
         None => {
             transaction
@@ -250,6 +231,9 @@ fn link_assertion(identity: &ReleaseAssertion, evidence: String) -> ReleaseAsser
 /// Dump checksums strong enough that two records sharing one describe the same dump.
 const DUMP_CHECKSUMS: [&str; 3] = ["sha1", "sha256", "md5"];
 
+/// The identifiers naming each dump, the ROMs or tracks or disks of a release.
+const DUMP_NAMES: [&str; 2] = ["rom_name", "disk_name"];
+
 /// The normalized identity of the release edition a record describes.
 struct NormalizedEdition<'a> {
     title: &'a str,
@@ -276,20 +260,29 @@ fn linked_release_edition(
 ) -> Result<Option<(i64, i64, &'static str)>, PortError> {
     // The editions whose dumps of one kind are exactly the record's, with the first kind that
     // shows it.
-    let mut matches: Vec<(i64, i64, &'static str)> = Vec::new();
-    for qualifier in DUMP_CHECKSUMS {
-        let checksums: BTreeSet<String> = record
+    let identifiers = |qualifiers: &[&str]| -> Vec<String> {
+        record
             .assertions
             .iter()
             .filter(|assertion| {
                 assertion.field == ReleaseAssertionField::Identifier
-                    && assertion.qualifier.as_deref() == Some(qualifier)
+                    && assertion
+                        .qualifier
+                        .as_deref()
+                        .is_some_and(|qualifier| qualifiers.contains(&qualifier))
             })
             .map(|assertion| normalize(&assertion.value))
-            .collect();
-        if checksums.is_empty() {
+            .collect()
+    };
+    let dumps = identifiers(&DUMP_NAMES).len();
+    let mut matches: Vec<(i64, i64, &'static str)> = Vec::new();
+    for qualifier in DUMP_CHECKSUMS {
+        let mut checksums = identifiers(&[qualifier]);
+        // A dump without a checksum of this kind could differ unseen, so every dump needs one.
+        if checksums.is_empty() || !covers_every_dump(checksums.len(), dumps) {
             continue;
         }
+        checksums.sort();
         let checksums_json = serde_json::to_string(&checksums)
             .map_err(|error| PortError::new(format!("failed to serialize checksums: {error}")))?;
         let sharing = editions_where(
@@ -308,9 +301,13 @@ fn linked_release_edition(
             if matches.iter().any(|(_, id, _)| *id == release_edition_id) {
                 continue;
             }
-            if edition_checksums(transaction, release_edition_id, qualifier, source_id)?
-                == checksums
-            {
+            if another_source_asserts_exactly(
+                transaction,
+                release_edition_id,
+                qualifier,
+                source_id,
+                &checksums,
+            )? {
                 matches.push((game_id, release_edition_id, qualifier));
             }
         }
@@ -360,29 +357,55 @@ fn linked_release_edition(
     })
 }
 
-/// The dumps of kind `qualifier` that sources other than `source_id` assert for an edition.
-fn edition_checksums(
+/// Whether `checksums` of one kind cover every one of `dumps` named dumps; a record naming no
+/// dump counts each checksum as one.
+fn covers_every_dump(checksums: usize, dumps: usize) -> bool {
+    dumps == 0 || checksums == dumps
+}
+
+/// Whether a source other than `source_id` asserts exactly `checksums` (sorted) as the dumps of
+/// kind `qualifier` of an edition, covering every dump it names there.
+fn another_source_asserts_exactly(
     transaction: &Transaction<'_>,
     release_edition_id: i64,
     qualifier: &str,
     source_id: &str,
-) -> Result<BTreeSet<String>, PortError> {
+    checksums: &[String],
+) -> Result<bool, PortError> {
     let mut statement = transaction
         .prepare(
-            "SELECT normalized_value FROM release_assertions
+            "SELECT source_id, qualifier, normalized_value FROM release_assertions
              WHERE release_edition_id = ?1
                AND field = 'identifier'
-               AND qualifier = ?2
+               AND qualifier IN (?2, 'rom_name', 'disk_name')
                AND source_id != ?3",
         )
         .map_err(sql_error)?;
-    statement
+    let rows = statement
         .query_map(params![release_edition_id, qualifier, source_id], |row| {
-            row.get(0)
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })
         .map_err(sql_error)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(sql_error)
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sql_error)?;
+    // Each source's dumps of this kind and the number of dumps it names.
+    let mut by_source: BTreeMap<String, (Vec<String>, usize)> = BTreeMap::new();
+    for (source, row_qualifier, value) in rows {
+        let (values, names) = by_source.entry(source).or_default();
+        if row_qualifier == qualifier {
+            values.push(value);
+        } else {
+            *names += 1;
+        }
+    }
+    Ok(by_source.into_values().any(|(mut values, names)| {
+        values.sort();
+        covers_every_dump(values.len(), names) && values == checksums
+    }))
 }
 
 fn editions_where(

@@ -494,3 +494,95 @@ fn a_link_moves_with_the_catalog_it_was_imported_from() {
         .unwrap();
     assert_eq!(link.source_location, "D:/moved/mame.xml");
 }
+
+#[test]
+fn an_unlinked_record_never_joins_an_edition_through_its_own_sources_game() {
+    let (_temp, catalog) = catalog();
+    for (region, sha1) in [
+        ("World", Some("dddd")),
+        ("Europe", Some("dddd")),
+        ("Japan", None),
+    ] {
+        import(
+            &catalog,
+            &Release {
+                source: "no-intro",
+                title: "Tetris",
+                platform: GAME_BOY,
+                region,
+                sha1,
+            },
+        );
+    }
+    // MAME first title-links the Japanese edition, so it titles the shared Game too.
+    let mame = Release {
+        source: "mame-software-lists",
+        title: "Tetris",
+        platform: GAME_BOY,
+        region: "Japan",
+        sha1: None,
+    };
+    import(&catalog, &mame);
+
+    // Its World record shares an ambiguous checksum, so it is linked to nothing.
+    let world = import(
+        &catalog,
+        &Release {
+            region: "World",
+            sha1: Some("dddd"),
+            ..mame
+        },
+    );
+
+    assert!(links_of(&catalog, world.release_edition_id, "mame-software-lists").is_empty());
+    let no_intro_world = catalog
+        .list_library()
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.region == "World")
+        .count();
+    assert_eq!(no_intro_world, 2);
+}
+
+#[test]
+fn checksums_that_leave_a_dump_uncovered_are_no_evidence() {
+    let (_temp, catalog) = catalog();
+    let release = |source: &str, title: &str, chr: &str| {
+        let assertion = |qualifier: &str, value: &str| ReleaseAssertion {
+            source_id: SourceId::from(source),
+            source_location: format!("C:/catalogs/{source}.xml"),
+            field: ReleaseAssertionField::Identifier,
+            qualifier: Some(qualifier.to_owned()),
+            value: value.to_owned(),
+        };
+        ReferenceReleaseRecord {
+            game_title: title.to_owned(),
+            platform: GAME_BOY.to_owned(),
+            region: "World".to_owned(),
+            revision: None,
+            edition_name: "Standard".to_owned(),
+            assertions: vec![
+                ReleaseAssertion {
+                    field: ReleaseAssertionField::Title,
+                    qualifier: None,
+                    ..assertion("", title)
+                },
+                assertion("source_record", title),
+                // Two dumps, only one of which records a SHA-1.
+                assertion("rom_name", "game.prg"),
+                assertion("sha1", "shared-prg"),
+                assertion("rom_name", chr),
+            ],
+        }
+    };
+    catalog
+        .persist_reference_release(release("no-intro", "Game A", "a.chr"))
+        .unwrap();
+
+    let other = catalog
+        .persist_reference_release(release("mame-software-lists", "Game B", "b.chr"))
+        .unwrap();
+
+    assert_eq!(catalog.list_library().unwrap().len(), 2);
+    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+}
