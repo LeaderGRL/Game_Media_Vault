@@ -65,7 +65,7 @@ fn is_region_candidate(tag: &str) -> bool {
         && !is_edition_tag(tag)
 }
 
-fn is_revision_tag(tag: &str) -> bool {
+pub(crate) fn is_revision_tag(tag: &str) -> bool {
     tag.starts_with("Rev ")
         || tag.starts_with("Revision ")
         || tag.strip_prefix('v').is_some_and(is_version_number)

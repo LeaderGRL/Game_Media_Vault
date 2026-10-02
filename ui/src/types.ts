@@ -2,6 +2,7 @@
 export type AssetType =
   | "box_front"
   | "box_back"
+  | "spine"
   | "box_3d_render"
   | "cartridge_front"
   | "cartridge_back"
@@ -352,4 +353,21 @@ export interface DerivationSummary {
   /** Originals the recipe cannot read. */
   skipped: number;
   failed: { original_hash: string; reason: string }[];
+}
+
+/** The kinds of reference catalog files the desktop imports. */
+export type ReferenceCatalogKind = "no_intro" | "redump" | "mame_software_list";
+
+/** A reference catalog file to import into the opened vault. */
+export interface ReferenceImportInput {
+  kind: ReferenceCatalogKind;
+  file: string;
+  max_games: number;
+  /** The MAME release a software list came with; software lists do not record it. */
+  mame_version: string | null;
+}
+
+export interface ReferenceImportSummary {
+  imported_releases: number;
+  skipped_records: number;
 }

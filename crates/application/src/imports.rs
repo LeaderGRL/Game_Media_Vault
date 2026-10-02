@@ -28,7 +28,7 @@ pub struct ImportReferenceCatalogRequest {
     pub max_games: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ReferenceImportSummary {
     pub imported_releases: usize,
     /// Records of the file too malformed to read, which the import skipped.

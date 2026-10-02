@@ -47,6 +47,71 @@ impl RetryPolicy {
     }
 }
 
+/// The wait a `Retry-After` header asks for, given in seconds or as an HTTP date (the IMF-fixdate
+/// form, `Sun, 06 Nov 1994 08:49:37 GMT`); a date already past asks for none.
+pub(crate) fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = http_date(value)?;
+    Some(date.duration_since(now).unwrap_or_default())
+}
+
+/// Reads an IMF-fixdate, the HTTP date form servers must send.
+fn http_date(value: &str) -> Option<SystemTime> {
+    let (_, rest) = value.split_once(", ")?;
+    let mut parts = rest.split(' ');
+    let day: u32 = parts.next()?.parse().ok()?;
+    let month = match parts.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = parts.next()?.parse().ok()?;
+    let mut clock = parts.next()?.split(':');
+    let hours: u64 = clock.next()?.parse().ok()?;
+    let minutes: u64 = clock.next()?.parse().ok()?;
+    let seconds: u64 = clock.next()?.parse().ok()?;
+    if parts.next()? != "GMT" || parts.next().is_some() || !(1..=31).contains(&day) {
+        return None;
+    }
+    // HTTP dates have four-digit years; anything else would overflow the arithmetic below.
+    if !(1970..=9999).contains(&year) {
+        return None;
+    }
+    if hours > 23 || minutes > 59 || seconds > 60 {
+        return None;
+    }
+    let days = u64::try_from(days_from_civil(year, month, day)).ok()?;
+    let since_epoch = days
+        .checked_mul(86_400)?
+        .checked_add(hours * 3_600 + minutes * 60 + seconds)?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(since_epoch))
+}
+
+/// Days from 1970-01-01 to a date of the proleptic Gregorian calendar.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day_of_year =
+        (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 /// A fraction in [0, 1) that differs between calls; precise randomness is not needed.
 fn random_fraction() -> f64 {
     let mut hasher = RandomState::new().build_hasher();
@@ -95,6 +160,35 @@ mod tests {
                 "{delay:?}"
             );
         }
+    }
+
+    #[test]
+    fn retry_after_is_read_in_seconds_or_as_an_http_date() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(784_111_740);
+
+        assert_eq!(
+            parse_retry_after("120", now),
+            Some(Duration::from_secs(120))
+        );
+        // 1994-11-06 08:49:37 GMT is 37 seconds after `now`.
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", now),
+            Some(Duration::from_secs(37))
+        );
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:48:00 GMT", now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(parse_retry_after("soon", now), None);
+        // A year no date can reach is refused rather than overflow.
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1000000000000 08:49:37 GMT", now),
+            None
+        );
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 PST", now),
+            None
+        );
     }
 
     #[test]

@@ -12,7 +12,10 @@ use quick_xml::{
     events::{BytesStart, Event},
 };
 
-use crate::{naming::split_trailing_tags, xml::push_xml_reference};
+use crate::{
+    naming::{is_revision_tag, split_trailing_tags},
+    xml::push_xml_reference,
+};
 
 pub const MAME_SOFTWARE_LISTS_SOURCE_ID: &str = "mame-software-lists";
 const SOURCE_NAME: &str = "MAME software list";
@@ -182,13 +185,28 @@ fn parse_list<R: std::io::BufRead>(
     let mut field: Option<TextField> = None;
     let mut text = String::new();
     let mut read = ReferenceCatalogRead::default();
+    // Elements opened and not closed yet: a list must close them all.
+    let mut depth = 0_usize;
 
     loop {
         let event = xml.read_event_into(&mut buffer).map_err(xml_error)?;
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
         match event {
             Event::Start(element) => match element.name().as_ref() {
                 "softwarelist" => {
-                    let name = attribute(&element, "name")?.unwrap_or_default();
+                    // The list name keeps the identities of its records apart from other lists.
+                    let name = attribute(&element, "name")?
+                        .map(|name| name.trim().to_owned())
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| {
+                            PortError::invalid_source_data(format!(
+                                "{SOURCE_NAME} has no name to identify its records"
+                            ))
+                        })?;
                     let description = attribute(&element, "description")?.unwrap_or_default();
                     list = Some((name, description));
                 }
@@ -232,28 +250,26 @@ fn parse_list<R: std::io::BufRead>(
                         )));
                     };
                     let (list_name, list_description) = list.as_ref().ok_or_else(missing_list)?;
-                    match finish_software(
-                        entry,
-                        list_name,
-                        list_description,
-                        location,
-                        mame_version,
-                    ) {
-                        Some(release) => {
-                            read.releases.push(release);
-                            if read.releases.len() >= max_games {
-                                break;
-                            }
+                    // Entries past the bound are still parsed, so the whole list is checked.
+                    if read.releases.len() < max_games {
+                        match finish_software(
+                            entry,
+                            list_name,
+                            list_description,
+                            location,
+                            mame_version,
+                        ) {
+                            Some(release) => read.releases.push(release),
+                            None => read.skipped_records += 1,
                         }
-                        None => read.skipped_records += 1,
                     }
                 }
                 _ => {}
             },
-            // A list cut short inside an entry is broken as a whole.
-            Event::Eof if current.is_some() => {
+            // A list cut short, inside an entry or between two, is broken as a whole.
+            Event::Eof if depth > 0 => {
                 return Err(PortError::invalid_source_data(format!(
-                    "{SOURCE_NAME} ends inside a software entry"
+                    "{SOURCE_NAME} ends before its elements close"
                 )));
             }
             Event::Eof => break,
@@ -276,7 +292,7 @@ fn start_software(element: &BytesStart<'_>) -> SoftwareEntry {
     match (attribute(element, "name"), attribute(element, "cloneof")) {
         (Ok(name), Ok(clone_of)) => SoftwareEntry {
             name: name.filter(|name| !name.trim().is_empty()),
-            clone_of,
+            clone_of: clone_of.filter(|parent| !parent.trim().is_empty()),
             ..SoftwareEntry::default()
         },
         _ => SoftwareEntry {
@@ -308,7 +324,11 @@ fn read_info(element: &BytesStart<'_>) -> Result<Vec<(String, String)>, PortErro
     let name = attribute(element, "name")?;
     let value = attribute(element, "value")?;
     Ok(match (name, value) {
-        (Some(name), Some(value)) if KEPT_INFO.contains(&name.as_str()) => vec![(name, value)],
+        (Some(name), Some(value))
+            if KEPT_INFO.contains(&name.as_str()) && !value.trim().is_empty() =>
+        {
+            vec![(name, value)]
+        }
         _ => Vec::new(),
     })
 }
@@ -320,7 +340,10 @@ fn read_dump(
     let mut identifiers = Vec::new();
     for (attribute_name, qualifier) in [("name", name_qualifier), ("crc", "crc"), ("sha1", "sha1")]
     {
-        if let Some(value) = attribute(element, attribute_name)? {
+        // A blank value identifies nothing.
+        if let Some(value) =
+            attribute(element, attribute_name)?.filter(|value| !value.trim().is_empty())
+        {
             identifiers.push((qualifier.to_owned(), value));
         }
     }
@@ -341,19 +364,19 @@ fn finish_software(
     }
     let name = entry.name?;
     let description = entry.description?;
-    // A list this importer does not name is placed by its description, else by its name; one
-    // naming neither places its software on no platform.
+    // A list this importer does not name is placed by its description, else by its name.
     let platform = LIST_PLATFORMS
         .iter()
         .find(|(list, _)| *list == list_name)
         .map(|(_, platform)| (*platform).to_owned())
-        .or_else(|| {
-            [list_description, list_name]
-                .into_iter()
-                .map(str::trim)
-                .find(|name| !name.is_empty())
-                .map(str::to_owned)
-        })?;
+        .unwrap_or_else(|| {
+            let description = list_description.trim();
+            if description.is_empty() {
+                list_name.to_owned()
+            } else {
+                description.to_owned()
+            }
+        });
     let release = mame_release_name(&description);
     let assertion = |field, qualifier: Option<&str>, value: &str| ReleaseAssertion {
         source_id: SourceId::from(MAME_SOFTWARE_LISTS_SOURCE_ID),
@@ -443,6 +466,9 @@ fn mame_release_name(description: &str) -> MameReleaseName {
                 let name = format!("Rev {rest}");
                 revision = Some(name.clone());
                 edition.push(name);
+            } else if is_revision_tag(part) {
+                revision = Some(part.to_owned());
+                edition.push(part.to_owned());
             } else {
                 edition.push(part.to_owned());
             }
@@ -469,7 +495,13 @@ fn mame_region(part: &str) -> Option<String> {
         .iter()
         .find(|(abbreviation, _)| *abbreviation == part)
         .map(|(_, region)| (*region).to_owned())
-        .or_else(|| REGION_NAMES.contains(&part).then(|| part.to_owned()))
+        .or_else(|| {
+            let spelled_out = REGION_NAMES.contains(&part)
+                || REGION_ABBREVIATIONS
+                    .iter()
+                    .any(|(_, region)| *region == part);
+            spelled_out.then(|| part.to_owned())
+        })
 }
 
 fn attribute(element: &BytesStart<'_>, name: &str) -> Result<Option<String>, PortError> {
