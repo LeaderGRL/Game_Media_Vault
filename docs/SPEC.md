@@ -564,7 +564,7 @@ game-media-vault verify ...
 game-media-vault source ...
 ```
 
-Requests should also be serializable to a declarative file so large acquisitions can be reproduced on another machine.
+Requests should also be serializable to a declarative file so large acquisitions can be reproduced on another machine. `game-media-vault run export <id>` prints the request of a run as a document `{ "format_version": 1, "request": … }` holding the request alone (no run state, Source credentials or vault paths), and `game-media-vault run start <file>` starts a run from such a document in any vault, planning it as `acquire` does. A document of another format version is `unsupported`; one that cannot be read or does not parse is an invalid request.
 
 Errors are classified into stable kinds shared by every frontend. The desktop shell returns them as `{ kind, message }`; the CLI prints the message on stderr and exits with a kind-specific code:
 

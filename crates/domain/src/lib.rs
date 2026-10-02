@@ -268,6 +268,21 @@ impl QualityRequirements {
 }
 
 impl AcquisitionRequest {
+    /// The draft this request validates, which validates into the same request again.
+    pub fn to_draft(&self) -> AcquisitionRequestDraft {
+        AcquisitionRequestDraft {
+            sources: self.sources.clone(),
+            platforms: self.platforms.clone(),
+            games: self.games.clone(),
+            regions: self.regions.clone(),
+            languages: self.languages.clone(),
+            asset_types: self.asset_types.clone(),
+            quality: self.quality.clone(),
+            retention: self.retention,
+            limits: self.limits.clone(),
+        }
+    }
+
     pub fn platforms(&self) -> &[String] {
         &self.platforms
     }
