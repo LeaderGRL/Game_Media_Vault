@@ -810,3 +810,20 @@ fn a_dataset_that_does_not_read_as_an_archive_is_never_cached() {
 
     assert_eq!(locators(&candidates).len(), 1);
 }
+
+#[test]
+fn a_cached_copy_damaged_on_disk_is_downloaded_again() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    connector.discover(&request(|_| {})).unwrap();
+    // The copy is cut short on disk while its validators stay.
+    std::fs::write(cache.path().join("Metadata.zip"), b"PK").unwrap();
+
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+    let again = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+    assert_eq!(locators(&again), locators(&candidates));
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 2);
+}

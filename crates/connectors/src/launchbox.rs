@@ -192,6 +192,12 @@ impl DatasetCache {
         }
     }
 
+    /// The cached copy, unless it vanished or no longer reads as an archive.
+    fn copy(&self) -> Option<File> {
+        let mut copy = File::open(self.archive()).ok()?;
+        (reads_as_archive(&copy) && copy.rewind().is_ok()).then_some(copy)
+    }
+
     /// Makes a copy of `dataset` the cached one, described by `validators`. A copy another
     /// process holds open may stay as it is.
     fn store(&self, mut dataset: &File, validators: &Validators) -> io::Result<()> {
@@ -365,25 +371,33 @@ where
     /// replaces it once it reads as an archive. The dataset is downloaded to a temporary file
     /// first, so a cache that cannot be written never fails the discovery.
     fn cached_dataset(&self, cache: &DatasetCache) -> Result<File, PortError> {
-        match self
+        let fetched = match self
             .transport
             .get_if_changed(LAUNCHBOX_METADATA_URL, &cache.validators())?
         {
-            Fetched::Unchanged => match File::open(cache.archive()) {
-                Ok(file) => Ok(file),
-                // The copy vanished since its validators were read.
-                Err(_) => spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?),
-            },
-            Fetched::Changed { body, validators } => {
-                let mut dataset = spool(body)?;
-                if reads_as_archive(&dataset) {
-                    // This discovery reads its own copy whether the cache keeps one or not.
-                    let _ = cache.store(&dataset, &validators);
+            Fetched::Unchanged => {
+                if let Some(copy) = cache.copy() {
+                    return Ok(copy);
                 }
-                dataset.rewind().map_err(buffer_failed)?;
-                Ok(dataset)
+                // The copy vanished, or no longer reads as an archive, since its validators
+                // were read: it is downloaded whole again.
+                self.transport
+                    .get_if_changed(LAUNCHBOX_METADATA_URL, &Validators::default())?
             }
+            changed => changed,
+        };
+        let Fetched::Changed { body, validators } = fetched else {
+            return Err(PortError::invalid_source_data(
+                "LaunchBox answered a request for its whole dataset as unchanged".to_owned(),
+            ));
+        };
+        let mut dataset = spool(body)?;
+        if reads_as_archive(&dataset) {
+            // This discovery reads its own copy whether the cache keeps one or not.
+            let _ = cache.store(&dataset, &validators);
         }
+        dataset.rewind().map_err(buffer_failed)?;
+        Ok(dataset)
     }
 }
 
