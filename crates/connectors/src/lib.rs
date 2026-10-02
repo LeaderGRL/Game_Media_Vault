@@ -10,6 +10,7 @@ use game_media_vault_domain::{
 mod datafile;
 mod launchbox;
 mod naming;
+mod resume;
 mod retry;
 mod xml;
 
@@ -126,7 +127,14 @@ impl HttpTransport for ReqwestHttpTransport {
         let mut attempts = 1;
         loop {
             match self.attempt(url) {
-                Ok(response) => return Ok(Box::new(response)),
+                Ok(response) => {
+                    return Ok(Box::new(resume::ResumingBody::new(
+                        self.client.clone(),
+                        self.retry,
+                        url,
+                        response,
+                    )));
+                }
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));
                     attempts += 1;
