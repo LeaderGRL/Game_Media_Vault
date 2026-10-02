@@ -314,6 +314,80 @@ describe("App", () => {
     );
   });
 
+  it("reports the originals skipped as unsupported formats", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "derive_thumbnails"
+          ? { derived: 0, skipped: 2, failed: [] }
+          : command === "list_library"
+            ? [entry]
+            : [],
+      ),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+
+    expect(
+      await screen.findByText("Rendered 0 thumbnails; 2 originals skipped as unsupported formats."),
+    ).toBeInTheDocument();
+  });
+
+  it("lets a vault loaded during a rendering render its own thumbnails", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      command === "derive_thumbnails"
+        ? new Promise(() => {})
+        : Promise.resolve(command === "list_library" ? [entry] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    expect(await screen.findByRole("button", { name: "Rendering thumbnails…" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeEnabled();
+  });
+
+  it("keeps a filter search submitted while thumbnails render", async () => {
+    let finishRendering: ((summary: unknown) => void) | undefined;
+    let metalSearches = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_thumbnails") {
+        return new Promise((resolve) => {
+          finishRendering = resolve;
+        });
+      }
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "metal") {
+          metalSearches += 1;
+          // The first search never settles; the rendering supersedes it.
+          return metalSearches === 1 ? new Promise(() => {}) : Promise.resolve([entry]);
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    await waitFor(() => expect(finishRendering).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(metalSearches).toBe(1));
+
+    await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
+
+    // The refresh searches again with the submitted filters, which then apply.
+    await waitFor(() => expect(metalSearches).toBe(2));
+    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue("metal"));
+    expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" });
+  });
+
   it("offers no Library search before a vault is loaded", () => {
     render(<App />);
 

@@ -61,8 +61,8 @@ export function App() {
   // The pending next-page request, if any: only it may apply its page or end the loading state.
   const pageRequestRef = useRef<object | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  // A filter search is pending; paging would continue the previous filters meanwhile.
-  const searchPendingRef = useRef(false);
+  // Filters of the pending filter search; paging would continue the previous filters meanwhile.
+  const pendingSearchRef = useRef<LibraryFilters | null>(null);
   const [searchingLibrary, setSearchingLibrary] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<View>("library");
@@ -72,6 +72,8 @@ export function App() {
   const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
   const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
   const [startingRun, setStartingRun] = useState(false);
+  // The pending thumbnail rendering, if any: only it may report or end the rendering state.
+  const thumbnailRequestRef = useRef<object | null>(null);
   const [renderingThumbnails, setRenderingThumbnails] = useState(false);
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -124,9 +126,9 @@ export function App() {
     const searchingVaultRoot = loadedVaultRoot;
     // Supersedes refreshes and pages requested with the previous filters, and a pending search
     // whose filters the bar keeps showing until this one settles.
-    searchPendingRef.current = false;
+    pendingSearchRef.current = null;
     const generation = supersedeLibraryRequests();
-    searchPendingRef.current = true;
+    pendingSearchRef.current = filters;
     setSearchingLibrary(true);
     setError(null);
     try {
@@ -151,7 +153,7 @@ export function App() {
       }
     } finally {
       if (generation === vaultDataGeneration.current) {
-        searchPendingRef.current = false;
+        pendingSearchRef.current = null;
         setSearchingLibrary(false);
       }
     }
@@ -164,8 +166,8 @@ export function App() {
    */
   function supersedeLibraryRequests() {
     vaultDataGeneration.current += 1;
-    if (searchPendingRef.current) {
-      searchPendingRef.current = false;
+    if (pendingSearchRef.current !== null) {
+      pendingSearchRef.current = null;
       setSearchingLibrary(false);
       setLibraryFiltersRevision((revision) => revision + 1);
     }
@@ -228,6 +230,9 @@ export function App() {
     supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
+    // A rendering still running for the previous vault no longer reports here.
+    thumbnailRequestRef.current = null;
+    setRenderingThumbnails(false);
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -430,12 +435,20 @@ export function App() {
     }
   }
 
-  /** Renders the thumbnails the Library lacks, then shows them with the applied filters. */
+  /**
+   * Renders the thumbnails the Library lacks, one rendering at a time, then shows them: a filter
+   * search submitted meanwhile is searched again so its results include them.
+   */
   async function renderThumbnails() {
-    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+    if (
+      loadedVaultRoot === null ||
+      openedVaultRoot.current !== loadedVaultRoot ||
+      thumbnailRequestRef.current !== null
+    ) {
       return;
     }
-    const renderingVaultRoot = loadedVaultRoot;
+    const request = {};
+    thumbnailRequestRef.current = request;
     setRenderingThumbnails(true);
     setThumbnailStatus(null);
     setError(null);
@@ -443,25 +456,30 @@ export function App() {
       const summary = await invoke<DerivationSummary>("derive_thumbnails", {
         max_edge: LIBRARY_THUMBNAIL_EDGE,
       });
-      if (activeVaultRoot.current !== renderingVaultRoot) {
+      // A vault loaded meanwhile abandoned this rendering.
+      if (thumbnailRequestRef.current !== request) {
         return;
       }
       setThumbnailStatus(describeThumbnailRendering(summary));
+      const pendingFilters = pendingSearchRef.current;
+      if (pendingFilters !== null) {
+        await applyLibraryFilters(pendingFilters);
+        return;
+      }
       const generation = supersedeLibraryRequests();
       const library = await searchLibrary();
-      if (
-        activeVaultRoot.current === renderingVaultRoot &&
-        generation === vaultDataGeneration.current
-      ) {
+      if (thumbnailRequestRef.current === request && generation === vaultDataGeneration.current) {
         showLibraryPage(library);
       }
     } catch (reason) {
-      // Another vault loaded meanwhile reports its own failures.
-      if (activeVaultRoot.current === renderingVaultRoot) {
+      if (thumbnailRequestRef.current === request) {
         setError(errorMessage(reason));
       }
     } finally {
-      setRenderingThumbnails(false);
+      if (thumbnailRequestRef.current === request) {
+        thumbnailRequestRef.current = null;
+        setRenderingThumbnails(false);
+      }
     }
   }
 
@@ -766,10 +784,19 @@ function originalObjectUrl(objectHash: string) {
 }
 
 function describeThumbnailRendering(summary: DerivationSummary) {
-  const rendered = `Rendered ${summary.derived} ${summary.derived === 1 ? "thumbnail" : "thumbnails"}`;
+  const parts = [
+    `Rendered ${summary.derived} ${summary.derived === 1 ? "thumbnail" : "thumbnails"}`,
+  ];
   const failed = summary.failed.length;
-  if (failed === 0) {
-    return rendered + ".";
+  if (failed > 0) {
+    parts.push(`${failed} ${failed === 1 ? "original" : "originals"} could not be rendered`);
   }
-  return `${rendered}; ${failed} ${failed === 1 ? "original" : "originals"} could not be rendered.`;
+  if (summary.skipped > 0) {
+    parts.push(
+      summary.skipped === 1
+        ? "1 original skipped as an unsupported format"
+        : `${summary.skipped} originals skipped as unsupported formats`,
+    );
+  }
+  return parts.join("; ") + ".";
 }
