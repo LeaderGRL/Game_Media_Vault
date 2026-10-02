@@ -1,8 +1,8 @@
 use std::{collections::HashSet, io::Read};
 
 use game_media_vault_domain::{
-    AssetType, AssetTypeSelector, CoverageProfile, DerivationRecipe, LibraryAsset, LibraryRelease,
-    PackagingTemplate,
+    AssetTypeSelector, LibraryRelease, PackagingModelBasis, PackagingModelScans, PackagingTemplate,
+    packaging_model_basis,
 };
 use serde::Serialize;
 
@@ -59,15 +59,6 @@ pub struct PackagingModelSummary {
     pub failed: Vec<PackagingModelFailure>,
 }
 
-/// The Preferred Assets a release's model is textured with, and its recipe.
-struct ModelBasis<'a> {
-    front: &'a LibraryAsset,
-    back: &'a LibraryAsset,
-    spine: &'a LibraryAsset,
-    template: PackagingTemplate,
-    recipe: DerivationRecipe,
-}
-
 /// Builds the 3D packaging model of every release whose Packaging Coverage Profile is complete
 /// and whose packaging family has a template, from the Preferred Asset of each texture slot.
 /// A model is a Derived Asset of the front scan whose recipe names the other scans exactly, so
@@ -90,40 +81,40 @@ pub fn derive_packaging_models(
     let mut built: HashSet<(String, String)> = HashSet::new();
     for entry in catalog.list_library()? {
         let release = LibraryRelease::from(entry);
-        let basis = match model_basis(&release) {
-            Basis::Ready(basis) => basis,
-            Basis::Incomplete(missing) => {
+        let release_edition_id = release.entry.release_edition_id;
+        let scans = match packaging_model_basis(
+            &release.entry.assets,
+            &release.preferred_assets,
+            release.coverage.as_ref(),
+        ) {
+            PackagingModelBasis::Ready(scans) => scans,
+            PackagingModelBasis::Incomplete(missing) => {
                 summary.incomplete.push(IncompletePackaging {
-                    release_edition_id: release.entry.release_edition_id,
+                    release_edition_id,
                     missing,
                 });
                 continue;
             }
-            Basis::WithoutTemplate => {
+            PackagingModelBasis::WithoutTemplate => {
                 summary.without_template += 1;
                 continue;
             }
         };
-        let key = (basis.front.object_hash.clone(), basis.recipe.key());
-        if built.contains(&key)
-            || basis
-                .front
-                .derived
-                .iter()
-                .any(|derived| derived.recipe == basis.recipe)
-        {
+        let recipe = scans.recipe();
+        let key = (scans.front.object_hash.clone(), recipe.key());
+        if built.contains(&key) || scans.model().is_some() {
             summary.up_to_date += 1;
             continue;
         }
-        match build_model(store, builder, &basis) {
+        match build_model(store, builder, &scans) {
             Ok(bytes) => {
                 let stored = store.store_derived(&mut bytes.as_slice())?;
-                derivatives.record_derivative(&basis.front.object_hash, &basis.recipe, &stored)?;
+                derivatives.record_derivative(&scans.front.object_hash, &recipe, &stored)?;
                 built.insert(key);
                 summary.generated += 1;
             }
             Err(error) => summary.failed.push(PackagingModelFailure {
-                release_edition_id: release.entry.release_edition_id,
+                release_edition_id,
                 reason: error.message().to_owned(),
             }),
         }
@@ -131,90 +122,28 @@ pub fn derive_packaging_models(
     Ok(summary)
 }
 
-enum Basis<'a> {
-    Ready(ModelBasis<'a>),
-    Incomplete(Vec<AssetTypeSelector>),
-    WithoutTemplate,
-}
-
-fn model_basis(release: &LibraryRelease) -> Basis<'_> {
-    let Some(coverage) = &release.coverage else {
-        return Basis::WithoutTemplate;
-    };
-    let Some(template) = PackagingTemplate::for_family(coverage.packaging_family) else {
-        return Basis::WithoutTemplate;
-    };
-    if let Some(packaging) = coverage
-        .profiles
-        .iter()
-        .find(|profile| profile.profile == CoverageProfile::Packaging)
-        && !packaging.missing.is_empty()
-    {
-        return Basis::Incomplete(packaging.missing.clone());
-    }
-    let preferred = |asset_type: AssetType| {
-        let asset_id = release
-            .preferred_assets
-            .iter()
-            .find(|preferred| preferred.asset_type == asset_type)?
-            .asset_id;
-        release
-            .entry
-            .assets
-            .iter()
-            .find(|asset| asset.asset_id == asset_id)
-    };
-    let slots = [
-        (AssetTypeSelector::BoxFront, preferred(AssetType::BoxFront)),
-        (AssetTypeSelector::BoxBack, preferred(AssetType::BoxBack)),
-        (AssetTypeSelector::Spine, preferred(AssetType::Spine)),
-    ];
-    // A complete Packaging profile has every slot; this keeps the requirements explained if
-    // the profile and the template ever disagree.
-    let [(_, Some(front)), (_, Some(back)), (_, Some(spine))] = slots else {
-        return Basis::Incomplete(
-            slots
-                .iter()
-                .filter(|(_, asset)| asset.is_none())
-                .map(|(selector, _)| *selector)
-                .collect(),
-        );
-    };
-    Basis::Ready(ModelBasis {
-        front,
-        back,
-        spine,
-        template,
-        recipe: DerivationRecipe::PackagingModel {
-            template,
-            back_hash: back.object_hash.clone(),
-            spine_hash: spine.object_hash.clone(),
-        },
-    })
-}
-
 fn build_model(
     store: &dyn DerivedStorePort,
     builder: &dyn PackagingModelPort,
-    basis: &ModelBasis<'_>,
+    scans: &PackagingModelScans<'_>,
 ) -> Result<Vec<u8>, PortError> {
-    let mut front = store.open_original(&basis.front.object_hash)?;
-    let mut back = store.open_original(&basis.back.object_hash)?;
-    let mut spine = store.open_original(&basis.spine.object_hash)?;
+    let mut front = store.open_original(&scans.front.object_hash)?;
+    let mut back = store.open_original(&scans.back.object_hash)?;
+    let mut spine = store.open_original(&scans.spine.object_hash)?;
     builder.build(
-        basis.template,
+        scans.template,
         PackagingScans {
             front: PackagingScan {
                 bytes: front.as_mut(),
-                media_type: &basis.front.media.media_type,
+                media_type: &scans.front.media.media_type,
             },
             back: PackagingScan {
                 bytes: back.as_mut(),
-                media_type: &basis.back.media.media_type,
+                media_type: &scans.back.media.media_type,
             },
             spine: PackagingScan {
                 bytes: spine.as_mut(),
-                media_type: &basis.spine.media.media_type,
+                media_type: &scans.spine.media.media_type,
             },
         },
     )

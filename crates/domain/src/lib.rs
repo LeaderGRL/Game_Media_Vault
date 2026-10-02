@@ -12,7 +12,10 @@ pub use coverage::{
     CoverageProfile, CoverageStatus, PackagingFamily, ProfileCoverage, ReleaseCoverage,
     packaging_family, release_coverage,
 };
-pub use derived::{DerivationRecipe, DerivedAsset, PackagingTemplate};
+pub use derived::{
+    DerivationRecipe, DerivedAsset, PackagingModelBasis, PackagingModelScans, PackagingTemplate,
+    packaging_model_basis,
+};
 pub use preference::{
     AssetPreference, Outranked, PreferenceReason, PreferredAsset, outranked_by, preferred_assets,
 };

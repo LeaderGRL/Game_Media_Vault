@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{MediaInfo, PackagingFamily};
+use crate::{
+    AssetType, AssetTypeSelector, CoverageProfile, LibraryAsset, MediaInfo, PackagingFamily,
+    PreferredAsset, ReleaseCoverage,
+};
 
 /// A reproducible transformation of an original. The same original and recipe always give the
 /// same Derived Asset, which is generated once and reused.
@@ -74,6 +77,104 @@ impl PackagingTemplate {
             Self::CardboardBox => "cardboard-box",
         }
     }
+}
+
+/// What the packaging model of a release rests on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackagingModelBasis<'a> {
+    Ready(PackagingModelScans<'a>),
+    /// Its Packaging Coverage Profile still misses these Asset Types.
+    Incomplete(Vec<AssetTypeSelector>),
+    /// Its packaging family is unknown or has no template yet.
+    WithoutTemplate,
+}
+
+/// The Preferred Asset of each texture slot of a packaging template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackagingModelScans<'a> {
+    pub template: PackagingTemplate,
+    pub front: &'a LibraryAsset,
+    pub back: &'a LibraryAsset,
+    pub spine: &'a LibraryAsset,
+}
+
+impl<'a> PackagingModelScans<'a> {
+    /// The recipe of the model of these exact scans, recorded under the front scan.
+    pub fn recipe(&self) -> DerivationRecipe {
+        DerivationRecipe::PackagingModel {
+            template: self.template,
+            back_hash: self.back.object_hash.clone(),
+            spine_hash: self.spine.object_hash.clone(),
+        }
+    }
+
+    /// The model of these scans, once it has been built.
+    pub fn model(&self) -> Option<&'a DerivedAsset> {
+        let recipe = self.recipe();
+        self.front
+            .derived
+            .iter()
+            .find(|derived| derived.recipe == recipe)
+    }
+}
+
+/// The basis of the packaging model of a release with these `assets`, Preferred Assets and
+/// coverage: the template of its packaging family, textured with the Preferred Asset of each
+/// slot once its Packaging Coverage Profile is complete.
+pub fn packaging_model_basis<'a>(
+    assets: &'a [LibraryAsset],
+    preferred: &[PreferredAsset],
+    coverage: Option<&ReleaseCoverage>,
+) -> PackagingModelBasis<'a> {
+    let Some(coverage) = coverage else {
+        return PackagingModelBasis::WithoutTemplate;
+    };
+    let Some(template) = PackagingTemplate::for_family(coverage.packaging_family) else {
+        return PackagingModelBasis::WithoutTemplate;
+    };
+    if let Some(packaging) = coverage
+        .profiles
+        .iter()
+        .find(|profile| profile.profile == CoverageProfile::Packaging)
+        && !packaging.missing.is_empty()
+    {
+        return PackagingModelBasis::Incomplete(packaging.missing.clone());
+    }
+    let preferred_asset = |asset_type: AssetType| {
+        let asset_id = preferred
+            .iter()
+            .find(|preferred| preferred.asset_type == asset_type)?
+            .asset_id;
+        assets.iter().find(|asset| asset.asset_id == asset_id)
+    };
+    let slots = [
+        (
+            AssetTypeSelector::BoxFront,
+            preferred_asset(AssetType::BoxFront),
+        ),
+        (
+            AssetTypeSelector::BoxBack,
+            preferred_asset(AssetType::BoxBack),
+        ),
+        (AssetTypeSelector::Spine, preferred_asset(AssetType::Spine)),
+    ];
+    // A complete Packaging profile has every slot; this keeps the requirements explained if
+    // the profile and the template ever disagree.
+    let [(_, Some(front)), (_, Some(back)), (_, Some(spine))] = slots else {
+        return PackagingModelBasis::Incomplete(
+            slots
+                .iter()
+                .filter(|(_, asset)| asset.is_none())
+                .map(|(selector, _)| *selector)
+                .collect(),
+        );
+    };
+    PackagingModelBasis::Ready(PackagingModelScans {
+        template,
+        front,
+        back,
+        spine,
+    })
 }
 
 /// A file generated from an original by a recipe. It never replaces its original.

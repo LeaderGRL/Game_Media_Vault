@@ -6,6 +6,7 @@ use std::{
 use game_media_vault_application::{
     CatalogPort, DerivativeRepositoryPort, DerivedStorePort, IncompletePackaging, OriginalObject,
     PackagingModelFailure, PackagingModelPort, PackagingScans, PortError, derive_packaging_models,
+    list_library,
 };
 use game_media_vault_domain::{
     AssetProvenance, AssetType, AssetTypeSelector, DerivationRecipe, DerivedAsset, ImportedAsset,
@@ -294,4 +295,26 @@ fn a_model_that_fails_to_build_is_reported_and_the_others_still_build() {
         }]
     );
     assert_eq!(vault.stored.borrow().len(), 1);
+}
+
+#[test]
+fn the_library_shows_the_model_of_the_current_preferred_scans() {
+    let vault = FakeVault::with_releases(vec![boxed_release(1, "front", "back", "spine")]);
+    let model_of = |vault: &FakeVault| {
+        list_library(vault).unwrap()[0]
+            .packaging_model
+            .as_ref()
+            .map(|model| model.object_hash.clone())
+    };
+    assert_eq!(model_of(&vault), None);
+
+    derive_packaging_models(&vault, &vault, &vault, &FakeBuilder).unwrap();
+    assert_eq!(
+        model_of(&vault).as_deref(),
+        Some("model-front:image/png+back:image/png+spine:image/png")
+    );
+
+    // A model of earlier scans is no longer the release's.
+    *vault.library.borrow_mut() = vec![boxed_release(1, "front", "rescanned-back", "spine")];
+    assert_eq!(model_of(&vault), None);
 }

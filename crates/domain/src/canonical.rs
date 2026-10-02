@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    LibraryEntry, PreferredAsset, ReleaseAssertion, ReleaseAssertionField, ReleaseCoverage,
-    preferred_assets, release_coverage,
+    DerivedAsset, LibraryEntry, PackagingModelBasis, PreferredAsset, ReleaseAssertion,
+    ReleaseAssertionField, ReleaseCoverage, packaging_model_basis, preferred_assets,
+    release_coverage,
 };
 
 /// Fields a Release Edition has a single value for. Identifiers are multi-valued (one checksum
@@ -30,8 +31,8 @@ pub struct CanonicalValue {
 }
 
 /// A library Release Edition with the Canonical Values derived from its assertions, the
-/// Preferred Asset of each Asset Type it has and its coverage, when its packaging family is
-/// known.
+/// Preferred Asset of each Asset Type it has, its coverage when its packaging family is known,
+/// and the packaging model of its Preferred Assets once one is built.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryRelease {
     #[serde(flatten)]
@@ -39,6 +40,7 @@ pub struct LibraryRelease {
     pub canonical_values: Vec<CanonicalValue>,
     pub preferred_assets: Vec<PreferredAsset>,
     pub coverage: Option<ReleaseCoverage>,
+    pub packaging_model: Option<DerivedAsset>,
 }
 
 impl From<LibraryEntry> for LibraryRelease {
@@ -46,11 +48,17 @@ impl From<LibraryEntry> for LibraryRelease {
         let canonical_values = canonical_values(&entry.assertions);
         let preferred_assets = preferred_assets(&entry.assets);
         let coverage = release_coverage(&entry.platform, &entry.assets);
+        let packaging_model =
+            match packaging_model_basis(&entry.assets, &preferred_assets, coverage.as_ref()) {
+                PackagingModelBasis::Ready(scans) => scans.model().cloned(),
+                PackagingModelBasis::Incomplete(_) | PackagingModelBasis::WithoutTemplate => None,
+            };
         Self {
             entry,
             canonical_values,
             preferred_assets,
             coverage,
+            packaging_model,
         }
     }
 }
