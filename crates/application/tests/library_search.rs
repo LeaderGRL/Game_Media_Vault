@@ -211,3 +211,67 @@ fn pages_follow_a_stable_order_and_resume_after_their_cursor() {
     );
     assert_eq!(second.next_after, None);
 }
+
+#[test]
+fn later_pages_keep_the_results_of_the_first_one() {
+    let vault = FakeVault::with_library(library());
+    let first = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            limit: 2,
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    // A release imported after the first page sorts after its cursor but is not part of the
+    // results the first page counted.
+    vault
+        .library
+        .borrow_mut()
+        .push(release(5, "Zelda", SNES, "USA"));
+    let second = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            limit: 2,
+            after: first.next_after,
+            as_of: Some(first.as_of),
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(second.total, first.total);
+    assert_eq!(
+        second
+            .releases
+            .iter()
+            .map(|release| release.entry.release_edition_id)
+            .collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+}
+
+#[test]
+fn stored_platforms_and_regions_match_without_surrounding_spaces() {
+    let vault = FakeVault::with_library(vec![release(
+        7,
+        "Spaced Out",
+        " Sony - PlayStation ",
+        " USA ",
+    )]);
+
+    assert_eq!(
+        ids(
+            &vault,
+            LibraryQuery {
+                platforms: vec!["Sony - PlayStation".to_owned()],
+                regions: vec!["usa".to_owned()],
+                ..LibraryQuery::default()
+            }
+        ),
+        vec![7]
+    );
+}

@@ -122,6 +122,9 @@ struct SearchArgs {
     /// The Release Edition the previous page ended with.
     #[arg(long)]
     after: Option<i64>,
+    /// The `as_of` of the first page, so later pages keep its results.
+    #[arg(long)]
+    as_of: Option<i64>,
     /// Releases per page.
     #[arg(long, default_value_t = DEFAULT_LIBRARY_PAGE_SIZE)]
     limit: usize,
@@ -137,6 +140,7 @@ impl SearchArgs {
             asset_types: self.asset_types,
             statuses: self.statuses,
             after: self.after,
+            as_of: self.as_of,
             limit: self.limit,
         }
     }

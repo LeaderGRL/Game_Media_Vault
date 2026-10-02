@@ -40,6 +40,8 @@ pub struct LibraryQuery {
     pub statuses: Vec<LibraryStatus>,
     /// The Release Edition the previous page ended with.
     pub after: Option<i64>,
+    /// The `as_of` of the first page, so later pages keep its results.
+    pub as_of: Option<i64>,
     /// Releases per page; 0 asks for the default.
     pub limit: usize,
 }
@@ -52,11 +54,15 @@ pub struct LibraryPage {
     pub total: usize,
     /// The cursor of the next page, when one follows.
     pub next_after: Option<i64>,
+    /// The newest Release Edition the search considered. Release Editions are never deleted
+    /// and new ones get larger ids, so passing it back keeps later pages to the same results.
+    pub as_of: i64,
 }
 
 /// Searches the Library. Releases are ordered by title, platform, region and edition, then by
-/// Release Edition; a page resumes after its cursor's place in that order, so releases added
-/// between two pages never repeat or shift the following ones.
+/// Release Edition; a page resumes after its cursor's place in that order and, given the `as_of`
+/// of the first page, keeps to the releases that page searched, so releases added between two
+/// pages never repeat, shift later pages or change the total.
 pub fn search_library(
     catalog: &dyn CatalogPort,
     reviews: &dyn ReviewRepositoryPort,
@@ -67,6 +73,14 @@ pub fn search_library(
         .into_iter()
         .map(LibraryRelease::from)
         .collect();
+    let as_of = query.as_of.unwrap_or_else(|| {
+        releases
+            .iter()
+            .map(|release| release.entry.release_edition_id)
+            .max()
+            .unwrap_or(0)
+    });
+    releases.retain(|release| release.entry.release_edition_id <= as_of);
     releases.sort_by_cached_key(sort_key);
     let start = match query.after {
         Some(after) => {
@@ -112,6 +126,7 @@ pub fn search_library(
         releases: page,
         total,
         next_after,
+        as_of,
     })
 }
 
@@ -151,10 +166,10 @@ fn matches(query: &LibraryQuery, release: &LibraryRelease, needing_review: &BTre
     });
     text_matches
         && any_or_all(&query.platforms, |platform| {
-            platform.trim().eq_ignore_ascii_case(&entry.platform)
+            platform.trim().eq_ignore_ascii_case(entry.platform.trim())
         })
         && any_or_all(&query.regions, |region| {
-            region.trim().eq_ignore_ascii_case(&entry.region)
+            region.trim().eq_ignore_ascii_case(entry.region.trim())
         })
         && any_or_all(&query.sources, |source| {
             entry.assets.iter().any(|asset| {

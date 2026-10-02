@@ -1157,7 +1157,10 @@ fn search_pages_through_matching_releases() {
         ]
     );
     let after = first["next_after"].to_string();
-    let second = search(&["--status", "partial", "--limit", "4", "--after", &after]);
+    let as_of = first["as_of"].to_string();
+    let second = search(&[
+        "--status", "partial", "--limit", "4", "--after", &after, "--as-of", &as_of,
+    ]);
     assert_eq!(titles(&second), ["Tetris", "Tom & Jerry"]);
     assert_eq!(second["next_after"], serde_json::Value::Null);
 
