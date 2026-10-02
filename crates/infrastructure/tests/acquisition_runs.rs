@@ -685,3 +685,32 @@ fn queued_work_lists_the_oldest_items_of_each_source_while_the_run_runs() {
     pause_acquisition_run(&catalog, run.id).unwrap();
     assert!(keys(&[], 2).is_empty());
 }
+
+#[test]
+fn the_next_queued_work_is_the_oldest_of_the_sources_not_skipped() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("a1"), work("a2")])
+        .unwrap();
+    let mut b1 = work("b1");
+    b1.candidate.source_id = SourceId::from("other-source");
+    catalog
+        .record_discovery(run.id, "other-source", &[b1])
+        .unwrap();
+    catalog.complete_work(run.id, "a1").unwrap();
+    let next = |skipped: &[String]| {
+        catalog
+            .next_queued_work(run.id, skipped)
+            .unwrap()
+            .map(|work| work.key)
+    };
+
+    assert_eq!(next(&[]).as_deref(), Some("a2"));
+    assert_eq!(next(&[SOURCE_ID.to_owned()]).as_deref(), Some("b1"));
+    assert_eq!(
+        next(&[SOURCE_ID.to_owned(), "other-source".to_owned()]),
+        None
+    );
+}

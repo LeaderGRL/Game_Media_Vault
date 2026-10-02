@@ -188,34 +188,12 @@ impl RunRepositoryPort for SqliteCatalog {
         run_id: i64,
         skipped_sources: &[String],
     ) -> Result<Option<AcquisitionWorkItem>, PortError> {
-        let skipped_sources_json = serde_json::to_string(skipped_sources).map_err(|error| {
-            PortError::new(format!("failed to serialize skipped sources: {error}"))
-        })?;
-        let row = self
-            .connect()?
-            .query_row(
-                "SELECT work.work_key, work.candidate_json
-                 FROM acquisition_run_work AS work
-                 INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-                 WHERE work.run_id = ?1 AND work.state = 'queued' AND run.status = 'running'
-                   AND json_extract(work.candidate_json, '$.source_id')
-                       NOT IN (SELECT value FROM json_each(?2))
-                 ORDER BY work.id
-                 LIMIT 1",
-                params![run_id, skipped_sources_json],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(sql_error)?;
-        row.map(|(key, candidate_json)| {
-            let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
-                PortError::new(format!(
-                    "catalog contains an invalid work candidate: {error}"
-                ))
-            })?;
-            Ok(AcquisitionWorkItem { key, candidate })
-        })
-        .transpose()
+        // Each Source's oldest item is looked up through the run work Source index, oldest
+        // first, so the first is the oldest of the queue outside `skipped_sources`.
+        Ok(self
+            .queued_work(run_id, skipped_sources, 1)?
+            .into_iter()
+            .next())
     }
 
     fn queued_work(
