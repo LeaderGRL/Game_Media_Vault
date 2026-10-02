@@ -1,8 +1,8 @@
 use std::fs;
 
 use game_media_vault_application::{
-    CatalogPort, CorruptObject, DerivativeRepositoryPort, DerivedStorePort, ObjectStorePort,
-    RepairActions, repair_vault, verify_vault,
+    CatalogPort, CorruptObject, DerivativeRepositoryPort, DerivedStorePort, ObjectArea,
+    ObjectStorePort, RepairActions, VaultRepairStorePort, repair_vault, verify_vault,
 };
 use game_media_vault_domain::{AssetType, DerivationRecipe, PersistAsset, SourceId, StoredObject};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
@@ -260,6 +260,27 @@ fn repairs_remove_what_verification_found_and_keep_damaged_originals() {
 }
 
 #[test]
+fn only_files_at_their_own_address_count_as_stored_objects() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let loose = store.store_original(&mut &b"loose cover"[..]).unwrap();
+    let misplaced = vault.join("objects").join("zz").join("zz");
+    fs::create_dir_all(&misplaced).unwrap();
+    fs::rename(store.object_path(&loose.hash), misplaced.join(&loose.hash)).unwrap();
+    fs::write(
+        store
+            .object_path(&loose.hash)
+            .with_file_name(loose.hash.to_uppercase()),
+        b"aliased",
+    )
+    .unwrap();
+
+    assert!(verify_vault(&catalog, &store).unwrap().is_healthy());
+}
+
+#[test]
 fn forgetting_orphaned_derived_assets_keeps_a_thumbnail_a_retained_original_shares() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
@@ -294,4 +315,37 @@ fn forgetting_orphaned_derived_assets_keeps_a_thumbnail_a_retained_original_shar
     assert_eq!(catalog.originals_without(&THUMBNAIL).unwrap().len(), 0);
     assert!(summary.remaining.orphaned_derived.is_empty());
     assert_eq!(summary.remaining.unreferenced_originals, [loose.hash]);
+}
+
+#[test]
+fn repairs_never_remove_a_path_the_store_did_not_name() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let store = ContentAddressedStore::new(&vault);
+    let kept = store.store_original(&mut &b"kept cover"[..]).unwrap();
+    fs::write(vault.join("keep.txt"), b"not an object").unwrap();
+
+    for name in [
+        "",
+        ".",
+        "..",
+        "../keep.txt",
+        "nested/file.tmp",
+        r"nested\file.tmp",
+    ] {
+        assert!(store.remove_staging_file(name).is_err(), "{name:?}");
+    }
+    for hash in [
+        "../keep.txt".to_owned(),
+        kept.hash.to_uppercase(),
+        kept.hash[..63].to_owned(),
+    ] {
+        assert!(
+            store.remove_object(ObjectArea::Original, &hash).is_err(),
+            "{hash:?}"
+        );
+    }
+
+    assert!(vault.join("keep.txt").exists());
+    assert!(store.object_path(&kept.hash).exists());
 }

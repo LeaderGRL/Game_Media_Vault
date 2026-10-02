@@ -141,12 +141,11 @@ impl VaultStorePort for ContentAddressedStore {
         let mut hashes = Vec::new();
         for first in subdirectories(&self.root.join(area_name(area)))? {
             for second in subdirectories(&first)? {
-                // Files that are not named by a hash are not objects of this store.
-                hashes.extend(
-                    file_names(&second)?
-                        .into_iter()
-                        .filter(|name| is_object_hash(name)),
-                );
+                // Only files named by a hash and stored at that hash's address are objects of
+                // this store; removing any other would remove a different path.
+                hashes.extend(file_names(&second)?.into_iter().filter(|name| {
+                    is_object_hash(name) && self.address(area_name(area), name) == second.join(name)
+                }));
             }
         }
         Ok(hashes)
