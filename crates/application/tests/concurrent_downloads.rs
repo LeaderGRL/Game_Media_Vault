@@ -15,8 +15,8 @@ use game_media_vault_application::{
     start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, SourceId, SourceSelection,
+    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, AssetType,
+    AssetTypeSelector, ConnectorCapabilities, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -285,4 +285,22 @@ fn a_pause_starts_no_further_download() {
 
     assert!(connectors[1].inner.downloads.borrow().is_empty());
     assert!(connectors[2].inner.downloads.borrow().is_empty());
+}
+
+#[test]
+fn a_pause_landing_before_a_download_thread_starts_leaves_its_work_queued() {
+    let mario = box_front("a", "Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&mario, 1)]);
+    // The execution already took the work and awaits its download when the pause lands.
+    *vault.pause_during_next_status_read.borrow_mut() = Some(Duration::from_millis(200));
+    let only = slow("a", vec![mario], None, None);
+
+    let imported = execute(&vault, &[&only], DownloadLimits { max_concurrent: 1 });
+
+    assert_eq!(imported, Ok(0));
+    assert!(only.inner.downloads.borrow().is_empty());
+    let run_id = *vault.runs.borrow().keys().next().unwrap();
+    let run = vault.run(run_id);
+    assert_eq!(run.status, AcquisitionRunStatus::Paused);
+    assert_eq!(run.queued_work, 1);
 }

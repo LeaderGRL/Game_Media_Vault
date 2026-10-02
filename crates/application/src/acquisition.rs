@@ -628,17 +628,20 @@ impl Acquisition<'_> {
         }
     }
 
-    /// Downloads and stores the candidate's original, or completes the work as unavailable and
-    /// returns `None` when its Source no longer serves the media.
+    /// Downloads and stores the candidate's original. Returns `None` when its Source no longer
+    /// serves the media, completing the work as unavailable, or when the run stopped before
+    /// the download started, leaving the work queued.
     fn store_original(
         &self,
         work: &AcquisitionWorkItem,
     ) -> Result<Option<StoredObject>, ApplicationError> {
-        // A download started ahead is awaited; one that never started is made now.
+        // A download started ahead is awaited; one never planned is made now.
         let ahead = self.prefetched.borrow_mut().remove(&work.key);
-        let fetched = match ahead.and_then(|result| result.recv().ok()) {
-            Some(fetched) => fetched,
-            None => {
+        let fetched = match ahead.map(|result| result.recv()) {
+            Some(Ok(fetched)) => fetched,
+            // Its download thread stopped before starting it, as a stopped run does.
+            Some(Err(_)) if !self.still_running()? => return Ok(None),
+            Some(Err(_)) | None => {
                 let connector = self.connector_for(work)?;
                 let _slot = self.slots.take();
                 fetch(connector, self.object_store, &work.candidate)
@@ -657,6 +660,10 @@ impl Acquisition<'_> {
             }
             Fetched::VaultFailed(error) => Err(error),
         }
+    }
+
+    fn still_running(&self) -> Result<bool, ApplicationError> {
+        Ok(self.runs.run_status(self.run_id)? == Some(AcquisitionRunStatus::Running))
     }
 
     fn asset_record(

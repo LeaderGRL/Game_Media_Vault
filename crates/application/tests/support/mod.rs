@@ -181,6 +181,9 @@ pub struct FakeVault {
     pub candidate_links: Shared<BTreeMap<String, i64>>,
     /// Source failures executions recorded, in recording order.
     pub source_failures: Shared<Vec<SourceFailure>>,
+    /// Simulates a pause landing while a download thread reads the run status: the next read
+    /// waits this long, then finds the run paused.
+    pub pause_during_next_status_read: Shared<Option<std::time::Duration>>,
 }
 
 impl FakeVault {
@@ -362,6 +365,13 @@ impl RunRepositoryPort for FakeVault {
     }
 
     fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        let pause_after = self.pause_during_next_status_read.borrow_mut().take();
+        if let Some(delay) = pause_after {
+            std::thread::sleep(delay);
+            if let Some(run) = self.runs.borrow_mut().get_mut(&run_id) {
+                run.status = AcquisitionRunStatus::Paused;
+            }
+        }
         Ok(self.runs.borrow().get(&run_id).map(|run| run.status))
     }
 
