@@ -27,7 +27,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 10);
+    assert_eq!(pragma(&path, "user_version"), 11);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets or Source failures.
+    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets or Source failures or dump sets.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -149,13 +149,14 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
              DROP INDEX idx_release_assertion_value;
              DROP TABLE acquisition_source_failures;
+             DROP TABLE reference_dump_sets;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 10);
+    assert_eq!(pragma(&path, "user_version"), 11);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }
@@ -188,13 +189,14 @@ fn runs_from_version_6_plan_the_sources_their_request_selects() {
              ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
              DROP INDEX idx_release_assertion_value;
              DROP TABLE acquisition_source_failures;
+             DROP TABLE reference_dump_sets;
              PRAGMA user_version = 6;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 10);
+    assert_eq!(pragma(&path, "user_version"), 11);
     assert_eq!(
         catalog.get_run(run.id).unwrap().unwrap().planned_sources,
         ["libretro-thumbnails"]
@@ -233,13 +235,14 @@ fn catalogs_from_version_8_gain_the_assertion_value_index() {
         .execute_batch(
             "DROP INDEX idx_release_assertion_value;
              DROP TABLE acquisition_source_failures;
+             DROP TABLE reference_dump_sets;
              PRAGMA user_version = 8;",
         )
         .unwrap();
 
     SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 10);
+    assert_eq!(pragma(&path, "user_version"), 11);
     assert!(has_index(&path, "idx_release_assertion_value"));
 }
 
@@ -269,13 +272,14 @@ fn catalogs_from_version_9_gain_the_source_failure_log() {
         .unwrap()
         .execute_batch(
             "DROP TABLE acquisition_source_failures;
+             DROP TABLE reference_dump_sets;
              PRAGMA user_version = 9;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 10);
+    assert_eq!(pragma(&path, "user_version"), 11);
     catalog
         .record_source_failure(
             run.id,
@@ -285,4 +289,23 @@ fn catalogs_from_version_9_gain_the_source_failure_log() {
         )
         .unwrap();
     assert_eq!(catalog.source_failures().unwrap().len(), 1);
+}
+
+#[test]
+fn catalogs_from_version_10_gain_the_reference_dump_sets() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    SqliteCatalog::open(&path).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE reference_dump_sets;
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+
+    SqliteCatalog::open_existing(&path).unwrap();
+
+    assert_eq!(pragma(&path, "user_version"), 11);
+    assert!(has_index(&path, "idx_reference_dump_set"));
 }

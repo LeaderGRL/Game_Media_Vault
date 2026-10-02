@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 10;
+const VAULT_SCHEMA_VERSION: i32 = 11;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -26,7 +26,30 @@ const MIGRATIONS: &[Migration] = &[
     add_work_unavailable_reason,
     add_release_assertion_value_index,
     add_source_failures,
+    add_reference_dump_sets,
 ];
+
+/// Version 11 records the dumps each reference record asserted the last time it was imported,
+/// which links the records of several sources by their dumps. Records imported before have
+/// none until imported again. The table matches `SCHEMA`.
+fn add_reference_dump_sets(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(REFERENCE_DUMP_SETS_TABLE)
+        .map_err(sql_error)
+}
+
+/// One row per reference record whose every dump has a SHA-1: the sorted lower-case SHA-1s of
+/// its dumps, replaced whenever the record is imported again.
+const REFERENCE_DUMP_SETS_TABLE: &str = "
+    CREATE TABLE reference_dump_sets (
+        source_id TEXT NOT NULL,
+        source_record TEXT NOT NULL,
+        release_edition_id INTEGER NOT NULL REFERENCES release_editions(id),
+        dump_set TEXT NOT NULL,
+        PRIMARY KEY(source_id, source_record)
+    );
+    CREATE INDEX idx_reference_dump_set ON reference_dump_sets(dump_set);
+";
 
 /// Version 10 records the failures of Sources that executions met, as history. The table
 /// matches `SCHEMA`.
@@ -270,6 +293,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         .map_err(sql_error)?;
     transaction
         .execute_batch(SOURCE_FAILURES_TABLE)
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(REFERENCE_DUMP_SETS_TABLE)
         .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)

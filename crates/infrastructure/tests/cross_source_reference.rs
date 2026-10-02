@@ -35,7 +35,18 @@ fn record(release: &Release<'_>) -> ReferenceReleaseRecord {
         ),
     ];
     // Several dumps, such as the ROMs or tracks of one release, are separated by commas.
-    for sha1 in release.sha1.into_iter().flat_map(|sha1| sha1.split(',')) {
+    for (number, sha1) in release
+        .sha1
+        .into_iter()
+        .flat_map(|sha1| sha1.split(','))
+        .enumerate()
+    {
+        let name = format!("dump {number}.bin");
+        assertions.push(assertion(
+            ReleaseAssertionField::Identifier,
+            Some("rom_name"),
+            &name,
+        ));
         assertions.push(assertion(
             ReleaseAssertionField::Identifier,
             Some("sha1"),
@@ -136,7 +147,7 @@ fn the_same_release_from_two_sources_is_one_release_edition_carrying_both() {
 }
 
 #[test]
-fn a_shared_dump_checksum_alone_links_nothing() {
+fn a_shared_set_of_dumps_links_releases_whose_titles_differ() {
     let (_temp, catalog) = catalog();
     let no_intro = import(
         &catalog,
@@ -149,8 +160,7 @@ fn a_shared_dump_checksum_alone_links_nothing() {
         },
     );
 
-    // The catalog keeps every dump a source ever asserted, so it cannot tell the dumps of one
-    // release from those of another: a checksum is no evidence yet.
+    // The very same dumps, whatever the case of their checksums.
     let mame = import(
         &catalog,
         &Release {
@@ -162,8 +172,11 @@ fn a_shared_dump_checksum_alone_links_nothing() {
         },
     );
 
-    assert_ne!(mame.release_edition_id, no_intro.release_edition_id);
-    assert!(links_of(&catalog, mame.release_edition_id, "mame-software-lists").is_empty());
+    assert_eq!(mame, no_intro);
+    assert_eq!(
+        links_of(&catalog, mame.release_edition_id, "mame-software-lists"),
+        ["linked_by=sha1"]
+    );
 }
 
 #[test]
@@ -245,7 +258,7 @@ fn importing_a_linked_release_again_keeps_one_link() {
     assert_eq!(catalog.list_library().unwrap().len(), 1);
     assert_eq!(
         links_of(&catalog, first.release_edition_id, "mame-software-lists"),
-        ["linked_by=title"]
+        ["linked_by=sha1"]
     );
 }
 
@@ -409,4 +422,141 @@ fn a_title_several_editions_share_links_none_of_them() {
     assert_ne!(third.release_edition_id, second.release_edition_id);
     assert!(links_of(&catalog, third.release_edition_id, "another-catalog").is_empty());
     assert_eq!(catalog.list_library().unwrap().len(), 3);
+}
+
+fn release<'a>(source: &'a str, title: &'a str, sha1: &'a str) -> Release<'a> {
+    Release {
+        source,
+        title,
+        platform: GAME_BOY,
+        region: "World",
+        sha1: Some(sha1),
+    }
+}
+
+#[test]
+fn a_set_of_dumps_several_editions_share_links_none_of_them() {
+    let (_temp, catalog) = catalog();
+    // One catalog lists two releases of the very same dumps.
+    import(&catalog, &release("no-intro", "Game A", "aaaa"));
+    import(&catalog, &release("no-intro", "Game B", "aaaa"));
+
+    let other = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
+    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+}
+
+#[test]
+fn part_of_a_set_of_dumps_is_no_evidence() {
+    let (_temp, catalog) = catalog();
+    import(&catalog, &release("no-intro", "Game A", "prg,shared-chr"));
+
+    let other = import(
+        &catalog,
+        &release("mame-software-lists", "Game B", "shared-chr"),
+    );
+
+    assert_eq!(catalog.list_library().unwrap().len(), 2);
+    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+}
+
+#[test]
+fn a_release_with_a_dump_lacking_a_checksum_gives_no_dump_evidence() {
+    let (_temp, catalog) = catalog();
+    let mut partial = record(&release("no-intro", "Game A", "shared"));
+    // A second dump without a SHA-1, so the set of dumps is not known whole.
+    partial.assertions.push(ReleaseAssertion {
+        source_id: SourceId::from("no-intro"),
+        source_location: "C:/catalogs/no-intro.xml".to_owned(),
+        field: ReleaseAssertionField::Identifier,
+        qualifier: Some("rom_name".to_owned()),
+        value: "unhashed.bin".to_owned(),
+    });
+    catalog.persist_reference_release(partial).unwrap();
+
+    let other = import(
+        &catalog,
+        &release("mame-software-lists", "Game B", "shared"),
+    );
+
+    assert_eq!(catalog.list_library().unwrap().len(), 2);
+    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+}
+
+#[test]
+fn the_same_dumps_in_another_region_stay_another_release() {
+    let (_temp, catalog) = catalog();
+    let world = import(&catalog, &release("no-intro", "Game A", "aaaa"));
+
+    let japan = import(
+        &catalog,
+        &Release {
+            region: "Japan",
+            ..release("mame-software-lists", "Game A (J)", "aaaa")
+        },
+    );
+
+    assert_ne!(japan.release_edition_id, world.release_edition_id);
+    assert!(links_of(&catalog, japan.release_edition_id, "mame-software-lists").is_empty());
+}
+
+#[test]
+fn a_corrected_set_of_dumps_replaces_the_one_a_source_asserted_before() {
+    let (_temp, catalog) = catalog();
+    let original = import(&catalog, &release("no-intro", "Game A", "old-dump"));
+    // The same release, imported again from a corrected datafile.
+    let mut corrected = record(&release("no-intro", "Game A", "new-dump"));
+    corrected
+        .assertions
+        .retain(|assertion| assertion.qualifier.as_deref() != Some("source_record"));
+    corrected.assertions.extend(
+        record(&release("no-intro", "Game A", "old-dump"))
+            .assertions
+            .into_iter()
+            .filter(|assertion| assertion.qualifier.as_deref() == Some("source_record")),
+    );
+    catalog.persist_reference_release(corrected).unwrap();
+
+    let stale = import(
+        &catalog,
+        &release("mame-software-lists", "Game B", "old-dump"),
+    );
+    let current = import(&catalog, &release("redump", "Game C", "new-dump"));
+
+    assert_ne!(stale.release_edition_id, original.release_edition_id);
+    assert_eq!(current.release_edition_id, original.release_edition_id);
+    assert_eq!(
+        links_of(&catalog, current.release_edition_id, "redump"),
+        ["linked_by=sha1"]
+    );
+}
+
+#[test]
+fn a_set_of_dumps_never_joins_two_releases_of_one_source() {
+    let (_temp, catalog) = catalog();
+    let first = import(&catalog, &release("no-intro", "Game A", "aaaa"));
+    import(&catalog, &release("mame-software-lists", "Game A", "aaaa"));
+
+    // The first catalog lists another release of the very same dumps.
+    let second = import(&catalog, &release("no-intro", "Game B", "aaaa"));
+
+    assert_ne!(second.release_edition_id, first.release_edition_id);
+    assert!(links_of(&catalog, second.release_edition_id, "no-intro").is_empty());
+}
+
+#[test]
+fn dumps_outweigh_a_title_another_edition_shares() {
+    let (_temp, catalog) = catalog();
+    import(&catalog, &release("no-intro", "Tetris", "aaaa"));
+    let deluxe = import(&catalog, &release("no-intro", "Tetris DX", "bbbb"));
+
+    // Titled like the first release, dumped like the second.
+    let other = import(&catalog, &release("mame-software-lists", "Tetris", "bbbb"));
+
+    assert_eq!(other.release_edition_id, deluxe.release_edition_id);
+    assert_eq!(
+        links_of(&catalog, other.release_edition_id, "mame-software-lists"),
+        ["linked_by=sha1"]
+    );
 }
