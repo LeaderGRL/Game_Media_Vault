@@ -261,8 +261,9 @@ struct NormalizedEdition<'a> {
 /// whose record of another source last asserted exactly the record's dumps. Otherwise the one
 /// such edition another source titled the same. Several editions, by dumps or by title, link
 /// none of them, and dump evidence pointing at several editions forbids a title link. An edition
-/// already holding a record of the same source is never linked by dumps: one catalog listing
-/// two releases of the same dumps describes two releases.
+/// already holding a record of the same source is never linked by dumps, since one catalog
+/// listing two releases of the same dumps describes two releases, but it counts among the
+/// editions they point at.
 fn linked_release_edition(
     transaction: &Transaction<'_>,
     source_id: &str,
@@ -270,34 +271,43 @@ fn linked_release_edition(
     dumps: Option<&str>,
 ) -> Result<Option<(i64, i64, &'static str)>, PortError> {
     if let Some(dumps) = dumps {
-        let editions = editions_where(
-            transaction,
-            "SELECT DISTINCT r.game_id, r.id
-             FROM reference_dump_sets d
-             JOIN release_editions r ON r.id = d.release_edition_id
-             WHERE d.dump_set = ?1
-               AND d.source_id != ?5
-               AND r.normalized_platform = ?2
-               AND r.normalized_region = ?3
-               AND r.normalized_edition_name = ?4
-               AND NOT EXISTS (
-                   SELECT 1 FROM release_assertions own
-                   WHERE own.release_edition_id = r.id
-                     AND own.source_id = ?5
-                     AND own.field = 'identifier'
-                     AND own.qualifier = 'source_record'
-               )",
-            params![
-                dumps,
-                edition.platform,
-                edition.region,
-                edition.edition,
-                source_id
-            ],
-        )?;
+        // Every edition the dumps point at counts, so that one already holding a record of the
+        // importing source never makes another look like the only match.
+        let editions: Vec<(i64, i64, bool)> = transaction
+            .prepare(
+                "SELECT DISTINCT r.game_id, r.id, EXISTS (
+                     SELECT 1 FROM release_assertions own
+                     WHERE own.release_edition_id = r.id
+                       AND own.source_id = ?5
+                       AND own.field = 'identifier'
+                       AND own.qualifier = 'source_record'
+                 )
+                 FROM reference_dump_sets d
+                 JOIN release_editions r ON r.id = d.release_edition_id
+                 WHERE d.dump_set = ?1
+                   AND d.source_id != ?5
+                   AND r.normalized_platform = ?2
+                   AND r.normalized_region = ?3
+                   AND r.normalized_edition_name = ?4",
+            )
+            .map_err(sql_error)?
+            .query_map(
+                params![
+                    dumps,
+                    edition.platform,
+                    edition.region,
+                    edition.edition,
+                    source_id
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(sql_error)?;
         match editions.as_slice() {
-            [] => {}
-            [(game_id, release_edition_id)] => {
+            // An edition already holding a record of the importing source is another release.
+            [] | [(_, _, true)] => {}
+            [(game_id, release_edition_id, false)] => {
                 return Ok(Some((*game_id, *release_edition_id, "sha1")));
             }
             _ => return Ok(None),

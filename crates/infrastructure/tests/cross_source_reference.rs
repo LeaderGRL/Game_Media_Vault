@@ -17,6 +17,18 @@ struct Release<'a> {
     sha1: Option<&'a str>,
 }
 
+/// The SHA-1 of the dump a fixture names `token`: the token itself, in its case, when it is made
+/// of hexadecimal digits, and otherwise its bytes in hexadecimal, padded to forty digits.
+fn sha1_of(token: &str) -> String {
+    let digits = if token.chars().all(|digit| digit.is_ascii_hexdigit()) {
+        token.to_owned()
+    } else {
+        token.bytes().map(|byte| format!("{byte:02x}")).collect()
+    };
+    assert!(digits.len() <= 40, "fixture dump name too long: {token}");
+    format!("{digits:0<40}")
+}
+
 fn record(release: &Release<'_>) -> ReferenceReleaseRecord {
     let assertion = |field, qualifier: Option<&str>, value: &str| ReleaseAssertion {
         source_id: SourceId::from(release.source),
@@ -50,7 +62,7 @@ fn record(release: &Release<'_>) -> ReferenceReleaseRecord {
         assertions.push(assertion(
             ReleaseAssertionField::Identifier,
             Some("sha1"),
-            sha1,
+            &sha1_of(sha1),
         ));
     }
     ReferenceReleaseRecord {
@@ -559,4 +571,19 @@ fn dumps_outweigh_a_title_another_edition_shares() {
         links_of(&catalog, other.release_edition_id, "mame-software-lists"),
         ["linked_by=sha1"]
     );
+}
+
+#[test]
+fn dumps_several_editions_share_link_none_even_once_one_holds_the_importing_source() {
+    let (_temp, catalog) = catalog();
+    let first = import(&catalog, &release("no-intro", "Game A", "aaaa"));
+    import(&catalog, &release("mame-software-lists", "Game A", "aaaa"));
+    // The first catalog then lists another release of the very same dumps.
+    import(&catalog, &release("no-intro", "Game B", "aaaa"));
+
+    let other = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+
+    assert_ne!(other.release_edition_id, first.release_edition_id);
+    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
 }
