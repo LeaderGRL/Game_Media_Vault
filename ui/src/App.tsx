@@ -180,7 +180,11 @@ export function App() {
         setLibraryNextAfter(page.next_after);
       }
     } catch (reason) {
-      if (activeVaultRoot.current === loadingVaultRoot) {
+      // A newer search or refresh replaced the page this one would have extended.
+      if (
+        activeVaultRoot.current === loadingVaultRoot &&
+        generation === vaultDataGeneration.current
+      ) {
         setError(errorMessage(reason));
       }
     } finally {
@@ -379,18 +383,26 @@ export function App() {
       return;
     }
     const generation = supersedeLibraryRequests();
+    reviewRefreshRequestGeneration.current += 1;
+    const reviewRefreshGeneration = reviewRefreshRequestGeneration.current;
     const reviewGenerationAtStart = reviewMutationGeneration.current;
     const [library, reviews] = await Promise.all([
       searchLibrary(),
       invoke<ReviewItem[]>("list_review_items"),
     ]);
-    // A newer refresh or a review decision made meanwhile read both lists after this one.
+    // A review decision made meanwhile read both lists after this one.
     if (
-      activeVaultRoot.current === expectedVaultRoot &&
-      generation === vaultDataGeneration.current &&
-      reviewMutationGeneration.current === reviewGenerationAtStart
+      activeVaultRoot.current !== expectedVaultRoot ||
+      reviewMutationGeneration.current !== reviewGenerationAtStart
     ) {
+      return;
+    }
+    // A filter search replaces only the Library page; the Review Items stay this refresh's
+    // unless a newer refresh read them.
+    if (generation === vaultDataGeneration.current) {
       showLibraryPage(library);
+    }
+    if (reviewRefreshGeneration === reviewRefreshRequestGeneration.current) {
       setReviewItems(reviews);
     }
   }

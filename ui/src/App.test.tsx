@@ -1720,3 +1720,102 @@ describe("App acquisition", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("start_acquisition_run", expect.anything());
   });
 });
+
+describe("App Library requests", () => {
+  const runToExecute = {
+    id: 1,
+    request: {
+      sources: { mode: "explicit", values: ["libretro-thumbnails"] },
+      platforms: ["Nintendo - Game Boy"],
+      games: { mode: "explicit", values: ["Tetris (World) (Rev 1)"] },
+      regions: [],
+      languages: [],
+      asset_types: ["box_front"],
+      quality: null,
+      retention: "keep_everything",
+      limits: {},
+    },
+    status: "running",
+    queued_work: 1,
+    awaiting_review_work: 0,
+    completed_work: 0,
+    below_quality_work: 0,
+    outranked_work: 0,
+  };
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openVaultMock.mockReset();
+    openVaultMock.mockResolvedValue(undefined);
+    libraryQueries.length = 0;
+  });
+
+  it("ignores the failure of a page a newer search superseded", async () => {
+    let failPage: ((reason: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.after === 2) {
+          return new Promise((_resolve, reject) => {
+            failPage = reject;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(failPage).toBeDefined());
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" }));
+    await act(async () => failPage?.({ kind: "external", message: "catalog busy" }));
+
+    expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Review Items an execution refresh read while a filter search ran", async () => {
+    let executed = false;
+    let finishRefreshPage: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve(runToExecute);
+      }
+      if (command === "list_review_items") {
+        return Promise.resolve(executed ? [reviewItem] : []);
+      }
+      if (command === "list_library") {
+        if (executed && libraryQueries.at(-1)?.text === null && !finishRefreshPage) {
+          // The Library page of the refresh after the execution arrives late.
+          return new Promise((resolve) => {
+            finishRefreshPage = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishRefreshPage).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" }));
+    await act(async () => finishRefreshPage?.([]));
+
+    // The newer search keeps its page; the refresh still brings the run's Review Item.
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review (1)" })).toBeInTheDocument();
+  });
+});
