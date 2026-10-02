@@ -630,9 +630,8 @@ export function App() {
   async function showSources() {
     showView("sources");
     void readSourceFailures();
-    if (sources !== null) {
-      return;
-    }
+    // Machine settings change outside this view, as from the CLI, so every visit reads the
+    // Sources again; the current list stays shown meanwhile.
     sourcesRequest.current += 1;
     const request = sourcesRequest.current;
     setSourcesError(null);

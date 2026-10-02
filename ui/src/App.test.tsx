@@ -2638,6 +2638,38 @@ describe("App Library requests", () => {
     });
   });
 
+  it("reads the Sources again each time the view is shown", async () => {
+    // Another process, such as the CLI, disables the Source between the two visits.
+    let enabled = true;
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_sources"
+          ? [
+              {
+                source_id: "launchbox-games-db",
+                asset_types: ["box_front"],
+                direct_media_download: true,
+                enabled,
+              },
+            ]
+          : [],
+      ),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    expect(
+      await screen.findByRole("checkbox", { name: "Enabled on this machine" }),
+    ).toBeChecked();
+
+    enabled = false;
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked(),
+    );
+  });
+
   it("reports Sources it could not read and reads them again when shown again", async () => {
     let failing = true;
     invokeMock.mockImplementation((command: string) => {
