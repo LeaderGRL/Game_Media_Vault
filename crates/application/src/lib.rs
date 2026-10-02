@@ -4,6 +4,7 @@ mod acquisition;
 mod error;
 mod identity;
 mod imports;
+mod library;
 mod ports;
 mod review;
 mod runs;
@@ -18,6 +19,10 @@ pub use identity::candidate_identity;
 pub use imports::{
     ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, ReferenceImportSummary,
     import_local_box_front, import_reference_catalog, list_library,
+};
+pub use library::{
+    DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,
+    search_library,
 };
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,

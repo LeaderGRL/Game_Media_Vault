@@ -1107,3 +1107,64 @@ fn a_malformed_reference_catalog_exits_as_a_source_failure() {
 
     assert_eq!(error.exit_code(), 6, "{error}");
 }
+
+fn titles(page: &serde_json::Value) -> Vec<String> {
+    page["releases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|release| release["game_title"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn search_pages_through_matching_releases() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("connectors")
+        .join("tests")
+        .join("fixtures")
+        .join("no_intro_sample.dat");
+    run_in_vault(
+        &vault,
+        &[
+            "import-no-intro",
+            "--file",
+            fixture.to_str().unwrap(),
+            "--max-games",
+            "10",
+        ],
+    )
+    .unwrap();
+    let search = |args: &[&str]| -> serde_json::Value {
+        let mut command = vec!["search"];
+        command.extend_from_slice(args);
+        serde_json::from_str(&run_in_vault(&vault, &command).unwrap()).unwrap()
+    };
+
+    // Game Boy cardboard boxes without their Assets are Partial.
+    let first = search(&["--status", "partial", "--limit", "4"]);
+    assert_eq!(first["total"], 6);
+    assert_eq!(
+        titles(&first),
+        [
+            "Kirby's Dream Land",
+            "Region Test Denmark",
+            "Region Test Poland",
+            "Super Mario Land"
+        ]
+    );
+    let after = first["next_after"].to_string();
+    let as_of = first["as_of"].to_string();
+    let second = search(&[
+        "--status", "partial", "--limit", "4", "--after", &after, "--as-of", &as_of,
+    ]);
+    assert_eq!(titles(&second), ["Tetris", "Tom & Jerry"]);
+    assert_eq!(second["next_after"], serde_json::Value::Null);
+
+    let mario = search(&["--text", "MARIO", "--platform", "Nintendo - Game Boy"]);
+    assert_eq!(titles(&mario), ["Super Mario Land"]);
+    assert_eq!(search(&["--status", "needs-review"])["total"], 0);
+}

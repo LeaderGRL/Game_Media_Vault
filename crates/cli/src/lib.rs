@@ -6,11 +6,12 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
-    ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, PortError,
+    DEFAULT_LIBRARY_PAGE_SIZE, ErrorKind, ImportLocalBoxFrontRequest,
+    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, PortError,
     acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run,
     import_local_box_front, import_reference_catalog, list_acquisition_runs, list_library,
     list_review_items, load_acquisition_run, pause_acquisition_run, resolve_review_item,
-    resume_acquisition_run, start_acquisition_run_for_connector,
+    resume_acquisition_run, search_library, start_acquisition_run_for_connector,
 };
 use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
 use game_media_vault_domain::{
@@ -98,6 +99,51 @@ enum Command {
         max_games: usize,
     },
     Library,
+    /// Searches the Library and prints one page of matching releases.
+    Search(SearchArgs),
+}
+
+#[derive(Debug, Args)]
+struct SearchArgs {
+    /// Text the game title contains, ignoring case.
+    #[arg(long)]
+    text: Option<String>,
+    #[arg(long = "platform")]
+    platforms: Vec<String>,
+    #[arg(long = "region")]
+    regions: Vec<String>,
+    #[arg(long = "source")]
+    sources: Vec<String>,
+    #[arg(long = "asset-type", value_parser = parse_asset_type)]
+    asset_types: Vec<AssetTypeSelector>,
+    /// complete, partial or needs-review.
+    #[arg(long = "status", value_parser = parse_library_status)]
+    statuses: Vec<LibraryStatus>,
+    /// The Release Edition the previous page ended with.
+    #[arg(long)]
+    after: Option<i64>,
+    /// The `as_of` of the first page, so later pages keep its results.
+    #[arg(long)]
+    as_of: Option<i64>,
+    /// Releases per page.
+    #[arg(long, default_value_t = DEFAULT_LIBRARY_PAGE_SIZE)]
+    limit: usize,
+}
+
+impl SearchArgs {
+    fn into_query(self) -> LibraryQuery {
+        LibraryQuery {
+            text: self.text,
+            platforms: self.platforms,
+            regions: self.regions,
+            sources: self.sources,
+            asset_types: self.asset_types,
+            statuses: self.statuses,
+            after: self.after,
+            as_of: self.as_of,
+            limit: self.limit,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -434,6 +480,14 @@ where
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?)
         }
+        Command::Search(search) => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            Ok(serde_json::to_string_pretty(&search_library(
+                &catalog,
+                &catalog,
+                &search.into_query(),
+            )?)?)
+        }
     }
 }
 
@@ -466,6 +520,10 @@ fn map_start_run_error(error: ApplicationError) -> CliError {
 
 fn parse_asset_type(value: &str) -> Result<AssetTypeSelector, String> {
     parse_domain_enum(value).map_err(|_| format!("unsupported asset type: {value}"))
+}
+
+fn parse_library_status(value: &str) -> Result<LibraryStatus, String> {
+    parse_domain_enum(value).map_err(|_| format!("unsupported library status: {value}"))
 }
 
 fn parse_retention_policy(value: &str) -> Result<RetentionPolicy, String> {
