@@ -15,21 +15,19 @@ const THUMBNAIL: DerivationRecipe = DerivationRecipe::Thumbnail { max_edge: 256 
 /// Originals by hash, derived outputs stored and the derivatives recorded for them.
 #[derive(Default)]
 struct FakeVault {
-    originals: BTreeMap<String, (String, Vec<u8>)>,
+    originals: BTreeMap<String, (Vec<String>, Vec<u8>)>,
     stored: RefCell<Vec<Vec<u8>>>,
     recorded: RefCell<Vec<(String, DerivationRecipe, String)>>,
 }
 
 impl FakeVault {
-    fn with_originals(originals: &[(&str, &str, &[u8])]) -> Self {
+    fn with_originals(originals: &[(&str, &[&str], &[u8])]) -> Self {
         Self {
             originals: originals
                 .iter()
-                .map(|(hash, media_type, bytes)| {
-                    (
-                        (*hash).to_owned(),
-                        ((*media_type).to_owned(), bytes.to_vec()),
-                    )
+                .map(|(hash, media_types, bytes)| {
+                    let media_types = media_types.iter().map(|&media_type| media_type.to_owned());
+                    ((*hash).to_owned(), (media_types.collect(), bytes.to_vec()))
                 })
                 .collect(),
             ..Self::default()
@@ -51,9 +49,9 @@ impl DerivativeRepositoryPort for FakeVault {
                     .iter()
                     .any(|(original, done, _)| original == *hash && done == recipe)
             })
-            .map(|(hash, (media_type, _))| OriginalObject {
+            .map(|(hash, (media_types, _))| OriginalObject {
                 hash: hash.clone(),
-                media_type: media_type.clone(),
+                media_types: media_types.clone(),
             })
             .collect())
     }
@@ -97,7 +95,7 @@ impl DerivedStorePort for FakeVault {
     }
 }
 
-/// Uppercases PNG and JPEG bytes; fails on bytes saying "broken".
+/// Uppercases PNG and JPEG bytes; fails on bytes saying "broken" and on media types it cannot read.
 struct FakeTransformer;
 
 impl MediaTransformPort for FakeTransformer {
@@ -108,8 +106,12 @@ impl MediaTransformPort for FakeTransformer {
     fn transform(
         &self,
         original: &mut dyn Read,
-        _recipe: &DerivationRecipe,
+        media_type: &str,
+        recipe: &DerivationRecipe,
     ) -> Result<Vec<u8>, PortError> {
+        if !self.can_transform(media_type, recipe) {
+            return Err(PortError::new(format!("cannot decode {media_type}")));
+        }
         let mut bytes = Vec::new();
         original
             .read_to_end(&mut bytes)
@@ -123,8 +125,10 @@ impl MediaTransformPort for FakeTransformer {
 
 #[test]
 fn derives_each_original_once_and_reuses_recorded_outputs() {
-    let vault =
-        FakeVault::with_originals(&[("aaa", "image/png", b"one"), ("bbb", "image/jpeg", b"two")]);
+    let vault = FakeVault::with_originals(&[
+        ("aaa", &["image/png"], b"one"),
+        ("bbb", &["image/jpeg"], b"two"),
+    ]);
 
     let summary = derive_assets(&vault, &vault, &FakeTransformer, &THUMBNAIL).unwrap();
 
@@ -144,8 +148,8 @@ fn derives_each_original_once_and_reuses_recorded_outputs() {
 #[test]
 fn a_failed_transform_is_reported_and_the_others_still_derive() {
     let vault = FakeVault::with_originals(&[
-        ("aaa", "image/png", b"broken"),
-        ("bbb", "image/png", b"two"),
+        ("aaa", &["image/png"], b"broken"),
+        ("bbb", &["image/png"], b"two"),
     ]);
 
     let summary = derive_assets(&vault, &vault, &FakeTransformer, &THUMBNAIL).unwrap();
@@ -165,12 +169,24 @@ fn a_failed_transform_is_reported_and_the_others_still_derive() {
 #[test]
 fn originals_the_transformer_cannot_read_are_skipped() {
     let vault = FakeVault::with_originals(&[
-        ("aaa", "application/pdf", b"manual"),
-        ("bbb", "image/png", b"two"),
+        ("aaa", &["application/pdf"], b"manual"),
+        ("bbb", &["image/png"], b"two"),
     ]);
 
     let summary = derive_assets(&vault, &vault, &FakeTransformer, &THUMBNAIL).unwrap();
 
     assert_eq!((summary.derived, summary.skipped), (1, 1));
     assert!(summary.failed.is_empty());
+}
+
+#[test]
+fn an_original_shared_by_assets_of_several_media_types_derives_from_one_it_can_read() {
+    // Bytes shared with an Asset whose media type was never identified.
+    let vault =
+        FakeVault::with_originals(&[("aaa", &["application/octet-stream", "image/png"], b"one")]);
+
+    let summary = derive_assets(&vault, &vault, &FakeTransformer, &THUMBNAIL).unwrap();
+
+    assert_eq!((summary.derived, summary.skipped), (1, 0));
+    assert!(summary.failed.is_empty(), "{:?}", summary.failed);
 }

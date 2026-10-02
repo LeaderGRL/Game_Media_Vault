@@ -55,11 +55,11 @@ fn originals_lacking_a_recipe_are_listed_once_until_their_output_is_recorded() {
         vec![
             OriginalObject {
                 hash: "aaa".to_owned(),
-                media_type: "image/png".to_owned(),
+                media_types: vec!["image/png".to_owned()],
             },
             OriginalObject {
                 hash: "bbb".to_owned(),
-                media_type: "image/png".to_owned(),
+                media_types: vec!["image/png".to_owned()],
             },
         ]
     );
@@ -104,5 +104,28 @@ fn originals_lacking_a_recipe_are_listed_once_until_their_output_is_recorded() {
             ("Metal Gear Solid Integral".to_owned(), vec![derived]),
             ("Vagrant Story".to_owned(), Vec::new()),
         ]
+    );
+}
+
+#[test]
+fn an_original_lists_every_media_type_recorded_for_its_bytes() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let mut unidentified = box_front("Metal Gear Solid", "aaa");
+    unidentified.media = MediaInfo::unknown();
+    catalog.persist_asset(unidentified).unwrap();
+    catalog
+        .persist_asset(box_front("Metal Gear Solid Integral", "aaa"))
+        .unwrap();
+
+    assert_eq!(
+        catalog.originals_without(&THUMBNAIL).unwrap(),
+        vec![OriginalObject {
+            hash: "aaa".to_owned(),
+            media_types: vec![
+                "application/octet-stream".to_owned(),
+                "image/png".to_owned()
+            ],
+        }]
     );
 }

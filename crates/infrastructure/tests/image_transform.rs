@@ -17,7 +17,7 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 
 fn thumbnail(original: &[u8]) -> image::DynamicImage {
     let output = ImageTransformer
-        .transform(&mut &original[..], &THUMBNAIL)
+        .transform(&mut &original[..], "image/png", &THUMBNAIL)
         .unwrap();
     image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap()
 }
@@ -37,10 +37,10 @@ fn smaller_images_keep_their_size() {
 fn the_same_original_always_gives_the_same_thumbnail() {
     let original = png(400, 300);
     let first = ImageTransformer
-        .transform(&mut &original[..], &THUMBNAIL)
+        .transform(&mut &original[..], "image/png", &THUMBNAIL)
         .unwrap();
     let second = ImageTransformer
-        .transform(&mut &original[..], &THUMBNAIL)
+        .transform(&mut &original[..], "image/png", &THUMBNAIL)
         .unwrap();
 
     assert_eq!(first, second);
@@ -54,7 +54,7 @@ fn only_decodable_images_are_transformed() {
     assert!(!ImageTransformer.can_transform("image/jxl", &THUMBNAIL));
     assert!(
         ImageTransformer
-            .transform(&mut &b"not an image"[..], &THUMBNAIL)
+            .transform(&mut &b"not an image"[..], "image/png", &THUMBNAIL)
             .is_err()
     );
 }

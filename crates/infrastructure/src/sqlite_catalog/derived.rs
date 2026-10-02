@@ -14,27 +14,30 @@ impl DerivativeRepositoryPort for SqliteCatalog {
         let connection = self.connect()?;
         let mut statement = connection
             .prepare(
-                "SELECT object_hash, MIN(media_type)
+                "SELECT DISTINCT object_hash, media_type
                  FROM assets
                  WHERE EXISTS (SELECT 1 FROM asset_provenance WHERE asset_id = assets.id)
                    AND NOT EXISTS (
                        SELECT 1 FROM derived_objects
                        WHERE original_hash = assets.object_hash AND recipe_key = ?1
                    )
-                 GROUP BY object_hash
-                 ORDER BY object_hash",
+                 ORDER BY object_hash, media_type",
             )
             .map_err(sql_error)?;
-        statement
-            .query_map(params![recipe.key()], |row| {
-                Ok(OriginalObject {
-                    hash: row.get(0)?,
-                    media_type: row.get(1)?,
-                })
-            })
-            .map_err(sql_error)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(sql_error)
+        let mut rows = statement.query(params![recipe.key()]).map_err(sql_error)?;
+        let mut originals: Vec<OriginalObject> = Vec::new();
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let hash: String = row.get(0).map_err(sql_error)?;
+            let media_type: String = row.get(1).map_err(sql_error)?;
+            match originals.last_mut() {
+                Some(original) if original.hash == hash => original.media_types.push(media_type),
+                _ => originals.push(OriginalObject {
+                    hash,
+                    media_types: vec![media_type],
+                }),
+            }
+        }
+        Ok(originals)
     }
 
     fn record_derivative(

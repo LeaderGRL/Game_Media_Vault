@@ -32,6 +32,7 @@ impl MediaTransformPort for ImageTransformer {
     fn transform(
         &self,
         original: &mut dyn Read,
+        _media_type: &str,
         recipe: &DerivationRecipe,
     ) -> Result<Vec<u8>, PortError> {
         let mut bytes = Vec::new();

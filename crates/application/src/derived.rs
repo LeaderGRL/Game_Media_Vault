@@ -9,7 +9,9 @@ use crate::{ApplicationError, PortError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OriginalObject {
     pub hash: String,
-    pub media_type: String,
+    /// Every media type recorded for the Assets sharing these bytes, sorted: one may be
+    /// unidentified while another names the format.
+    pub media_types: Vec<String>,
 }
 
 /// Derived Assets: reproducible outputs of an original object and a recipe.
@@ -43,9 +45,11 @@ pub trait MediaTransformPort {
     /// Whether originals of `media_type` can go through `recipe`.
     fn can_transform(&self, media_type: &str, recipe: &DerivationRecipe) -> bool;
 
+    /// Applies `recipe` to `original`, whose bytes are of `media_type`.
     fn transform(
         &self,
         original: &mut dyn Read,
+        media_type: &str,
         recipe: &DerivationRecipe,
     ) -> Result<Vec<u8>, PortError>;
 }
@@ -81,13 +85,17 @@ pub fn derive_assets(
         failed: Vec::new(),
     };
     for original in derivatives.originals_without(recipe)? {
-        if !transformer.can_transform(&original.media_type, recipe) {
+        let Some(media_type) = original
+            .media_types
+            .iter()
+            .find(|media_type| transformer.can_transform(media_type, recipe))
+        else {
             summary.skipped += 1;
             continue;
-        }
+        };
         let output = store
             .open_original(&original.hash)
-            .and_then(|mut bytes| transformer.transform(bytes.as_mut(), recipe));
+            .and_then(|mut bytes| transformer.transform(bytes.as_mut(), media_type, recipe));
         match output {
             Ok(bytes) => {
                 let stored = store.store_derived(&mut bytes.as_slice())?;
