@@ -59,6 +59,7 @@ fn persist_reference_release_in_transaction(
     let normalized_platform = normalize(&record.platform);
     let normalized_region = normalize(&record.region);
     let normalized_edition = normalize(&record.edition_name);
+    let dumps = dump_set(&record.assertions);
 
     if let Some((game_id, release_edition_id)) = transaction
         .query_row(
@@ -97,6 +98,13 @@ fn persist_reference_release_in_transaction(
             .map(|evidence| link_assertion(identity, evidence))
             .collect();
         persist_release_assertions(transaction, release_edition_id, &links)?;
+        record_dump_set(
+            transaction,
+            &source_id,
+            &source_record,
+            release_edition_id,
+            dumps.as_deref(),
+        )?;
         return Ok(ImportedReleaseEdition {
             game_id,
             release_edition_id,
@@ -112,11 +120,18 @@ fn persist_reference_release_in_transaction(
         edition: &normalized_edition,
     };
     if let Some((game_id, release_edition_id, evidence)) =
-        linked_release_edition(transaction, &source_id, &edition)?
+        linked_release_edition(transaction, &source_id, &edition, dumps.as_deref())?
     {
         let link = link_assertion(identity, evidence.to_owned());
         persist_release_assertions(transaction, release_edition_id, &record.assertions)?;
         persist_release_assertions(transaction, release_edition_id, &[link])?;
+        record_dump_set(
+            transaction,
+            &source_id,
+            &source_record,
+            release_edition_id,
+            dumps.as_deref(),
+        )?;
         return Ok(ImportedReleaseEdition {
             game_id,
             release_edition_id,
@@ -208,6 +223,13 @@ fn persist_reference_release_in_transaction(
         .map_err(sql_error)?;
 
     persist_release_assertions(transaction, release_edition_id, &record.assertions)?;
+    record_dump_set(
+        transaction,
+        &source_id,
+        &source_record,
+        release_edition_id,
+        dumps.as_deref(),
+    )?;
 
     Ok(ImportedReleaseEdition {
         game_id,
@@ -235,15 +257,64 @@ struct NormalizedEdition<'a> {
 }
 
 /// The release edition another source asserts the record describes too, with the evidence that
-/// links them: the one edition of its platform, region and edition another source titled the
-/// same. Several such editions link none of them. Dump checksums link nothing yet: the catalog
-/// keeps every claim a source ever made, so it cannot tell the dumps one catalog edition
-/// asserts together, nor how many share a checksum.
+/// links them. Dumps come first: the one edition of the record's platform, region and edition
+/// whose record of another source last asserted exactly the record's dumps. Otherwise the one
+/// such edition another source titled the same. Several editions, by dumps or by title, link
+/// none of them, and dump evidence pointing at several editions forbids a title link. An edition
+/// already holding a record of the same source is never linked by dumps, since one catalog
+/// listing two releases of the same dumps describes two releases, but it counts among the
+/// editions they point at, and dumps pointing at it alone forbid a title link.
 fn linked_release_edition(
     transaction: &Transaction<'_>,
     source_id: &str,
     edition: &NormalizedEdition<'_>,
+    dumps: Option<&str>,
 ) -> Result<Option<(i64, i64, &'static str)>, PortError> {
+    if let Some(dumps) = dumps {
+        // Every edition the dumps point at counts, so that one already holding a record of the
+        // importing source never makes another look like the only match.
+        let editions: Vec<(i64, i64, bool)> = transaction
+            .prepare(
+                "SELECT DISTINCT r.game_id, r.id, EXISTS (
+                     SELECT 1 FROM release_assertions own
+                     WHERE own.release_edition_id = r.id
+                       AND own.source_id = ?5
+                       AND own.field = 'identifier'
+                       AND own.qualifier = 'source_record'
+                 )
+                 FROM reference_dump_sets d
+                 JOIN release_editions r ON r.id = d.release_edition_id
+                 WHERE d.dump_set = ?1
+                   AND d.source_id != ?5
+                   AND r.normalized_platform = ?2
+                   AND r.normalized_region = ?3
+                   AND r.normalized_edition_name = ?4",
+            )
+            .map_err(sql_error)?
+            .query_map(
+                params![
+                    dumps,
+                    edition.platform,
+                    edition.region,
+                    edition.edition,
+                    source_id
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(sql_error)?;
+        match editions.as_slice() {
+            [] => {}
+            // An edition already holding a record of the importing source is another release, which
+            // no title links either.
+            [(_, _, true)] => return Ok(None),
+            [(game_id, release_edition_id, false)] => {
+                return Ok(Some((*game_id, *release_edition_id, "sha1")));
+            }
+            _ => return Ok(None),
+        }
+    }
     // Starting from the matching title assertions lets the assertion value index find them.
     let editions = editions_where(
         transaction,
@@ -269,6 +340,56 @@ fn linked_release_edition(
         [(game_id, release_edition_id)] => Some((*game_id, *release_edition_id, "title")),
         _ => None,
     })
+}
+
+/// The dumps `assertions` name, as their sorted lower-case SHA-1s, when every dump (each ROM,
+/// track or disk name) has one, forty hexadecimal digits long; otherwise the set of dumps is not
+/// known whole.
+fn dump_set(assertions: &[ReleaseAssertion]) -> Option<String> {
+    let identifiers = |qualifier: &'static str| {
+        assertions.iter().filter(move |assertion| {
+            assertion.field == ReleaseAssertionField::Identifier
+                && assertion.qualifier.as_deref() == Some(qualifier)
+        })
+    };
+    let dumps = identifiers("rom_name").count() + identifiers("disk_name").count();
+    let mut sha1: Vec<String> = identifiers("sha1")
+        .map(|assertion| assertion.value.trim().to_ascii_lowercase())
+        .collect();
+    // A placeholder such as `none` names no dump, so it never links two records.
+    let is_sha1 =
+        |value: &String| value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit());
+    if sha1.is_empty() || sha1.len() != dumps || !sha1.iter().all(is_sha1) {
+        return None;
+    }
+    sha1.sort();
+    Some(sha1.join(","))
+}
+
+/// Records the dumps the record last asserted, replacing what it asserted before, or forgets
+/// them when the record no longer names them whole.
+fn record_dump_set(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    source_record: &str,
+    release_edition_id: i64,
+    dumps: Option<&str>,
+) -> Result<(), PortError> {
+    match dumps {
+        Some(dumps) => transaction.execute(
+            "INSERT INTO reference_dump_sets (source_id, source_record, release_edition_id, dump_set)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(source_id, source_record)
+             DO UPDATE SET release_edition_id = ?3, dump_set = ?4",
+            params![source_id, source_record, release_edition_id, dumps],
+        ),
+        None => transaction.execute(
+            "DELETE FROM reference_dump_sets WHERE source_id = ?1 AND source_record = ?2",
+            params![source_id, source_record],
+        ),
+    }
+    .map_err(sql_error)?;
+    Ok(())
 }
 
 fn editions_where(
