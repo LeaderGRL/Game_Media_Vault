@@ -1,6 +1,7 @@
 //! Use cases of Game Media Vault, shared by the CLI and the Tauri shell.
 
 mod acquisition;
+mod derived;
 mod error;
 mod identity;
 mod imports;
@@ -10,6 +11,10 @@ mod review;
 mod runs;
 
 pub use acquisition::{acquire_run_with_connector, start_acquisition_run_for_connector};
+pub use derived::{
+    DerivationFailure, DerivationSummary, DerivativeRepositoryPort, DerivedStorePort,
+    MediaTransformPort, OriginalObject, derive_assets,
+};
 pub use error::{ApplicationError, ErrorKind};
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
