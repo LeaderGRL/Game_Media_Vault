@@ -88,7 +88,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test Rust workspace
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --locked
 
   desktop:
     name: Build ${{ matrix.target }}
@@ -145,7 +145,8 @@ jobs:
       # Builds the frontend first, then the app with its assets embedded.
       - name: Build desktop app
         working-directory: ui
-        run: npm run tauri -- build --no-bundle --target ${{ matrix.target }}
+        # `--locked` refuses a Cargo.lock that differs from the tagged one instead of rewriting it.
+        run: npm run tauri -- build --no-bundle --target ${{ matrix.target }} -- --locked
 
       - name: Build CLI
         run: cargo build --release --locked -p game-media-vault-cli --target ${{ matrix.target }}
