@@ -4,10 +4,12 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, ApplicationError, ConnectorPort, ErrorKind, LibraryPage, LibraryQuery,
-    PortError, acquire_run_with_connector as acquire_run_with_connector_use_case,
+    AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary, ErrorKind,
+    LibraryPage, LibraryQuery, PortError,
+    acquire_run_with_connector as acquire_run_with_connector_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
+    derive_assets as derive_assets_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
@@ -19,9 +21,12 @@ use game_media_vault_application::{
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRun, LibraryRelease, MatchingPolicy, ReviewDecision, ReviewItem,
+    AcquisitionRequest, AcquisitionRun, DerivationRecipe, LibraryRelease, MatchingPolicy,
+    ReviewDecision, ReviewItem,
 };
-use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog, inspect_media};
+use game_media_vault_infrastructure::{
+    ContentAddressedStore, ImageTransformer, SqliteCatalog, inspect_media,
+};
 use serde::Serialize;
 use tauri::{Manager, State, http, ipc::Response};
 
@@ -119,6 +124,25 @@ pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryRelease>, CommandErr
     Ok(list_library_use_case(&open_existing_catalog(vault_root)?)?)
 }
 
+/// Renders the thumbnail of every retained original lacking one, on a blocking worker since
+/// decoding and scaling images takes a while.
+pub async fn derive_thumbnails_in_vault_async(
+    vault_root: PathBuf,
+    max_edge: u32,
+) -> Result<DerivationSummary, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let catalog = open_existing_catalog(&vault_root)?;
+        Ok(derive_assets_use_case(
+            &catalog,
+            &ContentAddressedStore::new(&vault_root),
+            &ImageTransformer::new(),
+            &DerivationRecipe::Thumbnail { max_edge },
+        )?)
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("thumbnail rendering", error))?
+}
+
 /// Searches the vault's Library with the query every frontend shares.
 pub fn search_library_in_vault(
     vault_root: &Path,
@@ -171,6 +195,14 @@ pub async fn load_review_preview_in_vault_with_connector_async(
 #[tauri::command(rename_all = "snake_case")]
 fn list_library(session: State<'_, VaultSession>) -> Result<Vec<LibraryRelease>, CommandError> {
     load_library(&session.root()?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn derive_thumbnails(
+    session: State<'_, VaultSession>,
+    max_edge: u32,
+) -> Result<DerivationSummary, CommandError> {
+    derive_thumbnails_in_vault_async(session.root()?, max_edge).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -401,7 +433,7 @@ fn cancel_acquisition_run(
 pub const OBJECT_PROTOCOL: &str = "gmv-object";
 
 /// Answers `gmv-object` requests: the path must be a BLAKE3 object hash of the open vault, so
-/// the webview can only read original objects, never arbitrary files.
+/// the webview can only read original objects and Derived Assets, never arbitrary files.
 pub fn object_response(session: &VaultSession, path: &str) -> http::Response<Vec<u8>> {
     let hash = path.trim_start_matches('/');
     let is_object_hash = hash.len() == 64
@@ -414,7 +446,15 @@ pub fn object_response(session: &VaultSession, path: &str) -> http::Response<Vec
     let Ok(vault_root) = session.root() else {
         return plain_response(http::StatusCode::CONFLICT, "no vault is open");
     };
-    match std::fs::read(ContentAddressedStore::new(vault_root).object_path(hash)) {
+    let store = ContentAddressedStore::new(vault_root);
+    // Derived Assets are content-addressed too, apart from the originals.
+    let bytes = match std::fs::read(store.object_path(hash)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::read(store.derived_path(hash))
+        }
+        read => read,
+    };
+    match bytes {
         Ok(bytes) => http::Response::builder()
             .status(http::StatusCode::OK)
             .header(http::header::CONTENT_TYPE, inspect_media(&bytes).media_type)
@@ -460,6 +500,7 @@ pub fn run() {
             open_vault,
             list_library,
             search_library,
+            derive_thumbnails,
             list_review_items,
             resolve_review_item,
             load_review_preview,

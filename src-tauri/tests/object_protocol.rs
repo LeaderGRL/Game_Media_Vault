@@ -79,3 +79,20 @@ fn reports_missing_objects_and_closed_vaults() {
         409
     );
 }
+
+#[test]
+fn serves_derived_assets_by_their_hash_too() {
+    let (temp, session, _hash) = open_vault_with_object();
+    let thumbnail = b"\x89PNG\r\n\x1a\nfixture thumbnail";
+    let derived = game_media_vault_application::DerivedStorePort::store_derived(
+        &ContentAddressedStore::new(temp.path().join("vault")),
+        &mut &thumbnail[..],
+    )
+    .unwrap();
+
+    let response = object_response(&session, &format!("/{}", derived.hash));
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(response.body().as_slice(), thumbnail);
+}

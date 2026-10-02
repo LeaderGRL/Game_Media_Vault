@@ -20,5 +20,6 @@ serde.workspace = true
 tauri = { version = "2", features = [] }
 
 [dev-dependencies]
+image.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

@@ -1182,6 +1182,7 @@ dependencies = [
  "game-media-vault-connectors",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
+ "image",
  "serde",
  "serde_json",
  "tauri",
