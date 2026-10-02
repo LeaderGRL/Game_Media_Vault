@@ -29,12 +29,18 @@ pub fn inspect_media(bytes: &[u8]) -> MediaInfo {
 /// Identifies an original from its first bytes: its media type and, for images whose header
 /// fits in `header`, their pixel size.
 fn inspect_header(header: &[u8]) -> MediaInfo {
-    if header.starts_with(b"%PDF-") {
-        return MediaInfo {
-            media_type: "application/pdf".to_owned(),
-            width: None,
-            height: None,
-        };
+    for (signature, media_type) in [
+        (&b"%PDF-"[..], "application/pdf"),
+        // glTF 2.0 binary models, such as generated packaging.
+        (&b"glTF"[..], "model/gltf-binary"),
+    ] {
+        if header.starts_with(signature) {
+            return MediaInfo {
+                media_type: media_type.to_owned(),
+                width: None,
+                height: None,
+            };
+        }
     }
     let Ok(image_type) = imagesize::image_type(header) else {
         return MediaInfo::unknown();
