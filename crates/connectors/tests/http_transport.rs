@@ -144,19 +144,19 @@ fn a_source_that_cannot_be_reached_is_retried_then_reported() {
 }
 
 /// Serves `body` once with `headers`, dropping the connection after `cut_after` bytes, then
-/// answers the next request with `resume_reply` (given the request it received).
+/// answers each later request with the next of `resume_replies` (given the request it received).
 fn serve_cut_short(
     headers: &'static str,
     body: &'static [u8],
     cut_after: usize,
-    resume_reply: fn(&str) -> Vec<u8>,
+    resume_replies: Vec<fn(&str) -> Vec<u8>>,
 ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = Arc::clone(&requests);
     thread::spawn(move || {
-        for attempt in 0..2 {
+        for attempt in 0..=resume_replies.len() {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
             };
@@ -173,7 +173,9 @@ fn serve_cut_short(
                 stream.write_all(&body[..cut_after]).unwrap();
                 // Dropping the stream cuts the body short.
             } else {
-                stream.write_all(&resume_reply(&request)).unwrap();
+                stream
+                    .write_all(&resume_replies[attempt - 1](&request))
+                    .unwrap();
             }
         }
     });
@@ -200,7 +202,7 @@ fn a_download_cut_short_resumes_where_it_stopped() {
         "Accept-Ranges: bytes\r\nETag: \"v1\"",
         b"0123456789",
         4,
-        resumed_tail,
+        vec![resumed_tail],
     );
 
     let body = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url).unwrap();
@@ -217,7 +219,7 @@ fn a_download_cut_short_fails_when_the_source_cannot_resume_it() {
     // Without byte ranges, or without a validator proving the bytes are the same, the body
     // cannot be spliced.
     for headers in ["ETag: \"v1\"", "Accept-Ranges: bytes"] {
-        let (url, requests) = serve_cut_short(headers, b"0123456789", 4, resumed_tail);
+        let (url, requests) = serve_cut_short(headers, b"0123456789", 4, vec![resumed_tail]);
 
         let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
 
@@ -233,10 +235,47 @@ fn a_download_whose_media_changed_meanwhile_is_not_spliced() {
         "Accept-Ranges: bytes\r\nETag: \"v1\"",
         b"0123456789",
         4,
-        |_| b"HTTP/1.1 200 OK\r\nETag: \"v2\"\r\nContent-Length: 10\r\n\r\nabcdefghij".to_vec(),
+        vec![|_| {
+            b"HTTP/1.1 200 OK\r\nETag: \"v2\"\r\nContent-Length: 10\r\n\r\nabcdefghij".to_vec()
+        }],
     );
 
     let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
 
     assert!(result.is_err());
+}
+
+fn unavailable_for_now(_request: &str) -> Vec<u8> {
+    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".to_vec()
+}
+
+#[test]
+fn a_resume_the_source_refuses_for_now_is_tried_again() {
+    let (url, requests) = serve_cut_short(
+        "Accept-Ranges: bytes\r\nETag: \"v1\"",
+        b"0123456789",
+        4,
+        vec![unavailable_for_now, resumed_tail],
+    );
+
+    let body = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url).unwrap();
+
+    assert_eq!(body, b"0123456789");
+    assert_eq!(requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn resumes_stop_after_the_attempts_the_policy_allows() {
+    // Three attempts in all: the first request and two resumes.
+    let (url, requests) = serve_cut_short(
+        "Accept-Ranges: bytes\r\nETag: \"v1\"",
+        b"0123456789",
+        4,
+        vec![unavailable_for_now, unavailable_for_now, resumed_tail],
+    );
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    assert_eq!(requests.lock().unwrap().len(), 3);
 }

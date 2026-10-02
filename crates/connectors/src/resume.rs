@@ -95,26 +95,37 @@ impl ResumingBody {
     }
 }
 
-impl Read for ResumingBody {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+impl ResumingBody {
+    /// Replaces the broken response with the rest of the body, or fails with `error`. The broken
+    /// response is never read again: after its error it may report a clean end of the body.
+    fn resume_after(&mut self, error: io::Error) -> io::Result<()> {
         loop {
-            let error = match self.response.read(buffer) {
-                Ok(read) => {
-                    self.received += read as u64;
-                    return Ok(read);
-                }
-                Err(error) => error,
-            };
             if !self.can_resume() {
                 return Err(error);
             }
             self.resumes += 1;
             thread::sleep(self.retry.delay_before_retry(self.resumes, None));
             match self.resume() {
-                Resume::Resumed(response) => self.response = response,
+                Resume::Resumed(response) => {
+                    self.response = response;
+                    return Ok(());
+                }
                 Resume::Refused => return Err(error),
-                // The broken body fails again at once, so the next attempt resumes again.
                 Resume::Failed => {}
+            }
+        }
+    }
+}
+
+impl Read for ResumingBody {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.response.read(buffer) {
+                Ok(read) => {
+                    self.received += read as u64;
+                    return Ok(read);
+                }
+                Err(error) => self.resume_after(error)?,
             }
         }
     }
