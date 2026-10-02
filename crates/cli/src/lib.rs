@@ -7,16 +7,16 @@ use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
     ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, PortError,
-    acquire_run_with_connector, cancel_acquisition_run, import_local_box_front,
-    import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
-    load_acquisition_run, pause_acquisition_run, resolve_review_item, resume_acquisition_run,
-    start_acquisition_run,
+    acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run,
+    import_local_box_front, import_reference_catalog, list_acquisition_runs, list_library,
+    list_review_items, load_acquisition_run, pause_acquisition_run, resolve_review_item,
+    resume_acquisition_run, start_acquisition_run_for_connector,
 };
 use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRun, AssetTypeSelector, GameSelection, MatchingPolicy,
-    PlatformBoundGameSelector, QualityRequirements, RetentionPolicy, ReviewDecision,
-    SourceSelection,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, GameSelection,
+    MatchingPolicy, PlatformBoundGameSelector, QualityRequirements, RetentionPolicy,
+    ReviewDecision, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use thiserror::Error;
@@ -68,42 +68,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Acquire {
-        #[arg(long = "source")]
-        sources: Vec<String>,
-        #[arg(long, conflicts_with = "sources")]
-        auto_source: bool,
-        #[arg(long = "platform")]
-        platforms: Vec<String>,
-        #[arg(long = "game", conflicts_with_all = ["platform_games", "query_results"])]
-        games: Vec<String>,
-        #[arg(
-            long = "platform-game",
-            value_name = "PLATFORM=GAME",
-            value_parser = parse_platform_bound_game,
-            conflicts_with_all = ["games", "query_results"]
-        )]
-        platform_games: Vec<PlatformBoundGameSelector>,
-        #[arg(
-            long = "query-result",
-            value_name = "PLATFORM=GAME",
-            value_parser = parse_platform_bound_game,
-            conflicts_with_all = ["games", "platform_games"]
-        )]
-        query_results: Vec<PlatformBoundGameSelector>,
-        #[arg(long = "region")]
-        regions: Vec<String>,
-        #[arg(long = "language")]
-        languages: Vec<String>,
-        #[arg(long = "asset-type", value_parser = parse_asset_type)]
-        asset_types: Vec<AssetTypeSelector>,
-        #[command(flatten)]
-        quality: Box<QualityArgs>,
-        #[arg(long, default_value = "keep-everything", value_parser = parse_retention_policy)]
-        retention: RetentionPolicy,
-        #[command(flatten)]
-        limits: LimitArgs,
-    },
+    Acquire(Box<AcquireArgs>),
     Run {
         #[command(subcommand)]
         command: RunCommand,
@@ -133,6 +98,72 @@ enum Command {
         max_games: usize,
     },
     Library,
+}
+
+#[derive(Debug, Args)]
+struct AcquireArgs {
+    #[arg(long = "source")]
+    sources: Vec<String>,
+    #[arg(long, conflicts_with = "sources")]
+    auto_source: bool,
+    #[arg(long = "platform")]
+    platforms: Vec<String>,
+    #[arg(long = "game", conflicts_with_all = ["platform_games", "query_results"])]
+    games: Vec<String>,
+    #[arg(
+        long = "platform-game",
+        value_name = "PLATFORM=GAME",
+        value_parser = parse_platform_bound_game,
+        conflicts_with_all = ["games", "query_results"]
+    )]
+    platform_games: Vec<PlatformBoundGameSelector>,
+    #[arg(
+        long = "query-result",
+        value_name = "PLATFORM=GAME",
+        value_parser = parse_platform_bound_game,
+        conflicts_with_all = ["games", "platform_games"]
+    )]
+    query_results: Vec<PlatformBoundGameSelector>,
+    #[arg(long = "region")]
+    regions: Vec<String>,
+    #[arg(long = "language")]
+    languages: Vec<String>,
+    #[arg(long = "asset-type", value_parser = parse_asset_type)]
+    asset_types: Vec<AssetTypeSelector>,
+    #[command(flatten)]
+    quality: QualityArgs,
+    #[arg(long, default_value = "keep-everything", value_parser = parse_retention_policy)]
+    retention: RetentionPolicy,
+    #[command(flatten)]
+    limits: LimitArgs,
+}
+
+impl AcquireArgs {
+    fn into_input(self) -> AcquisitionRequestInput {
+        AcquisitionRequestInput {
+            sources: if self.auto_source {
+                SourceSelection::Auto
+            } else {
+                SourceSelection::Explicit(self.sources)
+            },
+            platforms: self.platforms,
+            games: if !self.platform_games.is_empty() {
+                GameSelection::PlatformBound(self.platform_games)
+            } else if !self.query_results.is_empty() {
+                GameSelection::QueryResult(self.query_results)
+            } else if !self.games.is_empty() {
+                GameSelection::Explicit(self.games)
+            } else {
+                GameSelection::All
+            },
+            regions: self.regions,
+            languages: self.languages,
+            asset_types: self.asset_types,
+            quality: self.quality.into_domain(),
+            retention: self.retention,
+            limits: self.limits.into(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -254,7 +285,34 @@ impl From<LimitArgs> for AcquisitionLimits {
     }
 }
 
+/// Runs a command line, executing and checking acquisition plans with Libretro Thumbnails.
 pub fn run<I, T>(args: I) -> Result<String, CliError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    run_with_connector(args, &LibretroThumbnailsConnector::new())
+}
+
+/// Builds and validates the Acquisition Request of an `acquire` command line without starting
+/// a run, whichever connector could execute it.
+pub fn acquisition_request_from_args<I, T>(args: I) -> Result<AcquisitionRequest, CliError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    match Cli::try_parse_from(args)?.command {
+        Command::Acquire(acquire) => Ok(build_acquisition_request(acquire.into_input())?),
+        _ => Err(CliError::Parse(clap::Error::raw(
+            clap::error::ErrorKind::InvalidSubcommand,
+            "expected an acquire command line",
+        ))),
+    }
+}
+
+/// Runs a command line with `connector`, the connector that checks the plan of a started run
+/// and executes runs.
+pub fn run_with_connector<I, T>(args: I, connector: &dyn ConnectorPort) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -262,45 +320,12 @@ where
     let cli = Cli::try_parse_from(args)?;
 
     match cli.command {
-        Command::Acquire {
-            sources,
-            auto_source,
-            platforms,
-            games,
-            platform_games,
-            query_results,
-            regions,
-            languages,
-            asset_types,
-            quality,
-            retention,
-            limits,
-        } => {
-            let input = AcquisitionRequestInput {
-                sources: if auto_source {
-                    SourceSelection::Auto
-                } else {
-                    SourceSelection::Explicit(sources)
-                },
-                platforms,
-                games: if !platform_games.is_empty() {
-                    GameSelection::PlatformBound(platform_games)
-                } else if !query_results.is_empty() {
-                    GameSelection::QueryResult(query_results)
-                } else if !games.is_empty() {
-                    GameSelection::Explicit(games)
-                } else {
-                    GameSelection::All
-                },
-                regions,
-                languages,
-                asset_types,
-                quality: (*quality).into_domain(),
-                retention,
-                limits: limits.into(),
-            };
+        Command::Acquire(acquire) => {
             let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-            let run = start_acquisition_run(&catalog, input).map_err(map_start_run_error)?;
+            // A plan the connector cannot execute would fail every execution, so no run starts.
+            let run =
+                start_acquisition_run_for_connector(&catalog, acquire.into_input(), connector)
+                    .map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&run)?)
         }
         Command::Run { command } => match command {
@@ -308,20 +333,17 @@ where
                 id,
                 match_high_threshold,
                 match_medium_threshold,
-            } => {
-                let connector = LibretroThumbnailsConnector::new();
-                Ok(serde_json::to_string_pretty(
-                    &execute_acquisition_run_in_vault_with_connector(
-                        &cli.vault,
-                        id,
-                        &connector,
-                        MatchingPolicy {
-                            high_confidence_threshold: match_high_threshold,
-                            medium_confidence_threshold: match_medium_threshold,
-                        },
-                    )?,
-                )?)
-            }
+            } => Ok(serde_json::to_string_pretty(
+                &execute_acquisition_run_in_vault_with_connector(
+                    &cli.vault,
+                    id,
+                    connector,
+                    MatchingPolicy {
+                        high_confidence_threshold: match_high_threshold,
+                        medium_confidence_threshold: match_medium_threshold,
+                    },
+                )?,
+            )?),
             other => {
                 let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
                 match other {
