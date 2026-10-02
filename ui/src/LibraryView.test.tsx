@@ -12,6 +12,7 @@ const entry: LibraryEntry = {
   region: "France",
   edition_name: "Original",
   assertions: [],
+  canonical_values: [],
   assets: [
     {
       asset_id: 3,
@@ -65,6 +66,41 @@ describe("LibraryView", () => {
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(screen.getByText("manual.pdf")).toBeInTheDocument();
+  });
+
+  it("shows canonical values with their confidence, sources and conflicts", () => {
+    const claim = (source_id: string, value: string) => ({
+      source_id,
+      source_location: "C:/catalogs/" + source_id + ".dat",
+      field: "revision" as const,
+      qualifier: null,
+      value,
+    });
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          {
+            ...entry,
+            canonical_values: [
+              {
+                field: "revision",
+                qualifier: null,
+                value: "Rev 1",
+                confidence: 50,
+                contributing: [claim("no-intro", "Rev 1")],
+                conflicting: [claim("redump", "Rev A")],
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Revision")).toBeInTheDocument();
+    expect(screen.getByText("Rev 1")).toBeInTheDocument();
+    expect(screen.getByText("50% · no-intro")).toBeInTheDocument();
+    expect(screen.getByText("Conflicts with redump: Rev A")).toBeInTheDocument();
   });
 
   it("shows the imported release and Box Front provenance", () => {
@@ -127,6 +163,7 @@ describe("LibraryView", () => {
             region: "World",
             edition_name: "Rev 1",
             assets: [],
+            canonical_values: [],
             assertions: [
               {
                 source_id: "no-intro",

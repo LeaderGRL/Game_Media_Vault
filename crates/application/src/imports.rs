@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use game_media_vault_domain::{AssetType, ImportedAsset, LibraryEntry, PersistAsset, SourceId};
+use game_media_vault_domain::{AssetType, ImportedAsset, LibraryRelease, PersistAsset, SourceId};
 
 use crate::{
     ApplicationError, CatalogPort, ObjectStorePort, PortError, ReferenceCatalogRepositoryPort,
@@ -99,8 +99,13 @@ pub fn import_local_box_front(
     })?)
 }
 
-pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryEntry>, ApplicationError> {
-    Ok(catalog.list_library()?)
+/// Lists the library with the Canonical Values derived from each release's assertions.
+pub fn list_library(catalog: &dyn CatalogPort) -> Result<Vec<LibraryRelease>, ApplicationError> {
+    Ok(catalog
+        .list_library()?
+        .into_iter()
+        .map(LibraryRelease::from)
+        .collect())
 }
 
 /// Canonical absolute path of a user-provided source, used for reading it. On Windows it keeps

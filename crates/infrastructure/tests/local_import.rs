@@ -102,20 +102,23 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
 
     assert_eq!(first.asset_id, second.asset_id);
     assert_eq!(library.len(), 1);
-    assert_eq!(library[0].game_title, "Metal Gear Solid");
-    assert_eq!(library[0].platform, "PlayStation");
-    assert_eq!(library[0].region, "France");
-    assert_eq!(library[0].assets.len(), 1);
-    assert_eq!(library[0].assets[0].original_filename, "mgs-front.png");
-    assert_eq!(library[0].assets[0].provenance.len(), 1);
+    assert_eq!(library[0].entry.game_title, "Metal Gear Solid");
+    assert_eq!(library[0].entry.platform, "PlayStation");
+    assert_eq!(library[0].entry.region, "France");
+    assert_eq!(library[0].entry.assets.len(), 1);
+    assert_eq!(
+        library[0].entry.assets[0].original_filename,
+        "mgs-front.png"
+    );
+    assert_eq!(library[0].entry.assets[0].provenance.len(), 1);
     assert_eq!(
         fs::canonicalize(std::path::Path::new(
-            &library[0].assets[0].provenance[0].source_location
+            &library[0].entry.assets[0].provenance[0].source_location
         ))
         .unwrap(),
         fs::canonicalize(&canonical_source).unwrap()
     );
-    assert_eq!(library[0].assets[0].object_hash, first.object_hash);
+    assert_eq!(library[0].entry.assets[0].object_hash, first.object_hash);
 }
 
 #[test]

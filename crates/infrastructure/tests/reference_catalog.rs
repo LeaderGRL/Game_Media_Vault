@@ -106,3 +106,75 @@ fn reference_batch_rolls_back_all_releases_when_one_record_is_invalid() {
     assert!(error.0.contains("source_record"));
     assert!(catalog.list_library().unwrap().is_empty());
 }
+
+#[test]
+fn a_changed_claim_is_recorded_after_the_claim_it_replaces() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+    let mut updated = tetris_release("Rev 1");
+    updated.assertions[0].value = "Tetris DX".to_owned();
+
+    catalog.persist_reference_release(updated).unwrap();
+
+    let titles: Vec<_> = catalog.list_library().unwrap()[0]
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.field == ReleaseAssertionField::Title)
+        .map(|assertion| assertion.value.clone())
+        .collect();
+    assert_eq!(titles, vec!["Tetris", "Tetris DX"]);
+}
+
+#[test]
+fn a_claim_observed_again_becomes_the_latest_one() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let mut corrected = tetris_release("Rev 1");
+    corrected.assertions[0].value = "Tetris DX".to_owned();
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+    catalog.persist_reference_release(corrected).unwrap();
+
+    // The source reverts its correction.
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+
+    let titles: Vec<_> = catalog.list_library().unwrap()[0]
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.field == ReleaseAssertionField::Title)
+        .map(|assertion| assertion.value.clone())
+        .collect();
+    assert_eq!(titles, vec!["Tetris DX", "Tetris"]);
+}
+
+#[test]
+fn a_catalog_imported_again_from_another_path_moves_its_claims() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(tetris_release("Rev 1"))
+        .unwrap();
+    let mut moved = tetris_release("Rev 1");
+    for assertion in &mut moved.assertions {
+        assertion.source_location = "D:/archive/Nintendo - Game Boy.dat".to_owned();
+    }
+
+    let reimported = catalog.persist_reference_release(moved).unwrap();
+
+    let library = catalog.list_library().unwrap();
+    assert_eq!(library.len(), 1);
+    assert_eq!(library[0].release_edition_id, reimported.release_edition_id);
+    assert_eq!(library[0].assertions.len(), 5);
+    assert!(
+        library[0]
+            .assertions
+            .iter()
+            .all(|assertion| assertion.source_location == "D:/archive/Nintendo - Game Boy.dat")
+    );
+}

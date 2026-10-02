@@ -16,6 +16,17 @@ export interface ReleaseAssertion {
   value: string;
 }
 
+/** Value selected for a release field from its assertions, with the claims it rests on. */
+export interface CanonicalValue {
+  field: ReleaseAssertionField;
+  qualifier: string | null;
+  value: string;
+  /** Share of the asserting sources that agree with the value, in percent. */
+  confidence: number;
+  contributing: ReleaseAssertion[];
+  conflicting: ReleaseAssertion[];
+}
+
 export interface LibraryAsset {
   asset_id: number;
   asset_type: AssetType;
@@ -33,6 +44,7 @@ export interface LibraryEntry {
   region: string;
   edition_name: string;
   assertions: ReleaseAssertion[];
+  canonical_values: CanonicalValue[];
   assets: LibraryAsset[];
 }
 

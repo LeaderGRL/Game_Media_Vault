@@ -18,7 +18,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRun, LibraryEntry, MatchingPolicy, ReviewDecision, ReviewItem,
+    AcquisitionRequest, AcquisitionRun, LibraryRelease, MatchingPolicy, ReviewDecision, ReviewItem,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use serde::Serialize;
@@ -114,7 +114,7 @@ fn build_acquisition_request(
     validate_acquisition_request(request)
 }
 
-pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryEntry>, CommandError> {
+pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryRelease>, CommandError> {
     Ok(list_library_use_case(&open_existing_catalog(vault_root)?)?)
 }
 
@@ -159,7 +159,7 @@ pub async fn load_review_preview_in_vault_with_connector_async(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_library(session: State<'_, VaultSession>) -> Result<Vec<LibraryEntry>, CommandError> {
+fn list_library(session: State<'_, VaultSession>) -> Result<Vec<LibraryRelease>, CommandError> {
     load_library(&session.root()?)
 }
 

@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+mod canonical;
+
+pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "values", rename_all = "snake_case")]
 pub enum SourceSelection {
