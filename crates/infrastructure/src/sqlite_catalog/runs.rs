@@ -13,7 +13,7 @@ impl RunRepositoryPort for SqliteCatalog {
     fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
         let connection = self.connect()?;
         let request_json = serde_json::to_string(&request).map_err(|error| {
-            PortError(format!("failed to serialize acquisition request: {error}"))
+            PortError::new(format!("failed to serialize acquisition request: {error}"))
         })?;
         connection
             .execute(
@@ -112,7 +112,7 @@ impl RunRepositoryPort for SqliteCatalog {
             )
             .optional()
             .map_err(sql_error)?
-            .ok_or_else(|| PortError(format!("acquisition run #{run_id} does not exist")))?;
+            .ok_or_else(|| PortError::new(format!("acquisition run #{run_id} does not exist")))?;
         if !matches!(status.as_str(), "running" | "paused") {
             return Ok(false);
         }
@@ -130,7 +130,7 @@ impl RunRepositoryPort for SqliteCatalog {
         }
         for item in work {
             let candidate_json = serde_json::to_string(&item.candidate).map_err(|error| {
-                PortError(format!(
+                PortError::new(format!(
                     "failed to serialize acquisition candidate: {error}"
                 ))
             })?;
@@ -164,7 +164,7 @@ impl RunRepositoryPort for SqliteCatalog {
             .map_err(sql_error)?;
         row.map(|(key, candidate_json)| {
             let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
-                PortError(format!(
+                PortError::new(format!(
                     "catalog contains an invalid work candidate: {error}"
                 ))
             })?;
@@ -194,7 +194,7 @@ impl RunRepositoryPort for SqliteCatalog {
         if exists {
             Ok(())
         } else {
-            Err(PortError(format!(
+            Err(PortError::new(format!(
                 "acquisition run #{run_id} has no work {work_key:?}"
             )))
         }
@@ -241,14 +241,16 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         return Ok(None);
     };
     if request_schema_version != ACQUISITION_REQUEST_SCHEMA_VERSION {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "unsupported acquisition request schema version: {request_schema_version}"
         )));
     }
-    let draft: AcquisitionRequestDraft = serde_json::from_str(&request_json)
-        .map_err(|error| PortError(format!("invalid persisted acquisition request: {error}")))?;
-    let request = AcquisitionRequest::try_from_draft(draft)
-        .map_err(|error| PortError(format!("invalid persisted acquisition request: {error}")))?;
+    let draft: AcquisitionRequestDraft = serde_json::from_str(&request_json).map_err(|error| {
+        PortError::new(format!("invalid persisted acquisition request: {error}"))
+    })?;
+    let request = AcquisitionRequest::try_from_draft(draft).map_err(|error| {
+        PortError::new(format!("invalid persisted acquisition request: {error}"))
+    })?;
     Ok(Some(AcquisitionRun {
         id: run_id,
         request,
@@ -267,7 +269,7 @@ fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
         "paused" => Ok(AcquisitionRunStatus::Paused),
         "cancelled" => Ok(AcquisitionRunStatus::Cancelled),
         "completed" => Ok(AcquisitionRunStatus::Completed),
-        other => Err(PortError(format!(
+        other => Err(PortError::new(format!(
             "unknown acquisition run status: {other}"
         ))),
     }

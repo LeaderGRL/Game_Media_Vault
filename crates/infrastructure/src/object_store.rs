@@ -70,7 +70,7 @@ impl ContentAddressedStore {
         let target = self.object_path(&staged.stored.hash);
         let parent = target
             .parent()
-            .ok_or_else(|| PortError("object path has no parent directory".into()))?;
+            .ok_or_else(|| PortError::new("object path has no parent directory".into()))?;
         fs::create_dir_all(parent).map_err(io_error)?;
         if !target.exists() {
             match publish_staged_object(&staged.staging_path, &target, parent) {
@@ -115,13 +115,13 @@ fn verify_existing_object(
 ) -> Result<(), PortError> {
     let metadata = fs::metadata(path).map_err(io_error)?;
     if !metadata.is_file() {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "object integrity check failed: {} is not a file",
             path.display()
         )));
     }
     if metadata.len() != expected_len {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "object integrity check failed: {} has length {}, expected {expected_len}",
             path.display(),
             metadata.len()
@@ -141,7 +141,7 @@ fn verify_existing_object(
 
     let actual_hash = hasher.finalize().to_hex().to_string();
     if actual_hash != expected_hash {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "object integrity check failed: {} hashes to {actual_hash}, expected {expected_hash}",
             path.display()
         )));
@@ -219,7 +219,7 @@ fn move_object(staging: &Path, target: &Path) -> std::io::Result<()> {
 }
 
 fn io_error(error: std::io::Error) -> PortError {
-    PortError(error.to_string())
+    PortError::new(error.to_string())
 }
 
 #[cfg(unix)]

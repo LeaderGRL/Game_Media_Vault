@@ -147,10 +147,10 @@ impl ConnectorPort for BlockingConnector {
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         self.download_started
             .send(())
-            .map_err(|error| PortError(error.to_string()))?;
+            .map_err(|error| PortError::new(error.to_string()))?;
         self.continue_download
             .recv()
-            .map_err(|error| PortError(error.to_string()))?;
+            .map_err(|error| PortError::new(error.to_string()))?;
         FixtureConnector.download(candidate)
     }
 }

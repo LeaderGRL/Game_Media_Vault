@@ -135,7 +135,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
             if settled {
                 return Ok(ParkedReview::Settled);
             }
-            return Err(PortError(format!(
+            return Err(PortError::new(format!(
                 "acquisition run #{run_id} has no queued work {work_key:?} to park"
             )));
         }
@@ -143,7 +143,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
         // earlier automatic link of the candidate goes until the decision.
         detach_candidate_links(&transaction, &item.candidate_identity, None)?;
         let review_item = select_review_item(&transaction, "id = ?1", params![review_item_id])?
-            .ok_or_else(|| PortError(format!("review item #{review_item_id} disappeared")))?;
+            .ok_or_else(|| PortError::new(format!("review item #{review_item_id} disappeared")))?;
         transaction.commit().map_err(sql_error)?;
         Ok(ParkedReview::Parked(review_item))
     }
@@ -223,7 +223,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
         }
         set_status_if_undecided(&transaction, review_item_id, status, Some(&decision_json))?;
         let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?
-            .ok_or_else(|| PortError(format!("review item #{review_item_id} disappeared")))?;
+            .ok_or_else(|| PortError::new(format!("review item #{review_item_id} disappeared")))?;
         match decision {
             ReviewDecision::Accept { release_edition_id } => {
                 requeue_parked_work(&transaction, review_item_id)?;
@@ -460,8 +460,9 @@ fn retained_assets(
                     asset_id,
                     asset_type,
                     object_hash,
-                    byte_len: u64::try_from(byte_len)
-                        .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
+                    byte_len: u64::try_from(byte_len).map_err(|_| {
+                        PortError::new("catalog contains a negative byte length".into())
+                    })?,
                     media,
                     original_filename,
                     provenance: Vec::new(),
@@ -608,12 +609,12 @@ fn decode_review_item(
 
 fn to_json(value: &impl serde::Serialize, what: &str) -> Result<String, PortError> {
     serde_json::to_string(value)
-        .map_err(|error| PortError(format!("failed to serialize {what}: {error}")))
+        .map_err(|error| PortError::new(format!("failed to serialize {what}: {error}")))
 }
 
 fn from_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, PortError> {
     serde_json::from_str(json)
-        .map_err(|error| PortError(format!("catalog contains an invalid {what}: {error}")))
+        .map_err(|error| PortError::new(format!("catalog contains an invalid {what}: {error}")))
 }
 
 fn review_status_to_str(status: ReviewStatus) -> &'static str {
@@ -635,7 +636,7 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
         "rejected" => Ok(ReviewStatus::Rejected),
         "auto_resolved" => Ok(ReviewStatus::AutoResolved),
         "superseded" => Ok(ReviewStatus::Superseded),
-        _ => Err(PortError(format!(
+        _ => Err(PortError::new(format!(
             "catalog contains invalid review status {value:?}"
         ))),
     }

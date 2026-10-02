@@ -8,9 +8,41 @@ use game_media_vault_domain::{
 };
 use thiserror::Error;
 
+/// Failure of a port adapter: storage, network or another environmental failure, or a Source
+/// that answered with data breaking the connector contract.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-#[error("{0}")]
-pub struct PortError(pub String);
+#[error("{message}")]
+pub struct PortError {
+    message: String,
+    invalid_source_data: bool,
+}
+
+impl PortError {
+    /// An environmental failure, which may succeed when retried.
+    pub fn new(message: String) -> Self {
+        Self {
+            message,
+            invalid_source_data: false,
+        }
+    }
+
+    /// A Source answered, but with data that breaks the connector contract, such as malformed
+    /// metadata or a catalog that cannot be parsed.
+    pub fn invalid_source_data(message: String) -> Self {
+        Self {
+            message,
+            invalid_source_data: true,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn is_invalid_source_data(&self) -> bool {
+        self.invalid_source_data
+    }
+}
 
 /// Immutable content-addressed store of original bytes.
 pub trait ObjectStorePort {

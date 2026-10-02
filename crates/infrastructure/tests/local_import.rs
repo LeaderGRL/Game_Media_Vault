@@ -73,7 +73,7 @@ fn reimport_rejects_a_corrupted_existing_object() {
         .store_original(&mut fs::File::open(&source).unwrap())
         .unwrap_err();
 
-    assert!(error.0.contains("integrity"));
+    assert!(error.message().contains("integrity"));
     assert_eq!(fs::read(object_path).unwrap(), b"corrupted bytes");
 }
 

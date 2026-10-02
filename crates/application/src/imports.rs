@@ -78,7 +78,7 @@ pub fn import_local_box_front(
     let resolved_source_path = resolve_source_path(&request.source_path)?;
     let source_location = source_location(&resolved_source_path);
     let mut source =
-        fs::File::open(&resolved_source_path).map_err(|error| PortError(error.to_string()))?;
+        fs::File::open(&resolved_source_path).map_err(|error| PortError::new(error.to_string()))?;
     let stored = object_store.store_original(&mut source)?;
 
     Ok(catalog.persist_asset(PersistAsset {
@@ -136,7 +136,9 @@ fn source_path_error(error: std::io::Error) -> ApplicationError {
         | std::io::ErrorKind::NotADirectory => {
             ApplicationError::ResolveSourcePath(error.to_string())
         }
-        _ => ApplicationError::Port(PortError(format!("failed to resolve source path: {error}"))),
+        _ => ApplicationError::Port(PortError::new(format!(
+            "failed to resolve source path: {error}"
+        ))),
     }
 }
 

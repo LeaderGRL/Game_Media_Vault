@@ -241,7 +241,7 @@ fn rejects_region_filters_without_source_region_evidence() {
 
     let error = connector.discover(&request).unwrap_err();
 
-    assert!(error.0.contains("region"));
+    assert!(error.message().contains("region"));
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn rejects_language_filters_without_source_language_evidence() {
 
     let error = connector.discover(&request).unwrap_err();
 
-    assert!(error.0.contains("language"));
+    assert!(error.message().contains("language"));
 }
 
 fn discover_one(game: &str) -> game_media_vault_domain::AssetCandidate {
@@ -366,4 +366,24 @@ fn refuses_platforms_without_a_libretro_repository_before_a_run_starts() {
         .unwrap();
 
     assert!(reason.contains("Nintendo - Famicom Disk Sytem"), "{reason}");
+}
+
+/// Answers every request with bytes that are not UTF-8.
+struct MalformedMetadataTransport;
+
+impl HttpTransport for MalformedMetadataTransport {
+    fn get_stream(&self, _url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(vec![0xff, 0xfe, 0xfd])))
+    }
+}
+
+#[test]
+fn malformed_repository_metadata_is_invalid_source_data() {
+    let connector = LibretroThumbnailsConnector::with_transport(MalformedMetadataTransport);
+
+    let error = connector
+        .discover(&request(vec![AssetTypeSelector::BoxFront]))
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
 }

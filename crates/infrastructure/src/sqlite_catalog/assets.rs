@@ -38,7 +38,7 @@ pub(super) fn persist_asset_in_transaction(
     let asset_type = asset_type_to_str(record.asset_type);
     let source_id = record.source_id.as_str();
     let byte_len = i64::try_from(record.byte_len)
-        .map_err(|_| PortError("asset byte length exceeds SQLite INTEGER range".into()))?;
+        .map_err(|_| PortError::new("asset byte length exceeds SQLite INTEGER range".into()))?;
     let explicit_target = resolve_existing_release_target(transaction, &record)?;
     let lookup = ExistingImportLookup {
         normalized_title: &normalized_title,
@@ -207,7 +207,7 @@ fn resolve_game_id(
         .map_err(sql_error)?;
 
     match exists {
-        None => Err(PortError(format!("game #{game_id} does not exist"))),
+        None => Err(PortError::new(format!("game #{game_id} does not exist"))),
         Some(_) => Ok(game_id),
     }
 }
@@ -229,7 +229,7 @@ fn resolve_existing_release_target(
         .optional()
         .map_err(sql_error)?
         .ok_or_else(|| {
-            PortError(format!(
+            PortError::new(format!(
                 "release edition #{release_edition_id} does not exist"
             ))
         })?;
@@ -237,7 +237,7 @@ fn resolve_existing_release_target(
     if let Some(existing_game_id) = record.existing_game_id
         && existing_game_id != game_id
     {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "release edition #{release_edition_id} does not belong to game #{existing_game_id}"
         )));
     }
@@ -335,13 +335,13 @@ fn record_provenance(
         .as_ref()
         .map(|decision| {
             if decision.release_edition_id != Some(imported.release_edition_id) {
-                return Err(PortError(format!(
+                return Err(PortError::new(format!(
                     "asset match decision targets release {:?}, expected #{}",
                     decision.release_edition_id, imported.release_edition_id
                 )));
             }
             serde_json::to_string(decision).map_err(|error| {
-                PortError(format!("failed to serialize asset match decision: {error}"))
+                PortError::new(format!("failed to serialize asset match decision: {error}"))
             })
         })
         .transpose()?;
@@ -383,7 +383,9 @@ pub(super) fn asset_type_to_str(asset_type: AssetType) -> &'static str {
 pub(super) fn parse_asset_type(value: &str) -> Result<AssetType, PortError> {
     match value {
         "box_front" => Ok(AssetType::BoxFront),
-        other => Err(PortError(format!("unknown asset type in catalog: {other}"))),
+        other => Err(PortError::new(format!(
+            "unknown asset type in catalog: {other}"
+        ))),
     }
 }
 

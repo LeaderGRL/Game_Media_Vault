@@ -55,9 +55,16 @@ fn application_errors_expose_a_stable_kind_for_frontends() {
             "source_failure",
         ),
         (
-            ApplicationError::Port(PortError("disk full".to_owned())),
+            ApplicationError::Port(PortError::new("disk full".to_owned())),
             ErrorKind::External,
             "external",
+        ),
+        (
+            ApplicationError::Port(PortError::invalid_source_data(
+                "invalid No-Intro XML".to_owned(),
+            )),
+            ErrorKind::SourceFailure,
+            "source_failure",
         ),
     ];
 

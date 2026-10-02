@@ -1081,3 +1081,29 @@ fn exit_codes_follow_the_error_kind() {
     let conflict = run_binary(&vault, &["run", "pause", "1"]);
     assert_eq!(conflict.status.code(), Some(4));
 }
+
+#[test]
+fn a_malformed_reference_catalog_exits_as_a_source_failure() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let datafile = temp.path().join("broken.dat");
+    fs::write(
+        &datafile,
+        "<datafile><header><name>Nintendo - Game Boy</name></header><game>",
+    )
+    .unwrap();
+
+    let error = run_in_vault(
+        &vault,
+        &[
+            "import-no-intro",
+            "--file",
+            datafile.to_str().unwrap(),
+            "--max-games",
+            "10",
+        ],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 6, "{error}");
+}

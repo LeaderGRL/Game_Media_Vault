@@ -103,7 +103,7 @@ fn reference_batch_rolls_back_all_releases_when_one_record_is_invalid() {
         .persist_reference_releases(vec![tetris_release("Rev 1"), invalid])
         .unwrap_err();
 
-    assert!(error.0.contains("source_record"));
+    assert!(error.message().contains("source_record"));
     assert!(catalog.list_library().unwrap().is_empty());
 }
 
