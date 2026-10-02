@@ -192,30 +192,26 @@ impl DatasetCache {
         }
     }
 
-    /// Prepares a new copy beside the current one, unless the cache directory is unusable.
-    fn stage(&self) -> io::Result<NamedTempFile> {
+    /// Makes a copy of `dataset` the cached one, described by `validators`. A copy another
+    /// process holds open may stay as it is.
+    fn store(&self, mut dataset: &File, validators: &Validators) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
-        NamedTempFile::new_in(&self.dir)
-    }
-
-    /// Makes `staged` the cached copy, described by `validators`, and returns it opened. A copy
-    /// another process holds open stays as it is, and `staged` serves this discovery alone.
-    fn replace(&self, staged: NamedTempFile, validators: &Validators) -> io::Result<File> {
+        let mut staged = NamedTempFile::new_in(&self.dir)?;
+        dataset.rewind()?;
+        io::copy(&mut dataset, &mut staged)?;
         // Validators of the previous copy must never describe the new one.
-        let _ = fs::remove_file(self.validators_file());
-        let mut file = match staged.persist(self.archive()) {
-            Ok(file) => {
-                let recorded = serde_json::json!({
-                    "etag": validators.etag,
-                    "last_modified": validators.last_modified,
-                });
-                let _ = fs::write(self.validators_file(), recorded.to_string());
-                file
-            }
-            Err(error) => error.file.into_file(),
-        };
-        file.rewind()?;
-        Ok(file)
+        match fs::remove_file(self.validators_file()) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        staged
+            .persist(self.archive())
+            .map_err(|error| error.error)?;
+        let recorded = serde_json::json!({
+            "etag": validators.etag,
+            "last_modified": validators.last_modified,
+        });
+        fs::write(self.validators_file(), recorded.to_string())
     }
 }
 
@@ -366,7 +362,8 @@ where
     T: HttpTransport,
 {
     /// The cached copy if it is still current, or the dataset LaunchBox serves now, which
-    /// replaces it. A cache that cannot be written never fails the discovery.
+    /// replaces it once it reads as an archive. The dataset is downloaded to a temporary file
+    /// first, so a cache that cannot be written never fails the discovery.
     fn cached_dataset(&self, cache: &DatasetCache) -> Result<File, PortError> {
         match self
             .transport
@@ -377,18 +374,22 @@ where
                 // The copy vanished since its validators were read.
                 Err(_) => spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?),
             },
-            Fetched::Changed {
-                mut body,
-                validators,
-            } => match cache.stage() {
-                Ok(mut staged) => {
-                    io::copy(&mut body, &mut staged).map_err(download_failed)?;
-                    cache.replace(staged, &validators).map_err(buffer_failed)
+            Fetched::Changed { body, validators } => {
+                let mut dataset = spool(body)?;
+                if reads_as_archive(&dataset) {
+                    // This discovery reads its own copy whether the cache keeps one or not.
+                    let _ = cache.store(&dataset, &validators);
                 }
-                Err(_) => spool(body),
-            },
+                dataset.rewind().map_err(buffer_failed)?;
+                Ok(dataset)
+            }
         }
     }
+}
+
+/// Whether `dataset` opens as a ZIP archive.
+fn reads_as_archive(dataset: &File) -> bool {
+    zip::ZipArchive::new(dataset).is_ok()
 }
 
 /// Downloads `body` to a temporary file.

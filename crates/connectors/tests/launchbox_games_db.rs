@@ -796,3 +796,17 @@ fn a_cache_that_cannot_be_written_never_fails_a_discovery() {
 
     assert_eq!(locators(&candidates).len(), 1);
 }
+
+#[test]
+fn a_dataset_that_does_not_read_as_an_archive_is_never_cached() {
+    let cache = tempfile::tempdir().unwrap();
+    // LaunchBox answers with a page that is no archive, under the dataset's validators.
+    let transport = VersionedTransport::serving(b"<html>maintenance</html>".to_vec(), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    assert!(connector.discover(&request(|_| {})).is_err());
+
+    transport.publish(dataset_with_image("front-v1.png"), "\"v1\"");
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+}
