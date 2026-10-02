@@ -10,11 +10,11 @@ use game_media_vault_application::{
     ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
     LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
     VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
-    derive_assets, describe_sources, draft_from_document, export_acquisition_request,
-    import_local_box_front, import_reference_catalog, list_acquisition_runs, list_library,
-    list_review_items, load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
-    resolve_review_item, resume_acquisition_run, search_library,
-    start_acquisition_run_with_connectors, verify_vault,
+    derive_assets, derive_packaging_models, describe_sources, draft_from_document,
+    export_acquisition_request, import_local_box_front, import_reference_catalog,
+    list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
+    pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
+    resume_acquisition_run, search_library, start_acquisition_run_with_connectors, verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -24,7 +24,9 @@ use game_media_vault_domain::{
     GameSelection, MatchingPolicy, PlatformBoundGameSelector, QualityRequirements, RetentionPolicy,
     ReviewDecision, SourceSelection,
 };
-use game_media_vault_infrastructure::{ContentAddressedStore, ImageTransformer, SqliteCatalog};
+use game_media_vault_infrastructure::{
+    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, SqliteCatalog,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -152,6 +154,9 @@ enum Command {
         #[arg(long, default_value_t = 256)]
         max_edge: u32,
     },
+    /// Builds the 3D packaging model of every release whose packaging is complete, from its
+    /// preferred front, back and spine scans, unless the model of those scans exists.
+    DerivePackagingModels,
     /// Compares the catalog with the stored bytes and reports every disagreement, repairing
     /// nothing.
     Verify,
@@ -594,6 +599,16 @@ where
                 &store,
                 &ImageTransformer::new(),
                 &DerivationRecipe::Thumbnail { max_edge },
+            )?)?)
+        }
+        Command::DerivePackagingModels => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            let store = ContentAddressedStore::new(&cli.vault);
+            Ok(serde_json::to_string_pretty(&derive_packaging_models(
+                &catalog,
+                &catalog,
+                &store,
+                &GltfPackagingBuilder::new(),
             )?)?)
         }
         Command::ImportNoIntro { file, max_games } => {

@@ -11,6 +11,17 @@ use crate::{ApplicationError, PortError};
 pub struct RecordedDerivative {
     pub original_hash: String,
     pub object_hash: String,
+    /// The other originals its recipe reads, such as the back and spine scans of a packaging
+    /// model: the output is in use only while every one of them is referenced too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_originals: Vec<String>,
+}
+
+impl RecordedDerivative {
+    fn originals(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.original_hash.as_str())
+            .chain(self.other_originals.iter().map(String::as_str))
+    }
 }
 
 /// A work item of an Acquisition Run still queued or parked, with what decides whether an
@@ -196,7 +207,7 @@ pub fn verify_vault(
         .collect();
 
     // An output several Derived Assets share is checked once, and stays in use while any of
-    // them belongs to a referenced original.
+    // them reads only referenced originals.
     let mut outputs: Vec<&str> = Vec::new();
     let mut recorded: HashSet<&str> = HashSet::new();
     let mut in_use: HashSet<&str> = HashSet::new();
@@ -204,7 +215,7 @@ pub fn verify_vault(
         if recorded.insert(&derivative.object_hash) {
             outputs.push(&derivative.object_hash);
         }
-        if referenced.contains(derivative.original_hash.as_str()) {
+        if derivative.originals().all(|hash| referenced.contains(hash)) {
             in_use.insert(&derivative.object_hash);
         }
     }
@@ -321,14 +332,15 @@ pub fn repair_vault(
             )
             .collect();
         // A damaged output is forgotten by every Derived Asset recording it, and an orphaned
-        // one only lists unreferenced originals, so no remaining record lists a deleted file.
+        // one is only listed by records reading an unreferenced original, so no remaining record
+        // lists a deleted file.
         summary.forgotten_derived = catalog
             .recorded_derivatives()?
             .into_iter()
             .filter(|derivative| {
                 (actions.reset_damaged_derived && damaged.contains(derivative.object_hash.as_str()))
                     || (actions.remove_orphaned_derived
-                        && !referenced.contains(&derivative.original_hash))
+                        && !derivative.originals().all(|hash| referenced.contains(hash)))
             })
             .collect();
         if !summary.forgotten_derived.is_empty() {

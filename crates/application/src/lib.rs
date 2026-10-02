@@ -7,6 +7,7 @@ mod error;
 mod identity;
 mod imports;
 mod library;
+mod packaging;
 mod plan;
 mod ports;
 mod review;
@@ -36,6 +37,10 @@ pub use imports::{
 pub use library::{
     DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,
     search_library,
+};
+pub use packaging::{
+    IncompletePackaging, PackagingModelFailure, PackagingModelPort, PackagingModelSummary,
+    PackagingScan, PackagingScans, derive_packaging_models,
 };
 pub use plan::{
     AcquisitionPlan, ExcludedSource, PlannedSource, SelectorCoverage, plan_acquisition,

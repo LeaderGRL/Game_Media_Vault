@@ -57,7 +57,15 @@ export interface LibraryAsset {
 }
 
 /** A reproducible transformation of an original. */
-export type DerivationRecipe = { transform: "thumbnail"; max_edge: number };
+export type DerivationRecipe =
+  | { transform: "thumbnail"; max_edge: number }
+  /** A 3D model of the packaging whose front scan is the original, with the other scans it shows. */
+  | {
+      transform: "packaging_model";
+      template: "cardboard_box";
+      back_hash: string;
+      spine_hash: string;
+    };
 
 /** A file generated from an original by a recipe; it never replaces its original. */
 export interface DerivedAsset {
@@ -128,6 +136,8 @@ export interface LibraryEntry {
   preferred_assets: PreferredAsset[];
   /** `null` when the packaging family of the platform is not known. */
   coverage: ReleaseCoverage | null;
+  /** The 3D packaging model of the preferred scans, once one is built. */
+  packaging_model: DerivedAsset | null;
   assets: LibraryAsset[];
 }
 

@@ -20,7 +20,9 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   automatically, uncertain ones become Review Items to accept, reject or defer.
 - **Library**: canonical values derived from every Source's claims, the Preferred Asset of each
   type, coverage of the packaging profiles, search with combinable filters and stable pages.
-- **Derived Assets**: reproducible PNG thumbnails rendered from originals without touching them.
+- **Derived Assets**: reproducible PNG thumbnails rendered from originals without touching them,
+  and 3D models (glTF binary) of complete cardboard boxes built from their front, back and spine
+  scans.
 
 See [`docs/SPEC.md`](docs/SPEC.md) for the complete product specification, including what is
 planned next.

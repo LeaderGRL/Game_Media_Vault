@@ -79,6 +79,7 @@ fn derivative(original_hash: &str, object_hash: &str) -> RecordedDerivative {
     RecordedDerivative {
         original_hash: original_hash.to_owned(),
         object_hash: object_hash.to_owned(),
+        other_originals: Vec::new(),
     }
 }
 
@@ -383,4 +384,24 @@ fn work_whose_state_contradicts_its_run_or_review_item_is_reported_stale() {
         ]
     );
     assert!(!report.is_healthy());
+}
+
+#[test]
+fn a_packaging_model_is_orphaned_once_any_scan_it_shows_is_no_longer_referenced() {
+    let model = |back: &str| RecordedDerivative {
+        other_originals: vec![back.to_owned(), "spine".to_owned()],
+        ..derivative("front", &format!("model-{back}"))
+    };
+    let vault = FakeVault {
+        // The back scan of the earlier model is no longer retained.
+        referenced: vec!["front".to_owned(), "back".to_owned(), "spine".to_owned()],
+        derivatives: vec![model("back"), model("old-back")],
+        originals: intact(&["front", "back", "spine"]),
+        derived: intact(&["model-back", "model-old-back"]),
+        ..FakeVault::default()
+    };
+
+    let report = verify_vault(&vault, &vault).unwrap();
+
+    assert_eq!(report.orphaned_derived, ["model-old-back"]);
 }

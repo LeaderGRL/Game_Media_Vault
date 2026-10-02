@@ -15,6 +15,7 @@ const entry: LibraryEntry = {
   canonical_values: [],
   preferred_assets: [],
   coverage: null,
+  packaging_model: null,
   assets: [
     {
       asset_id: 3,
@@ -375,6 +376,7 @@ describe("LibraryView", () => {
             canonical_values: [],
             preferred_assets: [],
             coverage: null,
+            packaging_model: null,
             assertions: [
               {
                 source_id: "no-intro",

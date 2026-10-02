@@ -1,4 +1,4 @@
-use game_media_vault_application::ObjectStorePort;
+use game_media_vault_application::{DerivedStorePort, ObjectStorePort};
 use game_media_vault_domain::MediaInfo;
 use game_media_vault_infrastructure::ContentAddressedStore;
 use tempfile::tempdir;
@@ -259,6 +259,27 @@ fn tiff_directories_past_the_inspected_prefix_still_give_the_pixel_size() {
             media_type: "image/tiff".to_owned(),
             width: Some(1800),
             height: Some(2400),
+        }
+    );
+}
+
+#[test]
+fn a_gltf_binary_is_recorded_as_a_3d_model() {
+    let temp = tempdir().unwrap();
+    let mut glb = b"glTF".to_vec();
+    glb.extend_from_slice(&2_u32.to_le_bytes());
+    glb.extend_from_slice(&12_u32.to_le_bytes());
+
+    let stored = ContentAddressedStore::new(temp.path())
+        .store_derived(&mut glb.as_slice())
+        .unwrap();
+
+    assert_eq!(
+        stored.media,
+        MediaInfo {
+            media_type: "model/gltf-binary".to_owned(),
+            width: None,
+            height: None,
         }
     );
 }

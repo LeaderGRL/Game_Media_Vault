@@ -7,17 +7,18 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestValidationError, ApplicationError, ConnectorPort, ParkedReview, PortError,
-    ReferenceCatalogRepositoryPort, ReviewRepositoryPort, RunRepositoryPort, candidate_identity,
+    AcquisitionRequestValidationError, ApplicationError, CatalogPort, ConnectorPort,
+    ObjectStorePort, ParkedReview, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
+    RunRepositoryPort, candidate_identity,
 };
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionWorkItem, AssetCandidate, AssetType, ConnectorCapabilities,
     MatchEvidence, MatchSignal, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
-    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, ReviewMatchCandidate,
-    SourceId,
+    PersistAsset, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
+    ReviewMatchCandidate, SourceId,
 };
-use game_media_vault_infrastructure::SqliteCatalog;
+use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
 struct FixtureConnector;
@@ -1674,4 +1675,60 @@ fn import_mame_software_list_records_its_software_in_the_library() {
             .iter()
             .all(|assertion| assertion["source_id"] == "mame-software-lists")
     }));
+}
+
+#[test]
+fn derive_packaging_models_builds_the_model_of_a_complete_box_once() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let mut release_edition_id = None;
+    for (asset_type, width) in [
+        (AssetType::BoxFront, 60),
+        (AssetType::BoxBack, 60),
+        (AssetType::Spine, 10),
+    ] {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(width, 80, image::Rgb([200, 30, 30]))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let stored = store.store_original(&mut png.as_slice()).unwrap();
+        let imported = catalog
+            .persist_asset(PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: release_edition_id,
+                match_decision: None,
+                game_title: "Super Mario Bros.".to_owned(),
+                platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+                region: "USA".to_owned(),
+                edition_name: "Original".to_owned(),
+                asset_type,
+                object_hash: stored.hash,
+                byte_len: stored.byte_len,
+                media: stored.media,
+                original_filename: format!("{}.png", asset_type.as_str()),
+                source_id: SourceId::from("local_import"),
+                source_asset_label: None,
+                source_location: "C:/scans".to_owned(),
+            })
+            .unwrap();
+        release_edition_id = Some(imported.release_edition_id);
+    }
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["derive-packaging-models"]).unwrap()).unwrap();
+
+    assert_eq!(summary["generated"], 1);
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let model = &library[0]["packaging_model"];
+    assert_eq!(model["recipe"]["transform"], "packaging_model");
+    assert_eq!(model["media_type"], "model/gltf-binary");
+    let again: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["derive-packaging-models"]).unwrap()).unwrap();
+    assert_eq!(
+        (again["generated"].as_u64(), again["up_to_date"].as_u64()),
+        (Some(0), Some(1))
+    );
 }
