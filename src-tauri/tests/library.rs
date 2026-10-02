@@ -1,6 +1,9 @@
-use std::fs;
+use std::{fs, io::Cursor};
 
-use game_media_vault_application::{ImportLocalBoxFrontRequest, import_local_box_front};
+use game_media_vault_application::{
+    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front,
+};
+use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
@@ -125,4 +128,54 @@ fn verifies_the_opened_vault_on_a_blocking_worker() {
 
     assert_eq!(report.interrupted_staging, ["4242-0.tmp"]);
     assert!(!report.is_healthy());
+}
+
+#[test]
+fn builds_the_packaging_models_of_the_selected_vault_off_the_calling_thread() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let mut release_edition_id = None;
+    for (asset_type, width) in [
+        (AssetType::BoxFront, 60),
+        (AssetType::BoxBack, 60),
+        (AssetType::Spine, 10),
+    ] {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(width, 80, image::Rgb([10, 20, 30]))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let stored = store.store_original(&mut png.as_slice()).unwrap();
+        let imported = catalog
+            .persist_asset(PersistAsset {
+                existing_game_id: None,
+                existing_release_edition_id: release_edition_id,
+                match_decision: None,
+                game_title: "Tetris".to_owned(),
+                platform: "Nintendo - Game Boy".to_owned(),
+                region: "World".to_owned(),
+                edition_name: "Original".to_owned(),
+                asset_type,
+                object_hash: stored.hash,
+                byte_len: stored.byte_len,
+                media: stored.media,
+                original_filename: format!("{}.png", asset_type.as_str()),
+                source_id: SourceId::from("local_import"),
+                source_asset_label: None,
+                source_location: "C:/scans".to_owned(),
+            })
+            .unwrap();
+        release_edition_id = Some(imported.release_edition_id);
+    }
+
+    let summary = tauri::async_runtime::block_on(
+        game_media_vault_tauri::derive_packaging_models_in_vault_async(vault.clone()),
+    )
+    .unwrap();
+
+    assert_eq!(summary.generated, 1);
+    let library = game_media_vault_tauri::load_library(&vault).unwrap();
+    let model = library[0].packaging_model.as_ref().unwrap();
+    assert_eq!(model.media.media_type, "model/gltf-binary");
 }

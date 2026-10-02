@@ -6,12 +6,13 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
-    ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, PortError,
-    ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription, VaultReport,
+    ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, PackagingModelSummary,
+    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
-    derive_assets as derive_assets_use_case, describe_sources,
+    derive_assets as derive_assets_use_case,
+    derive_packaging_models as derive_packaging_models_use_case, describe_sources,
     import_reference_catalog as import_reference_catalog_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_review_items as list_review_items_use_case,
@@ -32,7 +33,7 @@ use game_media_vault_domain::{
     ReviewDecision, ReviewItem,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, ImageTransformer, SqliteCatalog, inspect_media,
+    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, SqliteCatalog, inspect_media,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, http, ipc::Response};
@@ -169,6 +170,24 @@ pub async fn derive_thumbnails_in_vault_async(
     .map_err(|error| CommandError::worker_failed("thumbnail rendering", error))?
 }
 
+/// Builds the packaging model every complete release lacks, on a blocking worker since
+/// decoding scans and encoding textures takes a while.
+pub async fn derive_packaging_models_in_vault_async(
+    vault_root: PathBuf,
+) -> Result<PackagingModelSummary, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let catalog = open_existing_catalog(&vault_root)?;
+        Ok(derive_packaging_models_use_case(
+            &catalog,
+            &catalog,
+            &ContentAddressedStore::new(&vault_root),
+            &GltfPackagingBuilder::new(),
+        )?)
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("packaging model generation", error))?
+}
+
 /// Compares the catalog with the stored bytes, on a blocking worker since every referenced
 /// object is hashed again. Nothing is repaired.
 pub async fn verify_vault_async(vault_root: PathBuf) -> Result<VaultReport, CommandError> {
@@ -270,6 +289,13 @@ async fn derive_thumbnails(
     max_edge: u32,
 ) -> Result<DerivationSummary, CommandError> {
     derive_thumbnails_in_vault_async(session.root()?, max_edge).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn derive_packaging_models(
+    session: State<'_, VaultSession>,
+) -> Result<PackagingModelSummary, CommandError> {
+    derive_packaging_models_in_vault_async(session.root()?).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -657,6 +683,7 @@ pub fn run() {
             list_library,
             search_library,
             derive_thumbnails,
+            derive_packaging_models,
             verify_vault,
             list_review_items,
             resolve_review_item,
