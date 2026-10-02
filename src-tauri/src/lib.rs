@@ -65,6 +65,15 @@ impl CommandError {
     }
 }
 
+/// A canonical vault path as an identity: as is when it is Unicode, else in its debug form,
+/// quoted with its other bytes escaped. That form is lossless, so distinct paths never share an
+/// identity, and no canonical path written as is starts with a quote.
+fn vault_identity(canonical: &Path) -> String {
+    canonical
+        .to_str()
+        .map_or_else(|| format!("{canonical:?}"), str::to_owned)
+}
+
 /// The vault opened by the desktop user. Commands act on it instead of trusting a path sent by
 /// the webview with every call.
 #[derive(Debug, Default)]
@@ -85,11 +94,17 @@ impl VaultSession {
         } else {
             SqliteCatalog::open_existing(catalog_path)?;
         }
-        // The opened catalog proves the directory exists, so it canonicalizes; should it not,
-        // the path as given still identifies this spelling.
-        let identity = fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+        // An identity that is not canonical would split one vault in two, so the open fails
+        // rather than fall back to the path as given.
+        let canonical = fs::canonicalize(vault_root).map_err(|error| CommandError {
+            kind: ErrorKind::External.as_str(),
+            message: format!(
+                "failed to resolve the vault path {}: {error}",
+                vault_root.display()
+            ),
+        })?;
         *root = Some(vault_root.to_path_buf());
-        Ok(identity.to_string_lossy().into_owned())
+        Ok(vault_identity(&canonical))
     }
 
     pub fn root(&self) -> Result<PathBuf, CommandError> {
@@ -588,4 +603,46 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Game Media Vault");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_unicode_path_is_its_own_identity() {
+        assert_eq!(
+            vault_identity(Path::new("/vaults/ゲーム")),
+            "/vaults/ゲーム"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paths_that_are_not_unicode_keep_distinct_identities() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+        let first = vault_identity(Path::new(OsStr::from_bytes(b"/vaults/\xff")));
+        let second = vault_identity(Path::new(OsStr::from_bytes(b"/vaults/\xfe")));
+
+        assert_ne!(first, second);
+        assert!(first.starts_with('"'), "{first}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paths_that_are_not_unicode_keep_distinct_identities() {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+        let lone_surrogate = |unit| {
+            let mut wide: Vec<u16> = r"C:\vaults\".encode_utf16().collect();
+            wide.push(unit);
+            OsString::from_wide(&wide)
+        };
+        let first = vault_identity(Path::new(&lone_surrogate(0xD800)));
+        let second = vault_identity(Path::new(&lone_surrogate(0xD801)));
+
+        assert_ne!(first, second);
+        assert!(first.starts_with('"'), "{first}");
+    }
 }
