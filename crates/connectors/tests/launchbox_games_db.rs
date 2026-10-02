@@ -11,7 +11,7 @@ use game_media_vault_connectors::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType,
     AssetTypeSelector, GameSelection, PlatformBoundGameSelector, RetentionPolicy, SourceId,
-    SourceSelection,
+    SourceSelection, packaging_platforms,
 };
 
 const NES: &str = "Nintendo - Nintendo Entertainment System";
@@ -637,4 +637,25 @@ fn acquires_arcade_cabinets_control_panels_and_circuit_boards_of_arcade_games() 
             "{platform}"
         );
     }
+}
+
+#[test]
+fn accepts_every_platform_whose_packaging_the_coverage_knows() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+    // LaunchBox lists no DSi platform.
+    let without_launchbox_platform = ["Nintendo - Nintendo DSi"];
+
+    let refused: Vec<String> = packaging_platforms()
+        .filter(|(platform, _)| !without_launchbox_platform.contains(platform))
+        .filter_map(|(platform, _)| {
+            connector
+                .unsupported_request_reason(&request(|draft| {
+                    draft.platforms = vec![platform.to_owned()];
+                }))
+                .unwrap()
+        })
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:#?}");
 }

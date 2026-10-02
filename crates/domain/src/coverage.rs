@@ -124,6 +124,14 @@ const PLATFORM_FAMILIES: &[(PackagingFamily, &[&str])] = &[
 /// Suffixes that mark the digital release catalogs of a platform.
 const DIGITAL_SUFFIXES: &[&str] = &["(Digital)", "(PSN)"];
 
+/// Every platform whose packaging family is known, named as No-Intro, Redump and Libretro name
+/// it, with that family. Digital catalogs, known by their suffix, are left out.
+pub fn packaging_platforms() -> impl Iterator<Item = (&'static str, PackagingFamily)> {
+    PLATFORM_FAMILIES
+        .iter()
+        .flat_map(|(family, platforms)| platforms.iter().map(move |platform| (*platform, *family)))
+}
+
 /// The packaging family of releases on `platform`, when it is known.
 pub fn packaging_family(platform: &str) -> Option<PackagingFamily> {
     let platform = platform.trim();
