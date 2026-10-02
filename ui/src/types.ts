@@ -2,6 +2,7 @@
 export type AssetType =
   | "box_front"
   | "box_back"
+  | "spine"
   | "box_3d_render"
   | "cartridge_front"
   | "cartridge_back"

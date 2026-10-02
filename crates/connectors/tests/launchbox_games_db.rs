@@ -552,3 +552,32 @@ fn acquires_each_requested_media_type_it_maps_and_no_sibling() {
             .contains(&AssetType::CartridgeFront)
     );
 }
+
+#[test]
+fn acquires_box_spines() {
+    let transport = FixtureTransport::serving(metadata_archive(&[(
+        "Metadata.xml",
+        r#"<LaunchBox>
+  <Game>
+    <Name>Super Mario Bros.</Name>
+    <DatabaseID>140</DatabaseID>
+    <Platform>Nintendo Entertainment System</Platform>
+  </Game>
+  <GameImage><DatabaseID>140</DatabaseID><FileName>spine.png</FileName><Type>Box - Spine</Type></GameImage>
+</LaunchBox>"#,
+    )]));
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.asset_types = vec![AssetTypeSelector::Spine];
+        }))
+        .unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].asset_type, AssetType::Spine);
+    assert_eq!(
+        candidates[0].source_asset_label.as_deref(),
+        Some("Box - Spine")
+    );
+}
