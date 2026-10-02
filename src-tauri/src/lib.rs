@@ -7,7 +7,8 @@ use std::{
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
     ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, PackagingModelSummary,
-    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription, VaultReport,
+    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription,
+    SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
@@ -23,7 +24,7 @@ use game_media_vault_application::{
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
     search_library as search_library_use_case, start_acquisition_run_with_connectors,
-    verify_vault as verify_vault_use_case,
+    summarize_source_failures, verify_vault as verify_vault_use_case,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -211,6 +212,17 @@ pub fn search_library_in_vault(
     Ok(search_library_use_case(&catalog, &catalog, query)?)
 }
 
+/// The failures the vault's executions recorded, by Source, with the `latest` of each.
+pub fn load_source_failures(
+    vault_root: &Path,
+    latest: usize,
+) -> Result<Vec<SourceFailureSummary>, CommandError> {
+    Ok(summarize_source_failures(
+        &open_existing_catalog(vault_root)?,
+        latest,
+    )?)
+}
+
 pub fn load_review_items(vault_root: &Path) -> Result<Vec<ReviewItem>, CommandError> {
     Ok(list_review_items_use_case(&open_existing_catalog(
         vault_root,
@@ -247,6 +259,14 @@ pub fn list_registered_sources() -> Vec<SourceDescription> {
 #[tauri::command]
 fn list_sources() -> Vec<SourceDescription> {
     list_registered_sources()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn list_source_failures(
+    session: State<'_, VaultSession>,
+    latest: usize,
+) -> Result<Vec<SourceFailureSummary>, CommandError> {
+    load_source_failures(&session.root()?, latest)
 }
 
 #[tauri::command]
@@ -698,6 +718,7 @@ pub fn run() {
             resume_acquisition_run,
             cancel_acquisition_run,
             list_sources,
+            list_source_failures,
             import_reference_catalog
         ])
         .run(tauri::generate_context!())

@@ -2658,4 +2658,58 @@ describe("App Library requests", () => {
     expect(screen.getByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
     expect(screen.queryByText("registry unavailable")).not.toBeInTheDocument();
   });
+
+  it("shows the failures the loaded vault recorded for each Source", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_sources") {
+        return Promise.resolve([
+          { source_id: "libretro-thumbnails", asset_types: ["box_front"], direct_media_download: true },
+        ]);
+      }
+      if (command === "list_source_failures") {
+        return Promise.resolve([
+          {
+            source_id: "libretro-thumbnails",
+            failures: 1,
+            latest: [
+              {
+                sequence: 1,
+                source_id: "libretro-thumbnails",
+                run_id: 7,
+                stage: "discovery",
+                message: "timed out",
+                recorded_at: 1_790_000_000,
+              },
+            ],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Library is empty")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    expect(await screen.findByText("1 failure recorded")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("list_source_failures", { latest: 3 });
+  });
+
+  it("reads no failures before a vault is loaded", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_sources"
+          ? [{ source_id: "libretro-thumbnails", asset_types: [], direct_media_download: true }]
+          : [],
+      ),
+    );
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("list_source_failures", expect.anything());
+    expect(screen.queryByText("No failure recorded")).not.toBeInTheDocument();
+  });
 });

@@ -7,6 +7,7 @@ import type {
   AcquisitionRequestDraft,
   AcquisitionRun,
   SourceDescription,
+  SourceFailureSummary,
 } from "./acquisition";
 import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
@@ -47,6 +48,9 @@ interface VaultLibraryTask<Summary> {
   run: () => Promise<Summary>;
   describe: (summary: Summary) => string;
 }
+
+/** Latest failures the Sources view shows for each Source. */
+const SOURCE_FAILURES_SHOWN = 3;
 
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
@@ -117,6 +121,9 @@ export function App() {
   const [sourcesError, setSourcesError] = useState<string | null>(null);
   // The latest read of the Sources: an older one settling later applies nothing.
   const sourcesRequest = useRef(0);
+  // The failures the loaded vault recorded by Source, read each time the Sources view is shown.
+  const [sourceFailures, setSourceFailures] = useState<SourceFailureSummary[] | null>(null);
+  const sourceFailuresRequest = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -280,6 +287,9 @@ export function App() {
     setBuildingModels(buildingModelVaults.current.has(vaultKey));
     setImportingReference(importingReferenceVaults.current.has(vaultKey));
     setReferenceImportStatus(null);
+    // Another vault's failures never show, even from a read that settles later.
+    sourceFailuresRequest.current += 1;
+    setSourceFailures(null);
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -619,6 +629,7 @@ export function App() {
 
   async function showSources() {
     showView("sources");
+    void readSourceFailures();
     if (sources !== null) {
       return;
     }
@@ -634,6 +645,29 @@ export function App() {
       // Showing the view again reads them again.
       if (request === sourcesRequest.current) {
         setSourcesError(errorMessage(reason));
+      }
+    }
+  }
+
+  /** Reads the failures the loaded vault recorded, which executions add to meanwhile. */
+  async function readSourceFailures() {
+    sourceFailuresRequest.current += 1;
+    const request = sourceFailuresRequest.current;
+    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+      setSourceFailures(null);
+      return;
+    }
+    try {
+      const summaries = await invoke<SourceFailureSummary[]>("list_source_failures", {
+        latest: SOURCE_FAILURES_SHOWN,
+      });
+      if (request === sourceFailuresRequest.current) {
+        setSourceFailures(summaries);
+      }
+    } catch (reason) {
+      if (request === sourceFailuresRequest.current) {
+        setSourceFailures(null);
+        setError(errorMessage(reason));
       }
     }
   }
@@ -933,7 +967,9 @@ export function App() {
           onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
         />
       ) : null}
-      {activeView === "sources" ? <SourcesView sources={sources} error={sourcesError} /> : null}
+      {activeView === "sources" ? (
+        <SourcesView sources={sources} error={sourcesError} failures={sourceFailures} />
+      ) : null}
       {activeView === "runs" ? (
         <RunsView
           runs={runs}
