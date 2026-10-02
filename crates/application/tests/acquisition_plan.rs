@@ -10,13 +10,13 @@ use game_media_vault_domain::{
     SourceSelection,
 };
 
-/// A connector that records whether its plan check ran; it is never asked to discover.
+/// A connector that counts its plan checks; it is never asked to discover.
 struct StubConnector {
     source_id: &'static str,
     asset_types: Vec<AssetType>,
     direct_media_download: bool,
     refusal: Option<&'static str>,
-    consulted: Cell<bool>,
+    consultations: Cell<usize>,
 }
 
 fn connector(source_id: &'static str, asset_types: Vec<AssetType>) -> StubConnector {
@@ -25,7 +25,7 @@ fn connector(source_id: &'static str, asset_types: Vec<AssetType>) -> StubConnec
         asset_types,
         direct_media_download: true,
         refusal: None,
-        consulted: Cell::new(false),
+        consultations: Cell::new(0),
     }
 }
 
@@ -45,7 +45,7 @@ impl ConnectorPort for StubConnector {
         &self,
         _request: &AcquisitionRequest,
     ) -> Result<Option<String>, PortError> {
-        self.consulted.set(true);
+        self.consultations.set(self.consultations.get() + 1);
         Ok(self.refusal.map(str::to_owned))
     }
 
@@ -104,7 +104,7 @@ fn an_explicit_selection_contacts_only_the_selected_sources() {
             asset_types: vec![AssetType::BoxFront],
         }]
     );
-    assert!(!other.consulted.get());
+    assert_eq!(other.consultations.get(), 0);
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn auto_leaves_out_sources_that_cannot_serve_the_request_and_says_why() {
         ]
     );
     // A source that acquires none of the requested types is not consulted.
-    assert!(!unrelated.consulted.get());
+    assert_eq!(unrelated.consultations.get(), 0);
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn a_source_that_cannot_download_media_is_left_out_without_being_consulted() {
             reason: "cannot download media directly".to_owned(),
         }]
     );
-    assert!(!index.consulted.get());
+    assert_eq!(index.consultations.get(), 0);
 }
 
 fn uncovered(error: ApplicationError) -> (Vec<AssetTypeSelector>, Vec<ExcludedSource>) {
@@ -263,7 +263,7 @@ fn a_requested_type_no_selected_source_acquires_is_refused_before_consulting_any
         uncovered(error),
         (vec![AssetTypeSelector::Manual], Vec::new())
     );
-    assert!(!libretro.consulted.get());
+    assert_eq!(libretro.consultations.get(), 0);
 }
 
 #[test]
@@ -318,5 +318,24 @@ fn requirements_the_engine_cannot_apply_are_refused_before_consulting_any_source
     let error = plan_acquisition(&request, &connectors).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert!(!libretro.consulted.get());
+    assert_eq!(libretro.consultations.get(), 0);
+}
+
+#[test]
+fn a_source_selected_twice_is_planned_and_consulted_once() {
+    let libretro = connector("libretro-thumbnails", vec![AssetType::BoxFront]);
+
+    let plan = plan(
+        &request(
+            SourceSelection::Explicit(vec![
+                "libretro-thumbnails".to_owned(),
+                "libretro-thumbnails".to_owned(),
+            ]),
+            vec![AssetTypeSelector::BoxFront],
+        ),
+        &[&libretro],
+    );
+
+    assert_eq!(plan.sources.len(), 1);
+    assert_eq!(libretro.consultations.get(), 1);
 }

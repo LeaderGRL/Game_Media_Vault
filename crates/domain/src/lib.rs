@@ -338,10 +338,13 @@ impl AcquisitionRequest {
         let sources = match draft.sources {
             SourceSelection::Auto => SourceSelection::Auto,
             SourceSelection::Explicit(values) => {
-                let values = non_blank_values(values);
+                let mut values = non_blank_values(values);
                 if values.is_empty() {
                     return Err(AcquisitionRequestValidationError::MissingSources);
                 }
+                // A Source selected twice is selected once, in the order it first appears.
+                let mut seen = std::collections::HashSet::new();
+                values.retain(|value| seen.insert(value.clone()));
                 SourceSelection::Explicit(values)
             }
         };
