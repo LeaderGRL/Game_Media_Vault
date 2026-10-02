@@ -8,16 +8,24 @@ use image::{GenericImageView, ImageFormat, RgbImage};
 const THUMBNAIL: DerivationRecipe = DerivationRecipe::Thumbnail { max_edge: 100 };
 
 fn png(width: u32, height: u32) -> Vec<u8> {
+    encoded(width, height, ImageFormat::Png)
+}
+
+fn encoded(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
     let mut bytes = Vec::new();
     RgbImage::from_fn(width, height, |x, y| image::Rgb([x as u8, y as u8, 128]))
-        .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+        .write_to(&mut Cursor::new(&mut bytes), format)
         .unwrap();
     bytes
 }
 
 fn thumbnail(original: &[u8]) -> image::DynamicImage {
+    thumbnail_of(original, "image/png")
+}
+
+fn thumbnail_of(original: &[u8], media_type: &str) -> image::DynamicImage {
     let output = ImageTransformer
-        .transform(&mut &original[..], "image/png", &THUMBNAIL)
+        .transform(&mut &original[..], media_type, &THUMBNAIL)
         .unwrap();
     image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap()
 }
@@ -56,5 +64,16 @@ fn only_decodable_images_are_transformed() {
         ImageTransformer
             .transform(&mut &b"not an image"[..], "image/png", &THUMBNAIL)
             .is_err()
+    );
+}
+
+#[test]
+fn originals_without_a_signature_decode_with_their_recorded_format() {
+    // A TGA file need not start with any signature to guess its format from.
+    let original = encoded(400, 300, ImageFormat::Tga);
+
+    assert_eq!(
+        thumbnail_of(&original, "image/x-tga").dimensions(),
+        (100, 75)
     );
 }

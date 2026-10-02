@@ -32,15 +32,19 @@ impl MediaTransformPort for ImageTransformer {
     fn transform(
         &self,
         original: &mut dyn Read,
-        _media_type: &str,
+        media_type: &str,
         recipe: &DerivationRecipe,
     ) -> Result<Vec<u8>, PortError> {
         let mut bytes = Vec::new();
         original
             .read_to_end(&mut bytes)
             .map_err(|error| PortError::new(format!("failed to read the original: {error}")))?;
-        let image = image::load_from_memory(&bytes)
-            .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))?;
+        let image = match ImageFormat::from_mime_type(media_type) {
+            // Formats without a signature to guess from, such as TGA, need the recorded one.
+            Some(format) => image::load_from_memory_with_format(&bytes, format),
+            None => image::load_from_memory(&bytes),
+        }
+        .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))?;
         let output = match recipe {
             DerivationRecipe::Thumbnail { max_edge } => {
                 let (width, height) = image.dimensions();
