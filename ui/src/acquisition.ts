@@ -45,6 +45,8 @@ export interface AcquisitionRun {
   below_quality_work: number;
   /** Completed work whose original a retained Asset outranks under Keep Best Per Type. */
   outranked_work: number;
+  /** Completed work whose media its Source no longer serves. */
+  unavailable_work: number;
 }
 
 /** Sources the desktop app can currently execute. */

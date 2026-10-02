@@ -42,6 +42,7 @@ impl RunRepositoryPort for RecordingRunRepository {
             completed_work: 0,
             below_quality_work: 0,
             outranked_work: 0,
+            unavailable_work: 0,
         })
     }
 
@@ -74,6 +75,15 @@ impl RunRepositoryPort for RecordingRunRepository {
     }
 
     fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn complete_unavailable_work(
+        &self,
+        _run_id: i64,
+        _work_key: &str,
+        _reason: &str,
+    ) -> Result<(), PortError> {
         Ok(())
     }
 
@@ -188,6 +198,7 @@ impl RacingRunRepository {
             completed_work: 0,
             below_quality_work: 0,
             outranked_work: 0,
+            unavailable_work: 0,
         }
     }
 }
@@ -230,6 +241,15 @@ impl RunRepositoryPort for RacingRunRepository {
     }
 
     fn complete_work(&self, _run_id: i64, _work_key: &str) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn complete_unavailable_work(
+        &self,
+        _run_id: i64,
+        _work_key: &str,
+        _reason: &str,
+    ) -> Result<(), PortError> {
         Ok(())
     }
 

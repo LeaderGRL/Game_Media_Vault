@@ -14,7 +14,14 @@ use thiserror::Error;
 #[error("{message}")]
 pub struct PortError {
     message: String,
-    invalid_source_data: bool,
+    kind: PortErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortErrorKind {
+    Environmental,
+    InvalidSourceData,
+    Unavailable,
 }
 
 impl PortError {
@@ -22,7 +29,7 @@ impl PortError {
     pub fn new(message: String) -> Self {
         Self {
             message,
-            invalid_source_data: false,
+            kind: PortErrorKind::Environmental,
         }
     }
 
@@ -31,7 +38,16 @@ impl PortError {
     pub fn invalid_source_data(message: String) -> Self {
         Self {
             message,
-            invalid_source_data: true,
+            kind: PortErrorKind::InvalidSourceData,
+        }
+    }
+
+    /// A Source no longer serves what was asked, such as media it answers with HTTP 404 for;
+    /// retrying cannot help.
+    pub fn unavailable(message: String) -> Self {
+        Self {
+            message,
+            kind: PortErrorKind::Unavailable,
         }
     }
 
@@ -40,7 +56,11 @@ impl PortError {
     }
 
     pub fn is_invalid_source_data(&self) -> bool {
-        self.invalid_source_data
+        self.kind == PortErrorKind::InvalidSourceData
+    }
+
+    pub fn is_unavailable(&self) -> bool {
+        self.kind == PortErrorKind::Unavailable
     }
 }
 
@@ -225,6 +245,15 @@ pub trait RunRepositoryPort {
     ) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
+
+    /// Completes `work_key` as unavailable: its Source no longer serves the candidate media, so
+    /// retrying cannot help. `reason` says why.
+    fn complete_unavailable_work(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        reason: &str,
+    ) -> Result<(), PortError>;
 }
 
 /// Source-specific integration that discovers and downloads Asset Candidates.

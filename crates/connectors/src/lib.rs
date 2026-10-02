@@ -17,7 +17,7 @@ pub use launchbox::{
 
 use datafile::{DatafileSource, read_datafile};
 use naming::parse_release_name;
-use reqwest::blocking::Client;
+use reqwest::{StatusCode, blocking::Client};
 use url::Url;
 
 pub const LIBRETRO_THUMBNAILS_SOURCE_ID: &str = "libretro-thumbnails";
@@ -67,11 +67,17 @@ impl HttpTransport for ReqwestHttpTransport {
             .get(url)
             .send()
             .map_err(|error| PortError::new(format!("download of {url} failed: {error}")))?;
-        if !response.status().is_success() {
-            return Err(PortError::new(format!(
-                "download returned HTTP {} for {url}",
-                response.status()
-            )));
+        let status = response.status();
+        if !status.is_success() {
+            let message = format!("download returned HTTP {status} for {url}");
+            // The server no longer has the resource: asking again cannot help.
+            return Err(
+                if matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
+                    PortError::unavailable(message)
+                } else {
+                    PortError::new(message)
+                },
+            );
         }
         Ok(Box::new(response))
     }

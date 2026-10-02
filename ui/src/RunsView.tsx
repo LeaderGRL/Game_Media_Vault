@@ -102,6 +102,7 @@ function unlinkedCounts(run: AcquisitionRun) {
   const reasons = [
     run.below_quality_work > 0 ? `${run.below_quality_work} below quality` : null,
     run.outranked_work > 0 ? `${run.outranked_work} outranked` : null,
+    run.unavailable_work > 0 ? `${run.unavailable_work} unavailable` : null,
   ].filter((reason) => reason !== null);
   return reasons.length > 0 ? ` (${reasons.join(", ")})` : "";
 }
