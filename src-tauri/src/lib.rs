@@ -7,8 +7,8 @@ use std::{
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
     DownloadLimits, ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery,
-    PackagingModelSummary, PortError, ReferenceCatalogSourcePort, ReferenceImportSummary,
-    SourceDescription, SourceFailureSummary, VaultReport,
+    MachineSettingsPort, PackagingModelSummary, PortError, ReferenceCatalogSourcePort,
+    ReferenceImportSummary, SourceDescription, SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
@@ -18,13 +18,14 @@ use game_media_vault_application::{
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
-    load_review_preview as load_review_preview_use_case,
+    load_review_preview as load_review_preview_use_case, machine_registry,
     pause_acquisition_run as pause_acquisition_run_use_case,
     plan_acquisition as plan_acquisition_use_case,
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
-    search_library as search_library_use_case, start_acquisition_run_with_connectors,
-    summarize_source_failures, verify_vault as verify_vault_use_case,
+    search_library as search_library_use_case, set_source_enabled as set_source_enabled_use_case,
+    start_acquisition_run_with_connectors, summarize_source_failures,
+    verify_vault as verify_vault_use_case,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -35,6 +36,7 @@ use game_media_vault_domain::{
 };
 use game_media_vault_infrastructure::{
     ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, SqliteCatalog, inspect_media,
+    machine_settings,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, http, ipc::Response};
@@ -250,15 +252,50 @@ fn registry_refs(registry: &[Box<dyn ConnectorPort>]) -> Vec<&dyn ConnectorPort>
         .collect()
 }
 
-/// Describes every registered Source from the capabilities planning uses; no vault is needed and
-/// no Source is consulted.
-pub fn list_registered_sources() -> Vec<SourceDescription> {
-    describe_sources(&registry_refs(&registered_connectors()))
+/// The registered connectors, one per Source, as the settings of this machine leave them.
+fn machine_connectors() -> Result<Vec<Box<dyn ConnectorPort>>, CommandError> {
+    Ok(machine_registry(
+        registered_connectors(),
+        &machine_settings().disabled_sources()?,
+    ))
+}
+
+/// Describes every registered Source from the capabilities planning uses and the `settings` of
+/// this machine; no vault is needed and no Source is consulted.
+pub fn list_sources_on_machine(
+    settings: &dyn MachineSettingsPort,
+) -> Result<Vec<SourceDescription>, CommandError> {
+    Ok(describe_sources(
+        &registry_refs(&registered_connectors()),
+        &settings.disabled_sources()?,
+    ))
+}
+
+/// Enables or disables a registered Source in the `settings` of this machine, for every vault.
+pub fn set_source_enabled_on_machine(
+    settings: &dyn MachineSettingsPort,
+    source_id: &str,
+    enabled: bool,
+) -> Result<Vec<SourceDescription>, CommandError> {
+    Ok(set_source_enabled_use_case(
+        settings,
+        &registry_refs(&registered_connectors()),
+        source_id,
+        enabled,
+    )?)
 }
 
 #[tauri::command]
-fn list_sources() -> Vec<SourceDescription> {
-    list_registered_sources()
+fn list_sources() -> Result<Vec<SourceDescription>, CommandError> {
+    list_sources_on_machine(machine_settings().as_ref())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn set_source_enabled(
+    source_id: String,
+    enabled: bool,
+) -> Result<Vec<SourceDescription>, CommandError> {
+    set_source_enabled_on_machine(machine_settings().as_ref(), &source_id, enabled)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -360,12 +397,9 @@ async fn load_review_preview(
     review_item_id: i64,
 ) -> Result<Response, CommandError> {
     // Raw bytes reach the webview as an ArrayBuffer instead of a JSON number array.
-    let bytes = load_review_preview_in_vault_async(
-        session.root()?,
-        review_item_id,
-        registered_connectors(),
-    )
-    .await?;
+    let bytes =
+        load_review_preview_in_vault_async(session.root()?, review_item_id, machine_connectors()?)
+            .await?;
     Ok(Response::new(bytes))
 }
 
@@ -567,7 +601,7 @@ pub fn cancel_acquisition_run_in_vault(
 async fn plan_acquisition(
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionPlan, CommandError> {
-    plan_acquisition_async(request, registered_connectors()).await
+    plan_acquisition_async(request, machine_connectors()?).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -575,7 +609,7 @@ async fn start_acquisition_run(
     session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionRun, CommandError> {
-    start_acquisition_run_in_vault_async(session.root()?, request, registered_connectors()).await
+    start_acquisition_run_in_vault_async(session.root()?, request, machine_connectors()?).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -587,7 +621,7 @@ async fn execute_acquisition_run(
     execute_acquisition_run_in_vault_async(
         session.root()?,
         run_id,
-        registered_connectors(),
+        machine_connectors()?,
         matching_policy,
     )
     .await
@@ -719,6 +753,7 @@ pub fn run() {
             resume_acquisition_run,
             cancel_acquisition_run,
             list_sources,
+            set_source_enabled,
             list_source_failures,
             import_reference_catalog
         ])

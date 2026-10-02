@@ -1,6 +1,11 @@
+use game_media_vault_infrastructure::MachineSettingsFile;
+
 #[test]
 fn the_desktop_describes_every_registered_source_without_a_vault() {
-    let sources = game_media_vault_tauri::list_registered_sources();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+
+    let sources = game_media_vault_tauri::list_sources_on_machine(&settings).unwrap();
 
     let source_ids: Vec<&str> = sources
         .iter()
@@ -8,6 +13,7 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
         .collect();
     assert_eq!(source_ids, ["libretro-thumbnails", "launchbox-games-db"]);
     assert!(sources.iter().all(|source| source.direct_media_download));
+    assert!(sources.iter().all(|source| source.enabled));
 }
 
 #[test]
@@ -53,4 +59,35 @@ fn the_desktop_summarizes_the_failures_the_vault_recorded_per_source() {
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].failures, 2);
     assert_eq!(summaries[0].latest[0].message, "HTTP 503");
+}
+
+#[test]
+fn the_desktop_disables_a_source_on_this_machine_and_enables_it_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+
+    let disabled = game_media_vault_tauri::set_source_enabled_on_machine(
+        &settings,
+        "launchbox-games-db",
+        false,
+    )
+    .unwrap();
+    let listed = game_media_vault_tauri::list_sources_on_machine(&settings).unwrap();
+    let enabled = game_media_vault_tauri::set_source_enabled_on_machine(
+        &settings,
+        "launchbox-games-db",
+        true,
+    )
+    .unwrap();
+
+    let launchbox = |sources: &[game_media_vault_application::SourceDescription]| {
+        sources
+            .iter()
+            .find(|source| source.source_id == "launchbox-games-db")
+            .unwrap()
+            .enabled
+    };
+    assert!(!launchbox(&disabled));
+    assert!(!launchbox(&listed));
+    assert!(launchbox(&enabled));
 }

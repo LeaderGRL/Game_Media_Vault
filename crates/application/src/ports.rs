@@ -310,6 +310,58 @@ pub trait ConnectorPort: Send + Sync {
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 }
 
+/// A borrowed connector serves as the connector it borrows.
+impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
+    fn source_id(&self) -> &'static str {
+        (**self).source_id()
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        (**self).capabilities()
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        (**self).unsupported_request_reason(request)
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        (**self).discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        (**self).download(candidate)
+    }
+}
+
+/// A boxed connector serves as the connector it holds.
+impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
+    fn source_id(&self) -> &'static str {
+        (**self).source_id()
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        (**self).capabilities()
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        (**self).unsupported_request_reason(request)
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        (**self).discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        (**self).download(candidate)
+    }
+}
+
 /// The releases a reference catalog file yields, and how many of its records were too malformed
 /// to read; those never invalidate the others.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -343,4 +395,13 @@ pub trait ReferenceCatalogRepositoryPort {
             .map(|record| self.persist_reference_release(record))
             .collect()
     }
+}
+
+/// The settings of this machine, shared by every vault it opens.
+pub trait MachineSettingsPort {
+    /// The Sources disabled on this machine.
+    fn disabled_sources(&self) -> Result<Vec<String>, PortError>;
+
+    /// Records whether `source_id` takes part in acquisitions on this machine.
+    fn set_source_enabled(&self, source_id: &str, enabled: bool) -> Result<(), PortError>;
 }
