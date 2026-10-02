@@ -121,8 +121,9 @@ impl ReqwestHttpTransport {
         }
     }
 
-    /// Requests `url` once, asking for it only if it changed since `known`. A success or a
-    /// 304 Not Modified answer is a response; anything else is a failure.
+    /// Requests `url` once, asking for it only if it changed since `known`. A success, or a 304
+    /// Not Modified answer to a request naming a known version, is a response; anything else
+    /// is a failure.
     fn attempt(&self, url: &str, known: &Validators) -> Result<Response, FailedRequest> {
         let mut request = self.client.get(url);
         if let Some(etag) = &known.etag {
@@ -140,7 +141,8 @@ impl ReqwestHttpTransport {
             retry_after: None,
         })?;
         let status = response.status();
-        if status.is_success() || status == StatusCode::NOT_MODIFIED {
+        let conditional = known.etag.is_some() || known.last_modified.is_some();
+        if status.is_success() || (conditional && status == StatusCode::NOT_MODIFIED) {
             return Ok(response);
         }
         let retry_after = response

@@ -490,3 +490,14 @@ fn a_conditional_request_downloads_only_what_changed() {
     let requests = requests.lock().unwrap();
     assert!(requests[1].contains("if-modified-since: sun, 06 nov 1994 08:49:37 gmt"));
 }
+
+#[test]
+fn an_unchanged_answer_to_a_request_naming_no_version_is_refused() {
+    let (url, served) = serve(vec!["HTTP/1.1 304 Not Modified", "HTTP/1.1 200 OK"]);
+    let transport = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES);
+
+    let error = transport.get_stream(&url).err().unwrap();
+
+    assert!(error.message().contains("304"), "{}", error.message());
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+}
