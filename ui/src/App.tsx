@@ -36,6 +36,8 @@ export const RUN_PROGRESS_REFRESH_MS = 3000;
 
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
+  // The identity the backend resolved for each spelling of a vault path the user loaded.
+  const vaultIdentities = useRef(new Map<string, string>());
   // The vault the backend has open, unset while another one opens; commands issued for any
   // other vault would read the wrong catalog.
   const openedVaultRoot = useRef<string | null>(null);
@@ -228,7 +230,11 @@ export function App() {
 
   async function loadVault(create: boolean) {
     const requestedVaultRoot = vaultRoot;
-    activeVaultRoot.current = requestedVaultRoot;
+    // Vault-scoped state is keyed by the identity the backend resolves for the vault, shared by
+    // every spelling of its path; the identity this spelling resolved to before stands in until
+    // the backend answers.
+    let vaultKey = vaultIdentities.current.get(requestedVaultRoot) ?? requestedVaultRoot;
+    activeVaultRoot.current = vaultKey;
     openedVaultRoot.current = null;
     vaultLoadRequestGeneration.current += 1;
     const loadGeneration = vaultLoadRequestGeneration.current;
@@ -239,20 +245,30 @@ export function App() {
     supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
-    setRenderingThumbnails(renderingThumbnailVaults.current.has(requestedVaultRoot));
+    setRenderingThumbnails(renderingThumbnailVaults.current.has(vaultKey));
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
     setRuns([]);
     setBusyRunIds(new Set());
-    setExecutingRunIds(new Set(executionsByVault.current.get(requestedVaultRoot)));
+    setExecutingRunIds(new Set(executionsByVault.current.get(vaultKey)));
     try {
       // The backend keeps the opened vault; later commands never send a path.
-      await invoke("open_vault", { vault_root: requestedVaultRoot, create });
+      const identity = await invoke<string>("open_vault", {
+        vault_root: requestedVaultRoot,
+        create,
+      });
       if (loadGeneration !== vaultLoadRequestGeneration.current) {
         return;
       }
-      openedVaultRoot.current = requestedVaultRoot;
+      vaultIdentities.current.set(requestedVaultRoot, identity);
+      if (identity !== vaultKey) {
+        vaultKey = identity;
+        activeVaultRoot.current = identity;
+        setRenderingThumbnails(renderingThumbnailVaults.current.has(identity));
+        setExecutingRunIds(new Set(executionsByVault.current.get(identity)));
+      }
+      openedVaultRoot.current = vaultKey;
       // A refresh started after this search, such as one after a rendering, shows newer data.
       const libraryGeneration = supersedeLibraryRequests();
       const [library, reviews] = await Promise.all([
@@ -260,7 +276,7 @@ export function App() {
         invoke<ReviewItem[]>("list_review_items"),
       ]);
       if (
-        activeVaultRoot.current !== requestedVaultRoot ||
+        activeVaultRoot.current !== vaultKey ||
         loadGeneration !== vaultLoadRequestGeneration.current
       ) {
         return;
@@ -272,20 +288,20 @@ export function App() {
         }
         setReviewItems(reviews);
       }
-      setLoadedVaultRoot(requestedVaultRoot);
+      setLoadedVaultRoot(vaultKey);
       if (activeViewRef.current === "runs") {
-        await refreshRuns(requestedVaultRoot);
+        await refreshRuns(vaultKey);
       }
     } catch (reason) {
       if (
-        activeVaultRoot.current === requestedVaultRoot &&
+        activeVaultRoot.current === vaultKey &&
         loadGeneration === vaultLoadRequestGeneration.current
       ) {
         setError(errorMessage(reason));
       }
     } finally {
       if (
-        activeVaultRoot.current === requestedVaultRoot &&
+        activeVaultRoot.current === vaultKey &&
         loadGeneration === vaultLoadRequestGeneration.current
       ) {
         setLoading(false);

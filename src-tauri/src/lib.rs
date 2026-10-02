@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -72,9 +73,10 @@ pub struct VaultSession {
 }
 
 impl VaultSession {
-    /// Opens an existing vault, or initializes one when `create` is set. A failed open closes
-    /// the previous vault so commands cannot silently keep acting on it.
-    pub fn open(&self, vault_root: &Path, create: bool) -> Result<(), CommandError> {
+    /// Opens an existing vault, or initializes one when `create` is set, and returns its
+    /// identity: the canonical form of its path, which every spelling of that path shares. A
+    /// failed open closes the previous vault so commands cannot silently keep acting on it.
+    pub fn open(&self, vault_root: &Path, create: bool) -> Result<String, CommandError> {
         let mut root = self.lock();
         *root = None;
         let catalog_path = vault_root.join("catalog.sqlite3");
@@ -83,8 +85,11 @@ impl VaultSession {
         } else {
             SqliteCatalog::open_existing(catalog_path)?;
         }
+        // The opened catalog proves the directory exists, so it canonicalizes; should it not,
+        // the path as given still identifies this spelling.
+        let identity = fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
         *root = Some(vault_root.to_path_buf());
-        Ok(())
+        Ok(identity.to_string_lossy().into_owned())
     }
 
     pub fn root(&self) -> Result<PathBuf, CommandError> {
@@ -263,7 +268,7 @@ fn open_vault(
     session: State<'_, VaultSession>,
     vault_root: String,
     create: bool,
-) -> Result<(), CommandError> {
+) -> Result<String, CommandError> {
     session.open(Path::new(&vault_root), create)
 }
 
