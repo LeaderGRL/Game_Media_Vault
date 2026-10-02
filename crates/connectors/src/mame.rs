@@ -292,7 +292,7 @@ fn start_software(element: &BytesStart<'_>) -> SoftwareEntry {
     match (attribute(element, "name"), attribute(element, "cloneof")) {
         (Ok(name), Ok(clone_of)) => SoftwareEntry {
             name: name.filter(|name| !name.trim().is_empty()),
-            clone_of,
+            clone_of: clone_of.filter(|parent| !parent.trim().is_empty()),
             ..SoftwareEntry::default()
         },
         _ => SoftwareEntry {

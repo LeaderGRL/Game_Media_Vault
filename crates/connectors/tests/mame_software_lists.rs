@@ -296,3 +296,15 @@ fn a_bounded_read_still_refuses_a_list_broken_after_the_bound() {
 
     assert!(error.is_invalid_source_data(), "{error}");
 }
+
+#[test]
+fn a_blank_parent_is_left_out() {
+    let read = read_list(
+        r#"<softwarelist name="nes" description="NES">
+  <software name="child" cloneof=" "><description>Child (World)</description></software>
+</softwarelist>"#,
+    )
+    .unwrap();
+
+    assert!(identifier(&read.releases[0], "clone_of").is_empty());
+}
