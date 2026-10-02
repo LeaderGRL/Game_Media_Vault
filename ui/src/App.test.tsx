@@ -30,6 +30,7 @@ const entry: LibraryEntry = {
   edition_name: "Original",
   assertions: [],
   canonical_values: [],
+  preferred_assets: [],
   assets: [
     {
       asset_id: 3,
@@ -755,6 +756,7 @@ describe("App acquisition", () => {
     awaiting_review_work: 0,
     completed_work: 0,
     below_quality_work: 0,
+    outranked_work: 0,
   };
 
   beforeEach(() => {

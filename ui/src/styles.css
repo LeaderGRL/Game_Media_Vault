@@ -604,3 +604,12 @@ select:focus {
   color: #8e98aa;
   font-size: 12px;
 }
+
+.asset-preference span:not(.detail-label) {
+  color: #8e98aa;
+  font-size: 0.85rem;
+}
+
+.asset-preference.preferred strong {
+  color: #7fd1a8;
+}

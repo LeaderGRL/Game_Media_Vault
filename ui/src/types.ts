@@ -40,6 +40,24 @@ export interface LibraryAsset {
   provenance: AssetProvenance[];
 }
 
+/** What decides between two Assets of a type, checked in this order. */
+export type PreferenceReason =
+  | { reason: "more_pixels"; preferred: number; other: number | null }
+  | { reason: "more_bytes"; preferred: number; other: number }
+  | { reason: "acquired_first" };
+
+export interface AssetPreference {
+  asset_id: number;
+  reason: PreferenceReason;
+}
+
+/** The Asset preferred for one Asset Type, with why it outranks each other one. */
+export interface PreferredAsset {
+  asset_type: AssetType;
+  asset_id: number;
+  outranks: AssetPreference[];
+}
+
 export interface LibraryEntry {
   game_id: number;
   game_title: string;
@@ -49,6 +67,7 @@ export interface LibraryEntry {
   edition_name: string;
   assertions: ReleaseAssertion[];
   canonical_values: CanonicalValue[];
+  preferred_assets: PreferredAsset[];
   assets: LibraryAsset[];
 }
 

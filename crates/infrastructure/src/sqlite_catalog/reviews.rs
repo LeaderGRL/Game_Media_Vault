@@ -1,15 +1,16 @@
 use game_media_vault_application::{
-    ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
+    CandidateAssetOutcome, ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
 };
 use game_media_vault_domain::{
-    ImportedAsset, NewReviewItem, PersistAsset, QualityShortfall, ReviewDecision, ReviewItem,
-    ReviewMatchCandidate, ReviewStatus,
+    AssetType, LibraryAsset, MediaInfo, NewReviewItem, PersistAsset, QualityShortfall,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, StoredObject,
+    outranked_by,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use super::{
     SqliteCatalog,
-    assets::{detach_candidate_links, persist_asset_in_transaction},
+    assets::{asset_type_to_str, detach_candidate_links, persist_asset_in_transaction},
     sql_error,
 };
 
@@ -179,7 +180,12 @@ impl ReviewRepositoryPort for SqliteCatalog {
         }
         // The engine no longer believes in the candidate, so its automatic link goes too.
         detach_candidate_links(&transaction, candidate_identity, None)?;
-        complete_run_work(&transaction, run_id, candidate_identity, None)?;
+        complete_run_work(
+            &transaction,
+            run_id,
+            candidate_identity,
+            WorkOutcome::Settled,
+        )?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -242,18 +248,44 @@ impl ReviewRepositoryPort for SqliteCatalog {
         run_id: i64,
         candidate_identity: &str,
         record: PersistAsset,
-    ) -> Result<Option<ImportedAsset>, PortError> {
+        retention: RetentionPolicy,
+    ) -> Result<CandidateAssetOutcome, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        // The write lock is held from here on, so the compared Assets are the retained ones.
+        if retention == RetentionPolicy::KeepBestPerType
+            && let Some(release_edition_id) = record.existing_release_edition_id
+        {
+            let candidate = StoredObject {
+                hash: record.object_hash.clone(),
+                byte_len: record.byte_len,
+                media: record.media.clone(),
+            };
+            let retained = retained_assets(&transaction, release_edition_id, record.asset_type)?;
+            if let Some(outranked) = outranked_by(&candidate, &retained) {
+                let outranked_json = to_json(&outranked, "outranked original")?;
+                if !settle_unlinked(
+                    &transaction,
+                    run_id,
+                    candidate_identity,
+                    release_edition_id,
+                    WorkOutcome::Outranked(&outranked_json),
+                )? {
+                    return Ok(CandidateAssetOutcome::HumanDecisionConflict);
+                }
+                transaction.commit().map_err(sql_error)?;
+                return Ok(CandidateAssetOutcome::Outranked(outranked));
+            }
+        }
         if !auto_resolve_candidate_review(
             &transaction,
             candidate_identity,
             record.existing_release_edition_id,
             ParkedWork::Complete,
         )? {
-            return Ok(None);
+            return Ok(CandidateAssetOutcome::HumanDecisionConflict);
         }
         let imported =
             persist_asset_in_transaction(&transaction, record, Some(candidate_identity))?;
@@ -262,9 +294,14 @@ impl ReviewRepositoryPort for SqliteCatalog {
             candidate_identity,
             Some(imported.release_edition_id),
         )?;
-        complete_run_work(&transaction, run_id, candidate_identity, None)?;
+        complete_run_work(
+            &transaction,
+            run_id,
+            candidate_identity,
+            WorkOutcome::Settled,
+        )?;
         transaction.commit().map_err(sql_error)?;
-        Ok(Some(imported))
+        Ok(CandidateAssetOutcome::Linked(imported))
     }
 
     fn complete_candidate_below_quality(
@@ -279,21 +316,15 @@ impl ReviewRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        if !auto_resolve_candidate_review(
-            &transaction,
-            candidate_identity,
-            Some(release_edition_id),
-            ParkedWork::Requeue,
-        )? {
-            return Ok(false);
-        }
-        detach_candidate_links(&transaction, candidate_identity, Some(release_edition_id))?;
-        complete_run_work(
+        if !settle_unlinked(
             &transaction,
             run_id,
             candidate_identity,
-            Some(&shortfalls_json),
-        )?;
+            release_edition_id,
+            WorkOutcome::BelowQuality(&shortfalls_json),
+        )? {
+            return Ok(false);
+        }
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -353,20 +384,118 @@ fn auto_resolve_candidate_review(
     Ok(true)
 }
 
+/// How completed work ended, recorded so its candidate stays explainable.
+enum WorkOutcome<'a> {
+    /// Linked, dismissed or settled by a decision: nothing more to record.
+    Settled,
+    /// The original fell short of the quality requirements, as these JSON shortfalls say.
+    BelowQuality(&'a str),
+    /// A retained Asset outranks the original under Keep Best Per Type, as this JSON says.
+    Outranked(&'a str),
+}
+
+/// Settles a candidate matched to `release_edition_id` without linking its original: its
+/// Review Item is closed automatically (requeueing the work parked on it so every run applies
+/// its own requirements), its links to other editions are removed and its work in `run_id`
+/// records `outcome`. Returns `false`, changing nothing, when a human decision conflicts.
+fn settle_unlinked(
+    transaction: &Transaction<'_>,
+    run_id: i64,
+    candidate_identity: &str,
+    release_edition_id: i64,
+    outcome: WorkOutcome<'_>,
+) -> Result<bool, PortError> {
+    if !auto_resolve_candidate_review(
+        transaction,
+        candidate_identity,
+        Some(release_edition_id),
+        ParkedWork::Requeue,
+    )? {
+        return Ok(false);
+    }
+    detach_candidate_links(transaction, candidate_identity, Some(release_edition_id))?;
+    complete_run_work(transaction, run_id, candidate_identity, outcome)?;
+    Ok(true)
+}
+
+/// Assets of the edition and type that some provenance still retains.
+fn retained_assets(
+    transaction: &Transaction<'_>,
+    release_edition_id: i64,
+    asset_type: AssetType,
+) -> Result<Vec<LibraryAsset>, PortError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, object_hash, byte_len, original_filename, media_type, width, height
+             FROM assets
+             WHERE release_edition_id = ?1 AND asset_type = ?2
+               AND EXISTS (SELECT 1 FROM asset_provenance WHERE asset_id = assets.id)
+             ORDER BY id",
+        )
+        .map_err(sql_error)?;
+    let rows = statement
+        .query_map(
+            params![release_edition_id, asset_type_to_str(asset_type)],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    MediaInfo {
+                        media_type: row.get(4)?,
+                        width: row.get(5)?,
+                        height: row.get(6)?,
+                    },
+                ))
+            },
+        )
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sql_error)?;
+    rows.into_iter()
+        .map(
+            |(asset_id, object_hash, byte_len, original_filename, media)| {
+                Ok(LibraryAsset {
+                    asset_id,
+                    asset_type,
+                    object_hash,
+                    byte_len: u64::try_from(byte_len)
+                        .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
+                    media,
+                    original_filename,
+                    provenance: Vec::new(),
+                })
+            },
+        )
+        .collect()
+}
+
 /// Completes the candidate's work in `run_id`, whether queued or parked, so the outcome and the
-/// work settle together; `quality_shortfalls_json` records an original that fell short.
+/// work settle together.
 fn complete_run_work(
     transaction: &Transaction<'_>,
     run_id: i64,
     candidate_identity: &str,
-    quality_shortfalls_json: Option<&str>,
+    outcome: WorkOutcome<'_>,
 ) -> Result<(), PortError> {
+    let (quality_shortfalls_json, outranked_json) = match outcome {
+        WorkOutcome::Settled => (None, None),
+        WorkOutcome::BelowQuality(shortfalls) => (Some(shortfalls), None),
+        WorkOutcome::Outranked(outranked) => (None, Some(outranked)),
+    };
     transaction
         .execute(
             "UPDATE acquisition_run_work
-             SET state = 'done', review_item_id = NULL, quality_shortfalls_json = ?3
+             SET state = 'done', review_item_id = NULL,
+                 quality_shortfalls_json = ?3, outranked_json = ?4
              WHERE run_id = ?1 AND work_key = ?2",
-            params![run_id, candidate_identity, quality_shortfalls_json],
+            params![
+                run_id,
+                candidate_identity,
+                quality_shortfalls_json,
+                outranked_json
+            ],
         )
         .map_err(sql_error)?;
     Ok(())

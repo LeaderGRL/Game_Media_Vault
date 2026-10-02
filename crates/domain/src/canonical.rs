@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{LibraryEntry, ReleaseAssertion, ReleaseAssertionField};
+use crate::{
+    LibraryEntry, PreferredAsset, ReleaseAssertion, ReleaseAssertionField, preferred_assets,
+};
 
 /// Fields a Release Edition has a single value for. Identifiers are multi-valued (one checksum
 /// per dump, one record per source) and stay plain assertions.
@@ -26,20 +28,24 @@ pub struct CanonicalValue {
     pub conflicting: Vec<ReleaseAssertion>,
 }
 
-/// A library Release Edition with the Canonical Values derived from its assertions.
+/// A library Release Edition with the Canonical Values derived from its assertions and the
+/// Preferred Asset of each Asset Type it has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryRelease {
     #[serde(flatten)]
     pub entry: LibraryEntry,
     pub canonical_values: Vec<CanonicalValue>,
+    pub preferred_assets: Vec<PreferredAsset>,
 }
 
 impl From<LibraryEntry> for LibraryRelease {
     fn from(entry: LibraryEntry) -> Self {
         let canonical_values = canonical_values(&entry.assertions);
+        let preferred_assets = preferred_assets(&entry.assets);
         Self {
             entry,
             canonical_values,
+            preferred_assets,
         }
     }
 }

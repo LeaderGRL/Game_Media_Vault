@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 4;
+const VAULT_SCHEMA_VERSION: i32 = 5;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -17,7 +17,19 @@ const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
 type Migration = fn(&Transaction<'_>) -> Result<(), PortError>;
 
 /// Entry `i` upgrades a catalog from `OLDEST_SUPPORTED_SCHEMA_VERSION + i` to the next version.
-const MIGRATIONS: &[Migration] = &[add_asset_media, add_work_quality_shortfalls];
+const MIGRATIONS: &[Migration] = &[
+    add_asset_media,
+    add_work_quality_shortfalls,
+    add_work_outranked,
+];
+
+/// Version 5 records why Keep Best Per Type retained no new Asset for completed work. The
+/// column matches the `acquisition_run_work` layout of `SCHEMA`.
+fn add_work_outranked(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch("ALTER TABLE acquisition_run_work ADD COLUMN outranked_json TEXT;")
+        .map_err(sql_error)
+}
 
 /// Version 4 records how completed work fell short of its run's quality requirements. The
 /// column matches the `acquisition_run_work` layout of `SCHEMA`.
@@ -130,6 +142,7 @@ const SCHEMA: &str = "
         state TEXT NOT NULL CHECK(state IN ('queued', 'parked', 'done')),
         review_item_id INTEGER REFERENCES review_items(id),
         quality_shortfalls_json TEXT,
+        outranked_json TEXT,
         UNIQUE(run_id, work_key),
         CHECK((state = 'parked') = (review_item_id IS NOT NULL))
     );

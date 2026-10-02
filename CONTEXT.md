@@ -43,7 +43,7 @@ A discovered remote or imported media item that has not yet necessarily been acc
 _Avoid_: Asset until it is persisted as part of the library
 
 **Preferred Asset**:
-The currently preferred Asset for a Release Edition and Asset Type. Other matching Assets may still be retained.
+The currently preferred Asset for a Release Edition and Asset Type, derived from its retained Assets with the reason it outranks each other one. Other matching Assets may still be retained.
 _Avoid_: Best asset when the preference is policy-dependent
 
 ## Acquisition
@@ -65,7 +65,7 @@ One persisted execution of an Acquisition Request, including its progress, disco
 _Avoid_: Session
 
 **Retention Policy**:
-The policy controlling whether all accepted Assets are retained or only the preferred Asset per matching scope.
+The policy controlling whether a run retains every accepted Asset (Keep Everything) or only originals that become the Preferred Asset of their Release Edition and Asset Type (Keep Best Per Type).
 _Avoid_: Deduplication policy
 
 ## Review and Coverage

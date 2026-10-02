@@ -13,6 +13,7 @@ const entry: LibraryEntry = {
   edition_name: "Original",
   assertions: [],
   canonical_values: [],
+  preferred_assets: [],
   assets: [
     {
       asset_id: 3,
@@ -144,6 +145,45 @@ describe("LibraryView", () => {
     expect(screen.getByText("Conflicts with redump: Rev A")).toBeInTheDocument();
   });
 
+  it("marks the preferred original and explains why the others rank lower", () => {
+    const smaller = {
+      ...entry.assets[0],
+      asset_id: 4,
+      object_hash: "def456",
+      width: 640,
+      height: 900,
+      original_filename: "mgs-front-small.png",
+    };
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          {
+            ...entry,
+            assets: [entry.assets[0], smaller],
+            preferred_assets: [
+              {
+                asset_type: "box_front",
+                asset_id: 3,
+                outranks: [
+                  {
+                    asset_id: 4,
+                    reason: { reason: "more_pixels", preferred: 1_920_000, other: 576_000 },
+                  },
+                ],
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Preferred")).toBeInTheDocument();
+    expect(
+      screen.getByText("Fewer pixels than the preferred original (576000 vs 1920000 px)"),
+    ).toBeInTheDocument();
+  });
+
   it("shows the imported release and Box Front provenance", () => {
     render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
 
@@ -205,6 +245,7 @@ describe("LibraryView", () => {
             edition_name: "Rev 1",
             assets: [],
             canonical_values: [],
+            preferred_assets: [],
             assertions: [
               {
                 source_id: "no-intro",

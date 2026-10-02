@@ -1,13 +1,14 @@
 use game_media_vault_application::{
-    AcquisitionRequestInput, CatalogPort, ParkedReview, ReviewDecisionOutcome,
-    ReviewRepositoryPort, RunRepositoryPort, cancel_acquisition_run, load_acquisition_run,
-    start_acquisition_run,
+    AcquisitionRequestInput, CandidateAssetOutcome, CatalogPort, ParkedReview,
+    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort, cancel_acquisition_run,
+    load_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal, MediaInfo, NewReviewItem,
-    PersistAsset, QualityShortfall, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy,
-    ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, ImportedAsset, MatchEvidence, MatchSignal, MediaInfo,
+    NewReviewItem, Outranked, PersistAsset, PreferenceReason, QualityShortfall, ReleaseAssertion,
+    ReleaseAssertionField, RetentionPolicy, ReviewDecision, ReviewItem, ReviewMatchCandidate,
+    ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::{TempDir, tempdir};
@@ -411,10 +412,13 @@ fn superseding_a_candidate_without_review_item_records_nothing() {
 #[test]
 fn superseding_an_auto_linked_candidate_detaches_its_asset() {
     let (_temp, catalog) = open_catalog();
-    catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    )
+    .unwrap();
 
     assert!(
         catalog
@@ -430,10 +434,13 @@ fn superseding_an_auto_linked_candidate_detaches_its_asset() {
 fn superseding_an_auto_resolved_item_marks_it_superseded() {
     let (_temp, catalog) = open_catalog();
     let item = parked_item(&catalog, start_run(&catalog));
-    catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    )
+    .unwrap();
 
     assert!(
         catalog
@@ -469,10 +476,7 @@ fn auto_linking_settles_the_run_work_with_the_link() {
     let run_id = start_run(&catalog);
     discover(&catalog, run_id);
 
-    catalog
-        .persist_candidate_asset(run_id, IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
+    auto_link(&catalog, run_id, IDENTITY, auto_linked_record()).unwrap();
 
     assert_eq!(counts(&catalog, run_id), (0, 0, 1));
 }
@@ -482,10 +486,7 @@ fn parking_work_another_execution_settled_opens_no_review_item() {
     let (_temp, catalog) = open_catalog();
     let run_id = start_run(&catalog);
     discover(&catalog, run_id);
-    catalog
-        .persist_candidate_asset(run_id, IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
+    auto_link(&catalog, run_id, IDENTITY, auto_linked_record()).unwrap();
 
     let parked = catalog
         .park_work_for_review(
@@ -622,9 +623,12 @@ fn auto_linking_persists_the_asset_and_closes_the_undecided_item_together() {
     let parked_run = start_run(&catalog);
     let item = parked_item(&catalog, parked_run);
 
-    let imported = catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap();
+    let imported = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    );
 
     assert!(imported.is_some());
     assert_eq!(library_asset_count(&catalog), 1);
@@ -641,10 +645,13 @@ fn auto_linking_a_superseded_candidate_marks_its_item_auto_resolved() {
         .supersede_candidate_review(start_run(&catalog), IDENTITY)
         .unwrap();
 
-    catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    )
+    .unwrap();
 
     assert_eq!(
         catalog.get_review_item(item.id).unwrap().unwrap().status,
@@ -660,9 +667,12 @@ fn auto_linking_persists_nothing_once_a_human_decided() {
         .decide_review_item(item.id, ReviewDecision::Reject)
         .unwrap();
 
-    let imported = catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap();
+    let imported = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    );
 
     assert_eq!(imported, None);
     assert_eq!(library_asset_count(&catalog), 0);
@@ -676,9 +686,12 @@ fn auto_linking_persists_nothing_once_a_human_decided() {
 fn auto_linking_a_candidate_without_review_item_only_persists_the_asset() {
     let (_temp, catalog) = open_catalog();
 
-    let imported = catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap();
+    let imported = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    );
 
     assert!(imported.is_some());
     assert_eq!(library_asset_count(&catalog), 1);
@@ -705,21 +718,19 @@ fn assets_by_edition(catalog: &SqliteCatalog) -> Vec<(String, usize)> {
 #[test]
 fn a_later_link_moves_the_candidate_to_its_new_edition() {
     let (_temp, catalog) = open_catalog();
-    catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            IDENTITY,
-            record_for_edition("Standard", "first-bytes"),
-        )
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        record_for_edition("Standard", "first-bytes"),
+    );
 
-    catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            IDENTITY,
-            record_for_edition("Deluxe", "second-bytes"),
-        )
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        record_for_edition("Deluxe", "second-bytes"),
+    );
 
     assert_eq!(
         assets_by_edition(&catalog),
@@ -730,9 +741,12 @@ fn a_later_link_moves_the_candidate_to_its_new_edition() {
 #[test]
 fn parking_an_uncertain_candidate_detaches_its_earlier_automatic_link() {
     let (_temp, catalog) = open_catalog();
-    catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    );
 
     // An uncertain match must not affect the library before a human confirms it.
     parked_item(&catalog, start_run(&catalog));
@@ -743,21 +757,23 @@ fn parking_an_uncertain_candidate_detaches_its_earlier_automatic_link() {
 #[test]
 fn detaching_a_candidate_keeps_identical_bytes_linked_by_another_candidate() {
     let (_temp, catalog) = open_catalog();
-    let first = catalog
-        .persist_candidate_asset(start_run(&catalog), IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
-    catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            "candidate:fixture-provider:mirror",
-            PersistAsset {
-                existing_release_edition_id: Some(first.release_edition_id),
-                source_location: "https://example.invalid/mirror/front.png".to_owned(),
-                ..auto_linked_record()
-            },
-        )
-        .unwrap();
+    let first = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        auto_linked_record(),
+    )
+    .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        "candidate:fixture-provider:mirror",
+        PersistAsset {
+            existing_release_edition_id: Some(first.release_edition_id),
+            source_location: "https://example.invalid/mirror/front.png".to_owned(),
+            ..auto_linked_record()
+        },
+    );
     let item = parked_item(&catalog, start_run(&catalog));
 
     catalog
@@ -775,14 +791,13 @@ fn detaching_a_candidate_keeps_identical_bytes_linked_by_another_candidate() {
 #[test]
 fn an_accepted_candidate_is_not_linked_to_another_edition() {
     let (_temp, catalog) = open_catalog();
-    let standard = catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            IDENTITY,
-            record_for_edition("Standard", "standard-bytes"),
-        )
-        .unwrap()
-        .unwrap();
+    let standard = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        record_for_edition("Standard", "standard-bytes"),
+    )
+    .unwrap();
     let run_id = start_run(&catalog);
     catalog
         .record_discovery(
@@ -818,23 +833,21 @@ fn an_accepted_candidate_is_not_linked_to_another_edition() {
         .recorded()
         .unwrap();
 
-    let elsewhere = catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            IDENTITY,
-            record_for_edition("Deluxe", "deluxe-bytes"),
-        )
-        .unwrap();
-    let again = catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            IDENTITY,
-            PersistAsset {
-                existing_release_edition_id: Some(standard.release_edition_id),
-                ..record_for_edition("Standard", "standard-bytes")
-            },
-        )
-        .unwrap();
+    let elsewhere = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        record_for_edition("Deluxe", "deluxe-bytes"),
+    );
+    let again = auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        PersistAsset {
+            existing_release_edition_id: Some(standard.release_edition_id),
+            ..record_for_edition("Standard", "standard-bytes")
+        },
+    );
 
     assert_eq!(elsewhere, None);
     assert!(again.is_some());
@@ -868,21 +881,17 @@ const OTHER_IDENTITY: &str = "candidate:fixture-provider:same-locator";
 /// Links IDENTITY, then another candidate serving the same locator and bytes for the same
 /// edition with its own `label`, and returns the reopened Review Item of the second one.
 fn link_two_candidates_sharing_a_locator(catalog: &SqliteCatalog, label: &str) -> ReviewItem {
-    let first = catalog
-        .persist_candidate_asset(start_run(catalog), IDENTITY, auto_linked_record())
-        .unwrap()
-        .unwrap();
-    catalog
-        .persist_candidate_asset(
-            start_run(catalog),
-            OTHER_IDENTITY,
-            PersistAsset {
-                existing_release_edition_id: Some(first.release_edition_id),
-                source_asset_label: Some(label.to_owned()),
-                ..auto_linked_record()
-            },
-        )
-        .unwrap();
+    let first = auto_link(catalog, start_run(catalog), IDENTITY, auto_linked_record()).unwrap();
+    auto_link(
+        catalog,
+        start_run(catalog),
+        OTHER_IDENTITY,
+        PersistAsset {
+            existing_release_edition_id: Some(first.release_edition_id),
+            source_asset_label: Some(label.to_owned()),
+            ..auto_linked_record()
+        },
+    );
     let run_id = start_run(catalog);
     catalog
         .record_discovery(
@@ -1010,13 +1019,12 @@ fn a_below_quality_original_changes_nothing_once_a_human_rejected_the_candidate(
 #[test]
 fn a_below_quality_original_detaches_the_candidate_from_other_editions() {
     let (_temp, catalog) = open_catalog();
-    catalog
-        .persist_candidate_asset(
-            start_run(&catalog),
-            IDENTITY,
-            record_for_edition("Standard", "first-bytes"),
-        )
-        .unwrap();
+    auto_link(
+        &catalog,
+        start_run(&catalog),
+        IDENTITY,
+        record_for_edition("Standard", "first-bytes"),
+    );
     let strict_run = start_run(&catalog);
     discover(&catalog, strict_run);
 
@@ -1029,4 +1037,163 @@ fn a_below_quality_original_detaches_the_candidate_from_other_editions() {
         assets_by_edition(&catalog),
         vec![("Standard".to_owned(), 0)]
     );
+}
+
+/// Persists an automatically linked Asset under Keep Everything; `None` when a human decision
+/// conflicts.
+fn auto_link(
+    catalog: &SqliteCatalog,
+    run_id: i64,
+    candidate_identity: &str,
+    record: PersistAsset,
+) -> Option<ImportedAsset> {
+    match catalog
+        .persist_candidate_asset(
+            run_id,
+            candidate_identity,
+            record,
+            RetentionPolicy::KeepEverything,
+        )
+        .unwrap()
+    {
+        CandidateAssetOutcome::Linked(imported) => Some(imported),
+        CandidateAssetOutcome::HumanDecisionConflict => None,
+        other => panic!("Keep Everything links every original, got {other:?}"),
+    }
+}
+
+fn box_front_record(object_hash: &str, width: u32, height: u32) -> PersistAsset {
+    PersistAsset {
+        object_hash: object_hash.to_owned(),
+        media: MediaInfo {
+            media_type: "image/png".to_owned(),
+            width: Some(width),
+            height: Some(height),
+        },
+        ..auto_linked_record()
+    }
+}
+
+/// Retains a 1200 x 1600 Box Front for another candidate and returns its Asset.
+fn retain_large_box_front(catalog: &SqliteCatalog) -> ImportedAsset {
+    auto_link(
+        catalog,
+        start_run(catalog),
+        "candidate:fixture-provider:retained",
+        box_front_record("large-bytes", 1200, 1600),
+    )
+    .unwrap()
+}
+
+/// Persists a Box Front for the review candidate in the retained Asset's edition under Keep
+/// Best Per Type.
+fn keep_best(
+    catalog: &SqliteCatalog,
+    run_id: i64,
+    retained: &ImportedAsset,
+    record: PersistAsset,
+) -> CandidateAssetOutcome {
+    catalog
+        .persist_candidate_asset(
+            run_id,
+            IDENTITY,
+            PersistAsset {
+                existing_release_edition_id: Some(retained.release_edition_id),
+                ..record
+            },
+            RetentionPolicy::KeepBestPerType,
+        )
+        .unwrap()
+}
+
+#[test]
+fn keep_best_per_type_links_nothing_a_retained_asset_outranks() {
+    let (_temp, catalog) = open_catalog();
+    let retained = retain_large_box_front(&catalog);
+    let run_id = start_run(&catalog);
+    discover(&catalog, run_id);
+
+    let outcome = keep_best(
+        &catalog,
+        run_id,
+        &retained,
+        box_front_record("small-bytes", 640, 900),
+    );
+
+    assert_eq!(
+        outcome,
+        CandidateAssetOutcome::Outranked(Outranked {
+            preferred_asset_id: retained.asset_id,
+            reason: PreferenceReason::MorePixels {
+                preferred: 1_920_000,
+                other: Some(576_000),
+            },
+        })
+    );
+    assert_eq!(library_asset_count(&catalog), 1);
+    let run = load_acquisition_run(&catalog, run_id).unwrap();
+    assert_eq!((run.completed_work, run.outranked_work), (1, 1));
+}
+
+#[test]
+fn keep_best_per_type_links_an_original_that_becomes_preferred() {
+    let (_temp, catalog) = open_catalog();
+    let retained = retain_large_box_front(&catalog);
+
+    let outcome = keep_best(
+        &catalog,
+        start_run(&catalog),
+        &retained,
+        box_front_record("larger-bytes", 2400, 3200),
+    );
+
+    assert!(matches!(outcome, CandidateAssetOutcome::Linked(_)));
+    assert_eq!(library_asset_count(&catalog), 2);
+}
+
+#[test]
+fn keep_best_per_type_records_provenance_for_bytes_already_retained() {
+    let (_temp, catalog) = open_catalog();
+    let retained = retain_large_box_front(&catalog);
+
+    let outcome = keep_best(
+        &catalog,
+        start_run(&catalog),
+        &retained,
+        box_front_record("large-bytes", 1200, 1600),
+    );
+
+    let CandidateAssetOutcome::Linked(imported) = outcome else {
+        panic!("expected a link, got {outcome:?}");
+    };
+    assert_eq!(imported.asset_id, retained.asset_id);
+    assert_eq!(
+        catalog.list_library().unwrap()[0].assets[0]
+            .provenance
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn an_outranked_original_closes_the_undecided_item_and_requeues_its_work() {
+    let (_temp, catalog) = open_catalog();
+    let retained = retain_large_box_front(&catalog);
+    let parked_run = start_run(&catalog);
+    let item = parked_item(&catalog, parked_run);
+    let keep_best_run = start_run(&catalog);
+    discover(&catalog, keep_best_run);
+
+    keep_best(
+        &catalog,
+        keep_best_run,
+        &retained,
+        box_front_record("small-bytes", 640, 900),
+    );
+
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::AutoResolved
+    );
+    assert_eq!(counts(&catalog, parked_run), (1, 0, 0));
 }

@@ -4,6 +4,7 @@ import {
   filenameMediaType,
   type LibraryAsset,
   type LibraryEntry,
+  type PreferenceReason,
   type ReleaseAssertionField,
 } from "./types";
 
@@ -87,6 +88,7 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
                         </span>
                       ) : null}
                     </div>
+                    <AssetPreferenceNote entry={entry} asset={asset} />
                   </div>
 
                   <div className="provenance">
@@ -152,6 +154,48 @@ function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
       onError={() => setUnavailable(true)}
     />
   );
+}
+
+/** Whether an original is preferred among the others of its type, and why if it is not. */
+function AssetPreferenceNote({ entry, asset }: { entry: LibraryEntry; asset: LibraryAsset }) {
+  const preferred = entry.preferred_assets.find(
+    (candidate) => candidate.asset_type === asset.asset_type,
+  );
+  // A lone original of its type is not compared with anything.
+  if (!preferred || preferred.outranks.length === 0) {
+    return null;
+  }
+  if (preferred.asset_id === asset.asset_id) {
+    return (
+      <div className="asset-preference preferred">
+        <span className="detail-label">Preference</span>
+        <strong>Preferred</strong>
+      </div>
+    );
+  }
+  const outranked = preferred.outranks.find((other) => other.asset_id === asset.asset_id);
+  if (!outranked) {
+    return null;
+  }
+  return (
+    <div className="asset-preference">
+      <span className="detail-label">Preference</span>
+      <span>{preferenceReason(outranked.reason)}</span>
+    </div>
+  );
+}
+
+function preferenceReason(reason: PreferenceReason) {
+  switch (reason.reason) {
+    case "more_pixels":
+      return reason.other === null
+        ? `Unknown pixel size, the preferred original has ${reason.preferred} px`
+        : `Fewer pixels than the preferred original (${reason.other} vs ${reason.preferred} px)`;
+    case "more_bytes":
+      return `Same pixels in fewer bytes than the preferred original (${formatBytes(reason.other)} vs ${formatBytes(reason.preferred)})`;
+    case "acquired_first":
+      return "Equal to the preferred original, which was acquired first";
+  }
 }
 
 function formatAssetType(assetType: string) {

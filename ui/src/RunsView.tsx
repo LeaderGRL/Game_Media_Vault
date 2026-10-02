@@ -56,7 +56,7 @@ export function RunsView({
             <p className="run-counts">
               {run.queued_work} queued · {run.awaiting_review_work} awaiting review ·{" "}
               {run.completed_work} completed
-              {run.below_quality_work > 0 ? ` (${run.below_quality_work} below quality)` : ""}
+              {unlinkedCounts(run)}
             </p>
             <div className="run-actions">
               {run.status === "running" ? (
@@ -95,4 +95,13 @@ function describeRequest(run: AcquisitionRun): string {
   const sources =
     run.request.sources.mode === "auto" ? "Auto" : run.request.sources.values.join(", ");
   return [sources, run.request.platforms.join(", ")].filter((part) => part.length > 0).join(" · ");
+}
+
+/** Completed work whose original was not linked, and why. */
+function unlinkedCounts(run: AcquisitionRun) {
+  const reasons = [
+    run.below_quality_work > 0 ? `${run.below_quality_work} below quality` : null,
+    run.outranked_work > 0 ? `${run.outranked_work} outranked` : null,
+  ].filter((reason) => reason !== null);
+  return reasons.length > 0 ? ` (${reasons.join(", ")})` : "";
 }
