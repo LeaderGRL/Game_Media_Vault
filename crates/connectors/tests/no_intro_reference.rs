@@ -413,3 +413,32 @@ fn a_bounded_read_still_refuses_a_datafile_broken_after_the_bound() {
 
     assert!(error.is_invalid_source_data(), "{error}");
 }
+
+#[test]
+fn a_dump_without_a_name_asserts_none_of_its_checksums() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("nameless-dump.dat");
+    std::fs::write(
+        &path,
+        r#"<datafile><header><name>Nintendo - Game Boy</name></header>
+  <game name="Two Dumps (World)">
+    <rom name="named.gb" size="1"/>
+    <rom size="1" crc="12345678" sha1="1111111111111111111111111111111111111111"/>
+  </game>
+</datafile>"#,
+    )
+    .unwrap();
+
+    let read = NoIntroReferenceCatalog::new()
+        .read_releases(&path, 10)
+        .unwrap();
+
+    let identifiers: Vec<&str> = read.releases[0]
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.field == ReleaseAssertionField::Identifier)
+        .filter_map(|assertion| assertion.qualifier.as_deref())
+        .filter(|qualifier| *qualifier != "source_record")
+        .collect();
+    assert_eq!(identifiers, ["rom_name"]);
+}

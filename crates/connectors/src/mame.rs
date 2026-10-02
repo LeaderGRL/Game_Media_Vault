@@ -333,10 +333,15 @@ fn read_info(element: &BytesStart<'_>) -> Result<Vec<(String, String)>, PortErro
     })
 }
 
+/// The name and checksums of one dump. A dump without a name asserts none of its checksums, so
+/// each checksum a release asserts belongs to one of its named dumps.
 fn read_dump(
     element: &BytesStart<'_>,
     name_qualifier: &str,
 ) -> Result<Vec<(String, String)>, PortError> {
+    if attribute(element, "name")?.is_none_or(|name| name.trim().is_empty()) {
+        return Ok(Vec::new());
+    }
     let mut identifiers = Vec::new();
     for (attribute_name, qualifier) in [("name", name_qualifier), ("crc", "crc"), ("sha1", "sha1")]
     {

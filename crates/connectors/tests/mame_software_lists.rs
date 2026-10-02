@@ -308,3 +308,25 @@ fn a_blank_parent_is_left_out() {
 
     assert!(identifier(&read.releases[0], "clone_of").is_empty());
 }
+
+#[test]
+fn a_dump_without_a_name_asserts_none_of_its_checksums() {
+    let read = read_list(
+        r#"<softwarelist name="nes" description="Nintendo Entertainment System cartridges">
+  <software name="twodumps">
+    <description>Two Dumps</description>
+    <part name="cart" interface="nes_cart">
+      <dataarea name="prg" size="1">
+        <rom name="named.prg" size="1"/>
+        <rom size="1" crc="12345678" sha1="1111111111111111111111111111111111111111"/>
+      </dataarea>
+    </part>
+  </software>
+</softwarelist>"#,
+    )
+    .unwrap();
+
+    assert_eq!(identifier(&read.releases[0], "rom_name"), ["named.prg"]);
+    assert!(identifier(&read.releases[0], "sha1").is_empty());
+    assert!(identifier(&read.releases[0], "crc").is_empty());
+}

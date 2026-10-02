@@ -249,11 +249,16 @@ impl DatafileGame {
         }
     }
 
+    /// Records the name and checksums of one dump. A dump without a name asserts none of its
+    /// checksums, so each checksum a release asserts belongs to one of its named dumps.
     fn read_identifiers(
         &mut self,
         source: &DatafileSource,
         element: &quick_xml::events::BytesStart<'_>,
     ) -> Result<(), PortError> {
+        if attribute_value(source, element, "name")?.is_none_or(|name| name.trim().is_empty()) {
+            return Ok(());
+        }
         for name in ["name", "crc", "md5", "sha1", "sha256"] {
             if let Some(value) = attribute_value(source, element, name)? {
                 let qualifier = if name == "name" {
