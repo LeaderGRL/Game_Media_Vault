@@ -48,6 +48,8 @@ impl MediaTransformPort for ImageTransformer {
     fn can_transform(&self, media_type: &str, recipe: &DerivationRecipe) -> bool {
         match recipe {
             DerivationRecipe::Thumbnail { .. } => DECODABLE_MEDIA_TYPES.contains(&media_type),
+            // A packaging model reads several originals, never one alone.
+            DerivationRecipe::PackagingModel { .. } => false,
         }
     }
 
@@ -57,6 +59,11 @@ impl MediaTransformPort for ImageTransformer {
         media_type: &str,
         recipe: &DerivationRecipe,
     ) -> Result<Vec<u8>, PortError> {
+        let DerivationRecipe::Thumbnail { max_edge } = recipe else {
+            return Err(PortError::new(
+                "a packaging model is built from several originals".to_owned(),
+            ));
+        };
         let mut bytes = Vec::new();
         original
             .take(self.max_original_bytes.saturating_add(1))
@@ -74,16 +81,12 @@ impl MediaTransformPort for ImageTransformer {
             None => image::load_from_memory(&bytes),
         }
         .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))?;
-        let output = match recipe {
-            DerivationRecipe::Thumbnail { max_edge } => {
-                let (width, height) = image.dimensions();
-                if width.max(height) > *max_edge {
-                    // Fits both edges within the bound while keeping the aspect ratio.
-                    image.resize(*max_edge, *max_edge, FilterType::Lanczos3)
-                } else {
-                    image
-                }
-            }
+        let (width, height) = image.dimensions();
+        let output = if width.max(height) > *max_edge {
+            // Fits both edges within the bound while keeping the aspect ratio.
+            image.resize(*max_edge, *max_edge, FilterType::Lanczos3)
+        } else {
+            image
         };
         let mut encoded = Vec::new();
         output
