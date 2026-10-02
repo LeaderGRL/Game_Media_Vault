@@ -201,8 +201,9 @@ pub trait ReviewRepositoryPort {
     ) -> Result<bool, PortError>;
 }
 
-/// Persisted Acquisition Runs and their work queue.
-pub trait RunRepositoryPort {
+/// Persisted Acquisition Runs and their work queue. Download threads read the status of the run
+/// they serve.
+pub trait RunRepositoryPort: Send + Sync {
     /// Persists a running run of `request` that contacts the `planned_sources` of its plan.
     fn create_run(
         &self,
@@ -211,6 +212,9 @@ pub trait RunRepositoryPort {
     ) -> Result<AcquisitionRun, PortError>;
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError>;
+
+    /// The status of the run, without anything else about it.
+    fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError>;
 
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError>;
 

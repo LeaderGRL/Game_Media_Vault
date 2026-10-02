@@ -11,7 +11,7 @@ use std::{
 };
 
 use game_media_vault_application::{
-    ConnectorPort, DownloadLimits, PortError, acquire_run_with_connectors,
+    ConnectorPort, DownloadLimits, PortError, acquire_run_with_connectors, pause_acquisition_run,
     start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
@@ -64,6 +64,8 @@ struct SlowConnector<'a> {
     inner: FakeConnector,
     rendezvous: Option<&'a Rendezvous>,
     in_flight: Option<&'a InFlight>,
+    /// Runs while each download is under way, as a human acting meanwhile.
+    during_download: Option<&'a (dyn Fn() + Sync)>,
 }
 
 impl ConnectorPort for SlowConnector<'_> {
@@ -87,6 +89,9 @@ impl ConnectorPort for SlowConnector<'_> {
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        if let Some(during_download) = self.during_download {
+            during_download();
+        }
         if let Some(rendezvous) = self.rendezvous
             && !rendezvous.meet()
         {
@@ -125,6 +130,7 @@ fn slow<'a>(
         },
         rendezvous,
         in_flight,
+        during_download: None,
     }
 }
 
@@ -243,4 +249,40 @@ fn a_candidate_awaiting_review_is_never_downloaded_ahead() {
     assert_eq!(imported, Ok(1));
     assert!(second.inner.downloads.borrow().is_empty());
     assert_eq!(vault.review_items.borrow().len(), 1);
+}
+
+#[test]
+fn a_pause_starts_no_further_download() {
+    let candidates: Vec<AssetCandidate> = ["a", "b", "c"]
+        .iter()
+        .map(|source_id| box_front(source_id, &format!("Game {source_id}")))
+        .collect();
+    let vault = FakeVault::with_library(
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| release_for(candidate, index as i64 + 1))
+            .collect(),
+    );
+    // The first download lets a human pause the run; the other two wait their turn.
+    let pause = || {
+        let run_id = *vault.runs.borrow().keys().next().unwrap();
+        pause_acquisition_run(&vault, run_id).unwrap();
+    };
+    let mut connectors: Vec<SlowConnector<'_>> = ["a", "b", "c"]
+        .into_iter()
+        .zip(candidates)
+        .map(|(source_id, candidate)| slow(source_id, vec![candidate], None, None))
+        .collect();
+    connectors[0].during_download = Some(&pause);
+
+    execute(
+        &vault,
+        &connectors.iter().collect::<Vec<_>>(),
+        DownloadLimits { max_concurrent: 1 },
+    )
+    .unwrap();
+
+    assert!(connectors[1].inner.downloads.borrow().is_empty());
+    assert!(connectors[2].inner.downloads.borrow().is_empty());
 }

@@ -361,6 +361,10 @@ impl RunRepositoryPort for FakeVault {
         Ok(run)
     }
 
+    fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        Ok(self.runs.borrow().get(&run_id).map(|run| run.status))
+    }
+
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
         let ids = self.runs.borrow().keys().copied().collect::<Vec<_>>();
         Ok(ids.into_iter().map(|id| self.run(id)).collect())

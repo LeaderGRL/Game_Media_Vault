@@ -729,10 +729,19 @@ impl<'a> Acquisition<'a> {
                 Arc::clone(&self.slots),
                 Arc::clone(&self.stopped),
             );
-            let object_store = self.object_store;
+            let (object_store, runs, run_id) = (self.object_store, self.runs, self.run_id);
             scope.spawn(move || {
                 loop {
                     let slot = slots.take();
+                    // A pause or a cancellation starts no further download, even while the
+                    // execution still awaits one already under way.
+                    let running = matches!(
+                        runs.run_status(run_id),
+                        Ok(Some(AcquisitionRunStatus::Running))
+                    );
+                    if !running {
+                        stopped.store(true, Ordering::SeqCst);
+                    }
                     if stopped.load(Ordering::SeqCst) {
                         break;
                     }
