@@ -1,10 +1,16 @@
 use std::fs;
 
 use game_media_vault_application::{
-    CatalogPort, CorruptObject, DerivativeRepositoryPort, DerivedStorePort, ObjectArea,
-    ObjectStorePort, RepairActions, VaultRepairStorePort, repair_vault, verify_vault,
+    AcquisitionRequestInput, CatalogPort, CorruptObject, DerivativeRepositoryPort,
+    DerivedStorePort, ObjectArea, ObjectStorePort, RepairActions, ReviewRepositoryPort,
+    RunRepositoryPort, StaleWork, StaleWorkReason, VaultRepairStorePort, cancel_acquisition_run,
+    repair_vault, start_acquisition_run, verify_vault,
 };
-use game_media_vault_domain::{AssetType, DerivationRecipe, PersistAsset, SourceId, StoredObject};
+use game_media_vault_domain::{
+    AcquisitionLimits, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
+    DerivationRecipe, GameSelection, NewReviewItem, PersistAsset, RetentionPolicy, SourceId,
+    SourceSelection, StoredObject,
+};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
 
@@ -348,4 +354,89 @@ fn repairs_never_remove_a_path_the_store_did_not_name() {
 
     assert!(vault.join("keep.txt").exists());
     assert!(store.object_path(&kept.hash).exists());
+}
+
+const RUN_SOURCE: &str = "fixture-provider";
+
+fn run_request() -> AcquisitionRequestInput {
+    AcquisitionRequestInput {
+        sources: SourceSelection::Explicit(vec![RUN_SOURCE.to_owned()]),
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    }
+}
+
+fn work(key: &str) -> AcquisitionWorkItem {
+    AcquisitionWorkItem {
+        key: key.to_owned(),
+        candidate: AssetCandidate {
+            provider_candidate_id: Some(key.to_owned()),
+            game_title: format!("Game for {key}"),
+            platform: "Windows".to_owned(),
+            region: "Worldwide".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            source_id: SourceId::from(RUN_SOURCE),
+            source_asset_label: None,
+            source_url: format!("https://example.invalid/{key}.png"),
+            original_filename: format!("{key}.png"),
+        },
+    }
+}
+
+#[test]
+fn work_no_execution_will_process_is_reported_stale() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let running = start_acquisition_run(&catalog, run_request()).unwrap();
+    catalog
+        .record_discovery(running.id, RUN_SOURCE, &[work("kept"), work("parked")])
+        .unwrap();
+    catalog
+        .park_work_for_review(
+            running.id,
+            "parked",
+            NewReviewItem {
+                candidate_identity: "parked".to_owned(),
+                candidate: work("parked").candidate,
+                competing_matches: Vec::new(),
+            },
+        )
+        .unwrap();
+    // A decision that closed the Review Item without requeueing its work.
+    rusqlite::Connection::open(vault.join("catalog.sqlite3"))
+        .unwrap()
+        .execute("UPDATE review_items SET status = 'accepted'", [])
+        .unwrap();
+    let cancelled = start_acquisition_run(&catalog, run_request()).unwrap();
+    catalog
+        .record_discovery(cancelled.id, RUN_SOURCE, &[work("abandoned")])
+        .unwrap();
+    cancel_acquisition_run(&catalog, cancelled.id).unwrap();
+
+    let report = verify_vault(&catalog, &store).unwrap();
+
+    assert_eq!(
+        report.stale_work,
+        [
+            StaleWork {
+                run_id: running.id,
+                work_key: "parked".to_owned(),
+                reason: StaleWorkReason::ClosedReview,
+            },
+            StaleWork {
+                run_id: cancelled.id,
+                work_key: "abandoned".to_owned(),
+                reason: StaleWorkReason::CancelledRun,
+            },
+        ]
+    );
 }

@@ -1,9 +1,11 @@
 use std::{cell::RefCell, collections::BTreeMap};
 
 use game_media_vault_application::{
-    CorruptObject, ObjectArea, ObjectCheck, PortError, RecordedDerivative, UnreadableObject,
-    VaultCatalogPort, VaultReport, VaultStorePort, verify_vault,
+    CorruptObject, ObjectArea, ObjectCheck, PortError, RecordedDerivative, StaleWork,
+    StaleWorkReason, UnfinishedWork, UnreadableObject, VaultCatalogPort, VaultReport,
+    VaultStorePort, verify_vault,
 };
+use game_media_vault_domain::{AcquisitionRunStatus, ReviewStatus};
 
 /// Marks a stored file that cannot be read.
 const UNREADABLE: &str = "!unreadable";
@@ -17,6 +19,7 @@ struct FakeVault {
     originals: BTreeMap<String, String>,
     derived: BTreeMap<String, String>,
     staging: Vec<String>,
+    unfinished: Vec<UnfinishedWork>,
 }
 
 impl VaultCatalogPort for FakeVault {
@@ -26,6 +29,10 @@ impl VaultCatalogPort for FakeVault {
 
     fn recorded_derivatives(&self) -> Result<Vec<RecordedDerivative>, PortError> {
         Ok(self.derivatives.clone())
+    }
+
+    fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError> {
+        Ok(self.unfinished.clone())
     }
 }
 
@@ -237,6 +244,10 @@ impl VaultCatalogPort for ConcurrentlyStoringVault {
     fn recorded_derivatives(&self) -> Result<Vec<RecordedDerivative>, PortError> {
         Ok(Vec::new())
     }
+
+    fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError> {
+        Ok(Vec::new())
+    }
 }
 
 impl VaultStorePort for ConcurrentlyStoringVault {
@@ -294,4 +305,74 @@ fn a_derived_output_that_cannot_be_read_is_reported() {
             reason: "permission denied".to_owned(),
         }]
     );
+}
+
+fn unfinished(
+    run_id: i64,
+    run_status: AcquisitionRunStatus,
+    work_key: &str,
+    parked_on: Option<ReviewStatus>,
+) -> UnfinishedWork {
+    UnfinishedWork {
+        run_id,
+        run_status,
+        work_key: work_key.to_owned(),
+        parked_on,
+    }
+}
+
+#[test]
+fn work_no_execution_will_process_is_reported_stale() {
+    use AcquisitionRunStatus::{Cancelled, Paused, Running};
+    let vault = FakeVault {
+        unfinished: vec![
+            unfinished(1, Running, "queued-in-running-run", None),
+            unfinished(2, Paused, "queued-in-paused-run", None),
+            unfinished(1, Running, "parked-on-pending", Some(ReviewStatus::Pending)),
+            unfinished(
+                1,
+                Running,
+                "parked-on-deferred",
+                Some(ReviewStatus::Deferred),
+            ),
+            unfinished(3, Cancelled, "queued-in-cancelled-run", None),
+            unfinished(
+                3,
+                Cancelled,
+                "parked-in-cancelled-run",
+                Some(ReviewStatus::Accepted),
+            ),
+            unfinished(
+                1,
+                Running,
+                "parked-on-accepted",
+                Some(ReviewStatus::Accepted),
+            ),
+            unfinished(
+                2,
+                Paused,
+                "parked-on-rejected",
+                Some(ReviewStatus::Rejected),
+            ),
+        ],
+        ..FakeVault::default()
+    };
+
+    let report = verify_vault(&vault, &vault).unwrap();
+
+    let stale = |run_id, work_key: &str, reason| StaleWork {
+        run_id,
+        work_key: work_key.to_owned(),
+        reason,
+    };
+    assert_eq!(
+        report.stale_work,
+        [
+            stale(3, "queued-in-cancelled-run", StaleWorkReason::CancelledRun),
+            stale(3, "parked-in-cancelled-run", StaleWorkReason::CancelledRun),
+            stale(1, "parked-on-accepted", StaleWorkReason::ClosedReview),
+            stale(2, "parked-on-rejected", StaleWorkReason::ClosedReview),
+        ]
+    );
+    assert!(!report.is_healthy());
 }

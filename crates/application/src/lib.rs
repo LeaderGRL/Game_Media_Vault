@@ -55,6 +55,7 @@ pub use runs::{
 };
 pub use verify::{
     CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,
-    UnreadableObject, VaultCatalogPort, VaultRepairCatalogPort, VaultRepairStorePort, VaultReport,
-    VaultStorePort, repair_vault, verify_vault,
+    StaleWork, StaleWorkReason, UnfinishedWork, UnreadableObject, VaultCatalogPort,
+    VaultRepairCatalogPort, VaultRepairStorePort, VaultReport, VaultStorePort, repair_vault,
+    verify_vault,
 };
