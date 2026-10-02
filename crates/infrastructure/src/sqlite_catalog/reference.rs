@@ -341,7 +341,8 @@ fn linked_release_edition(
 }
 
 /// The dumps `assertions` name, as their sorted lower-case SHA-1s, when every dump (each ROM,
-/// track or disk name) has one; otherwise the set of dumps is not known whole.
+/// track or disk name) has one, forty hexadecimal digits long; otherwise the set of dumps is not
+/// known whole.
 fn dump_set(assertions: &[ReleaseAssertion]) -> Option<String> {
     let identifiers = |qualifier: &'static str| {
         assertions.iter().filter(move |assertion| {
@@ -353,7 +354,10 @@ fn dump_set(assertions: &[ReleaseAssertion]) -> Option<String> {
     let mut sha1: Vec<String> = identifiers("sha1")
         .map(|assertion| assertion.value.trim().to_ascii_lowercase())
         .collect();
-    if sha1.is_empty() || sha1.len() != dumps {
+    // A placeholder such as `none` names no dump, so it never links two records.
+    let is_sha1 =
+        |value: &String| value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit());
+    if sha1.is_empty() || sha1.len() != dumps || !sha1.iter().all(is_sha1) {
         return None;
     }
     sha1.sort();

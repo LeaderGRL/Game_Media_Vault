@@ -587,3 +587,28 @@ fn dumps_several_editions_share_link_none_even_once_one_holds_the_importing_sour
     assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
     assert_eq!(catalog.list_library().unwrap().len(), 3);
 }
+
+#[test]
+fn a_checksum_that_is_no_sha1_gives_no_dump_evidence() {
+    let (_temp, catalog) = catalog();
+    // Both catalogs fill an unknown checksum with the same placeholder.
+    let with_placeholder = |source, title| {
+        let mut placeholder = record(&release(source, title, "aaaa"));
+        for assertion in &mut placeholder.assertions {
+            if assertion.qualifier.as_deref() == Some("sha1") {
+                assertion.value = "none".to_owned();
+            }
+        }
+        placeholder
+    };
+    catalog
+        .persist_reference_release(with_placeholder("no-intro", "Game A"))
+        .unwrap();
+
+    let other = catalog
+        .persist_reference_release(with_placeholder("mame-software-lists", "Game B"))
+        .unwrap();
+
+    assert_eq!(catalog.list_library().unwrap().len(), 2);
+    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+}
