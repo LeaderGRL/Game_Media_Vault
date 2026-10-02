@@ -5,7 +5,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use game_media_vault_application::{DerivedStorePort, ObjectStorePort, PortError};
+use game_media_vault_application::{
+    DerivedStorePort, ObjectArea, ObjectCheck, ObjectStorePort, PortError, VaultStorePort,
+};
 use game_media_vault_domain::{MediaInfo, StoredObject};
 
 use crate::media::MediaInspector;
@@ -118,6 +120,39 @@ impl DerivedStorePort for ContentAddressedStore {
     }
 }
 
+impl VaultStorePort for ContentAddressedStore {
+    fn stored_objects(&self, area: ObjectArea) -> Result<Vec<String>, PortError> {
+        let mut hashes = Vec::new();
+        for first in subdirectories(&self.root.join(area_name(area)))? {
+            for second in subdirectories(&first)? {
+                hashes.extend(file_names(&second)?);
+            }
+        }
+        Ok(hashes)
+    }
+
+    fn check_object(&self, area: ObjectArea, hash: &str) -> Result<ObjectCheck, PortError> {
+        let path = self.address(area_name(area), hash);
+        match hash_file(&path) {
+            Ok(actual_hash) if actual_hash == hash => Ok(ObjectCheck::Intact),
+            Ok(actual_hash) => Ok(ObjectCheck::Corrupt { actual_hash }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ObjectCheck::Missing),
+            Err(error) => Err(io_error(error)),
+        }
+    }
+
+    fn staging_files(&self) -> Result<Vec<String>, PortError> {
+        file_names(&self.root.join("staging"))
+    }
+}
+
+fn area_name(area: ObjectArea) -> &'static str {
+    match area {
+        ObjectArea::Original => "objects",
+        ObjectArea::Derived => "derived",
+    }
+}
+
 struct StagedObject {
     staging_path: PathBuf,
     stored: StoredObject,
@@ -128,6 +163,57 @@ impl Drop for StagedObject {
         // Already moved when publication succeeded.
         let _ = fs::remove_file(&self.staging_path);
     }
+}
+
+/// The BLAKE3 hash of the bytes stored at `path`.
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    let mut input = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// The names of the files directly under `directory`, sorted; none when it does not exist.
+fn file_names(directory: &Path) -> Result<Vec<String>, PortError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(error)),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        if entry.file_type().map_err(io_error)?.is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The directories directly under `directory`, sorted; none when it does not exist.
+fn subdirectories(directory: &Path) -> Result<Vec<PathBuf>, PortError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(error)),
+    };
+    let mut directories = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        if entry.file_type().map_err(io_error)?.is_dir() {
+            directories.push(entry.path());
+        }
+    }
+    directories.sort();
+    Ok(directories)
 }
 
 fn verify_existing_object(
@@ -150,18 +236,7 @@ fn verify_existing_object(
         )));
     }
 
-    let mut input = File::open(path).map_err(io_error)?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = input.read(&mut buffer).map_err(io_error)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-
-    let actual_hash = hasher.finalize().to_hex().to_string();
+    let actual_hash = hash_file(path).map_err(io_error)?;
     if actual_hash != expected_hash {
         return Err(PortError::new(format!(
             "object integrity check failed: {} hashes to {actual_hash}, expected {expected_hash}",

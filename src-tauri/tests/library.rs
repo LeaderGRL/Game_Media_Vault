@@ -111,3 +111,18 @@ fn renders_thumbnails_of_the_selected_vault_off_the_calling_thread() {
         (Some(160), Some(120))
     );
 }
+
+#[test]
+fn verifies_the_opened_vault_on_a_blocking_worker() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    fs::create_dir_all(vault.join("staging")).unwrap();
+    fs::write(vault.join("staging").join("4242-0.tmp"), b"interrupted").unwrap();
+
+    let report =
+        tauri::async_runtime::block_on(game_media_vault_tauri::verify_vault_async(vault)).unwrap();
+
+    assert_eq!(report.interrupted_staging, ["4242-0.tmp"]);
+    assert!(!report.is_healthy());
+}

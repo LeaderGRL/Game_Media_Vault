@@ -8,12 +8,12 @@ use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
     ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
-    LibraryStatus, PortError, ReferenceCatalogSourcePort, acquire_run_with_connector,
+    LibraryStatus, PortError, ReferenceCatalogSourcePort, VaultReport, acquire_run_with_connector,
     build_acquisition_request, cancel_acquisition_run, derive_assets, draft_from_document,
     export_acquisition_request, import_local_box_front, import_reference_catalog,
     list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
     pause_acquisition_run, resolve_review_item, resume_acquisition_run, search_library,
-    start_acquisition_run_for_connector,
+    start_acquisition_run_for_connector, verify_vault,
 };
 use game_media_vault_connectors::{
     LibretroThumbnailsConnector, NoIntroReferenceCatalog, RedumpReferenceCatalog,
@@ -118,6 +118,9 @@ enum Command {
         #[arg(long, default_value_t = 256)]
         max_edge: u32,
     },
+    /// Compares the catalog with the stored bytes and reports every disagreement, repairing
+    /// nothing.
+    Verify,
     Library,
     /// Searches the Library and prints one page of matching releases.
     Search(SearchArgs),
@@ -499,6 +502,14 @@ where
                 imported.asset_id, imported.object_hash, imported.byte_len
             ))
         }
+        Command::Verify => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            let report = verify_vault(&catalog, &ContentAddressedStore::new(&cli.vault))?;
+            Ok(serde_json::to_string_pretty(&VerifyOutput {
+                healthy: report.is_healthy(),
+                report,
+            })?)
+        }
         Command::DeriveThumbnails { max_edge } => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             let store = ContentAddressedStore::new(&cli.vault);
@@ -633,4 +644,12 @@ fn read_request_document(path: &Path) -> Result<AcquisitionRequestDocument, CliE
         .into());
     }
     serde_json::from_str(&text).map_err(invalid)
+}
+
+/// A verification report, said healthy when it found nothing.
+#[derive(serde::Serialize)]
+struct VerifyOutput {
+    healthy: bool,
+    #[serde(flatten)]
+    report: VaultReport,
 }

@@ -1,5 +1,6 @@
 //! SQLite catalog adapter. Each port lives in its own module: `runs`, `reviews`, `assets`,
-//! `library` and `reference`; `schema` owns the table layout and its versioning.
+//! `library`, `reference`, `derived` and `verify`; `schema` owns the table layout and its
+//! versioning.
 
 use std::{
     fs::{self, OpenOptions},
@@ -17,6 +18,7 @@ mod reference;
 mod reviews;
 mod runs;
 mod schema;
+mod verify;
 
 pub struct SqliteCatalog {
     path: PathBuf,
