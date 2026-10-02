@@ -10,9 +10,9 @@ use game_media_vault_application::{
     ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
     LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
     VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
-    derive_assets, draft_from_document, export_acquisition_request, import_local_box_front,
-    import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
-    load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
+    derive_assets, describe_sources, draft_from_document, export_acquisition_request,
+    import_local_box_front, import_reference_catalog, list_acquisition_runs, list_library,
+    list_review_items, load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
     resolve_review_item, resume_acquisition_run, search_library,
     start_acquisition_run_with_connectors, verify_vault,
 };
@@ -103,6 +103,11 @@ enum Command {
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
+    },
+    /// Describes the registered Sources.
+    Source {
+        #[command(subcommand)]
+        command: SourceCommand,
     },
     ImportBoxFront {
         #[arg(long)]
@@ -287,6 +292,12 @@ enum RunCommand {
     Cancel {
         id: i64,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum SourceCommand {
+    /// Lists every registered Source with the Asset Types it acquires, as planning sees them.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -488,6 +499,9 @@ where
                 }
             }
         },
+        Command::Source {
+            command: SourceCommand::List,
+        } => Ok(serde_json::to_string_pretty(&describe_sources(connectors))?),
         Command::Review { command } => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             match command {

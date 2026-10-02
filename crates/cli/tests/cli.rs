@@ -1607,3 +1607,22 @@ fn a_failed_execution_reports_the_run_it_left_and_a_later_one_resumes_it() {
     assert_eq!(resumed["status"], "completed");
     assert_eq!(resumed["completed_work"], 1);
 }
+
+#[test]
+fn source_list_describes_the_registered_sources_without_a_vault() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let sources: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["source", "list"]).unwrap()).unwrap();
+
+    assert_eq!(
+        sources,
+        serde_json::json!([{
+            "source_id": "libretro-thumbnails",
+            "asset_types": ["box_front"],
+            "direct_media_download": true,
+        }])
+    );
+    assert!(!vault.exists());
+}

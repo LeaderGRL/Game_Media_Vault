@@ -551,6 +551,8 @@ Each Source displays:
 - current quotas/rate limits where discoverable;
 - recent success/error statistics.
 
+The desktop Sources view, which needs no vault, lists every registered Source with the Asset Types it acquires and its acquisition method, read from the same capabilities planning uses; `game-media-vault source list` prints the same descriptions as JSON. Enabled state, authentication, supported platforms, quotas and statistics are not shown yet.
+
 ## 21. CLI
 
 The CLI is a first-class frontend over the same application layer.

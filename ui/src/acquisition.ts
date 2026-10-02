@@ -55,6 +55,13 @@ export const KNOWN_SOURCES = [
   { value: "launchbox-games-db", label: "LaunchBox Games Database" },
 ];
 
+/** A registered Source as planning knows it. */
+export interface SourceDescription {
+  source_id: string;
+  asset_types: string[];
+  direct_media_download: boolean;
+}
+
 export interface AssetTypeOption {
   value: string;
   label: string;
