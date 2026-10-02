@@ -139,7 +139,12 @@ pub(crate) fn ensure_request_supported(
     {
         return Err(ApplicationError::UnsupportedRequest(reason));
     }
-    if request.limits() != &AcquisitionLimits::default() {
+    // Executions honour a cap on concurrent downloads; the other limits wait for the scheduler.
+    let unsupported_limits = AcquisitionLimits {
+        max_concurrent_downloads: None,
+        ..request.limits().clone()
+    };
+    if unsupported_limits != AcquisitionLimits::default() {
         return Err(ApplicationError::UnsupportedRequest(
             "acquisition limits are not supported yet",
         ));
