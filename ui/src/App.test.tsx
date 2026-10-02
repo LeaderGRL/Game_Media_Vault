@@ -2684,11 +2684,13 @@ describe("App Library requests", () => {
           },
         ]);
       }
-      return Promise.resolve([]);
+      // The vault takes a moment to open, as on a slower machine.
+      return new Promise((resolve) => setTimeout(() => resolve([]), 20));
     });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
-    expect(await screen.findByText("Library is empty")).toBeInTheDocument();
+    // The Library shows its empty page while the vault opens; its actions need the open vault.
+    expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
