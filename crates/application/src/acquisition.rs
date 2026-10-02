@@ -11,7 +11,9 @@ use url::Url;
 use crate::{
     ApplicationError, CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort,
     ParkedReview, ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request,
-    candidate_identity, load_acquisition_run, plan::capable_sources, plan_acquisition,
+    candidate_identity, load_acquisition_run,
+    plan::{CapableSources, capable_sources, ensure_covered, excluded_source},
+    plan_acquisition,
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -39,9 +41,11 @@ enum Step {
 /// Executes a running Acquisition Run with the registered `connectors`, one per Source.
 ///
 /// Each selected Source whose capabilities serve the request is discovered once per run: its
-/// candidates are persisted as queued work, so resuming never rediscovers it. Sources discover
-/// independently: one that refuses the plan or fails to discover leaves the others' work to
-/// run, keeps the run running, and its error is returned once the queued work is done. Each
+/// candidates are persisted as queued work, so resuming never rediscovers it. A Source not yet
+/// discovered checks the plan again and is left out if it now refuses it, as when planning;
+/// the run is refused before any discovery if that leaves a requested type uncovered. Sources
+/// discover independently: one that cannot be reached or fails to discover leaves the others'
+/// work to run, keeps the run running, and its error is returned once that work is done. Each
 /// queued candidate is matched against the library through its own Source's connector and is
 /// either imported, left unattached, or parked on its Review Item until a human decides.
 pub fn acquire_run_with_connectors(
@@ -58,12 +62,35 @@ pub fn acquire_run_with_connectors(
     let mut source_failure = None;
     match run.status {
         AcquisitionRunStatus::Running => {
-            let capable = capable_sources(&run.request, connectors)?;
-            for (connector, asset_types) in capable.sources {
+            let CapableSources {
+                sources: capable,
+                mut excluded,
+            } = capable_sources(&run.request, connectors)?;
+            // Types the run can still acquire: from Sources already discovered, from Sources
+            // accepting the plan, and from unreachable ones, which may serve it later.
+            let mut kept_types = Vec::new();
+            let mut accepted = Vec::new();
+            for (connector, asset_types) in capable {
                 if runs.has_discovered(run_id, connector.source_id())? {
+                    kept_types.extend_from_slice(&asset_types);
                     continue;
                 }
-                match discover_source(&run.request, connector, &asset_types) {
+                // As when planning, a Source refusing the request is left out.
+                match connector.unsupported_request_reason(&run.request) {
+                    Ok(None) => {
+                        kept_types.extend_from_slice(&asset_types);
+                        accepted.push((connector, asset_types));
+                    }
+                    Ok(Some(reason)) => excluded.push(excluded_source(connector, reason)),
+                    Err(error) => {
+                        kept_types.extend_from_slice(&asset_types);
+                        source_failure.get_or_insert(error.into());
+                    }
+                }
+            }
+            ensure_covered(&run.request, &kept_types, &excluded)?;
+            for (connector, asset_types) in accepted {
+                match discover_work(&run.request, connector, &asset_types) {
                     Ok(work) => {
                         // A cancellation or completion that won the race while discovering
                         // stops quietly.
@@ -132,22 +159,6 @@ pub fn start_acquisition_run_with_connectors(
     let request = build_acquisition_request(input)?;
     plan_acquisition(&request, connectors)?;
     Ok(runs.create_run(request)?)
-}
-
-/// Discovers the work of one Source once its connector accepts the plan, which may consult the
-/// Source. Only Sources not yet discovered need it: a persisted snapshot executes without them.
-fn discover_source(
-    request: &AcquisitionRequest,
-    connector: &dyn ConnectorPort,
-    asset_types: &[AssetType],
-) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
-    if let Some(reason) = connector.unsupported_request_reason(request)? {
-        return Err(ApplicationError::UnsupportedConnectorPlan {
-            source_id: connector.source_id().to_owned(),
-            reason,
-        });
-    }
-    discover_work(request, connector, asset_types)
 }
 
 fn discover_work(

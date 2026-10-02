@@ -167,14 +167,14 @@ fn capable_asset_types(
     Ok(asset_types)
 }
 
-fn excluded_source(connector: &dyn ConnectorPort, reason: String) -> ExcludedSource {
+pub(crate) fn excluded_source(connector: &dyn ConnectorPort, reason: String) -> ExcludedSource {
     ExcludedSource {
         source_id: connector.source_id().to_owned(),
         reason,
     }
 }
 
-fn ensure_covered(
+pub(crate) fn ensure_covered(
     request: &AcquisitionRequest,
     acquired: &[AssetType],
     excluded: &[ExcludedSource],

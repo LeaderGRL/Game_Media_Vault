@@ -144,3 +144,48 @@ fn a_run_no_selected_source_can_serve_is_never_persisted() {
     );
     assert!(vault.list_runs().unwrap().is_empty());
 }
+
+#[test]
+fn a_source_left_out_of_the_plan_is_left_out_of_every_execution() {
+    let smb = candidate("Super Mario Bros.");
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let refusing = FakeConnector {
+        source_id: "other-boxes",
+        unsupported_reason: Some("no repository for this platform".to_owned()),
+        ..FakeConnector::new(Vec::new())
+    };
+    let boxes = FakeConnector::new(vec![smb]);
+    let snaps = snap_connector(vec![snap]);
+    let connectors = [&refusing, &boxes, &snaps];
+    let run = start(&vault, auto_draft(), &connectors).unwrap();
+
+    let imported = execute(&vault, &connectors, run.id).unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(*refusing.discover_calls.borrow(), 0);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn a_type_left_uncovered_by_refusals_at_execution_keeps_the_run_running() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let boxes = FakeConnector::new(vec![smb.clone()]);
+    let snaps = snap_connector(vec![screenshot("Super Mario Bros.")]);
+    let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
+    // The only Screenshot Source refuses the request by the time the run executes.
+    let refusing_snaps = FakeConnector {
+        unsupported_reason: Some("the snapshot index is gone".to_owned()),
+        ..snap_connector(Vec::new())
+    };
+
+    let error = execute(&vault, &[&boxes, &refusing_snaps], run.id).unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::UncoveredAssetTypes { .. }),
+        "{error}"
+    );
+    assert_eq!(*boxes.discover_calls.borrow(), 0);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Running);
+}
