@@ -5,11 +5,11 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
-    ErrorKind, LibraryPage, LibraryQuery, PortError, VaultReport,
+    ErrorKind, LibraryPage, LibraryQuery, PortError, SourceDescription, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
-    derive_assets as derive_assets_use_case,
+    derive_assets as derive_assets_use_case, describe_sources,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
@@ -193,6 +193,17 @@ fn registry_refs(registry: &[Box<dyn ConnectorPort + Send>]) -> Vec<&dyn Connect
         .iter()
         .map(|connector| connector.as_ref() as &dyn ConnectorPort)
         .collect()
+}
+
+/// Describes every registered Source from the capabilities planning uses; no vault is needed and
+/// no Source is consulted.
+pub fn list_registered_sources() -> Vec<SourceDescription> {
+    describe_sources(&registry_refs(&registered_connectors()))
+}
+
+#[tauri::command]
+fn list_sources() -> Vec<SourceDescription> {
+    list_registered_sources()
 }
 
 pub fn load_review_preview_in_vault(
@@ -567,7 +578,8 @@ pub fn run() {
             list_acquisition_runs,
             pause_acquisition_run,
             resume_acquisition_run,
-            cancel_acquisition_run
+            cancel_acquisition_run,
+            list_sources
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Game Media Vault");

@@ -662,3 +662,35 @@ select:focus {
 .library-actions p {
   margin: 0;
 }
+
+.sources {
+  display: grid;
+  gap: 16px;
+}
+
+.source {
+  border: 1px solid #292f3a;
+  border-radius: 12px;
+  padding: 18px 22px;
+  background: #151920;
+}
+
+.source h2 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+}
+
+.source dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.source dt {
+  color: #9aa4b5;
+}
+
+.source dd {
+  margin: 0;
+}

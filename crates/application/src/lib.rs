@@ -11,6 +11,7 @@ mod plan;
 mod ports;
 mod review;
 mod runs;
+mod sources;
 mod verify;
 
 pub use acquisition::{acquire_run_with_connectors, start_acquisition_run_with_connectors};
@@ -53,6 +54,7 @@ pub use runs::{
     list_acquisition_runs, load_acquisition_run, pause_acquisition_run, resume_acquisition_run,
     start_acquisition_run,
 };
+pub use sources::{SourceDescription, describe_sources};
 pub use verify::{
     CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,
     StaleWork, StaleWorkReason, UnfinishedWork, UnreadableObject, VaultCatalogPort,

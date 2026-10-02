@@ -2,10 +2,16 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
-import type { AcquisitionPlan, AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
+import type {
+  AcquisitionPlan,
+  AcquisitionRequestDraft,
+  AcquisitionRun,
+  SourceDescription,
+} from "./acquisition";
 import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
+import { SourcesView } from "./SourcesView";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
   DerivationSummary,
@@ -16,7 +22,7 @@ import type {
   ReviewItem,
 } from "./types";
 
-type View = "library" | "review" | "acquire" | "runs";
+type View = "library" | "review" | "acquire" | "runs" | "sources";
 
 type RunAction = "pause" | "resume" | "cancel";
 
@@ -77,6 +83,8 @@ export function App() {
   const renderingThumbnailVaults = useRef(new Set<string>());
   const [renderingThumbnails, setRenderingThumbnails] = useState(false);
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
+  // The registered Sources, read the first time the Sources view is shown; they need no vault.
+  const [sources, setSources] = useState<SourceDescription[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -526,6 +534,19 @@ export function App() {
     }
   }
 
+  async function showSources() {
+    showView("sources");
+    if (sources !== null) {
+      return;
+    }
+    try {
+      setSources(await invoke<SourceDescription[]>("list_sources"));
+    } catch (reason) {
+      // Showing the view again reads them again.
+      setError(errorMessage(reason));
+    }
+  }
+
   async function showRuns() {
     showView("runs");
     const listingLoadGeneration = vaultLoadRequestGeneration.current;
@@ -763,6 +784,13 @@ export function App() {
         >
           Runs
         </button>
+        <button
+          type="button"
+          className={activeView === "sources" ? "active" : ""}
+          onClick={() => void showSources()}
+        >
+          Sources
+        </button>
       </nav>
 
       {activeView === "library" ? (
@@ -800,6 +828,7 @@ export function App() {
           onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
         />
       ) : null}
+      {activeView === "sources" ? <SourcesView sources={sources} /> : null}
       {activeView === "runs" ? (
         <RunsView
           runs={runs}

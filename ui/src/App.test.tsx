@@ -2333,4 +2333,52 @@ describe("App Library requests", () => {
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: null }));
     await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue(""));
   });
+
+  it("shows the registered Sources without a vault", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_sources"
+          ? [
+              {
+                source_id: "launchbox-games-db",
+                asset_types: ["box_front", "logo"],
+                direct_media_download: true,
+              },
+            ]
+          : [],
+      ),
+    );
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    expect(
+      await screen.findByRole("region", { name: "LaunchBox Games Database" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Box Front, Logo")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("list_sources");
+  });
+
+  it("reports Sources it could not read and reads them again when shown again", async () => {
+    let failing = true;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_sources") {
+        return failing
+          ? Promise.reject({ kind: "external", message: "registry unavailable" })
+          : Promise.resolve([
+              { source_id: "libretro-thumbnails", asset_types: [], direct_media_download: true },
+            ]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    expect(await screen.findByText("registry unavailable")).toBeInTheDocument();
+
+    failing = false;
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
+  });
 });
