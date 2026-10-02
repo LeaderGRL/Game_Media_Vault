@@ -62,6 +62,8 @@ struct Acquisition<'a> {
     source_failed: Cell<bool>,
     /// Downloads started ahead of processing, by work key.
     prefetched: RefCell<HashMap<String, Ahead>>,
+    /// The keys of each Source's queued work as the last round read them ahead, in queue order.
+    lookahead: RefCell<HashMap<String, Vec<String>>>,
     /// The downloads the execution may run at once, shared by every download it starts.
     slots: Arc<Slots>,
     /// Set once the execution stops, so that downloads not started yet never start.
@@ -223,6 +225,7 @@ pub fn acquire_run_with_connectors(
         retention: run.request.retention(),
         source_failed: Cell::new(false),
         prefetched: RefCell::new(HashMap::new()),
+        lookahead: RefCell::new(HashMap::new()),
         slots: Arc::new(Slots::new(limits.max_concurrent)),
         stopped: Arc::new(AtomicBool::new(false)),
     };
@@ -290,23 +293,18 @@ where
                 .chain(&served_this_round)
                 .cloned()
                 .collect();
-            let work = runs.next_queued_work(run_id, &skipped)?;
-            // Work downloaded ahead but settled elsewhere meanwhile, as by another execution of
-            // the run, still tells whether its Source failed before that Source's next work is
-            // processed; that work then waits for a later execution too.
-            let unclaimed = acquisition.unclaimed_failures(work.as_ref())?;
-            let source_failed = !unclaimed.is_empty();
-            for failure in unclaimed {
-                defer_failed_source(
-                    runs,
-                    run_id,
-                    failure,
-                    &mut failed_sources,
-                    &mut source_failure,
-                )?;
-            }
-            let Some(work) = work else {
+            let Some(work) = runs.next_queued_work(run_id, &skipped)? else {
                 if served_this_round.is_empty() {
+                    // Nothing is left to process, or the run stopped: the downloads still ahead
+                    // tell whether their Sources failed, their work staying queued.
+                    let left = acquisition.downloads_left();
+                    defer_failed_sources(
+                        runs,
+                        run_id,
+                        left,
+                        &mut failed_sources,
+                        &mut source_failure,
+                    )?;
                     break;
                 }
                 served_this_round.clear();
@@ -314,16 +312,26 @@ where
             };
             let source_id = work.candidate.source_id.as_str().to_owned();
             served_this_round.push(source_id.clone());
-            if source_failed {
+            // Work of the Source downloaded ahead but no longer queued before this work, as when
+            // another execution of the run settled it, tells whether the Source failed; this
+            // work then waits for a later execution too.
+            let passed = acquisition.downloads_passed_by(&work);
+            if defer_failed_sources(
+                runs,
+                run_id,
+                passed,
+                &mut failed_sources,
+                &mut source_failure,
+            )? {
                 continue;
             }
             match acquisition.process(&work) {
                 Ok(imported) => imported_assets.extend(imported),
                 Err(error) if acquisition.source_failed.get() => {
-                    defer_failed_source(
+                    defer_failed_sources(
                         runs,
                         run_id,
-                        (source_id, error),
+                        vec![(source_id, error)],
                         &mut failed_sources,
                         &mut source_failure,
                     )?;
@@ -363,28 +371,31 @@ where
     Ok(imported_assets)
 }
 
-/// Records that `source_id` failed to download and defers its remaining work to a later
-/// execution, keeping the first failure for the execution to return. A Source already
-/// failing keeps its first failure.
-fn defer_failed_source(
+/// Records the Sources whose downloads failed and defers their remaining work to a later
+/// execution, keeping the first failure for the execution to return. A Source already failing
+/// keeps its first failure. Returns whether any Source failed.
+fn defer_failed_sources(
     runs: &dyn RunRepositoryPort,
     run_id: i64,
-    (source_id, error): (String, ApplicationError),
+    failures: Vec<(String, ApplicationError)>,
     failed_sources: &mut Vec<String>,
     source_failure: &mut Option<ApplicationError>,
-) -> Result<(), ApplicationError> {
-    if failed_sources.contains(&source_id) {
-        return Ok(());
+) -> Result<bool, ApplicationError> {
+    let any_failed = !failures.is_empty();
+    for (source_id, error) in failures {
+        if failed_sources.contains(&source_id) {
+            continue;
+        }
+        runs.record_source_failure(
+            run_id,
+            &source_id,
+            SourceFailureStage::Download,
+            &error.to_string(),
+        )?;
+        failed_sources.push(source_id);
+        source_failure.get_or_insert(error);
     }
-    runs.record_source_failure(
-        run_id,
-        &source_id,
-        SourceFailureStage::Download,
-        &error.to_string(),
-    )?;
-    failed_sources.push(source_id);
-    source_failure.get_or_insert(error);
-    Ok(())
+    Ok(any_failed)
 }
 
 /// The connector of a planned Source and the requested types it acquires, unless the Source has
@@ -718,33 +729,43 @@ impl Acquisition<'_> {
         }
     }
 
-    /// Awaits the downloads started ahead whose work left the queue unprocessed, as work another
-    /// execution of the run settled meanwhile: those of the Source of the `served` work, or of
-    /// every Source when none is served. Returns the first failure of each of their Sources.
-    /// Only failures matter: their stored originals stay unreferenced until vault verification
-    /// collects them.
-    fn unclaimed_failures(
+    /// Awaits the downloads started ahead for work of the `served` work's Source that no longer
+    /// waits before it: work read ahead of it, or not read ahead with it, left the queue
+    /// unprocessed, as when another execution of the run settled it, even if it came back
+    /// since. Work read ahead behind it keeps its download for its turn.
+    fn downloads_passed_by(&self, served: &AcquisitionWorkItem) -> Vec<(String, ApplicationError)> {
+        let source_id = served.candidate.source_id.as_str();
+        let lookahead = self.lookahead.borrow();
+        let behind = lookahead
+            .get(source_id)
+            .and_then(|keys| {
+                let position = keys.iter().position(|key| *key == served.key)?;
+                Some(&keys[position + 1..])
+            })
+            .unwrap_or_default();
+        self.awaited_failures(|key, ahead| {
+            ahead.source_id == source_id && *key != served.key && !behind.contains(key)
+        })
+    }
+
+    /// Awaits every download still ahead, once the execution processes no further work.
+    fn downloads_left(&self) -> Vec<(String, ApplicationError)> {
+        self.awaited_failures(|_, _| true)
+    }
+
+    /// Awaits the downloads started ahead that `unclaimed` selects, and returns the first
+    /// failure of each of their Sources. Only failures matter: their stored originals stay
+    /// unreferenced until vault verification collects them.
+    fn awaited_failures(
         &self,
-        served: Option<&AcquisitionWorkItem>,
-    ) -> Result<Vec<(String, ApplicationError)>, ApplicationError> {
-        let mut unclaimed = Vec::new();
-        {
-            let mut prefetched = self.prefetched.borrow_mut();
-            let keys: Vec<String> = prefetched
-                .iter()
-                .filter(|(key, ahead)| {
-                    served.is_none_or(|work| {
-                        **key != work.key && ahead.source_id == work.candidate.source_id.as_str()
-                    })
-                })
-                .map(|(key, _)| key.clone())
-                .collect();
-            for key in keys {
-                if !self.runs.is_work_queued(self.run_id, &key)? {
-                    unclaimed.extend(prefetched.remove(&key));
-                }
-            }
-        }
+        mut unclaimed: impl FnMut(&String, &Ahead) -> bool,
+    ) -> Vec<(String, ApplicationError)> {
+        let unclaimed: Vec<Ahead> = self
+            .prefetched
+            .borrow_mut()
+            .extract_if(|key, ahead| unclaimed(key, ahead))
+            .map(|(_, ahead)| ahead)
+            .collect();
         let mut failures: Vec<(String, ApplicationError)> = Vec::new();
         for ahead in unclaimed {
             if let Ok(Fetched::SourceFailed(error)) = ahead.result.recv()
@@ -755,7 +776,7 @@ impl Acquisition<'_> {
                 failures.push((ahead.source_id, error));
             }
         }
-        Ok(failures)
+        failures
     }
 
     fn still_running(&self) -> Result<bool, ApplicationError> {
@@ -808,8 +829,14 @@ impl<'a> Acquisition<'a> {
         let mut skipped = failed_sources.to_vec();
         let mut jobs = VecDeque::new();
         let mut prefetched = self.prefetched.borrow_mut();
+        let mut lookahead = self.lookahead.borrow_mut();
+        lookahead.clear();
         while let Some(work) = self.runs.next_queued_work(self.run_id, &skipped)? {
             skipped.push(work.candidate.source_id.as_str().to_owned());
+            lookahead
+                .entry(work.candidate.source_id.as_str().to_owned())
+                .or_default()
+                .push(work.key.clone());
             let connector = self
                 .connectors
                 .iter()

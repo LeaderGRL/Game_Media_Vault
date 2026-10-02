@@ -5,6 +5,7 @@ use std::{
     sync::{
         Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::Duration,
@@ -299,6 +300,35 @@ fn a_pause_landing_before_a_download_thread_starts_leaves_its_work_queued() {
 
     assert_eq!(imported, Ok(0));
     assert!(only.inner.downloads.borrow().is_empty());
+    let run_id = *vault.runs.borrow().keys().next().unwrap();
+    let run = vault.run(run_id);
+    assert_eq!(run.status, AcquisitionRunStatus::Paused);
+    assert_eq!(run.queued_work, 1);
+}
+
+#[test]
+fn a_download_failing_once_the_run_is_paused_still_fails_its_source() {
+    let mario = box_front("a", "Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&mario, 1)]);
+    // The execution reads the queue to process the download only once a human paused the run
+    // while it was under way.
+    let (paused, go_on) = mpsc::channel();
+    *vault.queue_read_gate.borrow_mut() = Some((3, go_on));
+    let pause = || {
+        let run_id = *vault.runs.borrow().keys().next().unwrap();
+        pause_acquisition_run(&vault, run_id).unwrap();
+        paused.send(()).unwrap();
+    };
+    let mut only = slow("a", vec![mario.clone()], None, None);
+    only.inner
+        .failing_downloads
+        .insert(mario.source_url.clone());
+    only.during_download = Some(&pause);
+
+    let result = execute(&vault, &[&only], DownloadLimits { max_concurrent: 1 });
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(vault.source_failures.borrow().len(), 1);
     let run_id = *vault.runs.borrow().keys().next().unwrap();
     let run = vault.run(run_id);
     assert_eq!(run.status, AcquisitionRunStatus::Paused);

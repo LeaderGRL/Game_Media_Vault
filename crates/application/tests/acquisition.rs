@@ -1416,8 +1416,13 @@ fn a_failed_download_ahead_of_work_settled_elsewhere_still_fails_its_source() {
     // Another execution of the run completes the work this execution downloads ahead, right
     // before this execution reads the queue to process it: the round's first read after the
     // two that prefetch it.
-    *vault.completion_elsewhere_before_queue_read.borrow_mut() =
-        Some((3, candidate_identity(SOURCE_ID, &smb)));
+    *vault.work_leaving_before_queue_read.borrow_mut() = Some((
+        3,
+        WorkLeaving {
+            key: candidate_identity(SOURCE_ID, &smb),
+            requeued: false,
+        },
+    ));
     let run_id = vault.start_run();
     let mut connector = FakeConnector::new(vec![smb.clone(), tetris]);
     connector.failing_downloads.insert(smb.source_url.clone());
@@ -1431,4 +1436,29 @@ fn a_failed_download_ahead_of_work_settled_elsewhere_still_fails_its_source() {
     let run = vault.run(run_id);
     assert_eq!(run.status, AcquisitionRunStatus::Running);
     assert_eq!(run.queued_work, 1);
+}
+
+#[test]
+fn a_failed_download_ahead_of_work_requeued_meanwhile_fails_its_source_before_later_work() {
+    let (smb, tetris) = (candidate("Super Mario Bros."), candidate("Tetris"));
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73), release_for(&tetris, 74)]);
+    // Another execution parks the work this execution downloads ahead right before this
+    // execution reads the queue to process it, and a human accepts it right after that read.
+    *vault.work_leaving_before_queue_read.borrow_mut() = Some((
+        3,
+        WorkLeaving {
+            key: candidate_identity(SOURCE_ID, &smb),
+            requeued: true,
+        },
+    ));
+    let run_id = vault.start_run();
+    let mut connector = FakeConnector::new(vec![smb.clone(), tetris]);
+    connector.failing_downloads.insert(smb.source_url.clone());
+
+    let error = execute(&vault, &connector, run_id).unwrap_err();
+
+    assert!(matches!(error, ApplicationError::Port(_)), "{error}");
+    assert_eq!(vault.source_failures.borrow().len(), 1);
+    assert!(vault.records.borrow().is_empty());
+    assert_eq!(vault.run(run_id).queued_work, 2);
 }

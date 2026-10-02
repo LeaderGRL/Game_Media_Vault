@@ -209,19 +209,6 @@ impl RunRepositoryPort for SqliteCatalog {
         .transpose()
     }
 
-    fn is_work_queued(&self, run_id: i64, work_key: &str) -> Result<bool, PortError> {
-        self.connect()?
-            .query_row(
-                "SELECT EXISTS (
-                     SELECT 1 FROM acquisition_run_work
-                     WHERE run_id = ?1 AND work_key = ?2 AND state = 'queued'
-                 )",
-                params![run_id, work_key],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)
-    }
-
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
         complete_queued_work(&self.connect()?, run_id, work_key, None)
     }
