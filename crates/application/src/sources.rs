@@ -36,22 +36,21 @@ pub fn describe_sources(
     machine: Machine<'_>,
 ) -> Result<Vec<SourceDescription>, ApplicationError> {
     let disabled_sources = machine.settings.disabled_sources()?;
-    connectors
+    Ok(connectors
         .iter()
         .map(|connector| {
             let capabilities = connector.capabilities();
+            // A store that cannot be read leaves every other Source described.
             let credential = if !connector.needs_api_key() {
                 CredentialState::NotNeeded
-            } else if machine
-                .credentials
-                .api_key(connector.source_id())?
-                .is_some()
-            {
-                CredentialState::Stored
             } else {
-                CredentialState::Missing
+                match machine.credentials.api_key(connector.source_id()) {
+                    Ok(Some(_)) => CredentialState::Stored,
+                    Ok(None) => CredentialState::Missing,
+                    Err(_) => CredentialState::Unreadable,
+                }
             };
-            Ok(SourceDescription {
+            SourceDescription {
                 source_id: connector.source_id().to_owned(),
                 asset_types: capabilities.asset_types,
                 direct_media_download: capabilities.direct_media_download,
@@ -59,9 +58,9 @@ pub fn describe_sources(
                     .iter()
                     .any(|disabled| disabled == connector.source_id()),
                 credential,
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 /// The registered connector of `source_id`.

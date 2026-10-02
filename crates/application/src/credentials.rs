@@ -47,4 +47,7 @@ pub enum CredentialState {
     Missing,
     /// This machine stores the API key the Source needs.
     Stored,
+    /// This machine's credential store could not be read, so whether it stores the key is
+    /// unknown.
+    Unreadable,
 }

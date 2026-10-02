@@ -29,11 +29,9 @@ impl KeyringCredentialStore {
 impl CredentialStorePort for KeyringCredentialStore {
     fn api_key(&self, source_id: &str) -> Result<Option<ApiKey>, PortError> {
         match self.entry(source_id)?.get_password() {
-            Ok(key) => ApiKey::new(key).map(Some).map_err(|_| {
-                PortError::new(format!(
-                    "the API key stored for {source_id} is not a valid key; store it again"
-                ))
-            }),
+            // A value no key can be, as another tool may have written, reads as no key, which
+            // storing a key again replaces.
+            Ok(key) => Ok(ApiKey::new(key).ok()),
             Err(Error::NoEntry) => Ok(None),
             Err(error) => Err(failed("read", source_id, &error)),
         }

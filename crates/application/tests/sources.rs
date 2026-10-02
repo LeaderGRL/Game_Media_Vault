@@ -1,9 +1,9 @@
 mod support;
 
 use game_media_vault_application::{
-    ApiKey, ApplicationError, ConnectorPort, CredentialState, ErrorKind, Machine,
-    MachineSettingsPort, SourceDescription, clear_source_api_key, describe_sources,
-    set_source_api_key, set_source_enabled,
+    ApiKey, ApplicationError, ConnectorPort, CredentialState, CredentialStorePort, ErrorKind,
+    Machine, MachineSettingsPort, PortError, SourceDescription, clear_source_api_key,
+    describe_sources, set_source_api_key, set_source_enabled,
 };
 use game_media_vault_domain::AssetType;
 use support::{FakeConnector, FakeCredentials, FakeSettings};
@@ -205,4 +205,38 @@ fn an_unregistered_source_is_given_no_api_key() {
         ApplicationError::SourceNotRegistered("unknown-source".to_owned())
     );
     assert!(machine.credentials.keys.borrow().is_empty());
+}
+
+/// A credential store that cannot be read, as a machine without a running keyring service.
+struct UnreadableCredentials;
+
+impl CredentialStorePort for UnreadableCredentials {
+    fn api_key(&self, _source_id: &str) -> Result<Option<ApiKey>, PortError> {
+        Err(PortError::new("the credential store is locked".to_owned()))
+    }
+
+    fn set_api_key(&self, _source_id: &str, _key: &ApiKey) -> Result<(), PortError> {
+        Err(PortError::new("the credential store is locked".to_owned()))
+    }
+
+    fn clear_api_key(&self, _source_id: &str) -> Result<(), PortError> {
+        Err(PortError::new("the credential store is locked".to_owned()))
+    }
+}
+
+#[test]
+fn a_credential_store_that_cannot_be_read_still_lets_every_source_be_described() {
+    let keyed = keyed();
+    let boxes = FakeConnector::new(Vec::new());
+    let connectors: Vec<&dyn ConnectorPort> = vec![&keyed, &boxes];
+    let settings = FakeSettings::default();
+    let machine = Machine {
+        settings: &settings,
+        credentials: &UnreadableCredentials,
+    };
+
+    let sources = describe_sources(&connectors, machine).unwrap();
+
+    assert_eq!(sources[0].credential, CredentialState::Unreadable);
+    assert_eq!(sources[1].credential, CredentialState::NotNeeded);
 }

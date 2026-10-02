@@ -18,6 +18,13 @@ fn an_api_key_is_kept_by_the_os_credential_store_until_cleared() {
     assert_eq!(store.api_key("test-source").unwrap(), None);
     // Clearing a key that is not stored is no failure.
     store.clear_api_key("test-source").unwrap();
+    // A value no key can be, as another tool may write, reads as no key.
+    let service = format!("game-media-vault-test-{}", std::process::id());
+    let raw = keyring::v1::Entry::new(&service, "test-source").unwrap();
+    raw.set_password("not a key").unwrap();
+    let read = store.api_key("test-source");
+    raw.delete_credential().unwrap();
+    assert_eq!(read.unwrap(), None);
 }
 
 #[test]
