@@ -391,3 +391,35 @@ fn a_redirect_loop_is_not_retried() {
         requests.lock().unwrap().len()
     );
 }
+
+#[test]
+fn a_resumed_body_ending_before_the_media_does_is_not_complete() {
+    // The range claims the rest of the media, but its framing carries only two bytes.
+    let (url, _) = serve_raw(vec![
+        CUT_SHORT.to_vec(),
+        b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 2\r\n\r\n45"
+            .to_vec(),
+    ]);
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err(), "{result:?}");
+}
+
+#[test]
+fn a_resume_caught_in_a_redirect_loop_is_not_retried() {
+    let redirect = b"HTTP/1.1 302 Found\r\nLocation: /media.png\r\nContent-Length: 0\r\n\r\n";
+    let mut responses = vec![CUT_SHORT.to_vec()];
+    responses.extend(vec![redirect.to_vec(); 40]);
+    let (url, requests) = serve_raw(responses);
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    // The first request, then one resume following the redirects reqwest allows.
+    assert!(
+        requests.lock().unwrap().len() <= 12,
+        "{}",
+        requests.lock().unwrap().len()
+    );
+}

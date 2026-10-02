@@ -86,11 +86,17 @@ fn http_date(value: &str) -> Option<SystemTime> {
     if parts.next()? != "GMT" || parts.next().is_some() || !(1..=31).contains(&day) {
         return None;
     }
+    // HTTP dates have four-digit years; anything else would overflow the arithmetic below.
+    if !(1970..=9999).contains(&year) {
+        return None;
+    }
     if hours > 23 || minutes > 59 || seconds > 60 {
         return None;
     }
     let days = u64::try_from(days_from_civil(year, month, day)).ok()?;
-    let since_epoch = days * 86_400 + hours * 3_600 + minutes * 60 + seconds;
+    let since_epoch = days
+        .checked_mul(86_400)?
+        .checked_add(hours * 3_600 + minutes * 60 + seconds)?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(since_epoch))
 }
 
@@ -174,6 +180,11 @@ mod tests {
             Some(Duration::ZERO)
         );
         assert_eq!(parse_retry_after("soon", now), None);
+        // A year no date can reach is refused rather than overflow.
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1000000000000 08:49:37 GMT", now),
+            None
+        );
         assert_eq!(
             parse_retry_after("Sun, 06 Nov 1994 08:49:37 PST", now),
             None

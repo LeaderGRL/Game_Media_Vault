@@ -38,7 +38,8 @@ pub(crate) struct ResumingBody {
 }
 
 enum Resume {
-    Resumed(Response),
+    /// The rest of the body, and the length of the whole media it completes.
+    Resumed(Response, u64),
     /// The Source cannot continue this body, such as when its media changed meanwhile.
     Refused,
     /// Asking again may succeed, after the wait the Source asked for, if any.
@@ -88,14 +89,20 @@ impl ResumingBody {
         let Some(validator) = self.validator.as_deref() else {
             return Resume::Refused;
         };
-        let Ok(response) = self
+        let response = match self
             .client
             .get(self.url.clone())
             .header(RANGE, format!("bytes={}-", self.received))
             .header(IF_RANGE, validator)
             .send()
-        else {
-            return Resume::Failed(None);
+        {
+            Ok(response) => response,
+            // Only failures to reach the Source may pass, as for the first request; a redirect
+            // loop fails the same way every time.
+            Err(error) if error.is_connect() || error.is_timeout() || error.is_request() => {
+                return Resume::Failed(None);
+            }
+            Err(_) => return Resume::Refused,
         };
         let status = response.status();
         if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -121,7 +128,7 @@ impl ResumingBody {
                     && end.checked_add(1) == Some(total)
                     && self.total.is_none_or(|known| known == total) =>
             {
-                Resume::Resumed(response)
+                Resume::Resumed(response, total)
             }
             _ => Resume::Refused,
         }
@@ -138,8 +145,9 @@ impl ResumingBody {
             thread::sleep(self.retry.delay_before_retry(self.attempts, retry_after));
             self.attempts += 1;
             match self.resume() {
-                Resume::Resumed(response) => {
+                Resume::Resumed(response, total) => {
                     self.response = response;
+                    self.total = Some(total);
                     return Ok(());
                 }
                 Resume::Refused => return Err(error),
@@ -165,6 +173,16 @@ impl Read for ResumingBody {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
             match self.response.read(buffer) {
+                // A body that ends cleanly before the media does was cut short all the same.
+                Ok(0)
+                    if !buffer.is_empty()
+                        && self.total.is_some_and(|total| self.received < total) =>
+                {
+                    self.resume_after(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the download ended before the whole media arrived",
+                    ))?;
+                }
                 Ok(read) => {
                     self.received += read as u64;
                     return Ok(read);
