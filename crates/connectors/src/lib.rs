@@ -7,7 +7,13 @@ use game_media_vault_domain::{
 };
 
 mod datafile;
+mod launchbox;
 mod naming;
+mod xml;
+
+pub use launchbox::{
+    LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
+};
 
 use datafile::{DatafileSource, read_datafile};
 use naming::parse_release_name;
@@ -49,7 +55,7 @@ impl Default for ReqwestHttpTransport {
             client: Client::builder()
                 .user_agent("game-media-vault/0.1")
                 .build()
-                .expect("failed to build Libretro HTTP client"),
+                .expect("failed to build the HTTP client"),
         }
     }
 }
@@ -60,10 +66,10 @@ impl HttpTransport for ReqwestHttpTransport {
             .client
             .get(url)
             .send()
-            .map_err(|error| PortError::new(format!("Libretro download failed: {error}")))?;
+            .map_err(|error| PortError::new(format!("download of {url} failed: {error}")))?;
         if !response.status().is_success() {
             return Err(PortError::new(format!(
-                "Libretro download returned HTTP {} for {url}",
+                "download returned HTTP {} for {url}",
                 response.status()
             )));
         }

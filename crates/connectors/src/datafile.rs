@@ -7,9 +7,12 @@ use game_media_vault_application::PortError;
 use game_media_vault_domain::{
     ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
-use quick_xml::{Reader, escape::resolve_xml_entity, events::Event};
+use quick_xml::{Reader, events::Event};
 
-use crate::naming::{parse_release_name, platform_name};
+use crate::{
+    naming::{parse_release_name, platform_name},
+    xml::push_xml_reference,
+};
 
 /// The Source a datafile comes from, which every assertion it yields names.
 pub(crate) struct DatafileSource {
@@ -101,22 +104,7 @@ fn parse_datafile<R: std::io::BufRead>(
                 header_text.push_str(text.xml10_content().as_ref());
             }
             Event::GeneralRef(reference) if header_field.is_some() => {
-                if let Some(character) = reference.resolve_char_ref().map_err(|error| {
-                    PortError::invalid_source_data(format!(
-                        "invalid {} XML character reference: {error}",
-                        source.name
-                    ))
-                })? {
-                    header_text.push(character);
-                } else if let Some(value) = resolve_xml_entity(reference.as_ref()) {
-                    header_text.push_str(value);
-                } else {
-                    return Err(PortError::invalid_source_data(format!(
-                        "unsupported {} XML entity reference: &{};",
-                        source.name,
-                        reference.as_ref()
-                    )));
-                }
+                push_xml_reference(&mut header_text, &reference, source.name)?;
             }
             Event::End(element) => match element.name().as_ref() {
                 "name" if header_field == Some(HeaderField::Name) => {

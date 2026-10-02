@@ -158,7 +158,7 @@ The initial taxonomy is hierarchical and individually selectable.
 
 The taxonomy must be extensible without a database migration for every newly discovered source-specific label. Source labels map onto canonical Asset Types while the original label remains stored.
 
-The catalog stores the Asset Types some connector can acquire: Box Front, Screenshot and Title Screen so far. Libretro Thumbnails provides them from its `Named_Boxarts`, `Named_Snaps` and `Named_Titles` folders, recorded as the source label; a run discovers only the folders of the types it selects. A selector for a type no connector acquires yet, or for a family that includes one, is refused before discovery. The desktop Library groups each release's originals by Asset Type in taxonomy order.
+The catalog stores the Asset Types some connector can acquire: Box Front, Screenshot and Title Screen so far. Libretro Thumbnails provides them from its `Named_Boxarts`, `Named_Snaps` and `Named_Titles` folders, recorded as the source label; a run discovers only the folders of the types it selects. LaunchBox Games Database provides them from its daily `Metadata.zip` dataset as the `Box - Front`, `Screenshot - Gameplay` and `Screenshot - Game Title` image types, recorded as the source label. A selector for a type no connector acquires yet, or for a family that includes one, is refused before discovery. The desktop Library groups each release's originals by Asset Type in taxonomy order.
 
 ## 6. Acquisition Request Model
 
@@ -326,6 +326,8 @@ Connector families:
 - local import connector.
 
 A single Source may expose multiple connector implementations when useful, such as API plus public dataset.
+
+LaunchBox Games Database is a downloadable dataset rather than a repository: discovery downloads its `Metadata.zip` once, reads the game records of the requested platforms (all of them, or those whose title matches a requested release regardless of case, spacing, subtitle separator and article placement, so "Legend of Zelda, The - A Link to the Past" matches "The Legend of Zelda: A Link to the Past") and then their images, served by `images.launchbox-app.com`. Unlike Libretro Thumbnails, it covers whole platforms and records the region of each image (named as No-Intro does: North America and United States are USA, United Kingdom is UK, The Netherlands is Netherlands), so region filters and all-games selections are honoured; language filters and platforms it has no name for are refused when planning, without downloading the dataset. Records missing an identifier, a file name or a type, or whose file name could address anything but an image, are skipped. Candidates keep the title the request names, or, when every game is requested, the LaunchBox title as No-Intro writes it (a leading article moved after the main title, subtitles after " - "), so they match the releases the Library imported.
 
 Connectors own their transport credentials. Discovered candidates carry a stable, credential-free absolute locator that is persisted with Review Items, work items and provenance; a connector adds API keys, sessions or signed URLs only inside its download step. Candidates whose locator is not an absolute URL free of userinfo, query and fragment are rejected before anything is persisted; connectors that address media with request parameters expose a synthetic, path-based locator instead.
 
