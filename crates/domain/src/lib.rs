@@ -455,6 +455,7 @@ pub enum AssetType {
     Screenshot,
     TitleScreen,
     Logo,
+    Icon,
     WallpaperArtwork,
     Flyer,
     ArcadeCabinet,
@@ -476,7 +477,7 @@ impl AssetTypeSelector {
 
 impl AssetType {
     /// Every stored type, in taxonomy order.
-    pub const ALL: [AssetType; 16] = [
+    pub const ALL: [AssetType; 17] = [
         Self::BoxFront,
         Self::BoxBack,
         Self::Spine,
@@ -488,6 +489,7 @@ impl AssetType {
         Self::Screenshot,
         Self::TitleScreen,
         Self::Logo,
+        Self::Icon,
         Self::WallpaperArtwork,
         Self::Flyer,
         Self::ArcadeCabinet,
@@ -509,6 +511,7 @@ impl AssetType {
             Self::Screenshot => AssetTypeSelector::Screenshot,
             Self::TitleScreen => AssetTypeSelector::TitleScreen,
             Self::Logo => AssetTypeSelector::Logo,
+            Self::Icon => AssetTypeSelector::Icon,
             Self::WallpaperArtwork => AssetTypeSelector::WallpaperArtwork,
             Self::Flyer => AssetTypeSelector::Flyer,
             Self::ArcadeCabinet => AssetTypeSelector::ArcadeCabinet,
@@ -526,9 +529,11 @@ impl AssetType {
             Self::CartridgeFront | Self::CartridgeBack | Self::Disc | Self::Pcb => {
                 AssetTypeSelector::PhysicalMedia
             }
-            Self::Screenshot | Self::TitleScreen | Self::Logo | Self::WallpaperArtwork => {
-                AssetTypeSelector::DigitalMedia
-            }
+            Self::Screenshot
+            | Self::TitleScreen
+            | Self::Logo
+            | Self::Icon
+            | Self::WallpaperArtwork => AssetTypeSelector::DigitalMedia,
             Self::Flyer => AssetTypeSelector::PromotionalAndHistorical,
             Self::ArcadeCabinet | Self::ControlPanel | Self::Marquee => {
                 AssetTypeSelector::HardwareArcade
@@ -550,6 +555,7 @@ impl AssetType {
             Self::Screenshot => "screenshot",
             Self::TitleScreen => "title_screen",
             Self::Logo => "logo",
+            Self::Icon => "icon",
             Self::WallpaperArtwork => "wallpaper_artwork",
             Self::Flyer => "flyer",
             Self::ArcadeCabinet => "arcade_cabinet",
@@ -1099,5 +1105,17 @@ mod matching_policy_tests {
             policy.validate(),
             Err(MatchingPolicyValidationError::ThresholdOutOfRange { value: 101 })
         );
+    }
+}
+
+#[cfg(test)]
+mod asset_type_tests {
+    use super::{AssetType, AssetTypeSelector};
+
+    #[test]
+    fn icons_are_stored_as_digital_media() {
+        assert_eq!(AssetType::from_name("icon"), Some(AssetType::Icon));
+        assert_eq!(AssetType::Icon.family(), AssetTypeSelector::DigitalMedia);
+        assert!(AssetTypeSelector::Icon.is_covered_by(&[AssetType::Icon]));
     }
 }

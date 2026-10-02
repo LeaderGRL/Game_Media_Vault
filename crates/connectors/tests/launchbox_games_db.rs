@@ -195,11 +195,16 @@ fn locators(candidates: &[AssetCandidate]) -> Vec<&str> {
 }
 
 #[test]
-fn declares_every_stored_asset_type() {
+fn declares_every_stored_asset_type_but_icons() {
     let transport = FixtureTransport::new();
     let capabilities = LaunchBoxGamesDbConnector::with_transport(&transport).capabilities();
 
-    assert_eq!(capabilities.asset_types, AssetType::ALL);
+    // Its dataset records no icons.
+    let expected: Vec<AssetType> = AssetType::ALL
+        .into_iter()
+        .filter(|asset_type| *asset_type != AssetType::Icon)
+        .collect();
+    assert_eq!(capabilities.asset_types, expected);
     assert!(capabilities.direct_media_download);
 }
 

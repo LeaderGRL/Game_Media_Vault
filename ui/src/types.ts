@@ -11,6 +11,7 @@ export type AssetType =
   | "screenshot"
   | "title_screen"
   | "logo"
+  | "icon"
   | "wallpaper_artwork"
   | "flyer"
   | "arcade_cabinet"
