@@ -119,6 +119,7 @@ cargo test --workspace --all-features
 ## Documentation
 
 - [`docs/SPEC.md`](docs/SPEC.md) — product specification
+- [`docs/sources.md`](docs/sources.md) — what each Source provides and needs
 - [`CONTEXT.md`](CONTEXT.md) — domain glossary
 - [`docs/adr/`](docs/adr/) — architecture decisions
 - [`AGENTS.md`](AGENTS.md) — development workflow (test-first slices, one commit per change)
