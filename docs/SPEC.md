@@ -154,6 +154,8 @@ The initial taxonomy is hierarchical and individually selectable.
 
 The taxonomy must be extensible without a database migration for every newly discovered source-specific label. Source labels map onto canonical Asset Types while the original label remains stored.
 
+The catalog stores the Asset Types some connector can acquire: Box Front, Screenshot and Title Screen so far. Libretro Thumbnails provides them from its `Named_Boxarts`, `Named_Snaps` and `Named_Titles` folders, recorded as the source label; a run discovers only the folders of the types it selects. A selector for a type no connector acquires yet, or for a family that includes one, is refused before discovery. The desktop Library groups each release's originals by Asset Type in taxonomy order.
+
 ## 6. Acquisition Request Model
 
 Conceptually:

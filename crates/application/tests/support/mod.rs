@@ -829,6 +829,8 @@ pub struct FakeConnector {
     pub unsupported_reason: Option<String>,
     /// Whether checking a plan fails, as when the source cannot be reached.
     pub plan_check_fails: bool,
+    /// Asset Types the connector declares it can acquire.
+    pub asset_types: Vec<AssetType>,
 }
 
 impl FakeConnector {
@@ -841,6 +843,7 @@ impl FakeConnector {
             downloads: RefCell::new(Vec::new()),
             unsupported_reason: None,
             plan_check_fails: false,
+            asset_types: vec![AssetType::BoxFront],
         }
     }
 }
@@ -852,7 +855,7 @@ impl ConnectorPort for FakeConnector {
 
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
-            asset_types: vec![AssetType::BoxFront],
+            asset_types: self.asset_types.clone(),
             direct_media_download: true,
         }
     }

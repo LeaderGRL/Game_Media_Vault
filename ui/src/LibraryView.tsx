@@ -69,7 +69,7 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
             {entry.assets.length === 0 ? (
               <p className="no-assets">No media assets</p>
             ) : (
-              entry.assets.map((asset) => (
+              byAssetType(entry.assets).map((asset) => (
                 <div className="asset-record" key={asset.asset_id}>
                   <AssetOriginal
                     asset={asset}
@@ -255,11 +255,21 @@ function preferenceReason(reason: PreferenceReason) {
 }
 
 function formatAssetType(assetType: string) {
-  if (assetType === "box_front") {
-    return "Box Front";
-  }
+  return ASSET_TYPE_LABELS.get(assetType) ?? assetType;
+}
 
-  return assetType;
+/** Asset Types in taxonomy order, as the Acquire view lists them. */
+const ASSET_TYPE_ORDER = ASSET_TYPE_FAMILIES.flatMap((family) => family.types).map(
+  (type) => type.value,
+);
+
+/** The originals of a release grouped by Asset Type, in taxonomy order. */
+function byAssetType(assets: LibraryAsset[]) {
+  const rank = (asset: LibraryAsset) => {
+    const index = ASSET_TYPE_ORDER.indexOf(asset.asset_type);
+    return index < 0 ? ASSET_TYPE_ORDER.length : index;
+  };
+  return [...assets].sort((a, b) => rank(a) - rank(b));
 }
 
 function formatBytes(byteLength: number) {

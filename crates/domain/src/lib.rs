@@ -310,22 +310,20 @@ impl AcquisitionRequest {
     }
 
     pub fn requests_asset_type(&self, asset_type: AssetType) -> bool {
-        self.asset_types.iter().any(|selector| {
-            matches!(
-                (selector, asset_type),
-                (AssetTypeSelector::Packaging, AssetType::BoxFront)
-                    | (AssetTypeSelector::BoxFront, AssetType::BoxFront)
-            )
-        })
+        self.asset_types
+            .iter()
+            .any(|selector| *selector == asset_type.selector() || *selector == asset_type.family())
     }
 
     /// Whether `supported` covers every Asset Type the request selects. A family is covered only
     /// when all of its types are, and families still select types the catalog cannot represent
     /// yet, so none is covered.
     pub fn requested_asset_types_supported_by(&self, supported: &[AssetType]) -> bool {
-        self.asset_types.iter().all(|selector| match selector {
-            AssetTypeSelector::BoxFront => supported.contains(&AssetType::BoxFront),
-            _ => false,
+        self.asset_types.iter().all(|selector| {
+            AssetType::ALL
+                .into_iter()
+                .find(|asset_type| asset_type.selector() == *selector)
+                .is_some_and(|asset_type| supported.contains(&asset_type))
         })
     }
 
@@ -374,10 +372,34 @@ impl AcquisitionRequest {
     }
 }
 
+/// The Asset Types the catalog stores; Asset Type Selectors name the rest of the taxonomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssetType {
     BoxFront,
+    Screenshot,
+    TitleScreen,
+}
+
+impl AssetType {
+    pub const ALL: [AssetType; 3] = [Self::BoxFront, Self::Screenshot, Self::TitleScreen];
+
+    /// The selector naming exactly this type.
+    pub fn selector(self) -> AssetTypeSelector {
+        match self {
+            Self::BoxFront => AssetTypeSelector::BoxFront,
+            Self::Screenshot => AssetTypeSelector::Screenshot,
+            Self::TitleScreen => AssetTypeSelector::TitleScreen,
+        }
+    }
+
+    /// The family selector this type belongs to.
+    pub fn family(self) -> AssetTypeSelector {
+        match self {
+            Self::BoxFront => AssetTypeSelector::Packaging,
+            Self::Screenshot | Self::TitleScreen => AssetTypeSelector::DigitalMedia,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

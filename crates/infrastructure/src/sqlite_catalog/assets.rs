@@ -377,12 +377,16 @@ fn record_provenance(
 pub(super) fn asset_type_to_str(asset_type: AssetType) -> &'static str {
     match asset_type {
         AssetType::BoxFront => "box_front",
+        AssetType::Screenshot => "screenshot",
+        AssetType::TitleScreen => "title_screen",
     }
 }
 
 pub(super) fn parse_asset_type(value: &str) -> Result<AssetType, PortError> {
     match value {
         "box_front" => Ok(AssetType::BoxFront),
+        "screenshot" => Ok(AssetType::Screenshot),
+        "title_screen" => Ok(AssetType::TitleScreen),
         other => Err(PortError::new(format!(
             "unknown asset type in catalog: {other}"
         ))),

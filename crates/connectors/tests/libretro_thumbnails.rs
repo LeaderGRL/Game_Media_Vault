@@ -73,11 +73,18 @@ fn request(asset_types: Vec<AssetTypeSelector>) -> AcquisitionRequest {
 }
 
 #[test]
-fn declares_box_front_capability_and_downloads_the_discovered_fixture() {
+fn declares_its_thumbnail_types_and_downloads_the_discovered_fixture() {
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
 
     let capabilities = connector.capabilities();
-    assert_eq!(capabilities.asset_types, vec![AssetType::BoxFront]);
+    assert_eq!(
+        capabilities.asset_types,
+        vec![
+            AssetType::BoxFront,
+            AssetType::Screenshot,
+            AssetType::TitleScreen
+        ]
+    );
     assert!(capabilities.direct_media_download);
 
     let candidates = connector
@@ -104,11 +111,11 @@ fn declares_box_front_capability_and_downloads_the_discovered_fixture() {
 }
 
 #[test]
-fn does_not_discover_box_art_when_box_front_is_not_requested() {
+fn discovers_nothing_for_asset_types_libretro_does_not_offer() {
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
 
     let candidates = connector
-        .discover(&request(vec![AssetTypeSelector::Screenshot]))
+        .discover(&request(vec![AssetTypeSelector::Manual]))
         .unwrap();
 
     assert!(candidates.is_empty());
@@ -386,4 +393,46 @@ fn malformed_repository_metadata_is_invalid_source_data() {
         .unwrap_err();
 
     assert!(error.is_invalid_source_data(), "{error}");
+}
+
+#[test]
+fn discovers_screenshots_and_title_screens_from_their_own_thumbnail_folders() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+
+    let candidates = connector
+        .discover(&request(vec![
+            AssetTypeSelector::Screenshot,
+            AssetTypeSelector::TitleScreen,
+        ]))
+        .unwrap();
+
+    let found: Vec<_> = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.asset_type,
+                candidate.source_asset_label.as_deref().unwrap(),
+                candidate.source_url.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            (
+                AssetType::Screenshot,
+                "Named_Snaps",
+                "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Snaps/Super%20Mario%20Bros.%20(World).png"
+            ),
+            (
+                AssetType::TitleScreen,
+                "Named_Titles",
+                "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Titles/Super%20Mario%20Bros.%20(World).png"
+            ),
+        ]
+    );
+    assert_eq!(
+        candidates[0].provider_candidate_id.as_deref(),
+        Some("Nintendo_-_Nintendo_Entertainment_System/Named_Snaps/Super Mario Bros. (World)")
+    );
 }

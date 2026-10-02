@@ -224,6 +224,28 @@ describe("LibraryView", () => {
     expect(screen.getByText("Coverage not evaluated for this platform")).toBeInTheDocument();
   });
 
+  it("groups media by Asset Type and names each type", () => {
+    const screenshot = {
+      ...entry.assets[0],
+      asset_id: 5,
+      asset_type: "screenshot" as const,
+      object_hash: "snap123",
+      original_filename: "mgs-snap.png",
+    };
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[{ ...entry, assets: [screenshot, entry.assets[0]] }]}
+      />,
+    );
+
+    const images = screen.getAllByRole("img").map((image) => image.getAttribute("alt"));
+    expect(images).toEqual([
+      "Box Front of Metal Gear Solid",
+      "Screenshot of Metal Gear Solid",
+    ]);
+  });
+
   it("shows the imported release and Box Front provenance", () => {
     render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
 

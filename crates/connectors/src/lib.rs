@@ -20,6 +20,12 @@ use url::Url;
 
 pub const LIBRETRO_THUMBNAILS_SOURCE_ID: &str = "libretro-thumbnails";
 pub const NO_INTRO_SOURCE_ID: &str = "no-intro";
+/// The thumbnail folders of every Libretro repository and the Asset Type each holds.
+const THUMBNAIL_FOLDERS: [(AssetType, &str); 3] = [
+    (AssetType::BoxFront, "Named_Boxarts"),
+    (AssetType::Screenshot, "Named_Snaps"),
+    (AssetType::TitleScreen, "Named_Titles"),
+];
 const LIBRETRO_GITMODULES_URL: &str =
     "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
@@ -112,7 +118,10 @@ where
 
     fn capabilities(&self) -> ConnectorCapabilities {
         ConnectorCapabilities {
-            asset_types: vec![AssetType::BoxFront],
+            asset_types: THUMBNAIL_FOLDERS
+                .iter()
+                .map(|(asset_type, _)| *asset_type)
+                .collect(),
             direct_media_download: true,
         }
     }
@@ -141,7 +150,12 @@ where
     }
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
-        if !request.requests_asset_type(AssetType::BoxFront) {
+        let folders: Vec<(AssetType, &str)> = THUMBNAIL_FOLDERS
+            .iter()
+            .copied()
+            .filter(|(asset_type, _)| request.requests_asset_type(*asset_type))
+            .collect();
+        if folders.is_empty() {
             return Ok(Vec::new());
         }
         if let Some(reason) = unsupported_selection_reason(request) {
@@ -149,40 +163,39 @@ where
         }
 
         let repositories = self.repository_catalog()?;
-        let targets = acquisition_targets(request)?;
-        targets
-            .into_iter()
-            .map(|(platform, game_title)| {
-                let original_filename = thumbnail_filename(&game_title);
-                let repository = repositories
-                    .iter()
-                    .find(|repository| repository.platform == platform)
-                    .ok_or_else(|| {
-                        PortError::new(format!(
-                            "Libretro Thumbnails does not declare a repository for platform {platform}"
-                        ))
-                    })?;
-                let source_url = box_front_url(repository, &original_filename)?;
-                // Libretro names thumbnails after No-Intro/Redump release names, which encode
-                // the region and edition of the release.
-                let release = parse_release_name(&game_title);
-                Ok(AssetCandidate {
+        let mut candidates = Vec::new();
+        for (platform, game_title) in acquisition_targets(request)? {
+            let original_filename = thumbnail_filename(&game_title);
+            let repository = repositories
+                .iter()
+                .find(|repository| repository.platform == platform)
+                .ok_or_else(|| {
+                    PortError::new(format!(
+                        "Libretro Thumbnails does not declare a repository for platform {platform}"
+                    ))
+                })?;
+            // Libretro names thumbnails after No-Intro/Redump release names, which encode the
+            // region and edition of the release.
+            let release = parse_release_name(&game_title);
+            for (asset_type, folder) in &folders {
+                candidates.push(AssetCandidate {
                     provider_candidate_id: Some(format!(
-                        "{}/Named_Boxarts/{game_title}",
+                        "{}/{folder}/{game_title}",
                         repository.repository
                     )),
-                    game_title: release.game_title,
-                    platform,
-                    region: release.region,
-                    edition_name: release.edition_name,
-                    asset_type: AssetType::BoxFront,
+                    game_title: release.game_title.clone(),
+                    platform: platform.clone(),
+                    region: release.region.clone(),
+                    edition_name: release.edition_name.clone(),
+                    asset_type: *asset_type,
                     source_id: SourceId::from(LIBRETRO_THUMBNAILS_SOURCE_ID),
-                    source_asset_label: Some("Named_Boxarts".to_owned()),
-                    source_url,
-                    original_filename,
-                })
-            })
-            .collect()
+                    source_asset_label: Some((*folder).to_owned()),
+                    source_url: thumbnail_url(repository, folder, &original_filename)?,
+                    original_filename: original_filename.clone(),
+                });
+            }
+        }
+        Ok(candidates)
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
@@ -270,7 +283,11 @@ fn thumbnail_filename(game_title: &str) -> String {
     format!("{sanitized}.png")
 }
 
-fn box_front_url(repository: &LibretroRepository, filename: &str) -> Result<String, PortError> {
+fn thumbnail_url(
+    repository: &LibretroRepository,
+    folder: &str,
+    filename: &str,
+) -> Result<String, PortError> {
     let mut url = Url::parse("https://raw.githubusercontent.com/")
         .map_err(|error| PortError::new(format!("invalid Libretro base URL: {error}")))?;
     url.path_segments_mut()
@@ -279,7 +296,7 @@ fn box_front_url(repository: &LibretroRepository, filename: &str) -> Result<Stri
             "libretro-thumbnails",
             repository.repository.as_str(),
             repository.branch.as_str(),
-            "Named_Boxarts",
+            folder,
             filename,
         ]);
     Ok(url.into())
