@@ -32,7 +32,15 @@ interface LibraryViewProps {
   /** Whether a filter search is pending, which blocks paging the previous results. */
   searching?: boolean;
   onLoadMore?: () => void;
+  /** Renders the thumbnails the originals lack; the button shows only with it. */
+  onRenderThumbnails?: () => void;
+  renderingThumbnails?: boolean;
+  /** Outcome of the latest thumbnail rendering. */
+  thumbnailStatus?: string | null;
 }
+
+/** Longest edge of the thumbnails the Library shows instead of their originals. */
+export const LIBRARY_THUMBNAIL_EDGE = 256;
 
 const STATUS_OPTIONS: [LibraryStatus, string][] = [
   ["complete", "Complete"],
@@ -50,9 +58,20 @@ export function LibraryView({
   loadingMore = false,
   searching = false,
   onLoadMore,
+  onRenderThumbnails,
+  renderingThumbnails = false,
+  thumbnailStatus = null,
 }: LibraryViewProps) {
   return (
     <>
+      {onRenderThumbnails ? (
+        <div className="library-actions">
+          <button type="button" disabled={renderingThumbnails} onClick={onRenderThumbnails}>
+            {renderingThumbnails ? "Rendering thumbnails…" : "Render thumbnails"}
+          </button>
+          {thumbnailStatus ? <p role="status">{thumbnailStatus}</p> : null}
+        </div>
+      ) : null}
       {onSearch ? (
         <LibraryFilterBar key={filtersRevision} filters={filters} onSearch={onSearch} />
       ) : null}
@@ -304,25 +323,35 @@ interface AssetOriginalProps {
 }
 
 /**
- * Thumbnail of an image original, or a placeholder when the vault cannot serve it or the view
- * cannot decode its format.
+ * The Library thumbnail of an image original, else the original itself, or a placeholder when
+ * the vault cannot serve them or the view cannot decode them.
  */
 function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
-  const [unavailable, setUnavailable] = useState(false);
+  const [failedHashes, setFailedHashes] = useState<ReadonlySet<string>>(() => new Set());
+  const thumbnail = asset.derived.find(
+    (derived) =>
+      derived.recipe.transform === "thumbnail" &&
+      derived.recipe.max_edge === LIBRARY_THUMBNAIL_EDGE,
+  );
 
-  if (!isImageOriginal(asset)) {
+  if (thumbnail === undefined && !isImageOriginal(asset)) {
     return null;
   }
-  if (unavailable) {
+  // The thumbnail is smaller to load; the original replaces it if it cannot be shown.
+  const shownHash = [thumbnail?.object_hash, asset.object_hash].find(
+    (hash) => hash !== undefined && !failedHashes.has(hash),
+  );
+  if (shownHash === undefined) {
     return <p className="asset-original unavailable">Preview unavailable</p>;
   }
   return (
     <img
+      key={shownHash}
       className="asset-original"
-      src={objectUrl(asset.object_hash)}
+      src={objectUrl(shownHash)}
       alt={description}
       loading="lazy"
-      onError={() => setUnavailable(true)}
+      onError={() => setFailedHashes((failed) => new Set(failed).add(shownHash))}
     />
   );
 }

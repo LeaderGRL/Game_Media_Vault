@@ -3,11 +3,12 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
 import type { AcquisitionPlan, AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
-import { LibraryView } from "./LibraryView";
+import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
+  DerivationSummary,
   LibraryEntry,
   LibraryFilters,
   LibraryPage,
@@ -60,8 +61,8 @@ export function App() {
   // The pending next-page request, if any: only it may apply its page or end the loading state.
   const pageRequestRef = useRef<object | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  // A filter search is pending; paging would continue the previous filters meanwhile.
-  const searchPendingRef = useRef(false);
+  // Filters of the pending filter search; paging would continue the previous filters meanwhile.
+  const pendingSearchRef = useRef<LibraryFilters | null>(null);
   const [searchingLibrary, setSearchingLibrary] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<View>("library");
@@ -71,6 +72,11 @@ export function App() {
   const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
   const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
   const [startingRun, setStartingRun] = useState(false);
+  // Vaults whose thumbnails are rendering: the backend keeps rendering a vault while another is
+  // loaded, so loading it again shows its rendering instead of offering to start another.
+  const renderingThumbnailVaults = useRef(new Set<string>());
+  const [renderingThumbnails, setRenderingThumbnails] = useState(false);
+  const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -121,9 +127,9 @@ export function App() {
     const searchingVaultRoot = loadedVaultRoot;
     // Supersedes refreshes and pages requested with the previous filters, and a pending search
     // whose filters the bar keeps showing until this one settles.
-    searchPendingRef.current = false;
+    pendingSearchRef.current = null;
     const generation = supersedeLibraryRequests();
-    searchPendingRef.current = true;
+    pendingSearchRef.current = filters;
     setSearchingLibrary(true);
     setError(null);
     try {
@@ -148,7 +154,7 @@ export function App() {
       }
     } finally {
       if (generation === vaultDataGeneration.current) {
-        searchPendingRef.current = false;
+        pendingSearchRef.current = null;
         setSearchingLibrary(false);
       }
     }
@@ -161,8 +167,8 @@ export function App() {
    */
   function supersedeLibraryRequests() {
     vaultDataGeneration.current += 1;
-    if (searchPendingRef.current) {
-      searchPendingRef.current = false;
+    if (pendingSearchRef.current !== null) {
+      pendingSearchRef.current = null;
       setSearchingLibrary(false);
       setLibraryFiltersRevision((revision) => revision + 1);
     }
@@ -224,6 +230,8 @@ export function App() {
     setError(null);
     supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
+    setThumbnailStatus(null);
+    setRenderingThumbnails(renderingThumbnailVaults.current.has(requestedVaultRoot));
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -237,6 +245,8 @@ export function App() {
         return;
       }
       openedVaultRoot.current = requestedVaultRoot;
+      // A refresh started after this search, such as one after a rendering, shows newer data.
+      const libraryGeneration = supersedeLibraryRequests();
       const [library, reviews] = await Promise.all([
         searchLibrary(),
         invoke<ReviewItem[]>("list_review_items"),
@@ -249,7 +259,9 @@ export function App() {
       }
       // A decision made meanwhile refreshes both lists itself; this load read them before it.
       if (reviewMutationGeneration.current === reviewGenerationAtLoadStart) {
-        showLibraryPage(library);
+        if (libraryGeneration === vaultDataGeneration.current) {
+          showLibraryPage(library);
+        }
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
@@ -423,6 +435,94 @@ export function App() {
     }
     if (reviewRefreshGeneration === reviewRefreshRequestGeneration.current) {
       setReviewItems(reviews);
+    }
+  }
+
+  /**
+   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them, even
+   * after a failure that left some rendered.
+   */
+  async function renderThumbnails() {
+    if (
+      loadedVaultRoot === null ||
+      openedVaultRoot.current !== loadedVaultRoot ||
+      renderingThumbnailVaults.current.has(loadedVaultRoot)
+    ) {
+      return;
+    }
+    const renderingVaultRoot = loadedVaultRoot;
+    renderingThumbnailVaults.current.add(renderingVaultRoot);
+    // The rendering's vault reports it, even while it reopens; another vault loaded meanwhile
+    // neither shows nor reports it.
+    const reportsHere = () => activeVaultRoot.current === renderingVaultRoot;
+    setRenderingThumbnails(true);
+    setThumbnailStatus(null);
+    setError(null);
+    let failure: { reason: unknown } | null = null;
+    try {
+      const summary = await invoke<DerivationSummary>("derive_thumbnails", {
+        max_edge: LIBRARY_THUMBNAIL_EDGE,
+      });
+      if (reportsHere()) {
+        setThumbnailStatus(describeThumbnailRendering(summary));
+      }
+    } catch (reason) {
+      failure = { reason };
+    } finally {
+      // The rendering is over; showing its thumbnails is not part of it.
+      renderingThumbnailVaults.current.delete(renderingVaultRoot);
+      if (activeVaultRoot.current === renderingVaultRoot) {
+        setRenderingThumbnails(false);
+      }
+    }
+    if (!reportsHere()) {
+      return;
+    }
+    if (failure !== null) {
+      setError(errorMessage(failure.reason));
+    }
+    // A reopening of the vault searches the Library itself once the vault is open.
+    if (openedVaultRoot.current !== renderingVaultRoot) {
+      return;
+    }
+    // Even a failed rendering may have recorded thumbnails before failing.
+    try {
+      await showRenderedThumbnails(renderingVaultRoot);
+    } catch (reason) {
+      if (reportsHere()) {
+        setError(errorMessage((failure ?? { reason }).reason));
+      }
+      return;
+    }
+    // A search shown meanwhile cleared the rendering failure.
+    if (failure !== null && reportsHere()) {
+      setError(errorMessage(failure.reason));
+    }
+  }
+
+  /**
+   * Shows the Library with the thumbnails just rendered: a filter search submitted meanwhile is
+   * searched again so its results include them.
+   */
+  async function showRenderedThumbnails(renderingVaultRoot: string) {
+    const pendingFilters = pendingSearchRef.current;
+    if (pendingFilters !== null) {
+      await applyLibraryFilters(pendingFilters);
+      return;
+    }
+    const generation = supersedeLibraryRequests();
+    const isCurrent = () =>
+      openedVaultRoot.current === renderingVaultRoot && generation === vaultDataGeneration.current;
+    try {
+      const library = await searchLibrary();
+      if (isCurrent()) {
+        showLibraryPage(library);
+      }
+    } catch (reason) {
+      // A search or refresh that replaced this one reports for itself.
+      if (isCurrent()) {
+        throw reason;
+      }
     }
   }
 
@@ -678,6 +778,11 @@ export function App() {
           loadingMore={loadingMore}
           searching={searchingLibrary}
           onLoadMore={() => void loadMoreReleases()}
+          onRenderThumbnails={
+            loadedVaultRoot === null ? undefined : () => void renderThumbnails()
+          }
+          renderingThumbnails={renderingThumbnails}
+          thumbnailStatus={thumbnailStatus}
         />
       ) : null}
       {activeView === "review" ? (
@@ -719,4 +824,22 @@ function withoutRun(runIds: Set<number>, runId: number) {
 /** Original objects are served by the desktop shell's `gmv-object` protocol. */
 function originalObjectUrl(objectHash: string) {
   return convertFileSrc(objectHash, "gmv-object");
+}
+
+function describeThumbnailRendering(summary: DerivationSummary) {
+  const parts = [
+    `Rendered ${summary.derived} ${summary.derived === 1 ? "thumbnail" : "thumbnails"}`,
+  ];
+  const failed = summary.failed.length;
+  if (failed > 0) {
+    parts.push(`${failed} ${failed === 1 ? "original" : "originals"} could not be rendered`);
+  }
+  if (summary.skipped > 0) {
+    parts.push(
+      summary.skipped === 1
+        ? "1 original skipped as an unsupported format"
+        : `${summary.skipped} originals skipped as unsupported formats`,
+    );
+  }
+  return parts.join("; ") + ".";
 }

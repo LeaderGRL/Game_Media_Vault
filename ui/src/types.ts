@@ -38,6 +38,21 @@ export interface LibraryAsset {
   height: number | null;
   original_filename: string;
   provenance: AssetProvenance[];
+  /** Outputs of recipes applied to this Asset's original. */
+  derived: DerivedAsset[];
+}
+
+/** A reproducible transformation of an original. */
+export type DerivationRecipe = { transform: "thumbnail"; max_edge: number };
+
+/** A file generated from an original by a recipe; it never replaces its original. */
+export interface DerivedAsset {
+  recipe: DerivationRecipe;
+  object_hash: string;
+  byte_len: number;
+  media_type: string;
+  width: number | null;
+  height: number | null;
 }
 
 /** What decides between two Assets of a type, checked in this order. */
@@ -316,4 +331,12 @@ export function errorMessage(reason: unknown): string {
     return String((reason as { message: unknown }).message);
   }
   return String(reason);
+}
+
+/** Outcome of rendering a recipe for every original that lacks its output. */
+export interface DerivationSummary {
+  derived: number;
+  /** Originals the recipe cannot read. */
+  skipped: number;
+  failed: { original_hash: string; reason: string }[];
 }
