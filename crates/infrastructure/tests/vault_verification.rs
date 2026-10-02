@@ -158,7 +158,10 @@ fn a_store_in_progress_is_not_reported_but_a_left_over_file_of_this_process_is()
 
     store.store_original(&mut reader).unwrap();
 
-    assert_eq!(reader.staging_seen.unwrap(), [left_over.clone()]);
+    assert_eq!(
+        reader.staging_seen.unwrap(),
+        std::slice::from_ref(&left_over)
+    );
     assert_eq!(
         verify_vault(&catalog, &store).unwrap().interrupted_staging,
         [left_over]
