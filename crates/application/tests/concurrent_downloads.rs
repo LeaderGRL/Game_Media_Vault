@@ -390,6 +390,34 @@ fn downloads_of_one_source_overlap_up_to_its_limit() {
 }
 
 #[test]
+fn media_downloaded_ahead_for_a_later_round_is_downloaded_once() {
+    let candidates: Vec<AssetCandidate> = ["Mario", "Tetris", "Zelda"]
+        .iter()
+        .map(|title| box_front("a", title))
+        .collect();
+    let vault = FakeVault::with_library(
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| release_for(candidate, index as i64 + 1))
+            .collect(),
+    );
+    let only = slow("a", candidates, None, None);
+
+    let imported = execute(
+        &vault,
+        &[&only],
+        DownloadLimits {
+            max_concurrent: 4,
+            max_per_source: 2,
+        },
+    );
+
+    assert_eq!(imported, Ok(3));
+    assert_eq!(only.inner.downloads.borrow().len(), 3);
+}
+
+#[test]
 fn the_per_source_limit_bounds_the_downloads_of_one_source() {
     for max_per_source in [1, 2] {
         let candidates: Vec<AssetCandidate> = ["Mario", "Tetris", "Zelda"]
