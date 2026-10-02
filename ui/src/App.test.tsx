@@ -3,10 +3,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReviewItem } from "./types";
 
-const { invokeMock, openVaultMock } = vi.hoisted(() => ({
+const { invokeMock, openVaultMock, libraryQueries } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openVaultMock: vi.fn(),
+  libraryQueries: [] as Record<string, unknown>[],
 }));
+
+/**
+ * Tests script Library listings as `list_library` arrays; the App searches pages of them, so
+ * a search answers with the scripted listing as a single page and records its query. A
+ * scripted value that is already a page is returned as is.
+ */
+function searchLibrary(query: Record<string, unknown>) {
+  libraryQueries.push(query);
+  return Promise.resolve(invokeMock("list_library")).then((listing: unknown) =>
+    Array.isArray(listing)
+      ? { releases: listing, total: listing.length, next_after: null }
+      : listing,
+  );
+}
 
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them.
@@ -16,7 +31,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string, args?: Record<string, unknown>) =>
     command === "open_vault"
       ? openVaultMock(args)
-      : invokeMock(command, ...(args === undefined ? [] : [args])),
+      : command === "search_library"
+        ? searchLibrary(args?.query as Record<string, unknown>)
+        : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
@@ -95,6 +112,45 @@ describe("App", () => {
     );
     openVaultMock.mockReset();
     openVaultMock.mockResolvedValue(undefined);
+  });
+
+  it("searches the Library with the filters entered", async () => {
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    libraryQueries.length = 0;
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
+    fireEvent.click(screen.getByLabelText("Partial"));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(libraryQueries).toHaveLength(1));
+    expect(libraryQueries[0]).toMatchObject({ text: "mario", statuses: ["partial"], after: null });
+  });
+
+  it("loads the next page of releases", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null }
+            : { releases: [entry], total: 2, next_after: 2 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByText("2 releases · 0 reviews")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {

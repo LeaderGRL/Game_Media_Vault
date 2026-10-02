@@ -102,6 +102,25 @@ export interface LibraryEntry {
   assets: LibraryAsset[];
 }
 
+export type LibraryStatus = "complete" | "partial" | "needs_review";
+
+/** The Library filters the desktop offers, sent with every search (Rust `LibraryQuery`). */
+export interface LibraryFilters {
+  /** Text the title contains; blank searches every title. */
+  text: string;
+  statuses: LibraryStatus[];
+}
+
+export const NO_LIBRARY_FILTERS: LibraryFilters = { text: "", statuses: [] };
+
+/** One page of matching releases (Rust `LibraryPage`). */
+export interface LibraryPage {
+  releases: LibraryEntry[];
+  total: number;
+  /** The cursor of the next page, when one follows. */
+  next_after: number | null;
+}
+
 export interface AssetCandidate {
   provider_candidate_id?: string | null;
   game_title: string;
