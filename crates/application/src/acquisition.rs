@@ -364,6 +364,14 @@ where
             if load_acquisition_run(runs, run_id)?.status != AcquisitionRunStatus::Running {
                 break;
             }
+            // A Source disabled on this machine is not discovered, which is no failure of it.
+            if let Some(reason) = disabled_reason_of(connectors, source_id) {
+                source_failure.get_or_insert(ApplicationError::SourceDisabled {
+                    source_id: source_id.clone(),
+                    reason,
+                });
+                continue;
+            }
             let discovered = planned_connector(&run.request, source_id, connectors).and_then(
                 |(connector, asset_types)| discover_source(&run.request, connector, &asset_types),
             );
@@ -421,10 +429,8 @@ where
             // A Source disabled since its work was queued leaves that work waiting, untouched.
             if let Some(reason) = acquisition.disabled_reason(&work) {
                 failed_sources.push(source_id.clone());
-                source_failure.get_or_insert(ApplicationError::UnsupportedConnectorPlan {
-                    source_id,
-                    reason,
-                });
+                source_failure
+                    .get_or_insert(ApplicationError::SourceDisabled { source_id, reason });
                 continue;
             }
             // Work of the Source downloaded ahead but no longer queued before this work, as when
@@ -511,6 +517,14 @@ fn defer_failed_sources(
         source_failure.get_or_insert(error);
     }
     Ok(any_failed)
+}
+
+/// Why the registered connector of `source_id` takes no part in acquisitions, if it does not.
+fn disabled_reason_of(connectors: &[&dyn ConnectorPort], source_id: &str) -> Option<String> {
+    connectors
+        .iter()
+        .find(|connector| connector.source_id() == source_id)
+        .and_then(|connector| connector.disabled_reason())
 }
 
 /// The connector of a planned Source and the requested types it acquires, unless the Source has

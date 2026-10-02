@@ -56,6 +56,8 @@ pub enum ApplicationError {
     UnsupportedDocumentVersion { found: u32, supported: u32 },
     #[error("no connector is registered for source {0}")]
     SourceNotRegistered(String),
+    #[error("source {source_id} takes no part in acquisitions: {reason}")]
+    SourceDisabled { source_id: String, reason: String },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
     #[error("the engine cannot execute this acquisition request yet: {0}")]
@@ -144,6 +146,7 @@ impl ApplicationError {
             | Self::ReviewItemContended(_) => ErrorKind::Conflict,
             Self::ConnectorCannotDownload { .. }
             | Self::UnsupportedConnectorPlan { .. }
+            | Self::SourceDisabled { .. }
             | Self::UnsupportedDocumentVersion { .. }
             | Self::UnsupportedRequest(_)
             | Self::UncoveredAssetTypes { .. }

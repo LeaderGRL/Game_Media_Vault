@@ -162,6 +162,11 @@ fn capable_among<'a>(
     let mut sources = Vec::new();
     let mut excluded = Vec::new();
     for connector in selected {
+        // A Source disabled on this machine says so, whatever it acquires.
+        if let Some(reason) = connector.disabled_reason() {
+            excluded.push(excluded_source(connector, reason));
+            continue;
+        }
         match capable_asset_types(request, connector) {
             Ok(asset_types) => sources.push((connector, asset_types)),
             Err(reason) => excluded.push(excluded_source(connector, reason)),

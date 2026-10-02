@@ -86,6 +86,12 @@ pub fn load_review_preview(
         .ok_or_else(|| ApplicationError::PreviewConnectorUnavailable {
             candidate_source_id: source_id.to_owned(),
         })?;
+    if let Some(reason) = connector.disabled_reason() {
+        return Err(ApplicationError::SourceDisabled {
+            source_id: source_id.to_owned(),
+            reason,
+        });
+    }
     if !connector.capabilities().direct_media_download {
         return Err(ApplicationError::ConnectorCannotDownload {
             source_id: connector.source_id().to_owned(),

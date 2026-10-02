@@ -1,13 +1,13 @@
 mod support;
 
 use game_media_vault_application::{
-    ApplicationError, ConnectorPort, DownloadLimits, ExcludedSource, RunRepositoryPort,
-    acquire_run_with_connectors, candidate_identity, machine_connectors, machine_registry,
-    plan_acquisition, start_acquisition_run_with_connectors,
+    ApplicationError, ConnectorPort, DownloadLimits, ErrorKind, ExcludedSource, RunRepositoryPort,
+    acquire_run_with_connectors, candidate_identity, load_review_preview, machine_connectors,
+    machine_registry, plan_acquisition, start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AcquisitionWorkItem,
-    AssetCandidate, SourceId, SourceSelection,
+    AssetCandidate, AssetType, ReviewItem, ReviewStatus, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -111,10 +111,12 @@ fn an_execution_never_contacts_a_source_disabled_since_its_run_started() {
     let error = execute(&[OTHER_SOURCE.to_owned()]).unwrap_err();
 
     assert!(
-        matches!(error, ApplicationError::UnsupportedConnectorPlan { .. }),
+        matches!(error, ApplicationError::SourceDisabled { .. }),
         "{error}"
     );
     assert_eq!(*later_disabled.discover_calls.borrow(), 0);
+    // Disabling a Source is a choice of this machine, no failure of the Source.
+    assert!(vault.source_failures.borrow().is_empty());
     assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Running);
     // Enabled again, the Source is discovered by the next execution.
     assert_eq!(execute(&[]).unwrap().len(), 1);
@@ -184,11 +186,62 @@ fn work_a_disabled_source_already_queued_waits_untouched() {
     .unwrap_err();
 
     assert!(
-        matches!(error, ApplicationError::UnsupportedConnectorPlan { .. }),
+        matches!(error, ApplicationError::SourceDisabled { .. }),
         "{error}"
     );
     assert!(vault.review_items.borrow().is_empty());
     let run = vault.run(run.id);
     assert_eq!(run.status, AcquisitionRunStatus::Running);
     assert_eq!(run.queued_work, 1);
+}
+
+#[test]
+fn a_disabled_source_is_left_out_as_disabled_whatever_it_acquires() {
+    let boxes = FakeConnector::new(Vec::new());
+    // It acquires none of the requested types, yet its exclusion says it is disabled.
+    let disabled = FakeConnector {
+        asset_types: vec![AssetType::Screenshot],
+        ..other(Vec::new())
+    };
+    let registered: Vec<&dyn ConnectorPort> = vec![&boxes, &disabled];
+    let machine = machine_connectors(&registered, &[OTHER_SOURCE.to_owned()]);
+
+    let plan = plan_acquisition(&request_of(SourceSelection::Auto), &machine.refs()).unwrap();
+
+    assert_eq!(
+        plan.excluded,
+        [ExcludedSource {
+            source_id: OTHER_SOURCE.to_owned(),
+            reason: "disabled on this machine".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn a_review_preview_of_a_disabled_source_is_refused_as_unsupported() {
+    let candidate = AssetCandidate {
+        source_id: SourceId::from(OTHER_SOURCE),
+        ..candidate("Review Game")
+    };
+    let vault = FakeVault::default();
+    vault.review_items.borrow_mut().push(ReviewItem {
+        id: 1,
+        candidate_identity: candidate_identity(OTHER_SOURCE, &candidate),
+        candidate,
+        competing_matches: Vec::new(),
+        decision: None,
+        status: ReviewStatus::Pending,
+    });
+    let disabled = other(Vec::new());
+    let registered: Vec<&dyn ConnectorPort> = vec![&disabled];
+    let machine = machine_connectors(&registered, &[OTHER_SOURCE.to_owned()]);
+
+    let error = load_review_preview(&vault, &machine.refs(), 1).unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::SourceDisabled { .. }),
+        "{error}"
+    );
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(disabled.downloads.borrow().is_empty());
 }
