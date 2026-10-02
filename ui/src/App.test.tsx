@@ -71,6 +71,26 @@ const entry: LibraryEntry = {
   ],
 };
 
+// The entry once its Box Front has a Library thumbnail.
+const withLibraryThumbnail: LibraryEntry = {
+  ...entry,
+  assets: [
+    {
+      ...entry.assets[0],
+      derived: [
+        {
+          recipe: { transform: "thumbnail", max_edge: 256 },
+          object_hash: "thumb256",
+          byte_len: 512,
+          media_type: "image/png",
+          width: 192,
+          height: 256,
+        },
+      ],
+    },
+  ],
+};
+
 const reviewItem: ReviewItem = {
   id: 17,
   candidate_identity: "connector:review-game",
@@ -355,6 +375,101 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
 
     expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeEnabled();
+  });
+
+  it("releases the rendering once thumbnails are rendered, before the Library refresh", async () => {
+    let rendered = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_thumbnails") {
+        rendered = true;
+        return Promise.resolve({ derived: 1, skipped: 0, failed: [] });
+      }
+      if (command === "list_library") {
+        // The refresh after the rendering never settles.
+        return rendered ? new Promise(() => {}) : Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+
+    expect(await screen.findByText("Rendered 1 thumbnail.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Render thumbnails" })).toBeEnabled();
+  });
+
+  it("shows the thumbnails a failed rendering still produced", async () => {
+    let rendered = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_thumbnails") {
+        rendered = true;
+        return Promise.reject({ kind: "external", message: "disk full" });
+      }
+      if (command === "list_library") {
+        return Promise.resolve([rendered ? withLibraryThumbnail : entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+
+    expect(await screen.findByText("disk full")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
+        "src",
+        "http://gmv-object.localhost/thumb256",
+      ),
+    );
+  });
+
+  it("keeps the thumbnails a rendering showed while the same vault reloaded", async () => {
+    let rendered = false;
+    let reviewListings = 0;
+    let finishRendering: ((summary: unknown) => void) | undefined;
+    let finishReload: ((items: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_thumbnails") {
+        return new Promise((resolve) => {
+          finishRendering = (summary) => {
+            rendered = true;
+            resolve(summary);
+          };
+        });
+      }
+      if (command === "list_library") {
+        return Promise.resolve([rendered ? withLibraryThumbnail : entry]);
+      }
+      if (command === "list_review_items") {
+        reviewListings += 1;
+        // The reload read its Library page before the rendering ended, and settles last.
+        return reviewListings === 2
+          ? new Promise((resolve) => {
+              finishReload = resolve;
+            })
+          : Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    await waitFor(() => expect(finishRendering).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(finishReload).toBeDefined());
+
+    await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
+    await act(async () => finishReload?.([]));
+
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
+      "src",
+      "http://gmv-object.localhost/thumb256",
+    );
   });
 
   it("keeps a filter search submitted while thumbnails render", async () => {

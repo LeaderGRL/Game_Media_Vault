@@ -245,6 +245,8 @@ export function App() {
         return;
       }
       openedVaultRoot.current = requestedVaultRoot;
+      // A refresh started after this search, such as one after a rendering, shows newer data.
+      const libraryGeneration = supersedeLibraryRequests();
       const [library, reviews] = await Promise.all([
         searchLibrary(),
         invoke<ReviewItem[]>("list_review_items"),
@@ -257,7 +259,9 @@ export function App() {
       }
       // A decision made meanwhile refreshes both lists itself; this load read them before it.
       if (reviewMutationGeneration.current === reviewGenerationAtLoadStart) {
-        showLibraryPage(library);
+        if (libraryGeneration === vaultDataGeneration.current) {
+          showLibraryPage(library);
+        }
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
@@ -435,8 +439,8 @@ export function App() {
   }
 
   /**
-   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them: a filter
-   * search submitted meanwhile is searched again so its results include them.
+   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them, even
+   * after a failure that left some rendered.
    */
   async function renderThumbnails() {
     if (
@@ -453,33 +457,61 @@ export function App() {
     setRenderingThumbnails(true);
     setThumbnailStatus(null);
     setError(null);
+    let failure: { reason: unknown } | null = null;
     try {
       const summary = await invoke<DerivationSummary>("derive_thumbnails", {
         max_edge: LIBRARY_THUMBNAIL_EDGE,
       });
-      if (!reportsHere()) {
-        return;
-      }
-      setThumbnailStatus(describeThumbnailRendering(summary));
-      const pendingFilters = pendingSearchRef.current;
-      if (pendingFilters !== null) {
-        await applyLibraryFilters(pendingFilters);
-        return;
-      }
-      const generation = supersedeLibraryRequests();
-      const library = await searchLibrary();
-      if (reportsHere() && generation === vaultDataGeneration.current) {
-        showLibraryPage(library);
+      if (reportsHere()) {
+        setThumbnailStatus(describeThumbnailRendering(summary));
       }
     } catch (reason) {
-      if (reportsHere()) {
-        setError(errorMessage(reason));
-      }
+      failure = { reason };
     } finally {
+      // The rendering is over; showing its thumbnails is not part of it.
       renderingThumbnailVaults.current.delete(renderingVaultRoot);
       if (activeVaultRoot.current === renderingVaultRoot) {
         setRenderingThumbnails(false);
       }
+    }
+    if (!reportsHere()) {
+      return;
+    }
+    if (failure !== null) {
+      setError(errorMessage(failure.reason));
+    }
+    // Even a failed rendering may have recorded thumbnails before failing.
+    try {
+      await showRenderedThumbnails(renderingVaultRoot);
+    } catch (reason) {
+      if (reportsHere()) {
+        setError(errorMessage((failure ?? { reason }).reason));
+      }
+      return;
+    }
+    // A search shown meanwhile cleared the rendering failure.
+    if (failure !== null && reportsHere()) {
+      setError(errorMessage(failure.reason));
+    }
+  }
+
+  /**
+   * Shows the Library with the thumbnails just rendered: a filter search submitted meanwhile is
+   * searched again so its results include them.
+   */
+  async function showRenderedThumbnails(renderingVaultRoot: string) {
+    const pendingFilters = pendingSearchRef.current;
+    if (pendingFilters !== null) {
+      await applyLibraryFilters(pendingFilters);
+      return;
+    }
+    const generation = supersedeLibraryRequests();
+    const library = await searchLibrary();
+    if (
+      openedVaultRoot.current === renderingVaultRoot &&
+      generation === vaultDataGeneration.current
+    ) {
+      showLibraryPage(library);
     }
   }
 
