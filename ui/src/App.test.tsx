@@ -2444,5 +2444,7 @@ describe("App Library requests", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
     expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
+    // The failure no longer shows once the Sources are read.
+    expect(screen.queryByText("registry unavailable")).not.toBeInTheDocument();
   });
 });

@@ -1,12 +1,21 @@
 import { SourceDescription, assetTypeLabel, sourceLabel } from "./acquisition";
 
 interface SourcesViewProps {
-  /** The registered Sources, or `null` while they are read. */
+  /** The registered Sources, or `null` while they are read or after reading them failed. */
   sources: SourceDescription[] | null;
+  /** Why the Sources could not be read, if they could not. */
+  error?: string | null;
 }
 
 /** The registered Sources, described from the capabilities planning uses. */
-export function SourcesView({ sources }: SourcesViewProps) {
+export function SourcesView({ sources, error = null }: SourcesViewProps) {
+  if (error !== null) {
+    return (
+      <p className="error-message" role="alert">
+        {error}
+      </p>
+    );
+  }
   if (sources === null) {
     return <p className="hint">Reading the registered Sources…</p>;
   }

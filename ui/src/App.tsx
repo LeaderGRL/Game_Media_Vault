@@ -87,6 +87,8 @@ export function App() {
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
   // The registered Sources, read the first time the Sources view is shown; they need no vault.
   const [sources, setSources] = useState<SourceDescription[] | null>(null);
+  // Why the Sources could not be read the last time the Sources view was shown.
+  const [sourcesError, setSourcesError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -555,11 +557,12 @@ export function App() {
     if (sources !== null) {
       return;
     }
+    setSourcesError(null);
     try {
       setSources(await invoke<SourceDescription[]>("list_sources"));
     } catch (reason) {
       // Showing the view again reads them again.
-      setError(errorMessage(reason));
+      setSourcesError(errorMessage(reason));
     }
   }
 
@@ -844,7 +847,7 @@ export function App() {
           onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
         />
       ) : null}
-      {activeView === "sources" ? <SourcesView sources={sources} /> : null}
+      {activeView === "sources" ? <SourcesView sources={sources} error={sourcesError} /> : null}
       {activeView === "runs" ? (
         <RunsView
           runs={runs}
