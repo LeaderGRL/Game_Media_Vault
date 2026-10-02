@@ -9,3 +9,5 @@ Create a commit for every coherent modification or feature after its relevant ch
 Run the applicable local equivalents of the GitHub CI checks before committing. Treat formatting, linting, tests, and build failures as blockers.
 
 Write all code comments in English.
+
+Every pull request gets an automatic Claude review (`.github/workflows/claude-review.yml`) once a Claude credential is configured; mention `@claude` in a PR comment to ask it a question. Address or answer every finding before merging.
