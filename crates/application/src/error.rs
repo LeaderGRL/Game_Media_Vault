@@ -1,10 +1,10 @@
 use game_media_vault_domain::{
-    AcquisitionRequestValidationError, AcquisitionRunStatus, MatchingPolicyValidationError,
-    ReviewStatus,
+    AcquisitionRequestValidationError, AcquisitionRunStatus, AssetTypeSelector,
+    MatchingPolicyValidationError, ReviewStatus,
 };
 use thiserror::Error;
 
-use crate::PortError;
+use crate::{ExcludedSource, PortError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ApplicationError {
@@ -57,6 +57,17 @@ pub enum ApplicationError {
     RunNotExecutable { status: AcquisitionRunStatus },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
+    #[error("the engine cannot execute this acquisition request yet: {0}")]
+    UnsupportedRequest(&'static str),
+    #[error(
+        "no selected source acquires {}{}",
+        selector_names(uncovered),
+        excluded_reasons(excluded)
+    )]
+    UncoveredAssetTypes {
+        uncovered: Vec<AssetTypeSelector>,
+        excluded: Vec<ExcludedSource>,
+    },
     #[error("review item #{0} does not exist")]
     ReviewItemNotFound(i64),
     #[error(
@@ -131,6 +142,8 @@ impl ApplicationError {
             Self::ConnectorNotSelected { .. }
             | Self::ConnectorCannotDownload { .. }
             | Self::UnsupportedConnectorPlan { .. }
+            | Self::UnsupportedRequest(_)
+            | Self::UncoveredAssetTypes { .. }
             | Self::PreviewConnectorUnavailable { .. }
             | Self::ReviewPreviewTooLarge { .. } => ErrorKind::Unsupported,
             Self::ConnectorCandidateSourceMismatch { .. } | Self::UnsafeCandidateLocator { .. } => {
@@ -140,4 +153,24 @@ impl ApplicationError {
             Self::Port(_) => ErrorKind::External,
         }
     }
+}
+
+fn selector_names(selectors: &[AssetTypeSelector]) -> String {
+    let names: Vec<String> = selectors
+        .iter()
+        .map(|selector| format!("{selector:?}"))
+        .collect();
+    names.join(", ")
+}
+
+/// Why each excluded Source was left out, in parentheses, or nothing when none was selected.
+fn excluded_reasons(excluded: &[ExcludedSource]) -> String {
+    if excluded.is_empty() {
+        return String::new();
+    }
+    let reasons: Vec<String> = excluded
+        .iter()
+        .map(|source| format!("{}: {}", source.source_id, source.reason))
+        .collect();
+    format!(" ({})", reasons.join("; "))
 }

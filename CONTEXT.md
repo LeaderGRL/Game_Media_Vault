@@ -60,6 +60,10 @@ _Avoid_: Scraper when the integration may use an API, dataset, or local import
 The user-defined selection of platforms, games, regions, languages, asset types, sources, quality constraints, limits, and retention policy for one collection run.
 _Avoid_: Crawl when the request may target explicit games only
 
+**Acquisition Plan**:
+The Sources an Acquisition Request contacts, the requested Asset Types each of them acquires, the selected Sources left out with their reasons, and which Sources acquire each requested Asset Type selector.
+_Avoid_: Schedule when no execution order is implied
+
 **Acquisition Run**:
 One persisted execution of an Acquisition Request, including its progress, discoveries, downloads, failures, retries, and final statistics.
 _Avoid_: Session

@@ -296,6 +296,14 @@ impl AcquisitionRequest {
         &self.limits
     }
 
+    pub fn sources(&self) -> &SourceSelection {
+        &self.sources
+    }
+
+    pub fn asset_types(&self) -> &[AssetTypeSelector] {
+        &self.asset_types
+    }
+
     pub fn selects_only_source(&self, source_id: &str) -> bool {
         matches!(
             &self.sources,
@@ -317,16 +325,11 @@ impl AcquisitionRequest {
             .any(|selector| *selector == asset_type.selector() || *selector == asset_type.family())
     }
 
-    /// Whether `supported` covers every Asset Type the request selects. A family is covered only
-    /// when all of its types are, and families still select types the catalog cannot represent
-    /// yet, so none is covered.
+    /// Whether `supported` covers every Asset Type the request selects.
     pub fn requested_asset_types_supported_by(&self, supported: &[AssetType]) -> bool {
-        self.asset_types.iter().all(|selector| {
-            AssetType::ALL
-                .into_iter()
-                .find(|asset_type| asset_type.selector() == *selector)
-                .is_some_and(|asset_type| supported.contains(&asset_type))
-        })
+        self.asset_types
+            .iter()
+            .all(|selector| selector.is_covered_by(supported))
     }
 
     pub fn try_from_draft(
@@ -335,10 +338,13 @@ impl AcquisitionRequest {
         let sources = match draft.sources {
             SourceSelection::Auto => SourceSelection::Auto,
             SourceSelection::Explicit(values) => {
-                let values = non_blank_values(values);
+                let mut values = non_blank_values(values);
                 if values.is_empty() {
                     return Err(AcquisitionRequestValidationError::MissingSources);
                 }
+                // A Source selected twice is selected once, in the order it first appears.
+                let mut seen = std::collections::HashSet::new();
+                values.retain(|value| seen.insert(value.clone()));
                 SourceSelection::Explicit(values)
             }
         };
@@ -381,6 +387,18 @@ pub enum AssetType {
     BoxFront,
     Screenshot,
     TitleScreen,
+}
+
+impl AssetTypeSelector {
+    /// Whether `supported` includes every Asset Type this selector selects. A family is covered
+    /// only when all of its types are, and families still select types the catalog cannot
+    /// represent yet, so none is covered.
+    pub fn is_covered_by(self, supported: &[AssetType]) -> bool {
+        AssetType::ALL
+            .into_iter()
+            .find(|asset_type| asset_type.selector() == self)
+            .is_some_and(|asset_type| supported.contains(&asset_type))
+    }
 }
 
 impl AssetType {
