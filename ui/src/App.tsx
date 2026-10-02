@@ -57,6 +57,8 @@ export function App() {
   const [libraryAsOf, setLibraryAsOf] = useState<number | null>(null);
   const loadingMoreRef = useRef(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // A filter search is pending; paging would continue the previous filters meanwhile.
+  const [searchingLibrary, setSearchingLibrary] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<View>("library");
   const [loading, setLoading] = useState(false);
@@ -79,15 +81,14 @@ export function App() {
     after: number | null = null,
     asOf: number | null = null,
   ) {
-    const value = (text: string) => (text.trim() === "" ? [] : [text.trim()]);
     const text = filters.text.trim();
     return invoke<LibraryPage>("search_library", {
       query: {
         text: text === "" ? null : text,
-        platforms: value(filters.platform),
-        regions: value(filters.region),
-        sources: value(filters.source),
-        asset_types: value(filters.assetType),
+        platforms: filters.platforms,
+        regions: filters.regions,
+        sources: filters.sources,
+        asset_types: filters.assetTypes,
         statuses: filters.statuses,
         after,
         as_of: asOf,
@@ -112,8 +113,8 @@ export function App() {
     }
     const searchingVaultRoot = loadedVaultRoot;
     // Supersedes refreshes and pages requested with the previous filters.
-    vaultDataGeneration.current += 1;
-    const generation = vaultDataGeneration.current;
+    const generation = supersedeLibraryRequests();
+    setSearchingLibrary(true);
     setError(null);
     try {
       const page = await searchLibrary(filters);
@@ -126,10 +127,28 @@ export function App() {
         showLibraryPage(page);
       }
     } catch (reason) {
-      if (activeVaultRoot.current === searchingVaultRoot) {
+      // A newer search or refresh reports for itself.
+      if (
+        activeVaultRoot.current === searchingVaultRoot &&
+        generation === vaultDataGeneration.current
+      ) {
         setError(errorMessage(reason));
       }
+    } finally {
+      if (generation === vaultDataGeneration.current) {
+        setSearchingLibrary(false);
+      }
     }
+  }
+
+  /**
+   * Starts a request that replaces the shown Library page: searches, refreshes and pages begun
+   * earlier no longer apply.
+   */
+  function supersedeLibraryRequests() {
+    vaultDataGeneration.current += 1;
+    setSearchingLibrary(false);
+    return vaultDataGeneration.current;
   }
 
   /**
@@ -140,6 +159,7 @@ export function App() {
     if (
       libraryNextAfter === null ||
       loadingMoreRef.current ||
+      searchingLibrary ||
       openedVaultRoot.current !== loadedVaultRoot
     ) {
       return;
@@ -179,6 +199,7 @@ export function App() {
     reviewRefreshRequestGeneration.current += 1;
     setLoading(true);
     setError(null);
+    supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setReviewItems([]);
     setLoadedVaultRoot(null);
@@ -259,6 +280,7 @@ export function App() {
       });
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
+      const libraryGeneration = supersedeLibraryRequests();
       // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
       const [reviews, library] = await Promise.all([
         invoke<ReviewItem[]>("list_review_items"),
@@ -273,7 +295,9 @@ export function App() {
         return;
       }
       setReviewItems(reviews);
-      showLibraryPage(library);
+      if (libraryGeneration === vaultDataGeneration.current) {
+        showLibraryPage(library);
+      }
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(errorMessage(reason));
@@ -281,6 +305,7 @@ export function App() {
         // detaching its asset; show the current reviews and library.
         reviewRefreshRequestGeneration.current += 1;
         const refusalRefreshGeneration = reviewRefreshRequestGeneration.current;
+        const refusalLibraryGeneration = supersedeLibraryRequests();
         try {
           const [reviews, library] = await Promise.all([
             invoke<ReviewItem[]>("list_review_items"),
@@ -291,7 +316,9 @@ export function App() {
             refusalRefreshGeneration === reviewRefreshRequestGeneration.current
           ) {
             setReviewItems(reviews);
-            showLibraryPage(library);
+            if (refusalLibraryGeneration === vaultDataGeneration.current) {
+              showLibraryPage(library);
+            }
           }
         } catch {
           // The refused decision stays the reported error.
@@ -351,8 +378,7 @@ export function App() {
     if (openedVaultRoot.current !== expectedVaultRoot) {
       return;
     }
-    vaultDataGeneration.current += 1;
-    const generation = vaultDataGeneration.current;
+    const generation = supersedeLibraryRequests();
     const reviewGenerationAtStart = reviewMutationGeneration.current;
     const [library, reviews] = await Promise.all([
       searchLibrary(),
@@ -618,6 +644,7 @@ export function App() {
           }
           canLoadMore={libraryNextAfter !== null}
           loadingMore={loadingMore}
+          searching={searchingLibrary}
           onLoadMore={() => void loadMoreReleases()}
         />
       ) : null}

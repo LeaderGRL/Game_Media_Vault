@@ -108,30 +108,31 @@ export type LibraryStatus = "complete" | "partial" | "needs_review";
 export interface LibraryFilters {
   /** Text the title contains; blank searches every title. */
   text: string;
-  /** Platform, region and Source to keep; blank keeps them all. */
-  platform: string;
-  region: string;
-  source: string;
-  /** Asset Type or family the release has an Asset of; blank keeps every release. */
-  assetType: string;
+  /** Values of one filter widen the search; an empty filter keeps every release. */
+  platforms: string[];
+  regions: string[];
+  sources: string[];
+  /** Asset Types or families the release has an Asset of. */
+  assetTypes: string[];
   statuses: LibraryStatus[];
 }
 
 export const NO_LIBRARY_FILTERS: LibraryFilters = {
   text: "",
-  platform: "",
-  region: "",
-  source: "",
-  assetType: "",
+  platforms: [],
+  regions: [],
+  sources: [],
+  assetTypes: [],
   statuses: [],
 };
 
 /** Whether any filter narrows the Library search. */
 export function narrowsLibrary(filters: LibraryFilters) {
   return (
-    [filters.text, filters.platform, filters.region, filters.source, filters.assetType].some(
-      (value) => value.trim() !== "",
-    ) || filters.statuses.length > 0
+    filters.text.trim() !== "" ||
+    [filters.platforms, filters.regions, filters.sources, filters.assetTypes, filters.statuses].some(
+      (values) => values.length > 0,
+    )
   );
 }
 

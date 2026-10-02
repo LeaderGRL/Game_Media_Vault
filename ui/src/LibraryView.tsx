@@ -27,6 +27,8 @@ interface LibraryViewProps {
   canLoadMore?: boolean;
   /** Whether the next page is loading, which disables asking for it again. */
   loadingMore?: boolean;
+  /** Whether a filter search is pending, which blocks paging the previous results. */
+  searching?: boolean;
   onLoadMore?: () => void;
 }
 
@@ -43,23 +45,39 @@ export function LibraryView({
   onSearch,
   canLoadMore = false,
   loadingMore = false,
+  searching = false,
   onLoadMore,
 }: LibraryViewProps) {
   return (
     <>
-      {onSearch ? <LibraryFilterBar filters={filters} onSearch={onSearch} /> : null}
+      {onSearch ? (
+        <LibraryFilterBar filters={filters} onSearch={onSearch} />
+      ) : null}
       <LibraryResults
         entries={entries}
         objectUrl={objectUrl}
         filtered={narrowsLibrary(filters)}
       />
       {canLoadMore && onLoadMore ? (
-        <button type="button" className="load-more" disabled={loadingMore} onClick={onLoadMore}>
+        <button
+          type="button"
+          className="load-more"
+          disabled={loadingMore || searching}
+          onClick={onLoadMore}
+        >
           {loadingMore ? "Loading more…" : "Load more"}
         </button>
       ) : null}
     </>
   );
+}
+
+/** One value per line, without blank lines or surrounding spaces. */
+function lines(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 }
 
 /** Library filters, applied together when the search is submitted. */
@@ -70,18 +88,17 @@ function LibraryFilterBar({
   filters: LibraryFilters;
   onSearch: (filters: LibraryFilters) => void;
 }) {
-  const [draft, setDraft] = useState(filters);
-
-  function update(change: Partial<LibraryFilters>) {
-    setDraft((current) => ({ ...current, ...change }));
-  }
+  const [text, setText] = useState(filters.text);
+  const [platforms, setPlatforms] = useState(filters.platforms.join("\n"));
+  const [regions, setRegions] = useState(filters.regions.join("\n"));
+  const [sources, setSources] = useState(filters.sources.join("\n"));
+  const [assetTypes, setAssetTypes] = useState(filters.assetTypes);
+  const [statuses, setStatuses] = useState(filters.statuses);
 
   function toggle(status: LibraryStatus) {
-    update({
-      statuses: draft.statuses.includes(status)
-        ? draft.statuses.filter((value) => value !== status)
-        : [...draft.statuses, status],
-    });
+    setStatuses((current) =>
+      current.includes(status) ? current.filter((value) => value !== status) : [...current, status],
+    );
   }
 
   return (
@@ -90,35 +107,41 @@ function LibraryFilterBar({
       aria-label="Library filters"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
-        onSearch(draft);
+        onSearch({
+          text,
+          platforms: lines(platforms),
+          regions: lines(regions),
+          sources: lines(sources),
+          assetTypes,
+          statuses,
+        });
       }}
     >
       <label>
         Search titles
-        <input value={draft.text} onChange={(event) => update({ text: event.target.value })} />
+        <input value={text} onChange={(event) => setText(event.target.value)} />
       </label>
       <label>
-        Platform
-        <input
-          value={draft.platform}
-          onChange={(event) => update({ platform: event.target.value })}
-        />
+        Platforms (one per line)
+        <textarea rows={2} value={platforms} onChange={(event) => setPlatforms(event.target.value)} />
       </label>
       <label>
-        Region
-        <input value={draft.region} onChange={(event) => update({ region: event.target.value })} />
+        Regions (one per line)
+        <textarea rows={2} value={regions} onChange={(event) => setRegions(event.target.value)} />
       </label>
       <label>
-        Source
-        <input value={draft.source} onChange={(event) => update({ source: event.target.value })} />
+        Sources (one per line)
+        <textarea rows={2} value={sources} onChange={(event) => setSources(event.target.value)} />
       </label>
       <label>
-        Asset Type
+        Asset Types
         <select
-          value={draft.assetType}
-          onChange={(event) => update({ assetType: event.target.value })}
+          multiple
+          value={assetTypes}
+          onChange={(event) =>
+            setAssetTypes(Array.from(event.target.selectedOptions, (option) => option.value))
+          }
         >
-          <option value="">Any</option>
           {ASSET_TYPE_FAMILIES.map((family) => (
             <optgroup label={family.label} key={family.value}>
               <option value={family.value}>All {family.label}</option>
@@ -135,7 +158,7 @@ function LibraryFilterBar({
         <label className="choice" key={status}>
           <input
             type="checkbox"
-            checked={draft.statuses.includes(status)}
+            checked={statuses.includes(status)}
             onChange={() => toggle(status)}
           />
           {label}
