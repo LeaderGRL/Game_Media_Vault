@@ -9,10 +9,12 @@ use game_media_vault_domain::{
 
 mod datafile;
 mod launchbox;
+mod mame;
 mod naming;
 mod retry;
 mod xml;
 
+pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use retry::RetryPolicy;
 
 pub use launchbox::{

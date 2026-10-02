@@ -1627,3 +1627,51 @@ fn source_list_describes_the_registered_sources_without_a_vault() {
     );
     assert!(!vault.exists());
 }
+
+#[test]
+fn import_mame_software_list_records_its_software_in_the_library() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("connectors")
+        .join("tests")
+        .join("fixtures")
+        .join("mame_nes_sample.xml");
+    let import = |args: &[&str]| -> serde_json::Value {
+        let mut command = vec![
+            "import-mame-software-list",
+            "--file",
+            fixture.to_str().unwrap(),
+            "--max-games",
+            "10",
+        ];
+        command.extend_from_slice(args);
+        serde_json::from_str(&run_in_vault(&vault, &command).unwrap()).unwrap()
+    };
+
+    let summary = import(&["--mame-version", "0.268"]);
+    // Importing the list again is idempotent.
+    let again = import(&[]);
+
+    assert_eq!(summary["imported_releases"], 3);
+    assert_eq!(summary["skipped_records"], 2);
+    assert_eq!(again["imported_releases"], 3);
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let titles: Vec<&str> = library
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|release| release["game_title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles.len(), 3);
+    assert!(titles.contains(&"Super Mario Bros."), "{titles:?}");
+    assert!(library.as_array().unwrap().iter().all(|release| {
+        release["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|assertion| assertion["source_id"] == "mame-software-lists")
+    }));
+}

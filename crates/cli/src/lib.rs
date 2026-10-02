@@ -17,7 +17,7 @@ use game_media_vault_application::{
     start_acquisition_run_with_connectors, verify_vault,
 };
 use game_media_vault_connectors::{
-    NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
+    MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, DerivationRecipe,
@@ -135,6 +135,16 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         max_games: usize,
+    },
+    /// Records the software of a MAME software list (`hash/nes.xml`, say) as reference data.
+    ImportMameSoftwareList {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        max_games: usize,
+        /// The MAME release the list came with, which the list does not record itself.
+        #[arg(long)]
+        mame_version: Option<String>,
     },
     /// Renders the thumbnail of every retained original that has none yet.
     DeriveThumbnails {
@@ -591,6 +601,17 @@ where
         }
         Command::ImportRedump { file, max_games } => {
             import_reference_datafile(&cli.vault, &RedumpReferenceCatalog::new(), file, max_games)
+        }
+        Command::ImportMameSoftwareList {
+            file,
+            max_games,
+            mame_version,
+        } => {
+            let source = mame_version
+                .as_deref()
+                .map(MameSoftwareListCatalog::with_mame_version)
+                .unwrap_or_default();
+            import_reference_datafile(&cli.vault, &source, file, max_games)
         }
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
