@@ -1166,6 +1166,7 @@ name = "game-media-vault-infrastructure"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "dirs",
  "game-media-vault-application",
  "game-media-vault-domain",
  "image",

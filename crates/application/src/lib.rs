@@ -48,9 +48,9 @@ pub use plan::{
     AcquisitionPlan, ExcludedSource, PlannedSource, SelectorCoverage, plan_acquisition,
 };
 pub use ports::{
-    CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
-    ReferenceCatalogRead, ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort,
-    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
+    CandidateAssetOutcome, CatalogPort, ConnectorPort, MachineSettingsPort, ObjectStorePort,
+    ParkedReview, PortError, ReferenceCatalogRead, ReferenceCatalogRepositoryPort,
+    ReferenceCatalogSourcePort, ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{
     MAX_REVIEW_PREVIEW_BYTES, ReviewPreview, list_review_items, load_review_preview,
@@ -62,7 +62,8 @@ pub use runs::{
     start_acquisition_run,
 };
 pub use sources::{
-    SourceDescription, SourceFailureSummary, describe_sources, summarize_source_failures,
+    MachineConnector, MachineConnectors, SourceDescription, SourceFailureSummary, describe_sources,
+    machine_connectors, machine_registry, set_source_enabled, summarize_source_failures,
 };
 pub use verify::{
     CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,

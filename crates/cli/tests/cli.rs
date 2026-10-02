@@ -18,7 +18,7 @@ use game_media_vault_domain::{
     PersistAsset, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
     ReviewMatchCandidate, SourceFailureStage, SourceId,
 };
-use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use game_media_vault_infrastructure::{ContentAddressedStore, MachineSettingsFile, SqliteCatalog};
 use tempfile::tempdir;
 
 struct FixtureConnector;
@@ -1624,6 +1624,7 @@ fn source_list_describes_the_registered_sources_without_a_vault() {
             "source_id": "libretro-thumbnails",
             "asset_types": ["box_front"],
             "direct_media_download": true,
+            "enabled": true,
         }])
     );
     assert!(!vault.exists());
@@ -1779,4 +1780,62 @@ fn source_failures_summarizes_the_latest_failures_of_each_source() {
     assert_eq!(latest.len(), 1);
     assert_eq!(latest[0]["message"], "HTTP 503");
     assert_eq!(latest[0]["stage"], "download");
+}
+
+#[test]
+fn a_source_disabled_on_this_machine_takes_no_part_in_plans_until_enabled_again() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let settings = MachineSettingsFile::at(temp.path().join("config").join("settings.json"));
+    let run = |args: &[&str]| {
+        game_media_vault_cli::run_on_machine(
+            cli_args(&vault, args),
+            &[&FixtureConnector],
+            &settings,
+        )
+    };
+    let plan = [
+        "plan",
+        "--source",
+        "libretro-thumbnails",
+        "--platform",
+        "Nintendo Entertainment System",
+        "--game",
+        "Super Mario Bros.",
+        "--asset-type",
+        "box-front",
+    ];
+
+    let disabled: serde_json::Value =
+        serde_json::from_str(&run(&["source", "disable", "libretro-thumbnails"]).unwrap()).unwrap();
+    assert_eq!(disabled[0]["enabled"], false);
+    let listed: serde_json::Value =
+        serde_json::from_str(&run(&["source", "list"]).unwrap()).unwrap();
+    assert_eq!(listed[0]["enabled"], false);
+    let refused = run(&plan).unwrap_err();
+    assert!(
+        refused.to_string().contains("disabled on this machine"),
+        "{refused}"
+    );
+
+    run(&["source", "enable", "libretro-thumbnails"]).unwrap();
+    assert!(run(&plan).is_ok());
+}
+
+#[test]
+fn an_unregistered_source_cannot_be_disabled() {
+    let temp = tempdir().unwrap();
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+
+    let error = game_media_vault_cli::run_on_machine(
+        cli_args(
+            &temp.path().join("vault"),
+            &["source", "disable", "unknown-source"],
+        ),
+        &[&FixtureConnector],
+        &settings,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("unknown-source"), "{error}");
 }

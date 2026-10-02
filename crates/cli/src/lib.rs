@@ -8,13 +8,13 @@ use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
     DownloadLimits, ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest,
-    LibraryQuery, LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions,
-    RepairSummary, VaultReport, acquire_run_with_connectors, build_acquisition_request,
-    cancel_acquisition_run, derive_assets, derive_packaging_models, describe_sources,
-    draft_from_document, export_acquisition_request, import_local_box_front,
+    LibraryQuery, LibraryStatus, MachineSettingsPort, PortError, ReferenceCatalogSourcePort,
+    RepairActions, RepairSummary, VaultReport, acquire_run_with_connectors,
+    build_acquisition_request, cancel_acquisition_run, derive_assets, derive_packaging_models,
+    describe_sources, draft_from_document, export_acquisition_request, import_local_box_front,
     import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
-    load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
-    resolve_review_item, resume_acquisition_run, search_library,
+    load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
+    repair_vault, resolve_review_item, resume_acquisition_run, search_library, set_source_enabled,
     start_acquisition_run_with_connectors, summarize_source_failures, verify_vault,
 };
 use game_media_vault_connectors::{
@@ -26,7 +26,8 @@ use game_media_vault_domain::{
     ReviewDecision, SourceSelection,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, SqliteCatalog,
+    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, NoMachineSettings,
+    SqliteCatalog, machine_settings,
 };
 use thiserror::Error;
 
@@ -310,6 +311,24 @@ enum RunCommand {
     },
 }
 
+impl Command {
+    /// Whether the command plans, executes or describes acquisitions from Sources, which the
+    /// settings of this machine bear on.
+    fn reaches_sources(&self) -> bool {
+        matches!(
+            self,
+            Command::Acquire(_)
+                | Command::Plan(_)
+                | Command::Run {
+                    command: RunCommand::Start { .. } | RunCommand::Execute { .. },
+                }
+                | Command::Source {
+                    command: SourceCommand::List,
+                }
+        )
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum SourceCommand {
     /// Lists every registered Source with the Asset Types it acquires, as planning sees them.
@@ -320,6 +339,11 @@ enum SourceCommand {
         #[arg(long, default_value_t = 5)]
         latest: usize,
     },
+    /// Lets a Source take part in acquisitions on this machine again, for every vault.
+    Enable { source_id: String },
+    /// Keeps a Source out of every acquisition on this machine, for every vault; its queued
+    /// work waits until it is enabled again.
+    Disable { source_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -417,7 +441,8 @@ impl From<LimitArgs> for AcquisitionLimits {
     }
 }
 
-/// Runs a command line, executing and checking acquisition plans with Libretro Thumbnails.
+/// Runs a command line with the registered connectors, as the settings of this machine leave
+/// them.
 pub fn run<I, T>(args: I) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
@@ -428,7 +453,7 @@ where
         .iter()
         .map(|connector| connector.as_ref() as &dyn ConnectorPort)
         .collect();
-    run_with_connectors(args, &connectors)
+    run_on_machine(args, &connectors, machine_settings().as_ref())
 }
 
 /// Builds and validates the Acquisition Request of an `acquire` command line without starting
@@ -449,6 +474,7 @@ where
 
 /// Runs a command line with the registered `connectors`, one per Source, which plan started
 /// runs and execute them.
+/// Every Source is enabled, and this machine's settings are neither read nor changed.
 pub fn run_with_connectors<I, T>(
     args: I,
     connectors: &[&dyn ConnectorPort],
@@ -457,7 +483,30 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    run_on_machine(args, connectors, &NoMachineSettings)
+}
+
+/// Runs a command line with the registered `connectors`, one per Source, as the `settings` of
+/// this machine leave them, which plan started runs and execute them.
+pub fn run_on_machine<I, T>(
+    args: I,
+    registered: &[&dyn ConnectorPort],
+    settings: &dyn MachineSettingsPort,
+) -> Result<String, CliError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let cli = Cli::try_parse_from(args)?;
+    // Only commands that reach Sources read this machine's settings.
+    let disabled_sources = if cli.command.reaches_sources() {
+        settings.disabled_sources()?
+    } else {
+        Vec::new()
+    };
+    let machine = machine_connectors(registered, &disabled_sources);
+    let connectors = machine.refs();
+    let connectors = connectors.as_slice();
 
     match cli.command {
         Command::Acquire(acquire) => {
@@ -523,7 +572,20 @@ where
         },
         Command::Source {
             command: SourceCommand::List,
-        } => Ok(serde_json::to_string_pretty(&describe_sources(connectors))?),
+        } => Ok(serde_json::to_string_pretty(&describe_sources(
+            registered,
+            &disabled_sources,
+        ))?),
+        Command::Source {
+            command: SourceCommand::Enable { source_id },
+        } => Ok(serde_json::to_string_pretty(&set_source_enabled(
+            settings, registered, &source_id, true,
+        )?)?),
+        Command::Source {
+            command: SourceCommand::Disable { source_id },
+        } => Ok(serde_json::to_string_pretty(&set_source_enabled(
+            settings, registered, &source_id, false,
+        )?)?),
         Command::Source {
             command: SourceCommand::Failures { latest },
         } => {

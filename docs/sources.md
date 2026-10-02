@@ -13,7 +13,9 @@ vault; `game-media-vault source failures` and the desktop Sources view summarize
 
 ## Media Sources
 
-These Sources are registered connectors; `game-media-vault source list` describes them.
+These Sources are registered connectors; `game-media-vault source list` describes them, and
+`game-media-vault source disable <source>` keeps one out of every acquisition on this machine
+until `source enable <source>`.
 
 ### Libretro Thumbnails (`libretro-thumbnails`)
 
