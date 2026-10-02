@@ -85,3 +85,7 @@ _Avoid_: Completeness when referring to the rule rather than its result
 **Coverage Status**:
 The evaluated completeness of a Release Edition against a Coverage Profile, such as Partial, Packaging Complete, Physical Complete, or Archival Complete.
 _Avoid_: Download status
+
+**Packaging Family**:
+How the releases of a platform are packaged, such as a cardboard box, a CD jewel case, a keep case, a cartridge case, an arcade board or a digital release. It decides what each Coverage Profile requires.
+_Avoid_: Box type when the release has no box
