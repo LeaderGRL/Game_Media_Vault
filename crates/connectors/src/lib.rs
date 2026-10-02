@@ -1,4 +1,10 @@
-use std::{io::Read, path::Path, sync::OnceLock, thread, time::Duration};
+use std::{
+    io::Read,
+    path::Path,
+    sync::OnceLock,
+    thread,
+    time::{Duration, SystemTime},
+};
 
 use game_media_vault_application::{
     ConnectorPort, PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort,
@@ -89,8 +95,9 @@ impl ReqwestHttpTransport {
     fn attempt(&self, url: &str) -> Result<Response, FailedRequest> {
         let response = self.client.get(url).send().map_err(|error| FailedRequest {
             message: format!("download of {url} failed: {error}"),
-            // A request that could not even be built fails the same way every time.
-            transient: !error.is_builder(),
+            // Only failures to reach the Source may pass; a request that cannot be built or
+            // that redirects without end fails the same way every time.
+            transient: error.is_connect() || error.is_timeout() || error.is_request(),
             unavailable: false,
             retry_after: None,
         })?;
@@ -102,8 +109,7 @@ impl ReqwestHttpTransport {
             .headers()
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse().ok())
-            .map(Duration::from_secs);
+            .and_then(|value| retry::parse_retry_after(value, SystemTime::now()));
         Err(FailedRequest {
             message: format!("download returned HTTP {status} for {url}"),
             transient: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
@@ -133,7 +139,7 @@ impl HttpTransport for ReqwestHttpTransport {
                     return Ok(Box::new(resume::ResumingBody::new(
                         self.client.clone(),
                         self.retry,
-                        url,
+                        attempts,
                         response,
                     )));
                 }
