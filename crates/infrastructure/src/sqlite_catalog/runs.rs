@@ -312,7 +312,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
     }))
 }
 
-fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
+pub(super) fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {
     match value {
         "running" => Ok(AcquisitionRunStatus::Running),
         "paused" => Ok(AcquisitionRunStatus::Paused),

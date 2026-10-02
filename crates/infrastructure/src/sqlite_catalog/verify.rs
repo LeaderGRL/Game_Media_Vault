@@ -1,8 +1,8 @@
 use game_media_vault_application::{
-    PortError, RecordedDerivative, VaultCatalogPort, VaultRepairCatalogPort,
+    PortError, RecordedDerivative, UnfinishedWork, VaultCatalogPort, VaultRepairCatalogPort,
 };
 
-use super::{SqliteCatalog, sql_error};
+use super::{SqliteCatalog, reviews::parse_review_status, runs::parse_run_status, sql_error};
 
 impl VaultCatalogPort for SqliteCatalog {
     fn referenced_originals(&self) -> Result<Vec<String>, PortError> {
@@ -41,6 +41,45 @@ impl VaultCatalogPort for SqliteCatalog {
             .map_err(sql_error)?
             .collect::<rusqlite::Result<_>>()
             .map_err(sql_error)
+    }
+
+    fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT work.run_id, run.status, work.work_key, review.status
+                 FROM acquisition_run_work AS work
+                 JOIN acquisition_runs AS run ON run.id = work.run_id
+                 LEFT JOIN review_items AS review ON review.id = work.review_item_id
+                 WHERE work.state IN ('queued', 'parked')
+                 ORDER BY work.run_id, work.work_key",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .map(|(run_id, run_status, work_key, review_status)| {
+                Ok(UnfinishedWork {
+                    run_id,
+                    run_status: parse_run_status(&run_status)?,
+                    work_key,
+                    parked_on: review_status
+                        .as_deref()
+                        .map(parse_review_status)
+                        .transpose()?,
+                })
+            })
+            .collect()
     }
 }
 

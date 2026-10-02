@@ -1,8 +1,8 @@
 use std::{cell::RefCell, collections::BTreeMap};
 
 use game_media_vault_application::{
-    ObjectArea, ObjectCheck, PortError, RecordedDerivative, RepairActions, VaultCatalogPort,
-    VaultRepairCatalogPort, VaultRepairStorePort, VaultStorePort, repair_vault,
+    ObjectArea, ObjectCheck, PortError, RecordedDerivative, RepairActions, UnfinishedWork,
+    VaultCatalogPort, VaultRepairCatalogPort, VaultRepairStorePort, VaultStorePort, repair_vault,
 };
 
 /// What the catalog references and what the store holds, with the hash each stored file
@@ -32,6 +32,10 @@ impl VaultCatalogPort for FakeVault {
 
     fn recorded_derivatives(&self) -> Result<Vec<RecordedDerivative>, PortError> {
         Ok(self.derivatives.borrow().clone())
+    }
+
+    fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError> {
+        Ok(Vec::new())
     }
 }
 

@@ -629,7 +629,7 @@ fn review_status_to_str(status: ReviewStatus) -> &'static str {
     }
 }
 
-fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
+pub(super) fn parse_review_status(value: &str) -> Result<ReviewStatus, PortError> {
     match value {
         "pending" => Ok(ReviewStatus::Pending),
         "deferred" => Ok(ReviewStatus::Deferred),

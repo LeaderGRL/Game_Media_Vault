@@ -2,6 +2,8 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use game_media_vault_domain::{AcquisitionRunStatus, ReviewStatus};
+
 use crate::{ApplicationError, PortError};
 
 /// A Derived Asset the catalog records, by the hashes of its original and of its output.
@@ -11,12 +13,57 @@ pub struct RecordedDerivative {
     pub object_hash: String,
 }
 
-/// What the catalog says the object store should hold.
+/// A work item of an Acquisition Run still queued or parked, with what decides whether an
+/// execution can still process it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnfinishedWork {
+    pub run_id: i64,
+    pub run_status: AcquisitionRunStatus,
+    pub work_key: String,
+    /// The status of the Review Item parked work waits on; `None` for queued work.
+    pub parked_on: Option<ReviewStatus>,
+}
+
+/// What the catalog says the object store should hold, and the work its runs have left.
 pub trait VaultCatalogPort {
     /// The originals retained Assets reference, each once.
     fn referenced_originals(&self) -> Result<Vec<String>, PortError>;
 
     fn recorded_derivatives(&self) -> Result<Vec<RecordedDerivative>, PortError>;
+
+    /// Every queued or parked work item, by run and then by work key.
+    fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError>;
+}
+
+/// Why a work item's state contradicts its run or its Review Item, so that no execution will
+/// process it. Work a cancellation abandoned is expected, never stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaleWorkReason {
+    /// It is queued in a completed run, which completes only once its queue is empty.
+    CompletedRun,
+    /// It waits on a Review Item a decision already closed, which should have requeued or
+    /// completed it.
+    ClosedReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StaleWork {
+    pub run_id: i64,
+    pub work_key: String,
+    pub reason: StaleWorkReason,
+}
+
+impl UnfinishedWork {
+    fn stale_reason(&self) -> Option<StaleWorkReason> {
+        match (self.run_status, self.parked_on) {
+            // A decision does not requeue the work of a cancelled run, which keeps it as left.
+            (AcquisitionRunStatus::Cancelled, _) => None,
+            (AcquisitionRunStatus::Completed, None) => Some(StaleWorkReason::CompletedRun),
+            (_, None | Some(ReviewStatus::Pending | ReviewStatus::Deferred)) => None,
+            (_, Some(_)) => Some(StaleWorkReason::ClosedReview),
+        }
+    }
 }
 
 /// The two areas of the object store: originals and the Derived Assets kept apart from them.
@@ -66,7 +113,7 @@ pub struct UnreadableObject {
 }
 
 /// Every disagreement between the catalog and the object store, in catalog and then store
-/// order. Verifying changes nothing.
+/// order, and the work of its runs that no execution will process. Verifying changes nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct VaultReport {
     /// Originals retained Assets reference that the store lacks.
@@ -84,6 +131,8 @@ pub struct VaultReport {
     /// record lists.
     pub orphaned_derived: Vec<String>,
     pub interrupted_staging: Vec<String>,
+    /// Work items no execution will ever process.
+    pub stale_work: Vec<StaleWork>,
 }
 
 impl VaultReport {
@@ -118,7 +167,8 @@ impl ObjectFindings<'_> {
 
 /// Compares what the catalog references with what the object store holds, rehashing every
 /// referenced object. The store is listed before the catalog is read, so an object another
-/// task stores and records meanwhile is seen as referenced rather than unreferenced.
+/// task stores and records meanwhile is seen as referenced rather than unreferenced. Work whose
+/// state contradicts its run or Review Item is reported stale.
 pub fn verify_vault(
     catalog: &dyn VaultCatalogPort,
     store: &dyn VaultStorePort,
@@ -128,6 +178,7 @@ pub fn verify_vault(
     let staging = store.staging_files()?;
     let referenced = catalog.referenced_originals()?;
     let derivatives = catalog.recorded_derivatives()?;
+    let unfinished = catalog.unfinished_work()?;
     let mut report = VaultReport::default();
 
     let mut originals = ObjectFindings {
@@ -177,6 +228,16 @@ pub fn verify_vault(
         .collect();
 
     report.interrupted_staging = staging;
+    report.stale_work = unfinished
+        .into_iter()
+        .filter_map(|work| {
+            work.stale_reason().map(|reason| StaleWork {
+                run_id: work.run_id,
+                work_key: work.work_key,
+                reason,
+            })
+        })
+        .collect();
     Ok(report)
 }
 

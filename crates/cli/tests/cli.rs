@@ -1490,6 +1490,7 @@ fn verify_reports_originals_the_vault_lost_without_repairing_anything() {
         serde_json::from_str(&run_in_vault(&vault, &["verify"]).unwrap()).unwrap();
 
     assert_eq!(healthy["healthy"], true);
+    assert_eq!(healthy["stale_work"], serde_json::json!([]));
     assert_eq!(report["healthy"], false);
     assert_eq!(report["missing_originals"], serde_json::json!([hash]));
     let library: serde_json::Value =
