@@ -305,7 +305,16 @@ fn serve_raw(responses: Vec<Vec<u8>>) -> (String, Arc<std::sync::Mutex<Vec<Strin
             seen.lock()
                 .unwrap()
                 .push(String::from_utf8_lossy(&request[..read]).into_owned());
-            stream.write_all(&response).unwrap();
+            // Each answer closes its connection, so the client must not reuse it: announcing it
+            // keeps a pooled connection from failing the next request on some platforms.
+            let status_line_end = response
+                .windows(2)
+                .position(|pair| pair == b"\r\n")
+                .unwrap()
+                + 2;
+            stream.write_all(&response[..status_line_end]).unwrap();
+            stream.write_all(b"Connection: close\r\n").unwrap();
+            stream.write_all(&response[status_line_end..]).unwrap();
         }
     });
     (format!("http://{address}/media.png"), requests)
