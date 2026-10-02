@@ -69,6 +69,15 @@ impl CommandError {
     }
 }
 
+/// A canonical vault path as an identity: as is when it is Unicode, else in its debug form,
+/// quoted with its other bytes escaped. That form is lossless, so distinct paths never share an
+/// identity, and no canonical path written as is starts with a quote.
+fn vault_identity(canonical: &Path) -> String {
+    canonical
+        .to_str()
+        .map_or_else(|| format!("{canonical:?}"), str::to_owned)
+}
+
 /// The vault opened by the desktop user. Commands act on it instead of trusting a path sent by
 /// the webview with every call.
 #[derive(Debug, Default)]
@@ -89,11 +98,17 @@ impl VaultSession {
         } else {
             SqliteCatalog::open_existing(catalog_path)?;
         }
-        // The opened catalog proves the directory exists, so it canonicalizes; should it not,
-        // the path as given still identifies this spelling.
-        let identity = fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
+        // An identity that is not canonical would split one vault in two, so the open fails
+        // rather than fall back to the path as given.
+        let canonical = fs::canonicalize(vault_root).map_err(|error| CommandError {
+            kind: ErrorKind::External.as_str(),
+            message: format!(
+                "failed to resolve the vault path {}: {error}",
+                vault_root.display()
+            ),
+        })?;
         *root = Some(vault_root.to_path_buf());
-        Ok(identity.to_string_lossy().into_owned())
+        Ok(vault_identity(&canonical))
     }
 
     pub fn root(&self) -> Result<PathBuf, CommandError> {

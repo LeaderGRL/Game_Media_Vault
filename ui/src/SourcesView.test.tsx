@@ -30,6 +30,13 @@ describe("SourcesView", () => {
     expect(within(indexOnly).getByText("Cannot download media directly")).toBeInTheDocument();
   });
 
+  it("says why the Sources could not be read", () => {
+    render(<SourcesView sources={null} error="registry unavailable" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("registry unavailable");
+    expect(screen.queryByText("Reading the registered Sources…")).not.toBeInTheDocument();
+  });
+
   it("says when the Sources are still being read", () => {
     render(<SourcesView sources={null} />);
 

@@ -2581,5 +2581,34 @@ describe("App Library requests", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
     expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
+    // The failure no longer shows once the Sources are read.
+    expect(screen.queryByText("registry unavailable")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Sources a newer read shows when an older read fails late", async () => {
+    let failFirstRead: ((reason: unknown) => void) | undefined;
+    let reads = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_sources") {
+        reads += 1;
+        return reads === 1
+          ? new Promise((_, reject) => {
+              failFirstRead = reject;
+            })
+          : Promise.resolve([
+              { source_id: "libretro-thumbnails", asset_types: [], direct_media_download: true },
+            ]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
+
+    await act(async () => failFirstRead?.({ kind: "external", message: "registry unavailable" }));
+
+    expect(screen.getByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
+    expect(screen.queryByText("registry unavailable")).not.toBeInTheDocument();
   });
 });
