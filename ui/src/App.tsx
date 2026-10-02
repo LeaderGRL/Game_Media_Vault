@@ -88,6 +88,9 @@ export function App() {
   const renderingThumbnailVaults = useRef(new Set<string>());
   const [renderingThumbnails, setRenderingThumbnails] = useState(false);
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
+  // Vaults whose reference import runs: the backend keeps importing a vault while another is
+  // loaded, so loading it again shows its import instead of offering to start another.
+  const importingReferenceVaults = useRef(new Set<string>());
   const [importingReference, setImportingReference] = useState(false);
   const [referenceImportStatus, setReferenceImportStatus] = useState<string | null>(null);
   // The registered Sources, read the first time the Sources view is shown; they need no vault.
@@ -251,8 +254,7 @@ export function App() {
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
     setRenderingThumbnails(renderingThumbnailVaults.current.has(vaultKey));
-    // An import keeps running in the vault it started in, which reports it alone.
-    setImportingReference(false);
+    setImportingReference(importingReferenceVaults.current.has(vaultKey));
     setReferenceImportStatus(null);
     setReviewItems([]);
     setLoadedVaultRoot(null);
@@ -274,6 +276,7 @@ export function App() {
         vaultKey = identity;
         activeVaultRoot.current = identity;
         setRenderingThumbnails(renderingThumbnailVaults.current.has(identity));
+        setImportingReference(importingReferenceVaults.current.has(identity));
         setExecutingRunIds(new Set(executionsByVault.current.get(identity)));
       }
       openedVaultRoot.current = vaultKey;
@@ -472,10 +475,15 @@ export function App() {
 
   /** Imports a reference catalog file into the opened vault, then shows its releases. */
   async function importReferenceCatalog(input: ReferenceImportInput) {
-    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+    if (
+      loadedVaultRoot === null ||
+      openedVaultRoot.current !== loadedVaultRoot ||
+      importingReferenceVaults.current.has(loadedVaultRoot)
+    ) {
       return;
     }
     const importingVaultRoot = loadedVaultRoot;
+    importingReferenceVaults.current.add(importingVaultRoot);
     setImportingReference(true);
     setReferenceImportStatus(null);
     setError(null);
@@ -487,12 +495,13 @@ export function App() {
         return;
       }
       setReferenceImportStatus(describeReferenceImport(summary));
-      await refreshVaultData(importingVaultRoot);
+      await showChangedLibrary(importingVaultRoot);
     } catch (reason) {
       if (activeVaultRoot.current === importingVaultRoot) {
         setError(errorMessage(reason));
       }
     } finally {
+      importingReferenceVaults.current.delete(importingVaultRoot);
       if (activeVaultRoot.current === importingVaultRoot) {
         setImportingReference(false);
       }
@@ -548,7 +557,7 @@ export function App() {
     }
     // Even a failed rendering may have recorded thumbnails before failing.
     try {
-      await showRenderedThumbnails(renderingVaultRoot);
+      await showChangedLibrary(renderingVaultRoot);
     } catch (reason) {
       if (reportsHere()) {
         setError(errorMessage((failure ?? { reason }).reason));
@@ -562,10 +571,10 @@ export function App() {
   }
 
   /**
-   * Shows the Library with the thumbnails just rendered: a filter search submitted meanwhile is
-   * searched again so its results include them.
+   * Shows the Library again once the vault gained thumbnails or releases: a filter search
+   * submitted meanwhile is searched again so its results include them.
    */
-  async function showRenderedThumbnails(renderingVaultRoot: string) {
+  async function showChangedLibrary(changedVaultRoot: string) {
     const pendingFilters = pendingSearchRef.current;
     if (pendingFilters !== null) {
       await applyLibraryFilters(pendingFilters);
@@ -573,7 +582,7 @@ export function App() {
     }
     const generation = supersedeLibraryRequests();
     const isCurrent = () =>
-      openedVaultRoot.current === renderingVaultRoot && generation === vaultDataGeneration.current;
+      openedVaultRoot.current === changedVaultRoot && generation === vaultDataGeneration.current;
     try {
       const library = await searchLibrary();
       if (isCurrent()) {

@@ -696,6 +696,69 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Import catalog" })).toBeEnabled();
   });
 
+  it("keeps a reference import attached to its vault while another vault loads", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      command === "import_reference_catalog"
+        ? new Promise(() => {})
+        : Promise.resolve(command === "list_library" ? [entry] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+      target: { value: "nes.dat" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
+    expect(await screen.findByRole("button", { name: "Importing…" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByRole("button", { name: "Import catalog" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: ".game-media-vault" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    // The backend still imports into this vault, so a second import must not start.
+    expect(await screen.findByRole("button", { name: "Importing…" })).toBeDisabled();
+  });
+
+  it("keeps a filter search submitted while a reference catalog imports", async () => {
+    let finishImport: ((summary: unknown) => void) | undefined;
+    let metalSearches = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "import_reference_catalog") {
+        return new Promise((resolve) => {
+          finishImport = resolve;
+        });
+      }
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "metal") {
+          metalSearches += 1;
+          // The first search never settles; the import ending supersedes it.
+          return metalSearches === 1 ? new Promise(() => {}) : Promise.resolve([entry]);
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Catalog file"), { target: { value: "nes.dat" } });
+    fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
+    await waitFor(() => expect(finishImport).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(metalSearches).toBe(1));
+
+    await act(async () => finishImport?.({ imported_releases: 1, skipped_records: 0 }));
+
+    // The Library is searched again with the submitted filters, which then apply.
+    await waitFor(() => expect(metalSearches).toBe(2));
+    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue("metal"));
+    expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" });
+  });
+
   it("offers no reference catalog import before a vault is loaded", () => {
     render(<App />);
 
