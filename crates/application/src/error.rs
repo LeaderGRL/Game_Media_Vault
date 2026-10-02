@@ -14,6 +14,8 @@ pub enum ApplicationError {
     ResolveSourcePath(String),
     #[error("reference catalog imports require a positive game limit")]
     InvalidReferenceImportLimit,
+    #[error("thumbnails require a positive longest edge")]
+    InvalidThumbnailEdge,
     #[error("{0}")]
     Port(#[from] PortError),
     #[error("{0}")]
@@ -114,6 +116,7 @@ impl ApplicationError {
             Self::MissingSourceFileName
             | Self::ResolveSourcePath(_)
             | Self::InvalidReferenceImportLimit
+            | Self::InvalidThumbnailEdge
             | Self::Validation(_)
             | Self::InvalidMatchingPolicy(_)
             | Self::ReviewAcceptanceNotCompeting { .. } => ErrorKind::InvalidRequest,

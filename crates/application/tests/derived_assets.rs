@@ -5,7 +5,7 @@ use std::{
 };
 
 use game_media_vault_application::{
-    DerivationFailure, DerivativeRepositoryPort, DerivedStorePort, MediaTransformPort,
+    DerivationFailure, DerivativeRepositoryPort, DerivedStorePort, ErrorKind, MediaTransformPort,
     OriginalObject, PortError, derive_assets,
 };
 use game_media_vault_domain::{DerivationRecipe, MediaInfo, StoredObject};
@@ -189,4 +189,15 @@ fn an_original_shared_by_assets_of_several_media_types_derives_from_one_it_can_r
 
     assert_eq!((summary.derived, summary.skipped), (1, 0));
     assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+}
+
+#[test]
+fn a_thumbnail_without_a_positive_longest_edge_is_refused() {
+    let vault = FakeVault::with_originals(&[("aaa", &["image/png"], b"one")]);
+    let empty = DerivationRecipe::Thumbnail { max_edge: 0 };
+
+    let error = derive_assets(&vault, &vault, &FakeTransformer, &empty).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+    assert!(vault.stored.borrow().is_empty());
 }

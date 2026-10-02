@@ -79,6 +79,9 @@ pub fn derive_assets(
     transformer: &dyn MediaTransformPort,
     recipe: &DerivationRecipe,
 ) -> Result<DerivationSummary, ApplicationError> {
+    if *recipe == (DerivationRecipe::Thumbnail { max_edge: 0 }) {
+        return Err(ApplicationError::InvalidThumbnailEdge);
+    }
     let mut summary = DerivationSummary {
         derived: 0,
         skipped: 0,
