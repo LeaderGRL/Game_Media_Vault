@@ -452,8 +452,9 @@ export function App() {
     }
     const renderingVaultRoot = loadedVaultRoot;
     renderingThumbnailVaults.current.add(renderingVaultRoot);
-    // Another vault loaded meanwhile neither shows nor reports this rendering.
-    const reportsHere = () => openedVaultRoot.current === renderingVaultRoot;
+    // The rendering's vault reports it, even while it reopens; another vault loaded meanwhile
+    // neither shows nor reports it.
+    const reportsHere = () => activeVaultRoot.current === renderingVaultRoot;
     setRenderingThumbnails(true);
     setThumbnailStatus(null);
     setError(null);
@@ -479,6 +480,10 @@ export function App() {
     }
     if (failure !== null) {
       setError(errorMessage(failure.reason));
+    }
+    // A reopening of the vault searches the Library itself once the vault is open.
+    if (openedVaultRoot.current !== renderingVaultRoot) {
+      return;
     }
     // Even a failed rendering may have recorded thumbnails before failing.
     try {

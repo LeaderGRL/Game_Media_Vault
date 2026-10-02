@@ -508,6 +508,77 @@ describe("App", () => {
     expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" });
   });
 
+  it.each([
+    ["status", false, "Rendered 1 thumbnail."],
+    ["failure", true, "disk full"],
+  ])(
+    "reports the %s of a rendering that ends while its own vault reopens",
+    async (_outcome, fails, shown) => {
+      let settleRendering: (() => void) | undefined;
+      let finishReopen: (() => void) | undefined;
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "derive_thumbnails") {
+          return new Promise((resolve, reject) => {
+            settleRendering = () =>
+              fails
+                ? reject({ kind: "external", message: "disk full" })
+                : resolve({ derived: 1, skipped: 0, failed: [] });
+          });
+        }
+        return Promise.resolve(command === "list_library" ? [entry] : []);
+      });
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+      await waitFor(() => expect(settleRendering).toBeDefined());
+      openVaultMock.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishReopen = resolve;
+          }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      await waitFor(() => expect(finishReopen).toBeDefined());
+
+      await act(async () => settleRendering?.());
+      await act(async () => finishReopen?.());
+
+      expect(await screen.findByText(shown)).toBeInTheDocument();
+    },
+  );
+
+  it.each([false, true])(
+    "shows nothing of another vault's rendering that ends while this one is loaded (fails: %s)",
+    async (fails) => {
+      let settleRendering: (() => void) | undefined;
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "derive_thumbnails") {
+          return new Promise((resolve, reject) => {
+            settleRendering = () =>
+              fails
+                ? reject({ kind: "external", message: "disk full" })
+                : resolve({ derived: 1, skipped: 0, failed: [] });
+          });
+        }
+        return Promise.resolve(command === "list_library" ? [entry] : []);
+      });
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+      await waitFor(() => expect(settleRendering).toBeDefined());
+      fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeEnabled();
+
+      await act(async () => settleRendering?.());
+
+      expect(screen.queryByText("Rendered 1 thumbnail.")).not.toBeInTheDocument();
+      expect(screen.queryByText("disk full")).not.toBeInTheDocument();
+    },
+  );
+
   it("offers no Library search before a vault is loaded", () => {
     render(<App />);
 
