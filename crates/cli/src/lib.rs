@@ -5,11 +5,12 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
-    AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
-    DEFAULT_LIBRARY_PAGE_SIZE, ErrorKind, ImportLocalBoxFrontRequest,
-    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, PortError,
-    ReferenceCatalogSourcePort, acquire_run_with_connector, build_acquisition_request,
-    cancel_acquisition_run, derive_assets, import_local_box_front, import_reference_catalog,
+    ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
+    AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
+    ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
+    LibraryStatus, PortError, ReferenceCatalogSourcePort, acquire_run_with_connector,
+    build_acquisition_request, cancel_acquisition_run, derive_assets, draft_from_document,
+    export_acquisition_request, import_local_box_front, import_reference_catalog,
     list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
     pause_acquisition_run, resolve_review_item, resume_acquisition_run, search_library,
     start_acquisition_run_for_connector,
@@ -37,6 +38,9 @@ pub enum CliError {
     Serialization(#[from] serde_json::Error),
     #[error("{0}")]
     Validation(#[from] AcquisitionRequestValidationError),
+    /// A request document that cannot be read or does not parse.
+    #[error("{0}")]
+    InvalidDocument(String),
 }
 
 impl CliError {
@@ -45,7 +49,7 @@ impl CliError {
     pub fn exit_code(&self) -> i32 {
         let kind = match self {
             Self::Parse(error) => return error.exit_code(),
-            Self::Validation(_) => ErrorKind::InvalidRequest,
+            Self::Validation(_) | Self::InvalidDocument(_) => ErrorKind::InvalidRequest,
             Self::Application(error) => error.kind(),
             Self::Port(_) | Self::Serialization(_) => ErrorKind::External,
         };
@@ -231,6 +235,14 @@ impl AcquireArgs {
 #[derive(Debug, Subcommand)]
 enum RunCommand {
     List,
+    /// Prints the request of a run as a portable document, without run state or secrets.
+    Export {
+        id: i64,
+    },
+    /// Starts a run from a request document, as `acquire` starts one from arguments.
+    Start {
+        request_file: PathBuf,
+    },
     Show {
         id: i64,
     },
@@ -391,6 +403,13 @@ where
             Ok(serde_json::to_string_pretty(&run)?)
         }
         Command::Run { command } => match command {
+            RunCommand::Start { request_file } => {
+                let draft = draft_from_document(read_request_document(&request_file)?)?;
+                let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+                let run = start_acquisition_run_for_connector(&catalog, draft, connector)
+                    .map_err(map_start_run_error)?;
+                Ok(serde_json::to_string_pretty(&run)?)
+            }
             RunCommand::Execute {
                 id,
                 match_high_threshold,
@@ -424,7 +443,10 @@ where
                     RunCommand::Cancel { id } => Ok(serde_json::to_string_pretty(
                         &cancel_acquisition_run(&catalog, id)?,
                     )?),
-                    RunCommand::Execute { .. } => unreachable!(),
+                    RunCommand::Export { id } => Ok(serde_json::to_string_pretty(
+                        &export_acquisition_request(&catalog, id)?,
+                    )?),
+                    RunCommand::Execute { .. } | RunCommand::Start { .. } => unreachable!(),
                 }
             }
         },
@@ -584,4 +606,31 @@ fn import_reference_datafile(
     Ok(serde_json::to_string_pretty(&serde_json::json!({
         "imported_releases": summary.imported_releases
     }))?)
+}
+
+/// Reads a request document, checking its format version before the request it holds, so a
+/// document of another version is refused as such rather than as malformed.
+fn read_request_document(path: &Path) -> Result<AcquisitionRequestDocument, CliError> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        CliError::InvalidDocument(format!("cannot read {}: {error}", path.display()))
+    })?;
+    #[derive(serde::Deserialize)]
+    struct FormatProbe {
+        format_version: u32,
+    }
+    let invalid = |error: serde_json::Error| {
+        CliError::InvalidDocument(format!(
+            "invalid request document {}: {error}",
+            path.display()
+        ))
+    };
+    let probe: FormatProbe = serde_json::from_str(&text).map_err(invalid)?;
+    if probe.format_version != ACQUISITION_REQUEST_DOCUMENT_VERSION {
+        return Err(ApplicationError::UnsupportedDocumentVersion {
+            found: probe.format_version,
+            supported: ACQUISITION_REQUEST_DOCUMENT_VERSION,
+        }
+        .into());
+    }
+    serde_json::from_str(&text).map_err(invalid)
 }

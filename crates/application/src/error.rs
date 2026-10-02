@@ -55,6 +55,10 @@ pub enum ApplicationError {
     UnsafeCandidateLocator { source_id: String },
     #[error("acquisition run cannot execute connector work while {status:?}")]
     RunNotExecutable { status: AcquisitionRunStatus },
+    #[error(
+        "acquisition request documents of format version {found} are not supported (this version reads {supported})"
+    )]
+    UnsupportedDocumentVersion { found: u32, supported: u32 },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
     #[error("the engine cannot execute this acquisition request yet: {0}")]
@@ -142,6 +146,7 @@ impl ApplicationError {
             Self::ConnectorNotSelected { .. }
             | Self::ConnectorCannotDownload { .. }
             | Self::UnsupportedConnectorPlan { .. }
+            | Self::UnsupportedDocumentVersion { .. }
             | Self::UnsupportedRequest(_)
             | Self::UncoveredAssetTypes { .. }
             | Self::PreviewConnectorUnavailable { .. }

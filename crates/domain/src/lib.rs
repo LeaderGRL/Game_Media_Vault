@@ -139,7 +139,7 @@ pub enum RetentionPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct QualityRequirements {
     pub min_width: Option<u32>,
     pub min_height: Option<u32>,
@@ -155,6 +155,8 @@ pub struct QualityRequirements {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+// A misspelled limit must not be read as no limit.
+#[serde(deny_unknown_fields)]
 pub struct AcquisitionLimits {
     pub max_games: Option<u32>,
     pub max_downloads: Option<u32>,
@@ -176,6 +178,8 @@ pub struct AcquisitionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Requests come from documents people write: an unknown key is a mistake, never a default.
+#[serde(deny_unknown_fields)]
 pub struct AcquisitionRequestDraft {
     pub sources: SourceSelection,
     pub platforms: Vec<String>,
@@ -268,6 +272,21 @@ impl QualityRequirements {
 }
 
 impl AcquisitionRequest {
+    /// The draft this request validates, which validates into the same request again.
+    pub fn to_draft(&self) -> AcquisitionRequestDraft {
+        AcquisitionRequestDraft {
+            sources: self.sources.clone(),
+            platforms: self.platforms.clone(),
+            games: self.games.clone(),
+            regions: self.regions.clone(),
+            languages: self.languages.clone(),
+            asset_types: self.asset_types.clone(),
+            quality: self.quality.clone(),
+            retention: self.retention,
+            limits: self.limits.clone(),
+        }
+    }
+
     pub fn platforms(&self) -> &[String] {
         &self.platforms
     }

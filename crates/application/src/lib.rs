@@ -2,6 +2,7 @@
 
 mod acquisition;
 mod derived;
+mod documents;
 mod error;
 mod identity;
 mod imports;
@@ -15,6 +16,10 @@ pub use acquisition::{acquire_run_with_connector, start_acquisition_run_for_conn
 pub use derived::{
     DerivationFailure, DerivationSummary, DerivativeRepositoryPort, DerivedStorePort,
     MediaTransformPort, OriginalObject, derive_assets,
+};
+pub use documents::{
+    ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, draft_from_document,
+    export_acquisition_request,
 };
 pub use error::{ApplicationError, ErrorKind};
 pub use game_media_vault_domain::{

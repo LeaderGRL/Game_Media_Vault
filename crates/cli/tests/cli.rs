@@ -1252,3 +1252,131 @@ fn import_redump_records_disc_releases_in_the_library() {
             .all(|assertion| assertion["source_id"] == "redump")
     );
 }
+
+#[test]
+fn an_exported_request_starts_the_same_acquisition_in_another_vault() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let started: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &vault,
+            &[
+                "acquire",
+                "--source",
+                "libretro-thumbnails",
+                "--platform",
+                "Nintendo - Nintendo Entertainment System",
+                "--game",
+                "Super Mario Bros. (World)",
+                "--asset-type",
+                "box-front",
+                "--region",
+                "World",
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let document = run_in_vault(
+        &vault,
+        &[
+            "run",
+            "export",
+            &started["id"].as_i64().unwrap().to_string(),
+        ],
+    )
+    .unwrap();
+    let document_path = temp.path().join("request.json");
+    std::fs::write(&document_path, &document).unwrap();
+
+    let other_vault = temp.path().join("other-vault");
+    let restarted: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &other_vault,
+            &["run", "start", document_path.to_str().unwrap()],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let document: serde_json::Value = serde_json::from_str(&document).unwrap();
+    assert_eq!(document["format_version"], 1);
+    assert_eq!(restarted["request"], started["request"]);
+    assert_eq!(restarted["status"], "running");
+}
+
+#[test]
+fn a_request_document_of_another_format_version_is_unsupported() {
+    let temp = tempdir().unwrap();
+    let document_path = temp.path().join("request.json");
+    std::fs::write(&document_path, r#"{"format_version": 99, "request": {}}"#).unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &["run", "start", document_path.to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 5);
+}
+
+#[test]
+fn a_malformed_request_document_is_an_invalid_request() {
+    let temp = tempdir().unwrap();
+    let document_path = temp.path().join("request.json");
+    std::fs::write(&document_path, r#"{"format_version": 1, "request": {}}"#).unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &["run", "start", document_path.to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+}
+
+#[test]
+fn a_request_document_with_a_misspelled_key_is_an_invalid_request() {
+    let temp = tempdir().unwrap();
+    let document_path = temp.path().join("request.json");
+    // `min_widht` would otherwise be dropped, starting a run without its size requirement.
+    std::fs::write(
+        &document_path,
+        r#"{"format_version": 1, "request": {
+            "sources": {"mode": "explicit", "values": ["libretro-thumbnails"]},
+            "platforms": ["Nintendo - Nintendo Entertainment System"],
+            "games": {"mode": "explicit", "values": ["Super Mario Bros. (World)"]},
+            "regions": [], "languages": [], "asset_types": ["box_front"],
+            "quality": {"min_widht": 1000},
+            "retention": "keep_everything",
+            "limits": {}
+        }}"#,
+    )
+    .unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &["run", "start", document_path.to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(error.to_string().contains("min_widht"), "{error}");
+}
+
+#[test]
+fn a_request_document_that_cannot_be_read_is_an_invalid_request() {
+    let temp = tempdir().unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &[
+            "run",
+            "start",
+            temp.path().join("missing.json").to_str().unwrap(),
+        ],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+}
