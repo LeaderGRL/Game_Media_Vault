@@ -218,7 +218,15 @@ fn a_download_cut_short_resumes_where_it_stopped() {
 fn a_download_cut_short_fails_when_the_source_cannot_resume_it() {
     // Without byte ranges, or without a validator proving the bytes are the same, the body
     // cannot be spliced.
-    for headers in ["ETag: \"v1\"", "Accept-Ranges: bytes"] {
+    // A weak ETag or a date is no strong validator either.
+    for headers in [
+        "ETag: \"v1\"",
+        "Accept-Ranges: bytes",
+        "Accept-Ranges: bytes
+ETag: W/\"v1\"",
+        "Accept-Ranges: bytes
+Last-Modified: Wed, 21 Oct 2015 07:28:00 GMT",
+    ] {
         let (url, requests) = serve_cut_short(headers, b"0123456789", 4, vec![resumed_tail]);
 
         let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
@@ -278,4 +286,149 @@ fn resumes_stop_after_the_attempts_the_policy_allows() {
 
     assert!(result.is_err());
     assert_eq!(requests.lock().unwrap().len(), 3);
+}
+
+/// Answers successive connections with the raw `responses`, each written as is and the
+/// connection then closed, so a response whose body is shorter than its length is cut short.
+fn serve_raw(responses: Vec<Vec<u8>>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    thread::spawn(move || {
+        for response in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).unwrap_or(0);
+            seen.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&request[..read]).into_owned());
+            // Each answer closes its connection, so the client must not reuse it: announcing it
+            // keeps a pooled connection from failing the next request on some platforms.
+            let status_line_end = response
+                .windows(2)
+                .position(|pair| pair == b"\r\n")
+                .unwrap()
+                + 2;
+            stream.write_all(&response[..status_line_end]).unwrap();
+            stream.write_all(b"Connection: close\r\n").unwrap();
+            stream.write_all(&response[status_line_end..]).unwrap();
+        }
+    });
+    (format!("http://{address}/media.png"), requests)
+}
+
+const CUT_SHORT: &[u8] =
+    b"HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nETag: \"v1\"\r\nContent-Length: 10\r\n\r\n0123";
+const UNAVAILABLE_FOR_NOW: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+const TAIL: &[u8] =
+    b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 6\r\n\r\n456789";
+
+#[test]
+fn resumes_share_the_attempts_the_first_request_used() {
+    // The first attempt fails, the second is cut short, and the third resumes in vain: three
+    // attempts in all, so no fourth request is sent.
+    let (url, requests) = serve_raw(vec![
+        UNAVAILABLE_FOR_NOW.to_vec(),
+        CUT_SHORT.to_vec(),
+        UNAVAILABLE_FOR_NOW.to_vec(),
+        TAIL.to_vec(),
+    ]);
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    assert_eq!(requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn a_range_that_stops_short_of_the_media_is_not_spliced() {
+    let (url, _) = serve_raw(vec![
+        CUT_SHORT.to_vec(),
+        b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-5/10\r\nContent-Length: 2\r\n\r\n45"
+            .to_vec(),
+    ]);
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err(), "{result:?}");
+}
+
+#[test]
+fn range_units_compare_regardless_of_case() {
+    let (url, _) = serve_raw(vec![
+        b"HTTP/1.1 200 OK\r\nAccept-Ranges: Bytes\r\nETag: \"v1\"\r\nContent-Length: 10\r\n\r\n0123"
+            .to_vec(),
+        b"HTTP/1.1 206 Partial Content\r\nContent-Range: BYTES 4-9/10\r\nContent-Length: 6\r\n\r\n456789"
+            .to_vec(),
+    ]);
+
+    let body = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url).unwrap();
+
+    assert_eq!(body, b"0123456789");
+}
+
+#[test]
+fn a_redirected_download_resumes_the_media_it_was_redirected_to() {
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 302 Found\r\nLocation: /final.png\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        CUT_SHORT.to_vec(),
+        TAIL.to_vec(),
+    ]);
+
+    let body = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url).unwrap();
+
+    assert_eq!(body, b"0123456789");
+    let requests = requests.lock().unwrap();
+    assert!(requests[2].starts_with("GET /final.png"), "{}", requests[2]);
+}
+
+#[test]
+fn a_redirect_loop_is_not_retried() {
+    let redirect = b"HTTP/1.1 302 Found\r\nLocation: /media.png\r\nContent-Length: 0\r\n\r\n";
+    let (url, requests) = serve_raw(vec![redirect.to_vec(); 40]);
+
+    let result = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES).get_stream(&url);
+
+    assert!(result.is_err());
+    // One attempt follows the redirects reqwest allows; a retry would follow them again.
+    assert!(
+        requests.lock().unwrap().len() <= 11,
+        "{}",
+        requests.lock().unwrap().len()
+    );
+}
+
+#[test]
+fn a_resumed_body_ending_before_the_media_does_is_not_complete() {
+    // The range claims the rest of the media, but its framing carries only two bytes.
+    let (url, _) = serve_raw(vec![
+        CUT_SHORT.to_vec(),
+        b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 2\r\n\r\n45"
+            .to_vec(),
+    ]);
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err(), "{result:?}");
+}
+
+#[test]
+fn a_resume_caught_in_a_redirect_loop_is_not_retried() {
+    let redirect = b"HTTP/1.1 302 Found\r\nLocation: /media.png\r\nContent-Length: 0\r\n\r\n";
+    let mut responses = vec![CUT_SHORT.to_vec()];
+    responses.extend(vec![redirect.to_vec(); 40]);
+    let (url, requests) = serve_raw(responses);
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    // The first request, then one resume following the redirects reqwest allows.
+    assert!(
+        requests.lock().unwrap().len() <= 12,
+        "{}",
+        requests.lock().unwrap().len()
+    );
 }
