@@ -108,10 +108,32 @@ export type LibraryStatus = "complete" | "partial" | "needs_review";
 export interface LibraryFilters {
   /** Text the title contains; blank searches every title. */
   text: string;
+  /** Platform, region and Source to keep; blank keeps them all. */
+  platform: string;
+  region: string;
+  source: string;
+  /** Asset Type or family the release has an Asset of; blank keeps every release. */
+  assetType: string;
   statuses: LibraryStatus[];
 }
 
-export const NO_LIBRARY_FILTERS: LibraryFilters = { text: "", statuses: [] };
+export const NO_LIBRARY_FILTERS: LibraryFilters = {
+  text: "",
+  platform: "",
+  region: "",
+  source: "",
+  assetType: "",
+  statuses: [],
+};
+
+/** Whether any filter narrows the Library search. */
+export function narrowsLibrary(filters: LibraryFilters) {
+  return (
+    [filters.text, filters.platform, filters.region, filters.source, filters.assetType].some(
+      (value) => value.trim() !== "",
+    ) || filters.statuses.length > 0
+  );
+}
 
 /** One page of matching releases (Rust `LibraryPage`). */
 export interface LibraryPage {

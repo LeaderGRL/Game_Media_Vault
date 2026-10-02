@@ -10,6 +10,7 @@ import {
   type LibraryFilters,
   type LibraryStatus,
   NO_LIBRARY_FILTERS,
+  narrowsLibrary,
   type PackagingFamily,
   type PreferenceReason,
   type ReleaseAssertionField,
@@ -24,6 +25,8 @@ interface LibraryViewProps {
   filters?: LibraryFilters;
   onSearch?: (filters: LibraryFilters) => void;
   canLoadMore?: boolean;
+  /** Whether the next page is loading, which disables asking for it again. */
+  loadingMore?: boolean;
   onLoadMore?: () => void;
 }
 
@@ -39,23 +42,27 @@ export function LibraryView({
   filters = NO_LIBRARY_FILTERS,
   onSearch,
   canLoadMore = false,
+  loadingMore = false,
   onLoadMore,
 }: LibraryViewProps) {
-  const filtered = filters.text.trim() !== "" || filters.statuses.length > 0;
   return (
     <>
       {onSearch ? <LibraryFilterBar filters={filters} onSearch={onSearch} /> : null}
-      <LibraryResults entries={entries} objectUrl={objectUrl} filtered={filtered} />
+      <LibraryResults
+        entries={entries}
+        objectUrl={objectUrl}
+        filtered={narrowsLibrary(filters)}
+      />
       {canLoadMore && onLoadMore ? (
-        <button type="button" className="load-more" onClick={onLoadMore}>
-          Load more
+        <button type="button" className="load-more" disabled={loadingMore} onClick={onLoadMore}>
+          {loadingMore ? "Loading more…" : "Load more"}
         </button>
       ) : null}
     </>
   );
 }
 
-/** Title text and statuses to search the Library by, applied together. */
+/** Library filters, applied together when the search is submitted. */
 function LibraryFilterBar({
   filters,
   onSearch,
@@ -63,13 +70,18 @@ function LibraryFilterBar({
   filters: LibraryFilters;
   onSearch: (filters: LibraryFilters) => void;
 }) {
-  const [text, setText] = useState(filters.text);
-  const [statuses, setStatuses] = useState(filters.statuses);
+  const [draft, setDraft] = useState(filters);
+
+  function update(change: Partial<LibraryFilters>) {
+    setDraft((current) => ({ ...current, ...change }));
+  }
 
   function toggle(status: LibraryStatus) {
-    setStatuses((current) =>
-      current.includes(status) ? current.filter((value) => value !== status) : [...current, status],
-    );
+    update({
+      statuses: draft.statuses.includes(status)
+        ? draft.statuses.filter((value) => value !== status)
+        : [...draft.statuses, status],
+    });
   }
 
   return (
@@ -78,18 +90,52 @@ function LibraryFilterBar({
       aria-label="Library filters"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
-        onSearch({ text, statuses });
+        onSearch(draft);
       }}
     >
       <label>
         Search titles
-        <input value={text} onChange={(event) => setText(event.target.value)} />
+        <input value={draft.text} onChange={(event) => update({ text: event.target.value })} />
+      </label>
+      <label>
+        Platform
+        <input
+          value={draft.platform}
+          onChange={(event) => update({ platform: event.target.value })}
+        />
+      </label>
+      <label>
+        Region
+        <input value={draft.region} onChange={(event) => update({ region: event.target.value })} />
+      </label>
+      <label>
+        Source
+        <input value={draft.source} onChange={(event) => update({ source: event.target.value })} />
+      </label>
+      <label>
+        Asset Type
+        <select
+          value={draft.assetType}
+          onChange={(event) => update({ assetType: event.target.value })}
+        >
+          <option value="">Any</option>
+          {ASSET_TYPE_FAMILIES.map((family) => (
+            <optgroup label={family.label} key={family.value}>
+              <option value={family.value}>All {family.label}</option>
+              {family.types.map((type) => (
+                <option value={type.value} key={type.value}>
+                  {type.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
       </label>
       {STATUS_OPTIONS.map(([status, label]) => (
         <label className="choice" key={status}>
           <input
             type="checkbox"
-            checked={statuses.includes(status)}
+            checked={draft.statuses.includes(status)}
             onChange={() => toggle(status)}
           />
           {label}
