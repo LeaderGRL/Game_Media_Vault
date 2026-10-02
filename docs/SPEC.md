@@ -77,6 +77,8 @@ The library is centered on Games and Release Editions. A Release Edition view ex
 
 The library must support explicit filters for `Complete`, `Partial`, `Needs review`, platform, region, language, source, and Asset Type.
 
+Every frontend searches the library through one use case. A search combines a title text (matched case-insensitively against the game title and its canonical title), platforms, regions, Sources (of an Asset's provenance or of an assertion), Asset Types or families of retained Assets, and statuses: `Complete` (coverage at least Packaging Complete), `Partial` (coverage evaluated and still Partial) and `Needs review` (an undecided Review Item offers the Release Edition). Values of one filter widen the search; different filters narrow it. Results are ordered by title, platform, region and edition, then Release Edition, and come in pages (50 by default, at most 500) with the total match count; a page resumes after the Release Edition that ended the previous one, so releases imported in between neither repeat nor shift later pages. Release Editions do not record languages yet, so language filtering waits for reference data that provides them.
+
 ## 5. Asset Taxonomy
 
 The initial taxonomy is hierarchical and individually selectable.
