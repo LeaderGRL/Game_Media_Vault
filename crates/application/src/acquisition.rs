@@ -1,10 +1,12 @@
+use std::{cell::Cell, io::Read};
+
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
-    AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch,
-    ConnectorCapabilities, ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy,
-    NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem,
-    ReviewStatus, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
-    match_asset_candidate_to_release, review_matches_for_asset_candidate,
+    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
+    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, ImportedAsset,
+    LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
+    QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
+    ValidatedMatchingPolicy, confirmed_asset_candidate_match, match_asset_candidate_to_release,
+    review_matches_for_asset_candidate,
 };
 use url::Url;
 
@@ -12,6 +14,8 @@ use crate::{
     ApplicationError, CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort,
     ParkedReview, ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request,
     candidate_identity, load_acquisition_run,
+    plan::{capable_asset_types, ensure_request_supported},
+    plan_acquisition,
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -23,12 +27,15 @@ struct Acquisition<'a> {
     catalog: &'a dyn CatalogPort,
     reviews: &'a dyn ReviewRepositoryPort,
     object_store: &'a dyn ObjectStorePort,
-    connector: &'a dyn ConnectorPort,
+    connectors: &'a [&'a dyn ConnectorPort],
     run_id: i64,
     matching_policy: ValidatedMatchingPolicy,
     releases: Vec<LibraryEntry>,
     quality: Option<QualityRequirements>,
     retention: RetentionPolicy,
+    /// Whether the last failure came from the Source of the processed work, such as a failed
+    /// download, rather than from the vault.
+    source_failed: Cell<bool>,
 }
 
 enum Step {
@@ -36,34 +43,29 @@ enum Step {
     Retry,
 }
 
-/// Executes a running Acquisition Run with one Connector.
+/// Executes a running Acquisition Run with the registered `connectors`, one per Source.
 ///
-/// The Source is discovered once per run: its candidates are persisted as queued work, so
-/// resuming never rediscovers. Each queued candidate is matched against the library and is
-/// either imported, left unattached, or parked on its Review Item until a human decides.
-pub fn acquire_run_with_connector(
+/// Only the Sources the run's plan kept when it started are contacted. Each is discovered once
+/// per run: its candidates are persisted as queued work, so resuming never rediscovers it, and a
+/// pause stops further discoveries. Sources progress independently: one without a registered
+/// connector, that now refuses the plan, cannot be reached, fails to discover or fails to
+/// download leaves the others' work to run, keeps the run running, and its error is returned
+/// once that work is done. Each queued candidate is matched against the library through its own
+/// Source's connector and is either imported, left unattached, or parked on its Review Item
+/// until a human decides. The run completes only once every planned Source was discovered.
+pub fn acquire_run_with_connectors(
     runs: &dyn RunRepositoryPort,
     reviews: &dyn ReviewRepositoryPort,
     catalog: &dyn CatalogPort,
     object_store: &dyn ObjectStorePort,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
     run_id: i64,
     matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
     match run.status {
-        AcquisitionRunStatus::Running => {
-            let capabilities = validate_connector_plan(&run.request, connector)?;
-            if !runs.has_discovered(run_id, connector.source_id())? {
-                check_source_plan(&run.request, connector)?;
-                let work = discover_work(&run.request, connector, &capabilities)?;
-                // A cancellation or completion that won the race while discovering stops quietly.
-                if !runs.record_discovery(run_id, connector.source_id(), &work)? {
-                    return Ok(Vec::new());
-                }
-            }
-        }
+        AcquisitionRunStatus::Running => ensure_request_supported(&run.request)?,
         // Nothing is left to discover, but an acceptance may reopen the run right after this
         // read; the drain below executes whatever work it requeued.
         AcquisitionRunStatus::Completed => {}
@@ -75,29 +77,79 @@ pub fn acquire_run_with_connector(
         catalog,
         reviews,
         object_store,
-        connector,
+        connectors,
         run_id,
         matching_policy,
         releases: catalog.list_library()?,
         quality: run.request.quality().cloned(),
         retention: run.request.retention(),
+        source_failed: Cell::new(false),
     };
     let mut imported_assets = Vec::new();
+    let mut source_failure = None;
+    // Sources whose work failed; their remaining work waits for a later execution.
+    let mut failed_sources: Vec<String> = Vec::new();
     loop {
-        while let Some(work) = runs.next_queued_work(run_id)? {
-            if let Some(imported) = acquisition.process(&work)? {
-                imported_assets.push(imported);
+        for source_id in &run.planned_sources {
+            if runs.has_discovered(run_id, source_id)? {
+                continue;
+            }
+            // A pause, even one landing during a failed discovery, keeps the snapshots already
+            // recorded but discovers no further.
+            if load_acquisition_run(runs, run_id)?.status != AcquisitionRunStatus::Running {
+                break;
+            }
+            let discovered = planned_connector(&run.request, source_id, connectors).and_then(
+                |(connector, asset_types)| discover_source(&run.request, connector, &asset_types),
+            );
+            match discovered {
+                // A cancellation or completion that won the race while discovering stops
+                // quietly.
+                Ok(work) => {
+                    if !runs.record_discovery(run_id, source_id, &work)? {
+                        return Ok(imported_assets);
+                    }
+                }
+                Err(error) => {
+                    source_failure.get_or_insert(error);
+                }
             }
         }
-        if runs.compare_and_set_run_status(
-            run_id,
-            AcquisitionRunStatus::Running,
-            AcquisitionRunStatus::Completed,
-        )? {
+        while let Some(work) = runs.next_queued_work(run_id, &failed_sources)? {
+            match acquisition.process(&work) {
+                Ok(imported) => imported_assets.extend(imported),
+                Err(error) if acquisition.source_failed.get() => {
+                    failed_sources.push(work.candidate.source_id.as_str().to_owned());
+                    source_failure.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A Source left undiscovered or failing keeps the run running for a later execution.
+        if let Some(error) = source_failure.take() {
+            return Err(error);
+        }
+        // A pause may have stopped the discoveries before a resume that this execution then
+        // sees; the Sources it left are discovered on the next pass.
+        let all_discovered = run
+            .planned_sources
+            .iter()
+            .map(|source_id| runs.has_discovered(run_id, source_id))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .all(|discovered| discovered);
+        if all_discovered
+            && runs.compare_and_set_run_status(
+                run_id,
+                AcquisitionRunStatus::Running,
+                AcquisitionRunStatus::Completed,
+            )?
+        {
             break;
         }
         // A pause or cancellation that won the race keeps its status; otherwise a decision
-        // requeued work after the queue looked empty, and it is executed too.
+        // requeued work after the queue looked empty, or a resume left Sources to discover,
+        // and they are executed too.
         if load_acquisition_run(runs, run_id)?.status != AcquisitionRunStatus::Running {
             break;
         }
@@ -105,82 +157,62 @@ pub fn acquire_run_with_connector(
     Ok(imported_assets)
 }
 
-/// Starts an Acquisition Run only if `connector` can execute it, so runs that would fail on
-/// every execution are never persisted.
-pub fn start_acquisition_run_for_connector(
+/// The connector of a planned Source and the requested types it acquires, unless the Source has
+/// no registered connector anymore or its capabilities no longer serve the request.
+fn planned_connector<'a>(
+    request: &AcquisitionRequest,
+    source_id: &str,
+    connectors: &[&'a dyn ConnectorPort],
+) -> Result<(&'a dyn ConnectorPort, Vec<AssetType>), ApplicationError> {
+    let unsupported = |reason: String| ApplicationError::UnsupportedConnectorPlan {
+        source_id: source_id.to_owned(),
+        reason,
+    };
+    let connector = connectors
+        .iter()
+        .copied()
+        .find(|connector| connector.source_id() == source_id)
+        .ok_or_else(|| unsupported("no connector is registered for this source".to_owned()))?;
+    let asset_types = capable_asset_types(request, connector).map_err(unsupported)?;
+    Ok((connector, asset_types))
+}
+
+/// Starts an Acquisition Run only if the registered `connectors` can plan it, so runs that
+/// would fail on every execution are never persisted.
+pub fn start_acquisition_run_with_connectors(
     runs: &dyn RunRepositoryPort,
     input: AcquisitionRequestDraft,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
 ) -> Result<AcquisitionRun, ApplicationError> {
     let request = build_acquisition_request(input)?;
-    validate_connector_plan(&request, connector)?;
-    check_source_plan(&request, connector)?;
-    Ok(runs.create_run(request)?)
+    let planned_sources = plan_acquisition(&request, connectors)?
+        .sources
+        .into_iter()
+        .map(|source| source.source_id)
+        .collect();
+    Ok(runs.create_run(request, planned_sources)?)
 }
 
-fn validate_connector_plan(
+/// Discovers the work of one Source once its connector accepts the plan, which may consult the
+/// Source. Only Sources not yet discovered need it: a persisted snapshot executes without them.
+fn discover_source(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
-) -> Result<ConnectorCapabilities, ApplicationError> {
-    let source_id = connector.source_id();
-    if !request.selects_source(source_id) {
-        return Err(ApplicationError::ConnectorNotSelected {
-            source_id: source_id.to_owned(),
-        });
-    }
-    let capabilities = connector.capabilities();
-    if !capabilities.direct_media_download {
-        return Err(ApplicationError::ConnectorCannotDownload {
-            source_id: source_id.to_owned(),
-        });
-    }
-    let unsupported = |reason: &str| ApplicationError::UnsupportedConnectorPlan {
-        source_id: source_id.to_owned(),
-        reason: reason.to_owned(),
-    };
-    if !request.selects_only_source(source_id) {
-        return Err(unsupported(
-            "this execution path requires one explicitly selected source",
-        ));
-    }
-    if !request.requested_asset_types_supported_by(&capabilities.asset_types) {
-        return Err(unsupported(
-            "one or more requested asset types are not supported by this connector",
-        ));
-    }
-    if let Some(reason) = request
-        .quality()
-        .and_then(QualityRequirements::unsupported_requirement)
-    {
-        return Err(unsupported(reason));
-    }
-    if request.limits() != &AcquisitionLimits::default() {
-        return Err(unsupported(
-            "acquisition limits are not supported by this execution path",
-        ));
-    }
-    Ok(capabilities)
-}
-
-/// Asks the connector whether its Source can satisfy the plan, which may consult the Source.
-/// Only plans not yet discovered need it: a persisted snapshot executes without the Source.
-fn check_source_plan(
-    request: &AcquisitionRequest,
-    connector: &dyn ConnectorPort,
-) -> Result<(), ApplicationError> {
-    match connector.unsupported_request_reason(request)? {
-        Some(reason) => Err(ApplicationError::UnsupportedConnectorPlan {
+    asset_types: &[AssetType],
+) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
+    if let Some(reason) = connector.unsupported_request_reason(request)? {
+        return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
             reason,
-        }),
-        None => Ok(()),
+        });
     }
+    discover_work(request, connector, asset_types)
 }
 
 fn discover_work(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
-    capabilities: &ConnectorCapabilities,
+    asset_types: &[AssetType],
 ) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
     let source_id = connector.source_id();
     let mut work = Vec::new();
@@ -191,9 +223,8 @@ fn discover_work(
                 candidate_source_id: candidate.source_id.as_str().to_owned(),
             });
         }
-        if !request.requests_asset_type(candidate.asset_type)
-            || !capabilities.asset_types.contains(&candidate.asset_type)
-        {
+        // Only the requested types this Source acquires were planned from it.
+        if !asset_types.contains(&candidate.asset_type) {
             continue;
         }
         ensure_catalog_safe_locator(source_id, &candidate)?;
@@ -227,16 +258,32 @@ fn ensure_catalog_safe_locator(
 }
 
 impl Acquisition<'_> {
+    /// The connector of the Source that discovered `work`.
+    fn connector_for(
+        &self,
+        work: &AcquisitionWorkItem,
+    ) -> Result<&dyn ConnectorPort, ApplicationError> {
+        let source_id = work.candidate.source_id.as_str();
+        self.connectors
+            .iter()
+            .copied()
+            .find(|connector| connector.source_id() == source_id)
+            .ok_or_else(|| {
+                self.source_failed.set(true);
+                ApplicationError::UnsupportedConnectorPlan {
+                    source_id: source_id.to_owned(),
+                    reason: "no connector is registered for this source".to_owned(),
+                }
+            })
+    }
+
     fn process(
         &self,
         work: &AcquisitionWorkItem,
     ) -> Result<Option<ImportedAsset>, ApplicationError> {
-        if work.candidate.source_id.as_str() != self.connector.source_id() {
-            return Err(ApplicationError::ConnectorCandidateSourceMismatch {
-                connector_source_id: self.connector.source_id().to_owned(),
-                candidate_source_id: work.candidate.source_id.as_str().to_owned(),
-            });
-        }
+        self.source_failed.set(false);
+        // Work whose Source has no connector anymore stays queued until one is registered.
+        self.connector_for(work)?;
         let mut contended_review_item_id = None;
         for _ in 0..REVIEW_RACE_ATTEMPTS {
             let review_item = self.reviews.find_review_item(&work.key)?;
@@ -375,8 +422,15 @@ impl Acquisition<'_> {
     }
 
     fn store_original(&self, work: &AcquisitionWorkItem) -> Result<StoredObject, ApplicationError> {
-        let mut stream = self.connector.download(&work.candidate)?;
-        Ok(self.object_store.store_original(stream.as_mut())?)
+        let mut stream = self
+            .connector_for(work)?
+            .download(&work.candidate)
+            .inspect_err(|_| self.source_failed.set(true))?;
+        let mut body = SourceBody {
+            stream: stream.as_mut(),
+            failed: &self.source_failed,
+        };
+        Ok(self.object_store.store_original(&mut body)?)
     }
 
     fn asset_record(
@@ -404,5 +458,20 @@ impl Acquisition<'_> {
             source_asset_label: candidate.source_asset_label.clone(),
             source_location: candidate.source_url.clone(),
         }
+    }
+}
+
+/// A download body that notes when reading it fails, so a connection dropping partway is a
+/// failure of the Source rather than of the vault storing it.
+struct SourceBody<'a> {
+    stream: &'a mut (dyn Read + Send),
+    failed: &'a Cell<bool>,
+}
+
+impl Read for SourceBody<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.stream
+            .read(buffer)
+            .inspect_err(|_| self.failed.set(true))
     }
 }

@@ -23,7 +23,11 @@ impl RecordingRunRepository {
 }
 
 impl RunRepositoryPort for RecordingRunRepository {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+    fn create_run(
+        &self,
+        request: AcquisitionRequest,
+        planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError> {
         self.persisted_requests
             .borrow_mut()
             .push(serde_json::to_value(&request).unwrap());
@@ -31,6 +35,7 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(AcquisitionRun {
             id: 7,
             request,
+            planned_sources,
             status: AcquisitionRunStatus::Running,
             queued_work: 0,
             awaiting_review_work: 0,
@@ -60,7 +65,11 @@ impl RunRepositoryPort for RecordingRunRepository {
     ) -> Result<bool, PortError> {
         Ok(true)
     }
-    fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+    fn next_queued_work(
+        &self,
+        _run_id: i64,
+        _skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
         Ok(None)
     }
 
@@ -87,7 +96,7 @@ fn starting_an_acquisition_run_persists_the_validated_request() {
     let run = start_acquisition_run(
         &runs,
         AcquisitionRequestInput {
-            sources: SourceSelection::Auto,
+            sources: SourceSelection::Explicit(vec!["fixture-provider".to_owned()]),
             platforms: vec!["Windows".to_owned()],
             games: GameSelection::All,
             regions: Vec::new(),
@@ -101,13 +110,14 @@ fn starting_an_acquisition_run_persists_the_validated_request() {
     .unwrap();
 
     assert_eq!(run.id, 7);
+    assert_eq!(run.planned_sources, ["fixture-provider"]);
     assert_eq!(run.status, AcquisitionRunStatus::Running);
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 0);
     assert_eq!(
         runs.persisted_requests.borrow().as_slice(),
         &[json!({
-            "sources": { "mode": "auto" },
+            "sources": { "mode": "explicit", "values": ["fixture-provider"] },
             "platforms": ["Windows"],
             "games": { "mode": "all" },
             "regions": [],
@@ -171,6 +181,7 @@ impl RacingRunRepository {
         AcquisitionRun {
             id: 11,
             request: self.request.clone(),
+            planned_sources: Vec::new(),
             status: *self.status.borrow(),
             queued_work: 0,
             awaiting_review_work: 0,
@@ -182,7 +193,11 @@ impl RacingRunRepository {
 }
 
 impl RunRepositoryPort for RacingRunRepository {
-    fn create_run(&self, _request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+    fn create_run(
+        &self,
+        _request: AcquisitionRequest,
+        _planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError> {
         Ok(self.run())
     }
 
@@ -206,7 +221,11 @@ impl RunRepositoryPort for RacingRunRepository {
     ) -> Result<bool, PortError> {
         Ok(true)
     }
-    fn next_queued_work(&self, _run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+    fn next_queued_work(
+        &self,
+        _run_id: i64,
+        _skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
         Ok(None)
     }
 

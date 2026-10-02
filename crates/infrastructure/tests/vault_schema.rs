@@ -1,7 +1,10 @@
 use std::fs;
 
-use game_media_vault_application::CatalogPort;
-use game_media_vault_domain::{AssetType, MediaInfo, PersistAsset, SourceId};
+use game_media_vault_application::{CatalogPort, RunRepositoryPort};
+use game_media_vault_domain::{
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetType, AssetTypeSelector,
+    GameSelection, MediaInfo, PersistAsset, RetentionPolicy, SourceId, SourceSelection,
+};
 use game_media_vault_infrastructure::SqliteCatalog;
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -23,7 +26,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 6);
+    assert_eq!(pragma(&path, "user_version"), 7);
 }
 
 #[test]
@@ -131,7 +134,7 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media, quality shortfall or outranked columns nor Derived Assets.
+    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked or planned Source columns nor Derived Assets.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -141,13 +144,52 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              ALTER TABLE acquisition_run_work DROP COLUMN quality_shortfalls_json;
              ALTER TABLE acquisition_run_work DROP COLUMN outranked_json;
              DROP TABLE derived_objects;
+             ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 6);
+    assert_eq!(pragma(&path, "user_version"), 7);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
+}
+
+#[test]
+fn runs_from_version_6_plan_the_sources_their_request_selects() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+        platforms: vec!["Nintendo - Game Boy".to_owned()],
+        games: GameSelection::Explicit(vec!["Tetris (World) (Rev 1)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap();
+    let run = SqliteCatalog::open(&path)
+        .unwrap()
+        .create_run(request, vec!["libretro-thumbnails".to_owned()])
+        .unwrap();
+    // Version 6 runs recorded no plan.
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
+             PRAGMA user_version = 6;",
+        )
+        .unwrap();
+
+    let catalog = SqliteCatalog::open_existing(&path).unwrap();
+
+    assert_eq!(pragma(&path, "user_version"), 7);
+    assert_eq!(
+        catalog.get_run(run.id).unwrap().unwrap().planned_sources,
+        ["libretro-thumbnails"]
+    );
 }

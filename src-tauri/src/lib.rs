@@ -6,7 +6,7 @@ use std::{
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
     ErrorKind, LibraryPage, LibraryQuery, PortError, VaultReport,
-    acquire_run_with_connector as acquire_run_with_connector_use_case,
+    acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     derive_assets as derive_assets_use_case,
@@ -18,7 +18,7 @@ use game_media_vault_application::{
     plan_acquisition as plan_acquisition_use_case,
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
-    search_library as search_library_use_case, start_acquisition_run_for_connector,
+    search_library as search_library_use_case, start_acquisition_run_with_connectors,
     verify_vault as verify_vault_use_case,
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
@@ -279,8 +279,10 @@ pub fn start_acquisition_run_in_vault(
     connector: &dyn ConnectorPort,
 ) -> Result<AcquisitionRun, CommandError> {
     let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))?;
-    Ok(start_acquisition_run_for_connector(
-        &catalog, request, connector,
+    Ok(start_acquisition_run_with_connectors(
+        &catalog,
+        request,
+        &[connector],
     )?)
 }
 
@@ -326,12 +328,12 @@ pub fn execute_acquisition_run_in_vault_with_connector(
 ) -> Result<AcquisitionRun, CommandError> {
     let catalog = open_existing_catalog(vault_root)?;
     let object_store = ContentAddressedStore::new(vault_root);
-    acquire_run_with_connector_use_case(
+    acquire_run_with_connectors_use_case(
         &catalog,
         &catalog,
         &catalog,
         &object_store,
-        connector,
+        &[connector],
         run_id,
         matching_policy,
     )?;

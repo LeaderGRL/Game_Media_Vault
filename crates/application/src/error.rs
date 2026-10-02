@@ -33,8 +33,6 @@ pub enum ApplicationError {
         from: AcquisitionRunStatus,
         to: AcquisitionRunStatus,
     },
-    #[error("connector {source_id} is not selected by this acquisition request")]
-    ConnectorNotSelected { source_id: String },
     #[error("connector {source_id} does not support direct media downloads")]
     ConnectorCannotDownload { source_id: String },
     #[error(
@@ -146,8 +144,7 @@ impl ApplicationError {
             | Self::RunNotExecutable { .. }
             | Self::ReviewItemNotActionable { .. }
             | Self::ReviewItemContended(_) => ErrorKind::Conflict,
-            Self::ConnectorNotSelected { .. }
-            | Self::ConnectorCannotDownload { .. }
+            Self::ConnectorCannotDownload { .. }
             | Self::UnsupportedConnectorPlan { .. }
             | Self::UnsupportedDocumentVersion { .. }
             | Self::UnsupportedRequest(_)

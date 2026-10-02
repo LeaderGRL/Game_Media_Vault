@@ -182,7 +182,12 @@ pub trait ReviewRepositoryPort {
 
 /// Persisted Acquisition Runs and their work queue.
 pub trait RunRepositoryPort {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError>;
+    /// Persists a running run of `request` that contacts the `planned_sources` of its plan.
+    fn create_run(
+        &self,
+        request: AcquisitionRequest,
+        planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError>;
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError>;
 
@@ -211,8 +216,13 @@ pub trait RunRepositoryPort {
         work: &[AcquisitionWorkItem],
     ) -> Result<bool, PortError>;
 
-    /// Returns the oldest queued work item while the run is running.
-    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
+    /// Returns the oldest queued work item of a Source outside `skipped_sources` while the run is
+    /// running.
+    fn next_queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 }

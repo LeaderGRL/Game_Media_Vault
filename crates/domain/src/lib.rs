@@ -205,6 +205,9 @@ pub enum AcquisitionRunStatus {
 pub struct AcquisitionRun {
     pub id: i64,
     pub request: AcquisitionRequest,
+    /// The Sources the run's Acquisition Plan kept when it started, in plan order; no other
+    /// Source is ever contacted for the run.
+    pub planned_sources: Vec<String>,
     pub status: AcquisitionRunStatus,
     pub queued_work: u64,
     pub awaiting_review_work: u64,

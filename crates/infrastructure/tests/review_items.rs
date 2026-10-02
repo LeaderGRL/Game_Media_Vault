@@ -256,7 +256,7 @@ fn accepting_requeues_parked_work_and_reopens_completed_runs() {
         assert_eq!(run.status, AcquisitionRunStatus::Running);
         assert_eq!(counts(&catalog, run_id), (1, 0, 0));
         assert_eq!(
-            catalog.next_queued_work(run_id).unwrap().unwrap().key,
+            catalog.next_queued_work(run_id, &[]).unwrap().unwrap().key,
             IDENTITY
         );
     }

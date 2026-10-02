@@ -5,7 +5,7 @@ use std::{
 
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
-    RunRepositoryPort, acquire_run_with_connector, resolve_review_item,
+    RunRepositoryPort, acquire_run_with_connectors, resolve_review_item,
 };
 use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
 use game_media_vault_domain::{
@@ -111,13 +111,15 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
         requested_urls: requested_urls.clone(),
     });
 
-    let run = catalog.create_run(request()).unwrap();
-    let imported = acquire_run_with_connector(
+    let run = catalog
+        .create_run(request(), vec!["libretro-thumbnails".to_owned()])
+        .unwrap();
+    let imported = acquire_run_with_connectors(
         &catalog,
         &catalog,
         &catalog,
         &object_store,
-        &connector,
+        &[&connector],
         run.id,
         MatchingPolicy {
             high_confidence_threshold: 80,
@@ -192,7 +194,9 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
             }],
         })
         .unwrap();
-    let run = catalog.create_run(request()).unwrap();
+    let run = catalog
+        .create_run(request(), vec!["libretro-thumbnails".to_owned()])
+        .unwrap();
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
         requested_urls: Arc::new(Mutex::new(Vec::new())),
     });
@@ -202,12 +206,12 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
         medium_confidence_threshold: 50,
     };
 
-    let imported = acquire_run_with_connector(
+    let imported = acquire_run_with_connectors(
         &catalog,
         &catalog,
         &catalog,
         &ContentAddressedStore::new(&object_root),
-        &connector,
+        &[&connector],
         run.id,
         policy,
     )
@@ -233,12 +237,12 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
         },
     )
     .unwrap();
-    let imported = acquire_run_with_connector(
+    let imported = acquire_run_with_connectors(
         &reopened,
         &reopened,
         &reopened,
         &ContentAddressedStore::new(&object_root),
-        &NoDiscoveryConnector,
+        &[&NoDiscoveryConnector],
         run.id,
         policy,
     )

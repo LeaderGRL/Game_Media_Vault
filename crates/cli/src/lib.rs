@@ -9,12 +9,12 @@ use game_media_vault_application::{
     AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
     ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
     LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
-    VaultReport, acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run,
+    VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     derive_assets, draft_from_document, export_acquisition_request, import_local_box_front,
     import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
     load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
     resolve_review_item, resume_acquisition_run, search_library,
-    start_acquisition_run_for_connector, verify_vault,
+    start_acquisition_run_with_connectors, verify_vault,
 };
 use game_media_vault_connectors::{
     LibretroThumbnailsConnector, NoIntroReferenceCatalog, RedumpReferenceCatalog,
@@ -408,7 +408,7 @@ where
             let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
             // A plan the connector cannot execute would fail every execution, so no run starts.
             let run =
-                start_acquisition_run_for_connector(&catalog, acquire.into_input(), connector)
+                start_acquisition_run_with_connectors(&catalog, acquire.into_input(), &[connector])
                     .map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&run)?)
         }
@@ -421,7 +421,7 @@ where
             RunCommand::Start { request_file } => {
                 let draft = draft_from_document(read_request_document(&request_file)?)?;
                 let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-                let run = start_acquisition_run_for_connector(&catalog, draft, connector)
+                let run = start_acquisition_run_with_connectors(&catalog, draft, &[connector])
                     .map_err(map_start_run_error)?;
                 Ok(serde_json::to_string_pretty(&run)?)
             }
@@ -578,12 +578,12 @@ pub fn execute_acquisition_run_in_vault_with_connector(
 ) -> Result<AcquisitionRun, CliError> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))?;
     let object_store = ContentAddressedStore::new(vault_root);
-    acquire_run_with_connector(
+    acquire_run_with_connectors(
         &catalog,
         &catalog,
         &catalog,
         &object_store,
-        connector,
+        &[connector],
         run_id,
         matching_policy,
     )?;

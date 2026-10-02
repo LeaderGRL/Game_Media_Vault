@@ -142,6 +142,7 @@ pub struct FakeWork {
 #[derive(Debug, Clone)]
 pub struct FakeRun {
     pub request: AcquisitionRequest,
+    pub planned_sources: Vec<String>,
     pub status: AcquisitionRunStatus,
     pub discovered: BTreeSet<String>,
     pub work: Vec<FakeWork>,
@@ -168,6 +169,8 @@ pub struct FakeVault {
     pub decision_after_next_run_read: RefCell<Option<ReviewDecision>>,
     /// Simulates a pause or cancellation landing while the next discovery runs.
     pub status_before_next_discovery: RefCell<Option<AcquisitionRunStatus>>,
+    /// Simulates a status change, such as a resume, landing right after the next run read.
+    pub status_after_next_run_read: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
@@ -200,7 +203,9 @@ impl FakeVault {
     }
 
     pub fn start_run(&self) -> i64 {
-        self.create_run(request()).unwrap().id
+        self.create_run(request(), vec![SOURCE_ID.to_owned()])
+            .unwrap()
+            .id
     }
 
     pub fn run(&self, run_id: i64) -> AcquisitionRun {
@@ -280,13 +285,18 @@ impl FakeVault {
 }
 
 impl RunRepositoryPort for FakeVault {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+    fn create_run(
+        &self,
+        request: AcquisitionRequest,
+        planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError> {
         let mut runs = self.runs.borrow_mut();
         let id = runs.keys().next_back().copied().unwrap_or(6) + 1;
         runs.insert(
             id,
             FakeRun {
                 request,
+                planned_sources,
                 status: AcquisitionRunStatus::Running,
                 discovered: BTreeSet::new(),
                 work: Vec::new(),
@@ -307,6 +317,7 @@ impl RunRepositoryPort for FakeVault {
             AcquisitionRun {
                 id: run_id,
                 request: run.request.clone(),
+                planned_sources: run.planned_sources.clone(),
                 status: run.status,
                 queued_work: count(|state| *state == WorkState::Queued),
                 awaiting_review_work: count(|state| matches!(state, WorkState::Parked(_))),
@@ -326,6 +337,9 @@ impl RunRepositoryPort for FakeVault {
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
             let review_item_id = self.review_items.borrow()[0].id;
             self.decide_review_item(review_item_id, decision)?;
+        }
+        if let Some(status) = self.status_after_next_run_read.borrow_mut().take() {
+            self.runs.borrow_mut().get_mut(&run_id).unwrap().status = status;
         }
         Ok(run)
     }
@@ -400,7 +414,11 @@ impl RunRepositoryPort for FakeVault {
         Ok(true)
     }
 
-    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+    fn next_queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
         let runs = self.runs.borrow();
         let run = &runs[&run_id];
         if run.status != AcquisitionRunStatus::Running {
@@ -409,7 +427,12 @@ impl RunRepositoryPort for FakeVault {
         Ok(run
             .work
             .iter()
-            .find(|work| work.state == WorkState::Queued)
+            .find(|work| {
+                work.state == WorkState::Queued
+                    && !skipped_sources
+                        .iter()
+                        .any(|source| source == work.item.candidate.source_id.as_str())
+            })
             .map(|work| work.item.clone()))
     }
 
@@ -821,9 +844,12 @@ impl ObjectStorePort for FakeStore {
 }
 
 pub struct FakeConnector {
+    pub source_id: &'static str,
     pub candidates: Vec<AssetCandidate>,
     pub discovery_fails: bool,
     pub failing_downloads: BTreeSet<String>,
+    /// Source URLs whose download starts but fails partway through the body.
+    pub failing_bodies: BTreeSet<String>,
     pub discover_calls: RefCell<u32>,
     pub downloads: RefCell<Vec<String>>,
     /// Why the connector refuses every request, if it does.
@@ -837,9 +863,11 @@ pub struct FakeConnector {
 impl FakeConnector {
     pub fn new(candidates: Vec<AssetCandidate>) -> Self {
         Self {
+            source_id: SOURCE_ID,
             candidates,
             discovery_fails: false,
             failing_downloads: BTreeSet::new(),
+            failing_bodies: BTreeSet::new(),
             discover_calls: RefCell::new(0),
             downloads: RefCell::new(Vec::new()),
             unsupported_reason: None,
@@ -851,7 +879,7 @@ impl FakeConnector {
 
 impl ConnectorPort for FakeConnector {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        self.source_id
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
@@ -886,8 +914,22 @@ impl ConnectorPort for FakeConnector {
         self.downloads
             .borrow_mut()
             .push(candidate.source_url.clone());
+        if self.failing_bodies.contains(&candidate.source_url) {
+            return Ok(Box::new(
+                Cursor::new(b"partial bytes".to_vec()).chain(FailingRead),
+            ));
+        }
         Ok(Box::new(Cursor::new(
             format!("bytes of {}", candidate.original_filename).into_bytes(),
         )))
+    }
+}
+
+/// A download body whose connection drops: every read fails.
+pub struct FailingRead;
+
+impl Read for FailingRead {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("fixture connection reset"))
     }
 }
