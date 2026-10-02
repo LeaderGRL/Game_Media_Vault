@@ -2,7 +2,7 @@ use std::fs;
 
 use game_media_vault_application::{
     CatalogPort, CorruptObject, DerivativeRepositoryPort, DerivedStorePort, ObjectStorePort,
-    verify_vault,
+    RepairActions, repair_vault, verify_vault,
 };
 use game_media_vault_domain::{AssetType, DerivationRecipe, PersistAsset, SourceId, StoredObject};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
@@ -191,4 +191,70 @@ fn a_derived_record_not_named_by_a_hash_is_reported_unreadable() {
 
     assert_eq!(report.unreadable_derived.len(), 1);
     assert_eq!(report.unreadable_derived[0].hash, "../../outside");
+}
+
+#[test]
+fn repairs_remove_what_verification_found_and_keep_damaged_originals() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let kept = store.store_original(&mut &b"kept cover"[..]).unwrap();
+    let corrupt = store.store_original(&mut &b"cover to corrupt"[..]).unwrap();
+    let loose = store
+        .store_original(&mut &b"below quality cover"[..])
+        .unwrap();
+    for (title, object) in [("Kept", &kept), ("Corrupt", &corrupt)] {
+        catalog
+            .persist_asset(box_front(title, &object.hash, object.byte_len))
+            .unwrap();
+    }
+    let thumbnail = store.store_derived(&mut &b"kept thumbnail"[..]).unwrap();
+    catalog
+        .record_derivative(&kept.hash, &THUMBNAIL, &thumbnail)
+        .unwrap();
+    let stray = store.store_derived(&mut &b"stray thumbnail"[..]).unwrap();
+    fs::write(store.derived_path(&thumbnail.hash), b"garbled").unwrap();
+    fs::write(store.object_path(&corrupt.hash), b"bit rot").unwrap();
+    fs::write(vault.join("staging").join("4242-0.tmp"), b"interrupted").unwrap();
+    // A file the store did not name is not one of its objects.
+    fs::write(
+        store
+            .derived_path(&stray.hash)
+            .with_file_name("desktop.ini"),
+        b"",
+    )
+    .unwrap();
+
+    let summary = repair_vault(
+        &catalog,
+        &store,
+        RepairActions {
+            remove_interrupted_staging: true,
+            remove_orphaned_derived: true,
+            reset_damaged_derived: true,
+            collect_unreferenced_originals: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary.collected_originals,
+        std::slice::from_ref(&loose.hash)
+    );
+    assert_eq!(
+        summary.removed_derived,
+        [thumbnail.hash.clone(), stray.hash.clone()]
+    );
+    assert!(!store.object_path(&loose.hash).exists());
+    assert!(!store.derived_path(&thumbnail.hash).exists());
+    assert!(!vault.join("staging").join("4242-0.tmp").exists());
+    // The thumbnail renders again, while the corrupt original stays for a human to restore.
+    assert_eq!(catalog.originals_without(&THUMBNAIL).unwrap().len(), 2);
+    assert_eq!(
+        fs::read(store.object_path(&corrupt.hash)).unwrap(),
+        b"bit rot"
+    );
+    assert_eq!(summary.remaining.corrupt_originals.len(), 1);
+    assert!(summary.remaining.orphaned_derived.is_empty());
 }

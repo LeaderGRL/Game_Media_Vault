@@ -1428,3 +1428,25 @@ fn verify_reports_originals_the_vault_lost_without_repairing_anything() {
         serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
     assert_eq!(library.as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn repair_applies_only_the_actions_it_is_given() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    std::fs::create_dir_all(vault.join("staging")).unwrap();
+    std::fs::write(vault.join("staging").join("4242-0.tmp"), b"interrupted").unwrap();
+
+    let refused = run_in_vault(&vault, &["repair"]).unwrap_err();
+    let summary: serde_json::Value = serde_json::from_str(
+        &run_in_vault(&vault, &["repair", "--remove-interrupted-staging"]).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(refused.exit_code(), 2);
+    assert_eq!(
+        summary["removed_staging"],
+        serde_json::json!(["4242-0.tmp"])
+    );
+    assert_eq!(summary["healthy"], true);
+}

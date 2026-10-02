@@ -54,6 +54,7 @@ pub use runs::{
     start_acquisition_run,
 };
 pub use verify::{
-    CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, UnreadableObject, VaultCatalogPort,
-    VaultReport, VaultStorePort, verify_vault,
+    CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,
+    UnreadableObject, VaultCatalogPort, VaultRepairCatalogPort, VaultRepairStorePort, VaultReport,
+    VaultStorePort, repair_vault, verify_vault,
 };

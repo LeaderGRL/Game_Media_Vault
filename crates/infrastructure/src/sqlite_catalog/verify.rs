@@ -1,4 +1,6 @@
-use game_media_vault_application::{PortError, RecordedDerivative, VaultCatalogPort};
+use game_media_vault_application::{
+    PortError, RecordedDerivative, VaultCatalogPort, VaultRepairCatalogPort,
+};
 
 use super::{SqliteCatalog, sql_error};
 
@@ -39,5 +41,20 @@ impl VaultCatalogPort for SqliteCatalog {
             .map_err(sql_error)?
             .collect::<rusqlite::Result<_>>()
             .map_err(sql_error)
+    }
+}
+
+impl VaultRepairCatalogPort for SqliteCatalog {
+    fn forget_derivatives(&self, object_hashes: &[String]) -> Result<(), PortError> {
+        let object_hashes_json = serde_json::to_string(object_hashes)
+            .map_err(|error| PortError::new(format!("failed to serialize hashes: {error}")))?;
+        self.connect()?
+            .execute(
+                "DELETE FROM derived_objects
+                 WHERE object_hash IN (SELECT value FROM json_each(?1))",
+                [object_hashes_json],
+            )
+            .map_err(sql_error)?;
+        Ok(())
     }
 }

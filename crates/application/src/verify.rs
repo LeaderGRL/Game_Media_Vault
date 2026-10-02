@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ApplicationError, PortError};
 
@@ -178,4 +178,93 @@ pub fn verify_vault(
 
     report.interrupted_staging = staging;
     Ok(report)
+}
+
+/// The catalog side of the repairs a vault allows.
+pub trait VaultRepairCatalogPort: VaultCatalogPort {
+    /// Forgets the Derived Assets whose outputs are `object_hashes`, so their recipes run again.
+    fn forget_derivatives(&self, object_hashes: &[String]) -> Result<(), PortError>;
+}
+
+/// The store side of the repairs a vault allows; removing what is already gone succeeds.
+pub trait VaultRepairStorePort: VaultStorePort {
+    fn remove_object(&self, area: ObjectArea, hash: &str) -> Result<(), PortError>;
+
+    fn remove_staging_file(&self, name: &str) -> Result<(), PortError>;
+}
+
+/// Repairs to apply, each named explicitly. Missing and corrupt originals are never repaired:
+/// their bytes cannot be recovered from the vault.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairActions {
+    /// Deletes the staging files interrupted stores left.
+    pub remove_interrupted_staging: bool,
+    /// Forgets the Derived Assets of unreferenced originals and deletes derived files no record
+    /// lists.
+    pub remove_orphaned_derived: bool,
+    /// Forgets missing and corrupt Derived Assets, deleting corrupt files, so they render again.
+    pub reset_damaged_derived: bool,
+    /// Deletes stored originals no retained Asset references.
+    pub collect_unreferenced_originals: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepairSummary {
+    pub removed_staging: Vec<String>,
+    /// Derived Assets forgotten or deleted: damaged ones, then orphaned ones.
+    pub removed_derived: Vec<String>,
+    pub collected_originals: Vec<String>,
+    /// What verification still reports once the repairs are done.
+    pub remaining: VaultReport,
+}
+
+/// Verifies the vault, applies the requested `actions` to what it found, then verifies again.
+/// It assumes no other process uses the vault meanwhile: an interrupted store and one still
+/// running look alike.
+pub fn repair_vault(
+    catalog: &dyn VaultRepairCatalogPort,
+    store: &dyn VaultRepairStorePort,
+    actions: RepairActions,
+) -> Result<RepairSummary, ApplicationError> {
+    if actions == RepairActions::default() {
+        return Err(ApplicationError::NoRepairAction);
+    }
+    let report = verify_vault(catalog, store)?;
+    let mut summary = RepairSummary {
+        removed_staging: Vec::new(),
+        removed_derived: Vec::new(),
+        collected_originals: Vec::new(),
+        remaining: VaultReport::default(),
+    };
+
+    if actions.remove_interrupted_staging {
+        for name in report.interrupted_staging {
+            store.remove_staging_file(&name)?;
+            summary.removed_staging.push(name);
+        }
+    }
+    let mut removed_derived = Vec::new();
+    if actions.reset_damaged_derived {
+        removed_derived.extend(report.missing_derived);
+        removed_derived.extend(report.corrupt_derived.into_iter().map(|object| object.hash));
+    }
+    if actions.remove_orphaned_derived {
+        removed_derived.extend(report.orphaned_derived);
+    }
+    if !removed_derived.is_empty() {
+        catalog.forget_derivatives(&removed_derived)?;
+        for hash in &removed_derived {
+            store.remove_object(ObjectArea::Derived, hash)?;
+        }
+        summary.removed_derived = removed_derived;
+    }
+    if actions.collect_unreferenced_originals {
+        for hash in report.unreferenced_originals {
+            store.remove_object(ObjectArea::Original, &hash)?;
+            summary.collected_originals.push(hash);
+        }
+    }
+
+    summary.remaining = verify_vault(catalog, store)?;
+    Ok(summary)
 }

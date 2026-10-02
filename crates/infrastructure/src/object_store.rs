@@ -10,7 +10,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    DerivedStorePort, ObjectArea, ObjectCheck, ObjectStorePort, PortError, VaultStorePort,
+    DerivedStorePort, ObjectArea, ObjectCheck, ObjectStorePort, PortError, VaultRepairStorePort,
+    VaultStorePort,
 };
 use game_media_vault_domain::{MediaInfo, StoredObject};
 
@@ -140,7 +141,12 @@ impl VaultStorePort for ContentAddressedStore {
         let mut hashes = Vec::new();
         for first in subdirectories(&self.root.join(area_name(area)))? {
             for second in subdirectories(&first)? {
-                hashes.extend(file_names(&second)?);
+                // Files that are not named by a hash are not objects of this store.
+                hashes.extend(
+                    file_names(&second)?
+                        .into_iter()
+                        .filter(|name| is_object_hash(name)),
+                );
             }
         }
         Ok(hashes)
@@ -172,6 +178,32 @@ impl VaultStorePort for ContentAddressedStore {
             .into_iter()
             .filter(|name| !in_progress.contains(&staging_dir.join(name)))
             .collect())
+    }
+}
+
+impl VaultRepairStorePort for ContentAddressedStore {
+    fn remove_object(&self, area: ObjectArea, hash: &str) -> Result<(), PortError> {
+        if !is_object_hash(hash) {
+            return Err(PortError::new(format!("{hash:?} is not an object hash")));
+        }
+        remove_if_present(&self.address(area_name(area), hash))
+    }
+
+    fn remove_staging_file(&self, name: &str) -> Result<(), PortError> {
+        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+            return Err(PortError::new(format!(
+                "{name:?} is not a staging file name"
+            )));
+        }
+        remove_if_present(&self.root.join("staging").join(name))
+    }
+}
+
+fn remove_if_present(path: &Path) -> Result<(), PortError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(error)),
     }
 }
 

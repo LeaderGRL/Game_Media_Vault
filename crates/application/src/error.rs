@@ -16,6 +16,8 @@ pub enum ApplicationError {
     InvalidReferenceImportLimit,
     #[error("thumbnails require a positive longest edge")]
     InvalidThumbnailEdge,
+    #[error("a repair needs at least one action")]
+    NoRepairAction,
     #[error("{0}")]
     Port(#[from] PortError),
     #[error("{0}")]
@@ -132,6 +134,7 @@ impl ApplicationError {
             | Self::ResolveSourcePath(_)
             | Self::InvalidReferenceImportLimit
             | Self::InvalidThumbnailEdge
+            | Self::NoRepairAction
             | Self::Validation(_)
             | Self::InvalidMatchingPolicy(_)
             | Self::ReviewAcceptanceNotCompeting { .. } => ErrorKind::InvalidRequest,

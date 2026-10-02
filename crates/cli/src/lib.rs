@@ -8,12 +8,12 @@ use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
     ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
-    LibraryStatus, PortError, ReferenceCatalogSourcePort, VaultReport, acquire_run_with_connector,
-    build_acquisition_request, cancel_acquisition_run, derive_assets, draft_from_document,
-    export_acquisition_request, import_local_box_front, import_reference_catalog,
-    list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
-    pause_acquisition_run, resolve_review_item, resume_acquisition_run, search_library,
-    start_acquisition_run_for_connector, verify_vault,
+    LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
+    VaultReport, acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run,
+    derive_assets, draft_from_document, export_acquisition_request, import_local_box_front,
+    import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
+    load_acquisition_run, pause_acquisition_run, repair_vault, resolve_review_item,
+    resume_acquisition_run, search_library, start_acquisition_run_for_connector, verify_vault,
 };
 use game_media_vault_connectors::{
     LibretroThumbnailsConnector, NoIntroReferenceCatalog, RedumpReferenceCatalog,
@@ -121,6 +121,9 @@ enum Command {
     /// Compares the catalog with the stored bytes and reports every disagreement, repairing
     /// nothing.
     Verify,
+    /// Applies the named repairs to what verification finds, then verifies again. Run it only
+    /// while no other process uses the vault: interrupted and running stores look alike.
+    Repair(RepairArgs),
     Library,
     /// Searches the Library and prints one page of matching releases.
     Search(SearchArgs),
@@ -510,6 +513,23 @@ where
                 report,
             })?)
         }
+        Command::Repair(args) => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            let summary = repair_vault(
+                &catalog,
+                &ContentAddressedStore::new(&cli.vault),
+                RepairActions {
+                    remove_interrupted_staging: args.remove_interrupted_staging,
+                    remove_orphaned_derived: args.remove_orphaned_derived,
+                    reset_damaged_derived: args.reset_damaged_derived,
+                    collect_unreferenced_originals: args.collect_unreferenced_originals,
+                },
+            )?;
+            Ok(serde_json::to_string_pretty(&RepairOutput {
+                healthy: summary.remaining.is_healthy(),
+                summary,
+            })?)
+        }
         Command::DeriveThumbnails { max_edge } => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             let store = ContentAddressedStore::new(&cli.vault);
@@ -652,4 +672,28 @@ struct VerifyOutput {
     healthy: bool,
     #[serde(flatten)]
     report: VaultReport,
+}
+
+#[derive(Debug, Args)]
+struct RepairArgs {
+    /// Deletes the staging files interrupted stores left.
+    #[arg(long)]
+    remove_interrupted_staging: bool,
+    /// Forgets Derived Assets of unreferenced originals and deletes derived files no record lists.
+    #[arg(long)]
+    remove_orphaned_derived: bool,
+    /// Forgets missing and corrupt Derived Assets so they render again.
+    #[arg(long)]
+    reset_damaged_derived: bool,
+    /// Deletes stored originals no retained Asset references.
+    #[arg(long)]
+    collect_unreferenced_originals: bool,
+}
+
+/// A repair summary, said healthy when verification finds nothing left.
+#[derive(serde::Serialize)]
+struct RepairOutput {
+    healthy: bool,
+    #[serde(flatten)]
+    summary: RepairSummary,
 }
