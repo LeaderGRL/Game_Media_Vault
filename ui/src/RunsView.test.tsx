@@ -21,6 +21,7 @@ const run: AcquisitionRun = {
   queued_work: 2,
   awaiting_review_work: 1,
   completed_work: 4,
+  below_quality_work: 0,
 };
 
 function renderRuns(
@@ -93,6 +94,15 @@ describe("RunsView", () => {
 
     expect(handlers.onPause).toHaveBeenCalledWith(3);
     expect(handlers.onCancel).toHaveBeenCalledWith(3);
+  });
+
+  it("counts the completed work that fell short of the quality requirements", () => {
+    renderRuns([{ ...run, below_quality_work: 1 }]);
+
+    const card = screen.getByRole("article", { name: "Run #3" });
+    expect(
+      within(card).getByText("2 queued · 1 awaiting review · 4 completed (1 below quality)"),
+    ).toBeInTheDocument();
   });
 
   it("explains how to start when there is no run", () => {

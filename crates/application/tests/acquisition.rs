@@ -8,8 +8,8 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetTypeSelector, ImportedAsset, LibraryEntry, MatchConfidence,
-    MatchingPolicy, NewReviewItem, QualityRequirements, RetentionPolicy, ReviewDecision,
-    ReviewStatus, SourceId, SourceSelection,
+    MatchingPolicy, MediaInfo, NewReviewItem, QualityRequirements, QualityShortfall,
+    RetentionPolicy, ReviewDecision, ReviewStatus, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -36,6 +36,23 @@ fn execute(
     run_id: i64,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     execute_with(vault, connector, run_id, matching_policy())
+}
+
+fn execute_storing(
+    vault: &FakeVault,
+    connector: &FakeConnector,
+    run_id: i64,
+    store: &FakeStore,
+) -> Result<Vec<ImportedAsset>, ApplicationError> {
+    acquire_run_with_connector(
+        vault,
+        vault,
+        vault,
+        store,
+        connector,
+        run_id,
+        matching_policy(),
+    )
 }
 
 /// Runs a new acquisition of `candidate` that parks it on a Review Item, and returns the run.
@@ -731,17 +748,27 @@ fn rejects_multi_source_execution_until_a_multi_source_plan_exists() {
 }
 
 #[test]
-fn rejects_quality_and_retention_behavior_reserved_for_the_quality_slice() {
-    let error = plan_error(request_with(|draft| {
-        draft.quality = Some(QualityRequirements {
-            min_width: Some(600),
+fn rejects_quality_requirements_the_engine_cannot_measure_yet() {
+    for quality in [
+        QualityRequirements {
+            min_bitrate_kbps: Some(800),
             ..QualityRequirements::default()
-        });
-    }));
-    assert!(matches!(
-        error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
-    ));
+        },
+        QualityRequirements {
+            preferred_source_priority: vec![SOURCE_ID.to_owned()],
+            ..QualityRequirements::default()
+        },
+        QualityRequirements {
+            best_available: true,
+            ..QualityRequirements::default()
+        },
+    ] {
+        let error = plan_error(request_with(|draft| draft.quality = Some(quality)));
+        assert!(matches!(
+            error,
+            ApplicationError::UnsupportedConnectorPlan { .. }
+        ));
+    }
 
     let error = plan_error(request_with(|draft| {
         draft.retention = RetentionPolicy::KeepBestPerType;
@@ -750,6 +777,162 @@ fn rejects_quality_and_retention_behavior_reserved_for_the_quality_slice() {
         error,
         ApplicationError::UnsupportedConnectorPlan { .. }
     ));
+}
+
+fn quality_run(vault: &FakeVault, quality: QualityRequirements) -> i64 {
+    vault
+        .create_run(request_with(|draft| draft.quality = Some(quality)))
+        .unwrap()
+        .id
+}
+
+fn png(width: u32, height: u32) -> MediaInfo {
+    MediaInfo {
+        media_type: "image/png".to_owned(),
+        width: Some(width),
+        height: Some(height),
+    }
+}
+
+#[test]
+fn an_original_below_the_quality_requirements_is_not_linked() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = quality_run(
+        &vault,
+        QualityRequirements {
+            min_width: Some(1000),
+            min_longest_edge: Some(1200),
+            ..QualityRequirements::default()
+        },
+    );
+    let store = FakeStore::storing(png(640, 900));
+
+    let imported = execute_storing(&vault, &FakeConnector::new(vec![smb]), run_id, &store).unwrap();
+
+    assert!(imported.is_empty());
+    assert!(vault.records.borrow().is_empty());
+    let run = vault.run(run_id);
+    assert_eq!((run.completed_work, run.below_quality_work), (1, 1));
+    assert_eq!(
+        vault.quality_shortfalls(run_id),
+        vec![
+            QualityShortfall::MinWidth {
+                minimum: 1000,
+                actual: Some(640),
+            },
+            QualityShortfall::MinLongestEdge {
+                minimum: 1200,
+                actual: Some(900),
+            },
+        ]
+    );
+}
+
+#[test]
+fn an_original_meeting_the_quality_requirements_is_linked() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = quality_run(
+        &vault,
+        QualityRequirements {
+            min_width: Some(1000),
+            min_pixel_count: Some(1_000_000),
+            accepted_mime_types: vec!["image/png".to_owned()],
+            original_only: true,
+            ..QualityRequirements::default()
+        },
+    );
+    let store = FakeStore::storing(png(1200, 1600));
+
+    let imported = execute_storing(&vault, &FakeConnector::new(vec![smb]), run_id, &store).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.run(run_id).below_quality_work, 0);
+}
+
+#[test]
+fn an_original_of_an_unaccepted_media_type_is_not_linked() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = quality_run(
+        &vault,
+        QualityRequirements {
+            accepted_mime_types: vec!["image/png".to_owned()],
+            ..QualityRequirements::default()
+        },
+    );
+    let store = FakeStore::storing(MediaInfo {
+        media_type: "image/jpeg".to_owned(),
+        ..png(1200, 1600)
+    });
+
+    let imported = execute_storing(&vault, &FakeConnector::new(vec![smb]), run_id, &store).unwrap();
+
+    assert!(imported.is_empty());
+    assert_eq!(
+        vault.quality_shortfalls(run_id),
+        vec![QualityShortfall::AcceptedMediaTypes {
+            accepted: vec!["image/png".to_owned()],
+            actual: "image/jpeg".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn a_below_quality_original_still_settles_the_review_of_a_now_certain_match() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    let first_run = park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    let strict_run = quality_run(
+        &vault,
+        QualityRequirements {
+            min_width: Some(1000),
+            ..QualityRequirements::default()
+        },
+    );
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![threshold]),
+        strict_run,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert_eq!(vault.run(strict_run).below_quality_work, 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+    // Nothing was linked, so the parked run applies its own requirements to the candidate.
+    assert_eq!(vault.work_states(first_run), vec![WorkState::Queued]);
+    assert_eq!(vault.run(first_run).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn a_human_decision_landing_before_a_below_quality_completion_wins() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    let strict_run = quality_run(
+        &vault,
+        QualityRequirements {
+            min_width: Some(1000),
+            ..QualityRequirements::default()
+        },
+    );
+    *vault.human_decision_before_next_write.borrow_mut() = Some(ReviewDecision::Reject);
+
+    execute_storing(
+        &vault,
+        &FakeConnector::new(vec![threshold]),
+        strict_run,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert_eq!(vault.review_item(0).status, ReviewStatus::Rejected);
+    assert_eq!(vault.work_states(strict_run), vec![WorkState::Done]);
+    assert!(vault.quality_shortfalls(strict_run).is_empty());
 }
 
 #[test]

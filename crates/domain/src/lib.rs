@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 mod canonical;
+mod quality;
 
 pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
+pub use quality::QualityShortfall;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "values", rename_all = "snake_case")]
@@ -192,6 +194,8 @@ pub struct AcquisitionRun {
     pub queued_work: u64,
     pub awaiting_review_work: u64,
     pub completed_work: u64,
+    /// Completed work whose original fell short of the quality requirements.
+    pub below_quality_work: u64,
 }
 
 /// One discovered Asset Candidate to process within an Acquisition Run. The key is the

@@ -23,7 +23,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 3);
+    assert_eq!(pragma(&path, "user_version"), 4);
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn catalog_from_an_unsupported_older_schema_version_is_refused_unchanged() {
 }
 
 #[test]
-fn version_2_catalogs_are_upgraded_with_unknown_media_for_existing_assets() {
+fn version_2_catalogs_are_upgraded_to_the_current_layout() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("catalog.sqlite3");
     SqliteCatalog::open(&path)
@@ -128,20 +128,21 @@ fn version_2_catalogs_are_upgraded_with_unknown_media_for_existing_assets() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media columns.
+    // Rebuild the version 2 layout, which had no media or quality shortfall columns.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
             "ALTER TABLE assets DROP COLUMN media_type;
              ALTER TABLE assets DROP COLUMN width;
              ALTER TABLE assets DROP COLUMN height;
+             ALTER TABLE acquisition_run_work DROP COLUMN quality_shortfalls_json;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 3);
+    assert_eq!(pragma(&path, "user_version"), 4);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }

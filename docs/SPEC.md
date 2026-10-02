@@ -197,6 +197,8 @@ Quality requirements can independently constrain:
 
 The engine should not discard a candidate solely because another candidate is better until the configured Retention Policy has been applied.
 
+Requirements are measured on the stored original (its media type and pixel size, read from its bytes): minimum width, height, longest edge and pixel count, and accepted media types. Every acquired Asset is an original, so `original_only` always holds. An original that falls short is not linked; its work completes with the shortfalls recorded (shown as "below quality" run counts) and its object stays unreferenced until vault verification. The match still settles the candidate: an undecided Review Item is closed as `auto_resolved`, the work parked on it in other runs is requeued so each run applies its own requirements, and links of the candidate to other Release Editions are removed. Requirements the engine cannot measure or apply yet (compression ratio, bitrate, preferences and best-available mode, which need Keep Best Per Type) are refused before discovery.
+
 ## 8. Retention Policies
 
 ### Keep Everything

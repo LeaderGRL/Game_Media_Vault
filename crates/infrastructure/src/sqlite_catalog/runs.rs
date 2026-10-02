@@ -30,6 +30,7 @@ impl RunRepositoryPort for SqliteCatalog {
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
+            below_quality_work: 0,
         })
     }
 
@@ -205,7 +206,8 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
             "SELECT run.request_json, run.request_schema_version, run.status,
                     COUNT(work.id) FILTER (WHERE work.state = 'queued'),
                     COUNT(work.id) FILTER (WHERE work.state = 'parked'),
-                    COUNT(work.id) FILTER (WHERE work.state = 'done')
+                    COUNT(work.id) FILTER (WHERE work.state = 'done'),
+                    COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL)
              FROM acquisition_runs AS run
              LEFT JOIN acquisition_run_work AS work ON work.run_id = run.id
              WHERE run.id = ?1
@@ -219,12 +221,15 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
         .optional()
         .map_err(sql_error)?;
-    let Some((request_json, request_schema_version, status, queued, parked, done)) = row else {
+    let Some((request_json, request_schema_version, status, queued, parked, done, below_quality)) =
+        row
+    else {
         return Ok(None);
     };
     if request_schema_version != ACQUISITION_REQUEST_SCHEMA_VERSION {
@@ -243,6 +248,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         queued_work: count(queued),
         awaiting_review_work: count(parked),
         completed_work: count(done),
+        below_quality_work: count(below_quality),
     }))
 }
 

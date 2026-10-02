@@ -35,6 +35,7 @@ impl RunRepositoryPort for RecordingRunRepository {
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
+            below_quality_work: 0,
         })
     }
 
@@ -171,6 +172,7 @@ impl RacingRunRepository {
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
+            below_quality_work: 0,
         }
     }
 }

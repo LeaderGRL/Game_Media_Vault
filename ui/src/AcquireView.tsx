@@ -8,6 +8,7 @@ import {
   RetentionPolicy,
   buildAcquisitionRequest,
   emptyAcquisitionForm,
+  pixelSizeProblem,
 } from "./acquisition";
 
 interface AcquireViewProps {
@@ -15,9 +16,13 @@ interface AcquireViewProps {
   onStart: (request: AcquisitionRequestDraft) => void;
 }
 
-/** Compact Acquisition Request builder; the backend validates the submitted draft. */
+/**
+ * Compact Acquisition Request builder; the backend validates the submitted draft, except pixel
+ * sizes the request could not carry, which are refused here.
+ */
 export function AcquireView({ starting, onStart }: AcquireViewProps) {
   const [form, setForm] = useState<AcquisitionForm>(emptyAcquisitionForm);
+  const [formProblem, setFormProblem] = useState<string | null>(null);
 
   function update(change: Partial<AcquisitionForm>) {
     setForm((current) => ({ ...current, ...change }));
@@ -29,7 +34,11 @@ export function AcquireView({ starting, onStart }: AcquireViewProps) {
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    onStart(buildAcquisitionRequest(form));
+    const problem = pixelSizeProblem(form);
+    setFormProblem(problem);
+    if (problem === null) {
+      onStart(buildAcquisitionRequest(form));
+    }
   }
 
   return (
@@ -86,6 +95,22 @@ export function AcquireView({ starting, onStart }: AcquireViewProps) {
           />
         </label>
         <label>
+          Minimum width (px, empty for any)
+          <input
+            inputMode="numeric"
+            value={form.minWidth}
+            onChange={(event) => update({ minWidth: event.target.value })}
+          />
+        </label>
+        <label>
+          Minimum height (px, empty for any)
+          <input
+            inputMode="numeric"
+            value={form.minHeight}
+            onChange={(event) => update({ minHeight: event.target.value })}
+          />
+        </label>
+        <label>
           Retention policy
           <select
             value={form.retention}
@@ -124,6 +149,11 @@ export function AcquireView({ starting, onStart }: AcquireViewProps) {
         ))}
       </fieldset>
 
+      {formProblem ? (
+        <p className="error-message" role="alert">
+          {formProblem}
+        </p>
+      ) : null}
       <button type="submit" disabled={starting}>
         {starting ? "Starting…" : "Start acquisition"}
       </button>

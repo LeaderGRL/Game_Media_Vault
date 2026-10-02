@@ -3,7 +3,8 @@ use std::{io::Read, path::Path};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
-    PersistAsset, ReferenceReleaseRecord, ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
+    PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReviewDecision, ReviewItem,
+    ReviewStatus, StoredObject,
 };
 use thiserror::Error;
 
@@ -114,6 +115,21 @@ pub trait ReviewRepositoryPort {
         candidate_identity: &str,
         record: PersistAsset,
     ) -> Result<Option<ImportedAsset>, PortError>;
+
+    /// Completes the candidate's work in `run_id` without linking its original, which fell
+    /// short of the run's quality requirements, and records the shortfalls so the candidate
+    /// stays explainable. The match to `release_edition_id` still settles the candidate in the
+    /// same transaction: its links to other editions are removed and an undecided or superseded
+    /// Review Item is closed as `AutoResolved`, requeueing the work parked on it so every run
+    /// applies its own requirements. Changes nothing and returns `false` when a human rejected
+    /// the candidate or accepted another Release Edition.
+    fn complete_candidate_below_quality(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+        release_edition_id: i64,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError>;
 }
 
 /// Persisted Acquisition Runs and their work queue.

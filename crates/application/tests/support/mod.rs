@@ -15,8 +15,8 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchingPolicy, MediaInfo,
-    NewReviewItem, PersistAsset, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
-    SourceId, SourceSelection, StoredObject,
+    NewReviewItem, PersistAsset, QualityShortfall, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceId, SourceSelection, StoredObject,
 };
 
 pub const SOURCE_ID: &str = "libretro-thumbnails";
@@ -134,6 +134,7 @@ pub enum WorkState {
 pub struct FakeWork {
     pub item: AcquisitionWorkItem,
     pub state: WorkState,
+    pub shortfalls: Vec<QualityShortfall>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +203,15 @@ impl FakeVault {
 
     pub fn run(&self, run_id: i64) -> AcquisitionRun {
         self.get_run(run_id).unwrap().unwrap()
+    }
+
+    /// Every quality shortfall recorded on the run's work, in work order.
+    pub fn quality_shortfalls(&self, run_id: i64) -> Vec<QualityShortfall> {
+        self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .flat_map(|work| work.shortfalls.clone())
+            .collect()
     }
 
     pub fn work_states(&self, run_id: i64) -> Vec<WorkState> {
@@ -290,6 +300,11 @@ impl RunRepositoryPort for FakeVault {
                 queued_work: count(|state| *state == WorkState::Queued),
                 awaiting_review_work: count(|state| matches!(state, WorkState::Parked(_))),
                 completed_work: count(|state| *state == WorkState::Done),
+                below_quality_work: run
+                    .work
+                    .iter()
+                    .filter(|work| !work.shortfalls.is_empty())
+                    .count() as u64,
             }
         });
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
@@ -361,6 +376,7 @@ impl RunRepositoryPort for FakeVault {
                 run.work.push(FakeWork {
                     item: item.clone(),
                     state: WorkState::Queued,
+                    shortfalls: Vec::new(),
                 });
             }
         }
@@ -605,6 +621,59 @@ impl ReviewRepositoryPort for FakeVault {
         self.complete_work(run_id, candidate_identity)?;
         Ok(Some(imported))
     }
+
+    fn complete_candidate_below_quality(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+        release_edition_id: i64,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError> {
+        self.open_scheduled_review();
+        if let Some(existing) = self.find_review_item(candidate_identity)? {
+            self.apply_pending_human_decision(existing.id);
+            let current = self.get_review_item(existing.id)?.unwrap();
+            match (current.status, current.decision) {
+                (ReviewStatus::Rejected, _) => return Ok(false),
+                (
+                    ReviewStatus::Accepted,
+                    Some(ReviewDecision::Accept {
+                        release_edition_id: accepted,
+                    }),
+                ) if accepted != release_edition_id => return Ok(false),
+                (ReviewStatus::Pending | ReviewStatus::Deferred | ReviewStatus::Superseded, _) => {
+                    {
+                        let mut review_items = self.review_items.borrow_mut();
+                        let item = review_items
+                            .iter_mut()
+                            .find(|item| item.id == existing.id)
+                            .unwrap();
+                        item.status = ReviewStatus::AutoResolved;
+                        item.decision = None;
+                    }
+                    self.move_parked_work(existing.id, WorkState::Queued, false);
+                }
+                _ => {}
+            }
+        }
+        {
+            let mut links = self.candidate_links.borrow_mut();
+            if links.get(candidate_identity) != Some(&release_edition_id) {
+                links.remove(candidate_identity);
+            }
+        }
+        self.complete_work(run_id, candidate_identity)?;
+        let mut runs = self.runs.borrow_mut();
+        let work = runs
+            .get_mut(&run_id)
+            .unwrap()
+            .work
+            .iter_mut()
+            .find(|work| work.item.key == candidate_identity)
+            .unwrap();
+        work.shortfalls = shortfalls.to_vec();
+        Ok(true)
+    }
 }
 
 impl CatalogPort for FakeVault {
@@ -630,6 +699,17 @@ impl CatalogPort for FakeVault {
 #[derive(Default)]
 pub struct FakeStore {
     pub stored: RefCell<Vec<Vec<u8>>>,
+    /// Media every stored original is read as; unknown by default.
+    pub media: Option<MediaInfo>,
+}
+
+impl FakeStore {
+    pub fn storing(media: MediaInfo) -> Self {
+        Self {
+            media: Some(media),
+            ..Self::default()
+        }
+    }
 }
 
 impl ObjectStorePort for FakeStore {
@@ -641,7 +721,7 @@ impl ObjectStorePort for FakeStore {
         let stored = StoredObject {
             hash: format!("hash-of-{}-bytes", bytes.len()),
             byte_len: bytes.len() as u64,
-            media: MediaInfo::unknown(),
+            media: self.media.clone().unwrap_or_else(MediaInfo::unknown),
         };
         self.stored.borrow_mut().push(bytes);
         Ok(stored)

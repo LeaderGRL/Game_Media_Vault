@@ -1,13 +1,13 @@
 use std::fs;
 
 use game_media_vault_application::{
-    ApplicationError, CatalogPort, ImportLocalBoxFrontRequest, RunRepositoryPort,
-    cancel_acquisition_run, complete_acquisition_run, import_local_box_front, load_acquisition_run,
-    pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
+    ApplicationError, CatalogPort, ImportLocalBoxFrontRequest, ReviewRepositoryPort,
+    RunRepositoryPort, cancel_acquisition_run, complete_acquisition_run, import_local_box_front,
+    load_acquisition_run, pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, RetentionPolicy, SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, QualityShortfall, RetentionPolicy, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::Connection;
@@ -495,4 +495,33 @@ fn completing_unknown_work_is_an_error() {
     let error = catalog.complete_work(run.id, "missing").unwrap_err();
 
     assert!(error.to_string().contains("has no work"), "{error}");
+}
+
+#[test]
+fn work_below_quality_is_completed_and_counted_apart() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("small"), work("large")])
+        .unwrap();
+
+    catalog
+        .complete_candidate_below_quality(
+            run.id,
+            "small",
+            73,
+            &[QualityShortfall::MinWidth {
+                minimum: 1000,
+                actual: Some(640),
+            }],
+        )
+        .unwrap();
+    catalog.complete_work(run.id, "large").unwrap();
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    let loaded = load_acquisition_run(&reopened, run.id).unwrap();
+    assert_eq!((loaded.completed_work, loaded.below_quality_work), (2, 1));
 }

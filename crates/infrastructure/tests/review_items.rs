@@ -6,8 +6,8 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
     AssetTypeSelector, GameSelection, MatchEvidence, MatchSignal, MediaInfo, NewReviewItem,
-    PersistAsset, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, ReviewDecision,
-    ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
+    PersistAsset, QualityShortfall, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy,
+    ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::{TempDir, tempdir};
@@ -947,4 +947,86 @@ fn a_detached_candidate_takes_its_provenance_details_along() {
         .map(|provenance| provenance.source_asset_label.as_deref())
         .collect();
     assert_eq!(labels, vec![Some("front")]);
+}
+
+fn width_shortfall() -> Vec<QualityShortfall> {
+    vec![QualityShortfall::MinWidth {
+        minimum: 1000,
+        actual: Some(640),
+    }]
+}
+
+#[test]
+fn a_below_quality_original_closes_the_undecided_item_and_requeues_its_work() {
+    let (_temp, catalog) = open_catalog();
+    let parked_run = start_run(&catalog);
+    let item = parked_item(&catalog, parked_run);
+    complete_run(&catalog, parked_run);
+    let strict_run = start_run(&catalog);
+    discover(&catalog, strict_run);
+
+    let settled = catalog
+        .complete_candidate_below_quality(strict_run, IDENTITY, 201, &width_shortfall())
+        .unwrap();
+
+    assert!(settled);
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::AutoResolved
+    );
+    assert_eq!(library_asset_count(&catalog), 0);
+    let strict = load_acquisition_run(&catalog, strict_run).unwrap();
+    assert_eq!((strict.completed_work, strict.below_quality_work), (1, 1));
+    // Nothing was linked, so the parked run evaluates the candidate again.
+    assert_eq!(counts(&catalog, parked_run), (1, 0, 0));
+    assert_eq!(
+        load_acquisition_run(&catalog, parked_run).unwrap().status,
+        AcquisitionRunStatus::Running
+    );
+}
+
+#[test]
+fn a_below_quality_original_changes_nothing_once_a_human_rejected_the_candidate() {
+    let (_temp, catalog) = open_catalog();
+    let item = parked_item(&catalog, start_run(&catalog));
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+    let strict_run = start_run(&catalog);
+    discover(&catalog, strict_run);
+
+    let settled = catalog
+        .complete_candidate_below_quality(strict_run, IDENTITY, 201, &width_shortfall())
+        .unwrap();
+
+    assert!(!settled);
+    assert_eq!(counts(&catalog, strict_run), (1, 0, 0));
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Rejected
+    );
+}
+
+#[test]
+fn a_below_quality_original_detaches_the_candidate_from_other_editions() {
+    let (_temp, catalog) = open_catalog();
+    catalog
+        .persist_candidate_asset(
+            start_run(&catalog),
+            IDENTITY,
+            record_for_edition("Standard", "first-bytes"),
+        )
+        .unwrap();
+    let strict_run = start_run(&catalog);
+    discover(&catalog, strict_run);
+
+    // The candidate now matches another edition, whose original falls short.
+    catalog
+        .complete_candidate_below_quality(strict_run, IDENTITY, 999, &width_shortfall())
+        .unwrap();
+
+    assert_eq!(
+        assets_by_edition(&catalog),
+        vec![("Standard".to_owned(), 0)]
+    );
 }

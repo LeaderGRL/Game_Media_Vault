@@ -2,8 +2,8 @@ use game_media_vault_application::{
     ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
 };
 use game_media_vault_domain::{
-    ImportedAsset, NewReviewItem, PersistAsset, ReviewDecision, ReviewItem, ReviewMatchCandidate,
-    ReviewStatus,
+    ImportedAsset, NewReviewItem, PersistAsset, QualityShortfall, ReviewDecision, ReviewItem,
+    ReviewMatchCandidate, ReviewStatus,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -179,7 +179,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
         }
         // The engine no longer believes in the candidate, so its automatic link goes too.
         detach_candidate_links(&transaction, candidate_identity, None)?;
-        complete_run_work(&transaction, run_id, candidate_identity)?;
+        complete_run_work(&transaction, run_id, candidate_identity, None)?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -247,39 +247,13 @@ impl ReviewRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let review_item = select_review_item(
+        if !auto_resolve_candidate_review(
             &transaction,
-            "candidate_identity = ?1",
-            params![candidate_identity],
-        )?;
-        if let Some(item) = review_item {
-            match (item.status, item.decision) {
-                (ReviewStatus::Rejected, _) => return Ok(None),
-                (ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))
-                    if record.existing_release_edition_id != Some(release_edition_id) =>
-                {
-                    return Ok(None);
-                }
-                (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
-                    set_status_if_undecided(
-                        &transaction,
-                        item.id,
-                        ReviewStatus::AutoResolved,
-                        None,
-                    )?;
-                    complete_parked_work(&transaction, item.id)?;
-                }
-                // The candidate became high confidence after a run had dismissed it.
-                (ReviewStatus::Superseded, _) => {
-                    transaction
-                        .execute(
-                            "UPDATE review_items SET status = ?1 WHERE id = ?2",
-                            params![review_status_to_str(ReviewStatus::AutoResolved), item.id],
-                        )
-                        .map_err(sql_error)?;
-                }
-                _ => {}
-            }
+            candidate_identity,
+            record.existing_release_edition_id,
+            ParkedWork::Complete,
+        )? {
+            return Ok(None);
         }
         let imported =
             persist_asset_in_transaction(&transaction, record, Some(candidate_identity))?;
@@ -288,24 +262,111 @@ impl ReviewRepositoryPort for SqliteCatalog {
             candidate_identity,
             Some(imported.release_edition_id),
         )?;
-        complete_run_work(&transaction, run_id, candidate_identity)?;
+        complete_run_work(&transaction, run_id, candidate_identity, None)?;
         transaction.commit().map_err(sql_error)?;
         Ok(Some(imported))
     }
+
+    fn complete_candidate_below_quality(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+        release_edition_id: i64,
+        shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError> {
+        let shortfalls_json = to_json(&shortfalls, "quality shortfalls")?;
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        if !auto_resolve_candidate_review(
+            &transaction,
+            candidate_identity,
+            Some(release_edition_id),
+            ParkedWork::Requeue,
+        )? {
+            return Ok(false);
+        }
+        detach_candidate_links(&transaction, candidate_identity, Some(release_edition_id))?;
+        complete_run_work(
+            &transaction,
+            run_id,
+            candidate_identity,
+            Some(&shortfalls_json),
+        )?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(true)
+    }
+}
+
+/// What becomes of the work parked on a Review Item closed by a high-confidence match.
+enum ParkedWork {
+    /// The candidate was linked, so the parked work has nothing left to do.
+    Complete,
+    /// Nothing was linked, so every run evaluates the candidate again.
+    Requeue,
+}
+
+/// Closes the candidate's Review Item after a high-confidence match to `release_edition_id`:
+/// an undecided or superseded item becomes `AutoResolved`. Returns `false`, changing nothing,
+/// when a human rejected the candidate or accepted another Release Edition.
+fn auto_resolve_candidate_review(
+    transaction: &Transaction<'_>,
+    candidate_identity: &str,
+    release_edition_id: Option<i64>,
+    parked_work: ParkedWork,
+) -> Result<bool, PortError> {
+    let Some(item) = select_review_item(
+        transaction,
+        "candidate_identity = ?1",
+        params![candidate_identity],
+    )?
+    else {
+        return Ok(true);
+    };
+    match (item.status, item.decision) {
+        (ReviewStatus::Rejected, _) => return Ok(false),
+        (
+            ReviewStatus::Accepted,
+            Some(ReviewDecision::Accept {
+                release_edition_id: accepted,
+            }),
+        ) if release_edition_id != Some(accepted) => return Ok(false),
+        (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
+            set_status_if_undecided(transaction, item.id, ReviewStatus::AutoResolved, None)?;
+            match parked_work {
+                ParkedWork::Complete => complete_parked_work(transaction, item.id)?,
+                ParkedWork::Requeue => requeue_parked_work(transaction, item.id)?,
+            }
+        }
+        // The candidate became high confidence after a run had dismissed it.
+        (ReviewStatus::Superseded, _) => {
+            transaction
+                .execute(
+                    "UPDATE review_items SET status = ?1 WHERE id = ?2",
+                    params![review_status_to_str(ReviewStatus::AutoResolved), item.id],
+                )
+                .map_err(sql_error)?;
+        }
+        _ => {}
+    }
+    Ok(true)
 }
 
 /// Completes the candidate's work in `run_id`, whether queued or parked, so the outcome and the
-/// work settle together.
+/// work settle together; `quality_shortfalls_json` records an original that fell short.
 fn complete_run_work(
     transaction: &Transaction<'_>,
     run_id: i64,
     candidate_identity: &str,
+    quality_shortfalls_json: Option<&str>,
 ) -> Result<(), PortError> {
     transaction
         .execute(
-            "UPDATE acquisition_run_work SET state = 'done', review_item_id = NULL
+            "UPDATE acquisition_run_work
+             SET state = 'done', review_item_id = NULL, quality_shortfalls_json = ?3
              WHERE run_id = ?1 AND work_key = ?2",
-            params![run_id, candidate_identity],
+            params![run_id, candidate_identity, quality_shortfalls_json],
         )
         .map_err(sql_error)?;
     Ok(())
