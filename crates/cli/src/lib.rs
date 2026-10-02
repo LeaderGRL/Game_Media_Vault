@@ -679,7 +679,8 @@ struct RepairArgs {
     /// Deletes the staging files interrupted stores left.
     #[arg(long)]
     remove_interrupted_staging: bool,
-    /// Forgets Derived Assets of unreferenced originals and deletes derived files no record lists.
+    /// Forgets Derived Assets of unreferenced originals and deletes derived files no remaining
+    /// record lists.
     #[arg(long)]
     remove_orphaned_derived: bool,
     /// Forgets missing and corrupt Derived Assets so they render again.

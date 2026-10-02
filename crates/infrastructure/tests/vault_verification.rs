@@ -258,3 +258,40 @@ fn repairs_remove_what_verification_found_and_keep_damaged_originals() {
     assert_eq!(summary.remaining.corrupt_originals.len(), 1);
     assert!(summary.remaining.orphaned_derived.is_empty());
 }
+
+#[test]
+fn forgetting_orphaned_derived_assets_keeps_a_thumbnail_a_retained_original_shares() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let kept = store.store_original(&mut &b"kept cover"[..]).unwrap();
+    let loose = store.store_original(&mut &b"loose cover"[..]).unwrap();
+    catalog
+        .persist_asset(box_front("Kept", &kept.hash, kept.byte_len))
+        .unwrap();
+    let thumbnail = store.store_derived(&mut &b"same thumbnail"[..]).unwrap();
+    for original in [&kept, &loose] {
+        catalog
+            .record_derivative(&original.hash, &THUMBNAIL, &thumbnail)
+            .unwrap();
+    }
+
+    let summary = repair_vault(
+        &catalog,
+        &store,
+        RepairActions {
+            remove_orphaned_derived: true,
+            ..RepairActions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.forgotten_derived.len(), 1);
+    assert_eq!(summary.forgotten_derived[0].original_hash, loose.hash);
+    assert!(summary.removed_derived.is_empty());
+    assert!(store.derived_path(&thumbnail.hash).exists());
+    assert_eq!(catalog.originals_without(&THUMBNAIL).unwrap().len(), 0);
+    assert!(summary.remaining.orphaned_derived.is_empty());
+    assert_eq!(summary.remaining.unreferenced_originals, [loose.hash]);
+}

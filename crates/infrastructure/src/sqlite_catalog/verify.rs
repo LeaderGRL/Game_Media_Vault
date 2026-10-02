@@ -45,16 +45,22 @@ impl VaultCatalogPort for SqliteCatalog {
 }
 
 impl VaultRepairCatalogPort for SqliteCatalog {
-    fn forget_derivatives(&self, object_hashes: &[String]) -> Result<(), PortError> {
-        let object_hashes_json = serde_json::to_string(object_hashes)
-            .map_err(|error| PortError::new(format!("failed to serialize hashes: {error}")))?;
-        self.connect()?
-            .execute(
-                "DELETE FROM derived_objects
-                 WHERE object_hash IN (SELECT value FROM json_each(?1))",
-                [object_hashes_json],
-            )
-            .map_err(sql_error)?;
-        Ok(())
+    fn forget_derivatives(&self, derivatives: &[RecordedDerivative]) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction().map_err(sql_error)?;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "DELETE FROM derived_objects
+                     WHERE original_hash = ?1 AND object_hash = ?2",
+                )
+                .map_err(sql_error)?;
+            for derivative in derivatives {
+                statement
+                    .execute([&derivative.original_hash, &derivative.object_hash])
+                    .map_err(sql_error)?;
+            }
+        }
+        transaction.commit().map_err(sql_error)
     }
 }

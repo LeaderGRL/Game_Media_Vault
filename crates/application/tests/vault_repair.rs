@@ -6,7 +6,7 @@ use game_media_vault_application::{
 };
 
 /// What the catalog references and what the store holds, with the hash each stored file
-/// actually has; repairs change them in place.
+/// actually has; repairs change them in place. A file whose hash is `UNREADABLE` cannot be read.
 #[derive(Default)]
 struct FakeVault {
     referenced: Vec<String>,
@@ -36,10 +36,10 @@ impl VaultCatalogPort for FakeVault {
 }
 
 impl VaultRepairCatalogPort for FakeVault {
-    fn forget_derivatives(&self, object_hashes: &[String]) -> Result<(), PortError> {
+    fn forget_derivatives(&self, derivatives: &[RecordedDerivative]) -> Result<(), PortError> {
         self.derivatives
             .borrow_mut()
-            .retain(|derivative| !object_hashes.contains(&derivative.object_hash));
+            .retain(|derivative| !derivatives.contains(derivative));
         Ok(())
     }
 }
@@ -52,6 +52,9 @@ impl VaultStorePort for FakeVault {
     fn check_object(&self, area: ObjectArea, hash: &str) -> Result<ObjectCheck, PortError> {
         Ok(match self.area(area).borrow().get(hash) {
             None => ObjectCheck::Missing,
+            Some(actual) if actual == UNREADABLE => ObjectCheck::Unreadable {
+                reason: "permission denied".to_owned(),
+            },
             Some(actual) if actual == hash => ObjectCheck::Intact,
             Some(actual) => ObjectCheck::Corrupt {
                 actual_hash: actual.clone(),
@@ -75,6 +78,8 @@ impl VaultRepairStorePort for FakeVault {
         Ok(())
     }
 }
+
+const UNREADABLE: &str = "unreadable";
 
 fn intact(hashes: &[&str]) -> BTreeMap<String, String> {
     hashes
@@ -146,9 +151,14 @@ fn forgets_orphaned_and_damaged_derived_assets_so_they_render_again() {
     .unwrap();
 
     assert_eq!(
-        summary.removed_derived,
-        ["thumb-bbb", "thumb-aaa", "thumb-old", "stray"]
+        summary.forgotten_derived,
+        [
+            derivative("aaa", "thumb-aaa"),
+            derivative("bbb", "thumb-bbb"),
+            derivative("old", "thumb-old"),
+        ]
     );
+    assert_eq!(summary.removed_derived, ["thumb-aaa", "thumb-old", "stray"]);
     assert!(vault.derivatives.borrow().is_empty());
     assert!(vault.derived.borrow().is_empty());
     assert!(summary.remaining.missing_derived.is_empty());
@@ -190,4 +200,57 @@ fn a_repair_without_any_action_is_refused() {
         game_media_vault_application::ErrorKind::InvalidRequest
     );
     assert_eq!(vault.staging.borrow().len(), 1);
+}
+
+#[test]
+fn forgets_orphaned_derived_assets_but_keeps_an_output_a_referenced_original_shares() {
+    let vault = FakeVault {
+        referenced: vec!["aaa".to_owned()],
+        derivatives: RefCell::new(vec![derivative("aaa", "thumb"), derivative("old", "thumb")]),
+        originals: RefCell::new(intact(&["aaa"])),
+        derived: RefCell::new(intact(&["thumb"])),
+        ..FakeVault::default()
+    };
+
+    let summary = repair_vault(
+        &vault,
+        &vault,
+        RepairActions {
+            remove_orphaned_derived: true,
+            ..RepairActions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.forgotten_derived, [derivative("old", "thumb")]);
+    assert!(summary.removed_derived.is_empty());
+    assert_eq!(*vault.derivatives.borrow(), [derivative("aaa", "thumb")]);
+    assert_eq!(vault.derived.borrow().keys().collect::<Vec<_>>(), ["thumb"]);
+}
+
+#[test]
+fn leaves_unreadable_derived_files_in_place() {
+    let mut derived = BTreeMap::new();
+    derived.insert("locked".to_owned(), UNREADABLE.to_owned());
+    let vault = FakeVault {
+        referenced: vec!["aaa".to_owned()],
+        derivatives: RefCell::new(vec![derivative("old", "locked")]),
+        originals: RefCell::new(intact(&["aaa"])),
+        derived: RefCell::new(derived),
+        ..FakeVault::default()
+    };
+
+    let summary = repair_vault(
+        &vault,
+        &vault,
+        RepairActions {
+            remove_orphaned_derived: true,
+            ..RepairActions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.forgotten_derived, [derivative("old", "locked")]);
+    assert!(summary.removed_derived.is_empty());
+    assert!(vault.derived.borrow().contains_key("locked"));
 }
