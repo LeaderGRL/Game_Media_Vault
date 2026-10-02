@@ -42,8 +42,8 @@ pub use plan::{
 };
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
-    ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReviewDecisionOutcome,
-    ReviewRepositoryPort, RunRepositoryPort,
+    ReferenceCatalogRead, ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort,
+    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{
     MAX_REVIEW_PREVIEW_BYTES, ReviewPreview, list_review_items, load_review_preview,

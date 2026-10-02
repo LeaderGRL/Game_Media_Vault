@@ -366,7 +366,7 @@ Candidate reference catalogs include:
 
 This list is a registry seed, not a closed allowlist.
 
-No-Intro and Redump datafiles (Logiqx XML) import through the same reader, as `game-media-vault import-no-intro` and `import-redump`: the header names the platform, and each game entry becomes a Release Edition asserted by its Source, with its title, region and revision, a `source_record` identifier that keeps re-imports idempotent, and the name and checksums of every ROM or disc track. Redump disc tags such as `(Disc 1)` become the edition. When the header records a version, each release it asserts also carries a `dat_version` identifier, so the edition of the datafile that asserted it stays identifiable. Datafiles describe dumps and never contain playable content.
+No-Intro and Redump datafiles (Logiqx XML) import through the same reader, as `game-media-vault import-no-intro` and `import-redump`: the header names the platform, and each game entry becomes a Release Edition asserted by its Source, with its title, region and revision, a `source_record` identifier that keeps re-imports idempotent, and the name and checksums of every ROM or disc track. Redump disc tags such as `(Disc 1)` become the edition. When the header records a version, each release it asserts also carries a `dat_version` identifier, so the edition of the datafile that asserted it stays identifiable. A game entry too malformed to read (without a name, or with a ROM or track whose attributes cannot be read) is skipped without invalidating the others, and the import summary counts it as a `skipped_records`; a datafile that is not well-formed XML, or ends inside an entry, is invalid as a whole. Datafiles describe dumps and never contain playable content.
 
 ## 14. Acquisition Pipeline
 

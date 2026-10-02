@@ -593,6 +593,7 @@ fn imports_a_bounded_no_intro_fixture_without_ingesting_game_content() {
     .unwrap();
     let summary: serde_json::Value = serde_json::from_str(&summary).unwrap();
     assert_eq!(summary["imported_releases"], 2);
+    assert_eq!(summary["skipped_records"], 0);
 
     let library = game_media_vault_cli::run([
         "game-media-vault".into(),
