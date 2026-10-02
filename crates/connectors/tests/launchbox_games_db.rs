@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    collections::HashSet,
     io::{Cursor, Read, Write},
 };
 
@@ -9,11 +10,13 @@ use game_media_vault_connectors::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, RetentionPolicy, SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, PlatformBoundGameSelector, RetentionPolicy, SourceId,
+    SourceSelection,
 };
 
 const NES: &str = "Nintendo - Nintendo Entertainment System";
 const SNES: &str = "Nintendo - Super Nintendo Entertainment System";
+const GAME_BOY: &str = "Nintendo - Game Boy";
 
 /// A slice of the LaunchBox Games Database, with the records discovery must skip.
 const METADATA_XML: &str = r#"<?xml version="1.0" standalone="yes"?>
@@ -84,6 +87,29 @@ const METADATA_XML: &str = r#"<?xml version="1.0" standalone="yes"?>
     <DatabaseID>220</DatabaseID>
     <FileName>tetris-front.jpg</FileName>
     <Type>Box - Front</Type>
+  </GameImage>
+  <GameImage>
+    <DatabaseID>220</DatabaseID>
+    <FileName>tetris-front-us.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>United States</Region>
+  </GameImage>
+  <GameImage>
+    <DatabaseID>220</DatabaseID>
+    <FileName>tetris-front-uk.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>United Kingdom</Region>
+  </GameImage>
+  <GameImage>
+    <DatabaseID>220</DatabaseID>
+    <FileName>tetris-front-nl.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>The Netherlands</Region>
+  </GameImage>
+  <GameImage>
+    <DatabaseID>140</DatabaseID>
+    <FileName>smb-title.png</FileName>
+    <Type>Screenshot - Game Title</Type>
   </GameImage>
   <GameImage>
     <DatabaseID>300</DatabaseID>
@@ -372,5 +398,122 @@ fn names_every_game_of_a_platform_as_no_intro_does() {
     assert_eq!(
         candidates[0].game_title,
         "Legend of Zelda, The - A Link to the Past"
+    );
+}
+
+#[test]
+fn acquires_title_screens_from_game_title_screenshots() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.asset_types = vec![AssetTypeSelector::TitleScreen];
+        }))
+        .unwrap();
+
+    assert_eq!(
+        locators(&candidates),
+        ["https://images.launchbox-app.com/smb-title.png"]
+    );
+    assert_eq!(candidates[0].asset_type, AssetType::TitleScreen);
+    assert_eq!(
+        candidates[0].source_asset_label.as_deref(),
+        Some("Screenshot - Game Title")
+    );
+}
+
+#[test]
+fn names_regions_as_no_intro_does() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.platforms = vec![GAME_BOY.to_owned()];
+            draft.games = GameSelection::Explicit(vec!["Tetris (World) (Rev 1)".to_owned()]);
+        }))
+        .unwrap();
+
+    let regions: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.region.as_str())
+        .collect();
+    assert_eq!(regions, ["Unknown", "USA", "UK", "Netherlands"]);
+}
+
+#[test]
+fn refuses_to_discover_with_language_filters_before_downloading() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let error = connector
+        .discover(&request(|draft| draft.languages = vec!["fr".to_owned()]))
+        .unwrap_err();
+
+    assert!(error.message().contains("language"), "{}", error.message());
+    assert!(transport.requests.borrow().is_empty());
+}
+
+#[test]
+fn discovers_the_games_bound_to_their_platforms() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+    let bound = vec![
+        PlatformBoundGameSelector {
+            game: "Super Mario Bros. (World)".to_owned(),
+            platform: NES.to_owned(),
+        },
+        PlatformBoundGameSelector {
+            game: "Tetris (World)".to_owned(),
+            platform: GAME_BOY.to_owned(),
+        },
+    ];
+
+    for games in [
+        GameSelection::PlatformBound(bound.clone()),
+        GameSelection::QueryResult(bound.clone()),
+    ] {
+        let every_platform = connector
+            .discover(&request(|draft| {
+                draft.platforms = Vec::new();
+                draft.games = games.clone();
+            }))
+            .unwrap();
+        // Requested platforms narrow the bound games.
+        let narrowed = connector
+            .discover(&request(|draft| draft.games = games.clone()))
+            .unwrap();
+
+        let platforms: HashSet<&str> = every_platform
+            .iter()
+            .map(|candidate| candidate.platform.as_str())
+            .collect();
+        assert_eq!(platforms, HashSet::from([NES, GAME_BOY]));
+        assert!(narrowed.iter().all(|candidate| candidate.platform == NES));
+        assert!(!narrowed.is_empty());
+    }
+}
+
+#[test]
+fn checks_bound_games_against_the_platforms_it_covers() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let reason = connector
+        .unsupported_request_reason(&request(|draft| {
+            draft.platforms = Vec::new();
+            draft.games = GameSelection::PlatformBound(vec![PlatformBoundGameSelector {
+                game: "Pong (World)".to_owned(),
+                platform: "Philips - Videopac+".to_owned(),
+            }]);
+        }))
+        .unwrap();
+
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Philips - Videopac+")),
+        "{reason:?}"
     );
 }
