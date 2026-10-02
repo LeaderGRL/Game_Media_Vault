@@ -10,19 +10,32 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
 ## What it does today
 
 - **Acquisition Runs** from an Acquisition Request (Sources, platforms, games, regions, Asset
-  Types, quality requirements, retention policy). Runs are persisted, resumable, pausable and
-  cancellable; each Source is discovered once per run.
-- **Libretro Thumbnails** connector: Box Front, Screenshot and Title Screen images from the
-  `libretro-thumbnails` repositories.
-- **Reference catalogs**: No-Intro datafiles import as Release Editions with their identifiers,
-  so acquired media can be matched to known releases.
+  Types, quality requirements, retention policy), planned across every Source that can serve it
+  and explained before they start. Runs are persisted, resumable, pausable and cancellable.
+  Sources take turns, so a slow or failing Source never holds back the others. Transient
+  failures are retried with backoff, cut downloads resume, and media a Source no longer serves
+  completes as unavailable. Requests export to portable documents, and the desktop fills them
+  from presets.
+- **Sources**:
+  - **Libretro Thumbnails**: Box Front, Screenshot and Title Screen images.
+  - **LaunchBox Games Database**: box fronts, backs, spines and 3D renders, cartridges, discs,
+    screenshots, logos, artwork, flyers, and the marquees, cabinets, control panels and circuit
+    boards of arcade games.
+
+  The Sources view describes what each Source acquires and the failures executions recorded.
+- **Reference catalogs**: No-Intro and Redump datafiles and MAME software lists import as Release
+  Editions with their identifiers, so acquired media can be matched to known releases; releases
+  several catalogs describe under the same title share one Release Edition.
 - **Matching and Review**: each candidate is scored against the Library; confident matches link
   automatically, uncertain ones become Review Items to accept, reject or defer.
 - **Library**: canonical values derived from every Source's claims, the Preferred Asset of each
   type, coverage of the packaging profiles, search with combinable filters and stable pages.
 - **Derived Assets**: reproducible PNG thumbnails rendered from originals without touching them,
   and 3D models (glTF binary) of complete cardboard boxes built from their front, back and spine
-  scans.
+  scans, which the desktop previews in 3D.
+- **Vault integrity**: verification rehashes every stored object against the catalog and reports
+  stale work; repairs apply only the actions named, and never touch an original they cannot
+  recover.
 
 See [`docs/SPEC.md`](docs/SPEC.md) for the complete product specification, including what is
 planned next.
@@ -74,8 +87,10 @@ cargo run -p game-media-vault-cli -- --vault my-vault acquire --source libretro-
 cargo run -p game-media-vault-cli -- --vault my-vault run execute 1
 ```
 
-`cargo run -p game-media-vault-cli -- --help` lists every command (runs, reviews, imports,
-Library search, thumbnails).
+`cargo run -p game-media-vault-cli -- --help` lists every command: `acquire` and `plan`, `run`
+(list, show, start, execute, pause, resume, cancel, export), `review`, `source`, the
+`import-*` commands for local box fronts and reference catalogs, `library` and `search`,
+`derive-thumbnails` and `derive-packaging-models`, and `verify` and `repair`.
 
 ## Tests
 
