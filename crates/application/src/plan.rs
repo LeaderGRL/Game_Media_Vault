@@ -102,6 +102,38 @@ pub(crate) fn capable_sources<'a>(
     request: &AcquisitionRequest,
     connectors: &[&'a dyn ConnectorPort],
 ) -> Result<CapableSources<'a>, ApplicationError> {
+    let selected = match request.sources() {
+        SourceSelection::Auto => connectors.to_vec(),
+        SourceSelection::Explicit(source_ids) => registered_connectors(source_ids, connectors)?,
+    };
+    capable_among(request, selected)
+}
+
+/// The connectors of `source_ids`, in that order; each Source needs one.
+pub(crate) fn registered_connectors<'a>(
+    source_ids: &[String],
+    connectors: &[&'a dyn ConnectorPort],
+) -> Result<Vec<&'a dyn ConnectorPort>, ApplicationError> {
+    source_ids
+        .iter()
+        .map(|source_id| {
+            connectors
+                .iter()
+                .copied()
+                .find(|connector| connector.source_id() == source_id)
+                .ok_or_else(|| ApplicationError::UnsupportedConnectorPlan {
+                    source_id: source_id.clone(),
+                    reason: "no connector is registered for this source".to_owned(),
+                })
+        })
+        .collect()
+}
+
+/// Keeps the `selected` connectors whose capabilities serve `request`, as `capable_sources`.
+pub(crate) fn capable_among<'a>(
+    request: &AcquisitionRequest,
+    selected: Vec<&'a dyn ConnectorPort>,
+) -> Result<CapableSources<'a>, ApplicationError> {
     if let Some(reason) = request
         .quality()
         .and_then(QualityRequirements::unsupported_requirement)
@@ -113,22 +145,6 @@ pub(crate) fn capable_sources<'a>(
             "acquisition limits are not supported yet",
         ));
     }
-    let selected: Vec<&dyn ConnectorPort> = match request.sources() {
-        SourceSelection::Auto => connectors.to_vec(),
-        SourceSelection::Explicit(source_ids) => source_ids
-            .iter()
-            .map(|source_id| {
-                connectors
-                    .iter()
-                    .copied()
-                    .find(|connector| connector.source_id() == source_id)
-                    .ok_or_else(|| ApplicationError::UnsupportedConnectorPlan {
-                        source_id: source_id.clone(),
-                        reason: "no connector is registered for this source".to_owned(),
-                    })
-            })
-            .collect::<Result<_, _>>()?,
-    };
 
     let mut sources = Vec::new();
     let mut excluded = Vec::new();
@@ -167,14 +183,14 @@ fn capable_asset_types(
     Ok(asset_types)
 }
 
-pub(crate) fn excluded_source(connector: &dyn ConnectorPort, reason: String) -> ExcludedSource {
+fn excluded_source(connector: &dyn ConnectorPort, reason: String) -> ExcludedSource {
     ExcludedSource {
         source_id: connector.source_id().to_owned(),
         reason,
     }
 }
 
-pub(crate) fn ensure_covered(
+fn ensure_covered(
     request: &AcquisitionRequest,
     acquired: &[AssetType],
     excluded: &[ExcludedSource],

@@ -146,9 +146,8 @@ fn a_run_no_selected_source_can_serve_is_never_persisted() {
 }
 
 #[test]
-fn a_source_left_out_of_the_plan_is_left_out_of_every_execution() {
+fn a_run_contacts_only_the_sources_its_plan_kept() {
     let smb = candidate("Super Mario Bros.");
-    let snap = screenshot("Super Mario Bros.");
     let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
     let refusing = FakeConnector {
         source_id: "other-boxes",
@@ -156,25 +155,34 @@ fn a_source_left_out_of_the_plan_is_left_out_of_every_execution() {
         ..FakeConnector::new(Vec::new())
     };
     let boxes = FakeConnector::new(vec![smb]);
-    let snaps = snap_connector(vec![snap]);
-    let connectors = [&refusing, &boxes, &snaps];
-    let run = start(&vault, auto_draft(), &connectors).unwrap();
+    let snaps = snap_connector(vec![screenshot("Super Mario Bros.")]);
+    let run = start(&vault, auto_draft(), &[&refusing, &boxes, &snaps]).unwrap();
+    // By the first execution, the Source left out accepts and another one is registered.
+    let accepting = FakeConnector {
+        source_id: "other-boxes",
+        ..FakeConnector::new(Vec::new())
+    };
+    let newcomer = FakeConnector {
+        source_id: "new-boxes",
+        ..FakeConnector::new(Vec::new())
+    };
 
-    let imported = execute(&vault, &connectors, run.id).unwrap();
+    let imported = execute(&vault, &[&accepting, &boxes, &snaps, &newcomer], run.id).unwrap();
 
     assert_eq!(imported.len(), 2);
-    assert_eq!(*refusing.discover_calls.borrow(), 0);
+    assert_eq!(*accepting.discover_calls.borrow(), 0);
+    assert_eq!(*newcomer.discover_calls.borrow(), 0);
+    assert_eq!(vault.run(run.id).planned_sources, [SOURCE_ID, SNAPS]);
     assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
 }
 
 #[test]
-fn a_type_left_uncovered_by_refusals_at_execution_keeps_the_run_running() {
+fn a_planned_source_refusing_at_execution_leaves_the_others_progressing() {
     let smb = candidate("Super Mario Bros.");
     let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
     let boxes = FakeConnector::new(vec![smb.clone()]);
     let snaps = snap_connector(vec![screenshot("Super Mario Bros.")]);
     let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
-    // The only Screenshot Source refuses the request by the time the run executes.
     let refusing_snaps = FakeConnector {
         unsupported_reason: Some("the snapshot index is gone".to_owned()),
         ..snap_connector(Vec::new())
@@ -183,9 +191,28 @@ fn a_type_left_uncovered_by_refusals_at_execution_keeps_the_run_running() {
     let error = execute(&vault, &[&boxes, &refusing_snaps], run.id).unwrap_err();
 
     assert!(
-        matches!(error, ApplicationError::UncoveredAssetTypes { .. }),
+        matches!(error, ApplicationError::UnsupportedConnectorPlan { .. }),
         "{error}"
     );
-    assert_eq!(*boxes.discover_calls.borrow(), 0);
+    assert_eq!(boxes.downloads.borrow().as_slice(), [smb.source_url]);
     assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn a_pause_during_a_discovery_keeps_it_but_discovers_no_further() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let boxes = FakeConnector::new(vec![smb]);
+    let snaps = snap_connector(vec![screenshot("Super Mario Bros.")]);
+    let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
+    // The run is paused while the first Source is being discovered.
+    *vault.status_before_next_discovery.borrow_mut() = Some(AcquisitionRunStatus::Paused);
+
+    execute(&vault, &[&boxes, &snaps], run.id).unwrap();
+
+    assert_eq!(*boxes.discover_calls.borrow(), 1);
+    assert_eq!(*snaps.discover_calls.borrow(), 0);
+    let paused = vault.run(run.id);
+    assert_eq!(paused.status, AcquisitionRunStatus::Paused);
+    assert_eq!(paused.queued_work, 1);
 }

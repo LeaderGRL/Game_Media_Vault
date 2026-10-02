@@ -41,7 +41,7 @@ fn queue(catalog: &SqliteCatalog, run_id: i64, key: &str) {
 
 fn request() -> game_media_vault_application::AcquisitionRequestInput {
     game_media_vault_application::AcquisitionRequestInput {
-        sources: SourceSelection::Auto,
+        sources: SourceSelection::Explicit(vec![SOURCE_ID.to_owned()]),
         platforms: vec!["Windows".to_owned()],
         games: GameSelection::All,
         regions: Vec::new(),
@@ -61,6 +61,7 @@ fn persists_an_acquisition_run_across_catalog_reopen() {
 
     let started = start_acquisition_run(&catalog, request()).unwrap();
     assert_eq!(started.status, AcquisitionRunStatus::Running);
+    assert_eq!(started.planned_sources, [SOURCE_ID]);
     drop(catalog);
 
     let reopened = SqliteCatalog::open_existing(&path).unwrap();

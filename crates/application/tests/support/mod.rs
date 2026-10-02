@@ -142,6 +142,7 @@ pub struct FakeWork {
 #[derive(Debug, Clone)]
 pub struct FakeRun {
     pub request: AcquisitionRequest,
+    pub planned_sources: Vec<String>,
     pub status: AcquisitionRunStatus,
     pub discovered: BTreeSet<String>,
     pub work: Vec<FakeWork>,
@@ -200,7 +201,9 @@ impl FakeVault {
     }
 
     pub fn start_run(&self) -> i64 {
-        self.create_run(request()).unwrap().id
+        self.create_run(request(), vec![SOURCE_ID.to_owned()])
+            .unwrap()
+            .id
     }
 
     pub fn run(&self, run_id: i64) -> AcquisitionRun {
@@ -280,13 +283,18 @@ impl FakeVault {
 }
 
 impl RunRepositoryPort for FakeVault {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+    fn create_run(
+        &self,
+        request: AcquisitionRequest,
+        planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError> {
         let mut runs = self.runs.borrow_mut();
         let id = runs.keys().next_back().copied().unwrap_or(6) + 1;
         runs.insert(
             id,
             FakeRun {
                 request,
+                planned_sources,
                 status: AcquisitionRunStatus::Running,
                 discovered: BTreeSet::new(),
                 work: Vec::new(),
@@ -307,6 +315,7 @@ impl RunRepositoryPort for FakeVault {
             AcquisitionRun {
                 id: run_id,
                 request: run.request.clone(),
+                planned_sources: run.planned_sources.clone(),
                 status: run.status,
                 queued_work: count(|state| *state == WorkState::Queued),
                 awaiting_review_work: count(|state| matches!(state, WorkState::Parked(_))),

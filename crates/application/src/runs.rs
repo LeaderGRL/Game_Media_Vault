@@ -1,6 +1,6 @@
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRequestValidationError, AcquisitionRun,
-    AcquisitionRunStatus,
+    AcquisitionRunStatus, SourceSelection,
 };
 
 use crate::{ApplicationError, RunRepositoryPort};
@@ -11,12 +11,21 @@ pub fn build_acquisition_request(
     AcquisitionRequest::try_from_draft(input)
 }
 
+/// Starts a run without consulting any connector: its plan contacts exactly the explicitly
+/// selected Sources. `Auto` is planned with the registered connectors, through
+/// `start_acquisition_run_with_connectors`.
 pub fn start_acquisition_run(
     runs: &dyn RunRepositoryPort,
     input: AcquisitionRequestDraft,
 ) -> Result<AcquisitionRun, ApplicationError> {
     let request = build_acquisition_request(input)?;
-    Ok(runs.create_run(request)?)
+    let SourceSelection::Explicit(sources) = request.sources() else {
+        return Err(ApplicationError::UnsupportedRequest(
+            "an Auto selection is planned with the registered connectors",
+        ));
+    };
+    let planned_sources = sources.clone();
+    Ok(runs.create_run(request, planned_sources)?)
 }
 
 pub fn load_acquisition_run(

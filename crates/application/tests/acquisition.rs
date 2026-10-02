@@ -724,7 +724,12 @@ fn request_with(change: impl FnOnce(&mut AcquisitionRequestDraft)) -> Acquisitio
 
 fn plan_error(request: AcquisitionRequest) -> ApplicationError {
     let vault = FakeVault::default();
-    let run_id = vault.create_run(request).unwrap().id;
+    // The plan kept every explicitly selected Source.
+    let planned_sources = match request.sources() {
+        SourceSelection::Explicit(sources) => sources.clone(),
+        SourceSelection::Auto => vec![SOURCE_ID.to_owned()],
+    };
+    let run_id = vault.create_run(request, planned_sources).unwrap().id;
     let connector = FakeConnector::new(Vec::new());
     let error = execute(&vault, &connector, run_id).unwrap_err();
     assert_eq!(*connector.discover_calls.borrow(), 0);
@@ -765,9 +770,12 @@ fn rejects_quality_requirements_the_engine_cannot_measure_yet() {
 
 fn keep_best_run(vault: &FakeVault) -> i64 {
     vault
-        .create_run(request_with(|draft| {
-            draft.retention = RetentionPolicy::KeepBestPerType;
-        }))
+        .create_run(
+            request_with(|draft| {
+                draft.retention = RetentionPolicy::KeepBestPerType;
+            }),
+            vec![SOURCE_ID.to_owned()],
+        )
         .unwrap()
         .id
 }
@@ -889,7 +897,10 @@ fn an_outranked_original_still_settles_the_review_of_a_now_certain_match() {
 
 fn quality_run(vault: &FakeVault, quality: QualityRequirements) -> i64 {
     vault
-        .create_run(request_with(|draft| draft.quality = Some(quality)))
+        .create_run(
+            request_with(|draft| draft.quality = Some(quality)),
+            vec![SOURCE_ID.to_owned()],
+        )
         .unwrap()
         .id
 }
@@ -1361,9 +1372,12 @@ fn a_run_acquires_only_the_asset_types_it_selects() {
     };
     let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
     let run_id = vault
-        .create_run(request_with(|draft| {
-            draft.asset_types = vec![AssetTypeSelector::Screenshot];
-        }))
+        .create_run(
+            request_with(|draft| {
+                draft.asset_types = vec![AssetTypeSelector::Screenshot];
+            }),
+            vec![SOURCE_ID.to_owned()],
+        )
         .unwrap()
         .id;
     let connector = FakeConnector {

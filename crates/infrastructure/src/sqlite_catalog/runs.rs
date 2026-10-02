@@ -10,22 +10,35 @@ use super::{SqliteCatalog, sql_error};
 const ACQUISITION_REQUEST_SCHEMA_VERSION: i64 = 1;
 
 impl RunRepositoryPort for SqliteCatalog {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError> {
+    fn create_run(
+        &self,
+        request: AcquisitionRequest,
+        planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError> {
         let connection = self.connect()?;
         let request_json = serde_json::to_string(&request).map_err(|error| {
             PortError::new(format!("failed to serialize acquisition request: {error}"))
         })?;
+        let planned_sources_json = serde_json::to_string(&planned_sources).map_err(|error| {
+            PortError::new(format!("failed to serialize planned sources: {error}"))
+        })?;
         connection
             .execute(
-                "INSERT INTO acquisition_runs (request_json, request_schema_version, status)
-                 VALUES (?1, ?2, 'running')",
-                params![request_json, ACQUISITION_REQUEST_SCHEMA_VERSION],
+                "INSERT INTO acquisition_runs
+                     (request_json, request_schema_version, status, planned_sources_json)
+                 VALUES (?1, ?2, 'running', ?3)",
+                params![
+                    request_json,
+                    ACQUISITION_REQUEST_SCHEMA_VERSION,
+                    planned_sources_json
+                ],
             )
             .map_err(sql_error)?;
 
         Ok(AcquisitionRun {
             id: connection.last_insert_rowid(),
             request,
+            planned_sources,
             status: AcquisitionRunStatus::Running,
             queued_work: 0,
             awaiting_review_work: 0,
@@ -204,7 +217,7 @@ impl RunRepositoryPort for SqliteCatalog {
 fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
     let row = connection
         .query_row(
-            "SELECT run.request_json, run.request_schema_version, run.status,
+            "SELECT run.request_json, run.request_schema_version, run.status, run.planned_sources_json,
                     COUNT(work.id) FILTER (WHERE work.state = 'queued'),
                     COUNT(work.id) FILTER (WHERE work.state = 'parked'),
                     COUNT(work.id) FILTER (WHERE work.state = 'done'),
@@ -219,12 +232,13 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                 // Queued, parked, done, below-quality and outranked work.
                 let mut counts = [0_i64; 5];
                 for (index, count) in counts.iter_mut().enumerate() {
-                    *count = row.get(3 + index)?;
+                    *count = row.get(4 + index)?;
                 }
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                     counts,
                 ))
             },
@@ -235,6 +249,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         request_json,
         request_schema_version,
         status,
+        planned_sources_json,
         [queued, parked, done, below_quality, outranked],
     )) = row
     else {
@@ -251,9 +266,12 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
     let request = AcquisitionRequest::try_from_draft(draft).map_err(|error| {
         PortError::new(format!("invalid persisted acquisition request: {error}"))
     })?;
+    let planned_sources = serde_json::from_str(&planned_sources_json)
+        .map_err(|error| PortError::new(format!("invalid persisted planned sources: {error}")))?;
     Ok(Some(AcquisitionRun {
         id: run_id,
         request,
+        planned_sources,
         status: parse_run_status(&status)?,
         queued_work: count(queued),
         awaiting_review_work: count(parked),

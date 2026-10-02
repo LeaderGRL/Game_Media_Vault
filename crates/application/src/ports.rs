@@ -182,7 +182,12 @@ pub trait ReviewRepositoryPort {
 
 /// Persisted Acquisition Runs and their work queue.
 pub trait RunRepositoryPort {
-    fn create_run(&self, request: AcquisitionRequest) -> Result<AcquisitionRun, PortError>;
+    /// Persists a running run of `request` that contacts the `planned_sources` of its plan.
+    fn create_run(
+        &self,
+        request: AcquisitionRequest,
+        planned_sources: Vec<String>,
+    ) -> Result<AcquisitionRun, PortError>;
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError>;
 

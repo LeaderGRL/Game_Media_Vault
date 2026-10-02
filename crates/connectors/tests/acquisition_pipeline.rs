@@ -111,7 +111,9 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
         requested_urls: requested_urls.clone(),
     });
 
-    let run = catalog.create_run(request()).unwrap();
+    let run = catalog
+        .create_run(request(), vec!["libretro-thumbnails".to_owned()])
+        .unwrap();
     let imported = acquire_run_with_connectors(
         &catalog,
         &catalog,
@@ -192,7 +194,9 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
             }],
         })
         .unwrap();
-    let run = catalog.create_run(request()).unwrap();
+    let run = catalog
+        .create_run(request(), vec!["libretro-thumbnails".to_owned()])
+        .unwrap();
     let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport {
         requested_urls: Arc::new(Mutex::new(Vec::new())),
     });
