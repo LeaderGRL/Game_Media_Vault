@@ -272,6 +272,8 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(await screen.findByText("catalog busy")).toBeInTheDocument();
+    // The filter bar shows the filters of the shown results again.
+    expect(screen.getByLabelText("Search titles")).toHaveValue("");
 
     // The next page still continues the search that produced the shown results.
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
@@ -279,6 +281,33 @@ describe("App", () => {
     expect(libraryQueries.at(-1)).toMatchObject({ text: null });
     // A search that succeeds clears the earlier failure.
     await waitFor(() => expect(screen.queryByText("catalog busy")).not.toBeInTheDocument());
+  });
+
+  it("shows the filters of a search that ended while the Library was hidden", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "metal") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: "Review (0)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    await act(async () => finishSearch?.([entry]));
+
+    expect(screen.getByLabelText("Search titles")).toHaveValue("metal");
   });
 
   it("requests one next page at a time", async () => {

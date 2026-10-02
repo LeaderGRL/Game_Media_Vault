@@ -51,6 +51,8 @@ export function App() {
   // Searches use the filters of the latest search, including those that refresh the Library.
   const libraryFiltersRef = useRef<LibraryFilters>(NO_LIBRARY_FILTERS);
   const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>(NO_LIBRARY_FILTERS);
+  // Counts settled filter searches; the filter bar then shows the filters of the shown results.
+  const [libraryFiltersRevision, setLibraryFiltersRevision] = useState(0);
   const [libraryTotal, setLibraryTotal] = useState(0);
   const [libraryNextAfter, setLibraryNextAfter] = useState<number | null>(null);
   // The newest Release Edition the first page searched; later pages keep to its results.
@@ -108,7 +110,8 @@ export function App() {
 
   /**
    * Searches with new filters, which apply only together with their first page: a failed
-   * search keeps the previous filters with the results they produced.
+   * search keeps the previous filters with the results they produced. Once the search settles,
+   * the filter bar shows the filters of the shown results.
    */
   async function applyLibraryFilters(filters: LibraryFilters) {
     if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
@@ -128,6 +131,7 @@ export function App() {
         libraryFiltersRef.current = filters;
         setLibraryFilters(filters);
         showLibraryPage(page);
+        setLibraryFiltersRevision((revision) => revision + 1);
       }
     } catch (reason) {
       // A newer search or refresh reports for itself.
@@ -136,6 +140,7 @@ export function App() {
         generation === vaultDataGeneration.current
       ) {
         setError(errorMessage(reason));
+        setLibraryFiltersRevision((revision) => revision + 1);
       }
     } finally {
       if (generation === vaultDataGeneration.current) {
@@ -655,6 +660,7 @@ export function App() {
           entries={entries}
           objectUrl={originalObjectUrl}
           filters={libraryFilters}
+          filtersRevision={libraryFiltersRevision}
           onSearch={
             loadedVaultRoot === null ? undefined : (filters) => void applyLibraryFilters(filters)
           }

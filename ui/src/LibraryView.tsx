@@ -23,6 +23,8 @@ interface LibraryViewProps {
   objectUrl: (objectHash: string) => string;
   /** Filters of the current search; the filter bar shows only with `onSearch`. */
   filters?: LibraryFilters;
+  /** Changes whenever a search settles, resetting the filter bar to `filters`. */
+  filtersRevision?: number;
   onSearch?: (filters: LibraryFilters) => void;
   canLoadMore?: boolean;
   /** Whether the next page is loading, which disables asking for it again. */
@@ -42,6 +44,7 @@ export function LibraryView({
   entries,
   objectUrl,
   filters = NO_LIBRARY_FILTERS,
+  filtersRevision = 0,
   onSearch,
   canLoadMore = false,
   loadingMore = false,
@@ -51,7 +54,7 @@ export function LibraryView({
   return (
     <>
       {onSearch ? (
-        <LibraryFilterBar filters={filters} onSearch={onSearch} />
+        <LibraryFilterBar key={filtersRevision} filters={filters} onSearch={onSearch} />
       ) : null}
       <LibraryResults
         entries={entries}
