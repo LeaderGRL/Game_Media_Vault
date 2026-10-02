@@ -30,6 +30,7 @@ const entry: LibraryEntry = {
   edition_name: "Original",
   assertions: [],
   canonical_values: [],
+  preferred_assets: [],
   assets: [
     {
       asset_id: 3,
