@@ -11,6 +11,7 @@ use game_media_vault_domain::{ImportedAsset, LibraryEntry, PersistAsset};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
 mod assets;
+mod derived;
 mod library;
 mod reference;
 mod reviews;

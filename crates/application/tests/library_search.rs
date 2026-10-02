@@ -34,6 +34,7 @@ fn with_asset(mut entry: LibraryEntry, asset_type: AssetType, source_id: &str) -
             source_location: "https://example.invalid/original.png".to_owned(),
             match_decision: None,
         }],
+        derived: Vec::new(),
     });
     entry
 }

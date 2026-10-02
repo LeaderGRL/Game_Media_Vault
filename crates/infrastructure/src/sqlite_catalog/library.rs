@@ -7,7 +7,8 @@ use game_media_vault_domain::{
 };
 
 use super::{
-    SqliteCatalog, assets::parse_asset_type, reference::parse_release_assertion_field, sql_error,
+    SqliteCatalog, assets::parse_asset_type, derived::derived_by_original,
+    reference::parse_release_assertion_field, sql_error,
 };
 
 impl SqliteCatalog {
@@ -143,6 +144,7 @@ impl SqliteCatalog {
                     media,
                     original_filename,
                     provenance,
+                    derived: Vec::new(),
                 });
             }
         }
@@ -173,6 +175,13 @@ impl SqliteCatalog {
                 qualifier: (!qualifier.is_empty()).then_some(qualifier),
                 value: row.get(5).map_err(sql_error)?,
             });
+        }
+
+        let derived = derived_by_original(&connection)?;
+        for asset in entries.iter_mut().flat_map(|entry| entry.assets.iter_mut()) {
+            if let Some(outputs) = derived.get(&asset.object_hash) {
+                asset.derived = outputs.clone();
+            }
         }
 
         Ok(entries)

@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 5;
+const VAULT_SCHEMA_VERSION: i32 = 6;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -21,7 +21,30 @@ const MIGRATIONS: &[Migration] = &[
     add_asset_media,
     add_work_quality_shortfalls,
     add_work_outranked,
+    add_derived_objects,
 ];
+
+/// Version 6 records the Derived Assets generated from originals. The table matches `SCHEMA`.
+fn add_derived_objects(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(DERIVED_OBJECTS_TABLE)
+        .map_err(sql_error)
+}
+
+/// One output per original and recipe; recipes are reproducible, so it is generated once.
+const DERIVED_OBJECTS_TABLE: &str = "
+    CREATE TABLE derived_objects (
+        original_hash TEXT NOT NULL,
+        recipe_key TEXT NOT NULL,
+        recipe_json TEXT NOT NULL,
+        object_hash TEXT NOT NULL,
+        byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
+        media_type TEXT NOT NULL,
+        width INTEGER CHECK(width IS NULL OR width > 0),
+        height INTEGER CHECK(height IS NULL OR height > 0),
+        PRIMARY KEY(original_hash, recipe_key)
+    );
+";
 
 /// Version 5 records why Keep Best Per Type retained no new Asset for completed work. The
 /// column matches the `acquisition_run_work` layout of `SCHEMA`.
@@ -176,6 +199,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         ));
     }
     transaction.execute_batch(SCHEMA).map_err(sql_error)?;
+    transaction
+        .execute_batch(DERIVED_OBJECTS_TABLE)
+        .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)
 }

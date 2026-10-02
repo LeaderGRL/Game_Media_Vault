@@ -466,6 +466,7 @@ fn retained_assets(
                     media,
                     original_filename,
                     provenance: Vec::new(),
+                    derived: Vec::new(),
                 })
             },
         )

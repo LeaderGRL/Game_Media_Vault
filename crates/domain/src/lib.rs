@@ -893,6 +893,8 @@ pub struct LibraryAsset {
     pub media: MediaInfo,
     pub original_filename: String,
     pub provenance: Vec<AssetProvenance>,
+    /// Outputs of recipes applied to this Asset's original.
+    pub derived: Vec<DerivedAsset>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
