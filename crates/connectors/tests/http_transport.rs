@@ -9,7 +9,9 @@ use std::{
     time::Duration,
 };
 
-use game_media_vault_connectors::{HttpTransport, ReqwestHttpTransport, RetryPolicy};
+use game_media_vault_connectors::{
+    Fetched, HttpTransport, ReqwestHttpTransport, RetryPolicy, Validators,
+};
 
 /// Retries quickly, so the tests do not wait.
 const FAST_RETRIES: RetryPolicy = RetryPolicy {
@@ -431,4 +433,60 @@ fn a_resume_caught_in_a_redirect_loop_is_not_retried() {
         "{}",
         requests.lock().unwrap().len()
     );
+}
+
+/// Serves `media` with the ETag `"v1"`, or answers 304 Not Modified to a request that already
+/// has that version, and records each request.
+fn serve_versioned(requests: usize) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    thread::spawn(move || {
+        for _ in 0..requests {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            log.lock().unwrap().push(request.clone());
+            let reply = if request.contains("if-none-match: \"v1\"") {
+                "HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_owned()
+            } else {
+                "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT\r\nContent-Length: 5\r\nConnection: close\r\n\r\nmedia".to_owned()
+            };
+            stream.write_all(reply.as_bytes()).unwrap();
+        }
+    });
+    (format!("http://{address}/Metadata.zip"), seen)
+}
+
+#[test]
+fn a_conditional_request_downloads_only_what_changed() {
+    let (url, requests) = serve_versioned(2);
+    let transport = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES);
+
+    let Fetched::Changed {
+        mut body,
+        validators,
+    } = transport
+        .get_if_changed(&url, &Validators::default())
+        .unwrap()
+    else {
+        panic!("a first request fetches the resource");
+    };
+    let mut media = String::new();
+    body.read_to_string(&mut media).unwrap();
+    let again = transport.get_if_changed(&url, &validators).unwrap();
+
+    assert_eq!(media, "media");
+    assert_eq!(validators.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(
+        validators.last_modified.as_deref(),
+        Some("Sun, 06 Nov 1994 08:49:37 GMT")
+    );
+    assert!(matches!(again, Fetched::Unchanged));
+    let requests = requests.lock().unwrap();
+    assert!(requests[1].contains("if-modified-since: sun, 06 nov 1994 08:49:37 gmt"));
 }

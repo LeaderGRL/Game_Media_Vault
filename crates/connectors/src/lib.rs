@@ -33,7 +33,7 @@ use naming::parse_release_name;
 use reqwest::{
     StatusCode,
     blocking::{Client, Response},
-    header::RETRY_AFTER,
+    header::{ETAG, HeaderName, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, RETRY_AFTER},
 };
 use url::Url;
 
@@ -57,9 +57,37 @@ pub fn registered_connectors() -> Vec<Box<dyn ConnectorPort>> {
     ]
 }
 
+/// What a server said identifies the version of a resource it served.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Validators {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+/// What a conditional request gave.
+pub enum Fetched {
+    /// The resource has not changed since the version the request named.
+    Unchanged,
+    /// The resource, and the validators of the version served.
+    Changed {
+        body: Box<dyn Read + Send>,
+        validators: Validators,
+    },
+}
+
 /// Requests media and data from Sources; connectors share it across download threads.
 pub trait HttpTransport: Send + Sync {
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError>;
+
+    /// Fetches `url` unless its server says it has not changed since the version `known`
+    /// names. A transport that cannot ask fetches it whole.
+    fn get_if_changed(&self, url: &str, known: &Validators) -> Result<Fetched, PortError> {
+        let _ = known;
+        Ok(Fetched::Changed {
+            body: self.get_stream(url)?,
+            validators: Validators::default(),
+        })
+    }
 
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
         let mut stream = self.get_stream(url)?;
@@ -93,8 +121,17 @@ impl ReqwestHttpTransport {
         }
     }
 
-    fn attempt(&self, url: &str) -> Result<Response, FailedRequest> {
-        let response = self.client.get(url).send().map_err(|error| FailedRequest {
+    /// Requests `url` once, asking for it only if it changed since `known`. A success or a
+    /// 304 Not Modified answer is a response; anything else is a failure.
+    fn attempt(&self, url: &str, known: &Validators) -> Result<Response, FailedRequest> {
+        let mut request = self.client.get(url);
+        if let Some(etag) = &known.etag {
+            request = request.header(IF_NONE_MATCH, etag);
+        }
+        if let Some(last_modified) = &known.last_modified {
+            request = request.header(IF_MODIFIED_SINCE, last_modified);
+        }
+        let response = request.send().map_err(|error| FailedRequest {
             message: format!("download of {url} failed: {error}"),
             // Only failures to reach the Source may pass; a request that cannot be built or
             // that redirects without end fails the same way every time.
@@ -103,7 +140,7 @@ impl ReqwestHttpTransport {
             retry_after: None,
         })?;
         let status = response.status();
-        if status.is_success() {
+        if status.is_success() || status == StatusCode::NOT_MODIFIED {
             return Ok(response);
         }
         let retry_after = response
@@ -133,17 +170,51 @@ impl HttpTransport for ReqwestHttpTransport {
     /// Retries transient failures (connection failures, HTTP 429 and 5xx) as the retry policy
     /// allows; any other refusal fails at once.
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        let (response, attempts) = self.send(url, &Validators::default())?;
+        Ok(self.body(response, attempts))
+    }
+
+    fn get_if_changed(&self, url: &str, known: &Validators) -> Result<Fetched, PortError> {
+        let (response, attempts) = self.send(url, known)?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Fetched::Unchanged);
+        }
+        let header = |name: HeaderName| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let validators = Validators {
+            etag: header(ETAG),
+            last_modified: header(LAST_MODIFIED),
+        };
+        Ok(Fetched::Changed {
+            body: self.body(response, attempts),
+            validators,
+        })
+    }
+}
+
+impl ReqwestHttpTransport {
+    /// The body of `response`, resumed from where its connection drops when it can be, within
+    /// the attempts the request left.
+    fn body(&self, response: Response, attempts: u32) -> Box<dyn Read + Send> {
+        Box::new(resume::ResumingBody::new(
+            self.client.clone(),
+            self.retry,
+            attempts,
+            response,
+        ))
+    }
+
+    /// Requests `url` as the retry policy allows, with the attempts it took.
+    fn send(&self, url: &str, known: &Validators) -> Result<(Response, u32), PortError> {
         let mut attempts = 1;
         loop {
-            match self.attempt(url) {
-                Ok(response) => {
-                    return Ok(Box::new(resume::ResumingBody::new(
-                        self.client.clone(),
-                        self.retry,
-                        attempts,
-                        response,
-                    )));
-                }
+            match self.attempt(url, known) {
+                Ok(response) => return Ok((response, attempts)),
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));
                     attempts += 1;
