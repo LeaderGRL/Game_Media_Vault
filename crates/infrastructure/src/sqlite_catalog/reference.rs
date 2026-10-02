@@ -14,7 +14,7 @@ impl ReferenceCatalogRepositoryPort for SqliteCatalog {
         let mut imported = self.persist_reference_releases(vec![record])?;
         imported
             .pop()
-            .ok_or_else(|| PortError("reference persistence returned no release".into()))
+            .ok_or_else(|| PortError::new("reference persistence returned no release".into()))
     }
 
     fn persist_reference_releases(
@@ -49,7 +49,9 @@ fn persist_reference_release_in_transaction(
                 && assertion.qualifier.as_deref() == Some("source_record")
         })
         .ok_or_else(|| {
-            PortError("reference release is missing its source_record identifier assertion".into())
+            PortError::new(
+                "reference release is missing its source_record identifier assertion".into(),
+            )
         })?;
     let source_id = identity.source_id.as_str().to_owned();
     let source_record = identity.value.clone();
@@ -161,7 +163,7 @@ fn persist_release_assertions(
 ) -> Result<(), PortError> {
     for assertion in assertions {
         if assertion.source_id.as_str().trim().is_empty() || assertion.value.trim().is_empty() {
-            return Err(PortError(
+            return Err(PortError::new(
                 "release assertions require non-blank source ids and values".into(),
             ));
         }
@@ -226,7 +228,7 @@ pub(super) fn parse_release_assertion_field(
         "region" => Ok(ReleaseAssertionField::Region),
         "revision" => Ok(ReleaseAssertionField::Revision),
         "identifier" => Ok(ReleaseAssertionField::Identifier),
-        other => Err(PortError(format!(
+        other => Err(PortError::new(format!(
             "unknown release assertion field in catalog: {other}"
         ))),
     }

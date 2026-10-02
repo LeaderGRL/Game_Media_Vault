@@ -8,9 +8,22 @@ use game_media_vault_domain::{
 };
 use thiserror::Error;
 
+/// Failure of a port adapter: storage, network or another environmental failure.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-#[error("{0}")]
-pub struct PortError(pub String);
+#[error("{message}")]
+pub struct PortError {
+    message: String,
+}
+
+impl PortError {
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
 
 /// Immutable content-addressed store of original bytes.
 pub trait ObjectStorePort {

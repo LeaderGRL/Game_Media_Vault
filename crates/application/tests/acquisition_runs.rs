@@ -74,7 +74,9 @@ impl RunRepositoryPort for RecordingRunRepository {
         _expected: AcquisitionRunStatus,
         _target: AcquisitionRunStatus,
     ) -> Result<bool, PortError> {
-        Err(PortError("not implemented by this test double".to_owned()))
+        Err(PortError::new(
+            "not implemented by this test double".to_owned(),
+        ))
     }
 }
 

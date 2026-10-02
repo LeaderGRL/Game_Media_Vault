@@ -94,7 +94,7 @@ pub fn load_review_preview(
     stream
         .take(MAX_REVIEW_PREVIEW_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| PortError(error.to_string()))?;
+        .map_err(|error| PortError::new(error.to_string()))?;
     if bytes.len() as u64 > MAX_REVIEW_PREVIEW_BYTES {
         return Err(ApplicationError::ReviewPreviewTooLarge {
             review_item_id,

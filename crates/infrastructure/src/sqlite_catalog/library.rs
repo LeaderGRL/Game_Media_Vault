@@ -65,7 +65,7 @@ impl SqliteCatalog {
                     .map(|decision_json| {
                         serde_json::from_str::<AssetCandidateMatch>(&decision_json).map_err(
                             |error| {
-                                PortError(format!(
+                                PortError::new(format!(
                                     "catalog contains invalid asset match decision: {error}"
                                 ))
                             },
@@ -74,7 +74,7 @@ impl SqliteCatalog {
                     .transpose()?;
                 let entry = entries
                     .last_mut()
-                    .ok_or_else(|| PortError("library release aggregation failed".into()))?;
+                    .ok_or_else(|| PortError::new("library release aggregation failed".into()))?;
 
                 if let Some(asset) = entry
                     .assets
@@ -95,27 +95,31 @@ impl SqliteCatalog {
                 let asset_type = row
                     .get::<_, Option<String>>(7)
                     .map_err(sql_error)?
-                    .ok_or_else(|| PortError("catalog asset is missing its type".into()))?;
+                    .ok_or_else(|| PortError::new("catalog asset is missing its type".into()))?;
                 let object_hash = row
                     .get::<_, Option<String>>(8)
                     .map_err(sql_error)?
-                    .ok_or_else(|| PortError("catalog asset is missing its object hash".into()))?;
+                    .ok_or_else(|| {
+                        PortError::new("catalog asset is missing its object hash".into())
+                    })?;
                 let byte_len = row
                     .get::<_, Option<i64>>(9)
                     .map_err(sql_error)?
-                    .ok_or_else(|| PortError("catalog asset is missing its byte length".into()))?;
+                    .ok_or_else(|| {
+                        PortError::new("catalog asset is missing its byte length".into())
+                    })?;
                 let original_filename = row
                     .get::<_, Option<String>>(10)
                     .map_err(sql_error)?
                     .ok_or_else(|| {
-                        PortError("catalog asset is missing its original filename".into())
+                        PortError::new("catalog asset is missing its original filename".into())
                     })?;
                 let media = MediaInfo {
                     media_type: row
                         .get::<_, Option<String>>(15)
                         .map_err(sql_error)?
                         .ok_or_else(|| {
-                            PortError("catalog asset is missing its media type".into())
+                            PortError::new("catalog asset is missing its media type".into())
                         })?,
                     width: row.get(16).map_err(sql_error)?,
                     height: row.get(17).map_err(sql_error)?,
@@ -133,8 +137,9 @@ impl SqliteCatalog {
                     asset_id,
                     asset_type: parse_asset_type(&asset_type)?,
                     object_hash,
-                    byte_len: u64::try_from(byte_len)
-                        .map_err(|_| PortError("catalog contains a negative byte length".into()))?,
+                    byte_len: u64::try_from(byte_len).map_err(|_| {
+                        PortError::new("catalog contains a negative byte length".into())
+                    })?,
                     media,
                     original_filename,
                     provenance,

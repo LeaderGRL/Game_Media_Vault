@@ -53,7 +53,7 @@ impl SqliteCatalog {
     pub fn open_existing(path: impl Into<PathBuf>) -> Result<Self, PortError> {
         let path = path.into();
         if !path.is_file() {
-            return Err(PortError(format!(
+            return Err(PortError::new(format!(
                 "catalog does not exist: {}",
                 path.display()
             )));
@@ -114,7 +114,7 @@ fn initialize_new_catalog(
             Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
                 Err(error)
             }
-            Err(cleanup_error) => Err(PortError(format!(
+            Err(cleanup_error) => Err(PortError::new(format!(
                 "{error}; failed to remove incomplete catalog {}: {cleanup_error}",
                 path.display()
             ))),
@@ -143,11 +143,11 @@ fn normalize(value: &str) -> String {
 }
 
 fn io_error(error: std::io::Error) -> PortError {
-    PortError(error.to_string())
+    PortError::new(error.to_string())
 }
 
 fn sql_error(error: rusqlite::Error) -> PortError {
-    PortError(error.to_string())
+    PortError::new(error.to_string())
 }
 
 #[cfg(test)]
@@ -181,7 +181,7 @@ mod tests {
         let catalog_path = temp.path().join("catalog.sqlite3");
 
         let error = initialize_new_catalog(&catalog_path, |_| {
-            Err(PortError("forced initialization failure".to_owned()))
+            Err(PortError::new("forced initialization failure".to_owned()))
         })
         .unwrap_err();
 

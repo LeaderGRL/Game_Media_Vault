@@ -171,7 +171,7 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get(0))
         .map_err(sql_error)?;
     if existing_objects != 0 {
-        return Err(PortError(
+        return Err(PortError::new(
             "refusing to create a vault catalog in a non-empty database".to_owned(),
         ));
     }
@@ -184,7 +184,7 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
 pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortError> {
     let application_id = read_pragma(connection, "application_id")?;
     if application_id != VAULT_APPLICATION_ID {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "{} is not a Game Media Vault catalog",
             path.display()
         )));
@@ -194,7 +194,7 @@ pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortE
         return Err(newer_schema(path, version));
     }
     if version < OLDEST_SUPPORTED_SCHEMA_VERSION {
-        return Err(PortError(format!(
+        return Err(PortError::new(format!(
             "catalog {} uses unsupported schema version {version}; recreate the vault with this version of Game Media Vault",
             path.display()
         )));
@@ -223,7 +223,7 @@ pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortE
 }
 
 fn newer_schema(path: &Path, version: i32) -> PortError {
-    PortError(format!(
+    PortError::new(format!(
         "catalog {} uses schema version {version}, which is newer than the supported version {VAULT_SCHEMA_VERSION}; upgrade Game Media Vault",
         path.display()
     ))
@@ -320,7 +320,7 @@ mod tests {
     fn a_catalog_upgraded_past_this_version_meanwhile_is_refused() {
         let error = open_racing_a_first_opener(VAULT_SCHEMA_VERSION + 1).unwrap_err();
 
-        assert!(error.0.contains("newer"), "{error}");
+        assert!(error.message().contains("newer"), "{error}");
     }
 
     #[test]

@@ -29,9 +29,9 @@ pub trait HttpTransport {
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
         let mut stream = self.get_stream(url)?;
         let mut bytes = Vec::new();
-        stream
-            .read_to_end(&mut bytes)
-            .map_err(|error| PortError(format!("failed to read HTTP response body: {error}")))?;
+        stream.read_to_end(&mut bytes).map_err(|error| {
+            PortError::new(format!("failed to read HTTP response body: {error}"))
+        })?;
         Ok(bytes)
     }
 }
@@ -57,9 +57,9 @@ impl HttpTransport for ReqwestHttpTransport {
             .client
             .get(url)
             .send()
-            .map_err(|error| PortError(format!("Libretro download failed: {error}")))?;
+            .map_err(|error| PortError::new(format!("Libretro download failed: {error}")))?;
         if !response.status().is_success() {
-            return Err(PortError(format!(
+            return Err(PortError::new(format!(
                 "Libretro download returned HTTP {} for {url}",
                 response.status()
             )));
@@ -145,7 +145,7 @@ where
             return Ok(Vec::new());
         }
         if let Some(reason) = unsupported_selection_reason(request) {
-            return Err(PortError(reason.to_owned()));
+            return Err(PortError::new(reason.to_owned()));
         }
 
         let repositories = self.repository_catalog()?;
@@ -158,7 +158,7 @@ where
                     .iter()
                     .find(|repository| repository.platform == platform)
                     .ok_or_else(|| {
-                        PortError(format!(
+                        PortError::new(format!(
                             "Libretro Thumbnails does not declare a repository for platform {platform}"
                         ))
                     })?;
@@ -199,8 +199,9 @@ where
             return Ok(repositories);
         }
         let bytes = self.transport.get_bytes(LIBRETRO_GITMODULES_URL)?;
-        let manifest = std::str::from_utf8(&bytes)
-            .map_err(|error| PortError(format!("invalid Libretro repository metadata: {error}")))?;
+        let manifest = std::str::from_utf8(&bytes).map_err(|error| {
+            PortError::new(format!("invalid Libretro repository metadata: {error}"))
+        })?;
         let repositories = parse_repository_catalog(manifest)?;
         Ok(self.repositories.get_or_init(|| repositories))
     }
@@ -246,7 +247,7 @@ fn acquisition_targets(request: &AcquisitionRequest) -> Result<Vec<(String, Stri
             })
             .map(|game| (game.platform.clone(), game.game.clone()))
             .collect()),
-        GameSelection::All => Err(PortError(
+        GameSelection::All => Err(PortError::new(
             "Libretro Thumbnails requires an explicit bounded game selection".to_owned(),
         )),
     }
@@ -271,9 +272,9 @@ fn thumbnail_filename(game_title: &str) -> String {
 
 fn box_front_url(repository: &LibretroRepository, filename: &str) -> Result<String, PortError> {
     let mut url = Url::parse("https://raw.githubusercontent.com/")
-        .map_err(|error| PortError(format!("invalid Libretro base URL: {error}")))?;
+        .map_err(|error| PortError::new(format!("invalid Libretro base URL: {error}")))?;
     url.path_segments_mut()
-        .map_err(|_| PortError("Libretro base URL cannot contain path segments".to_owned()))?
+        .map_err(|_| PortError::new("Libretro base URL cannot contain path segments".to_owned()))?
         .extend([
             "libretro-thumbnails",
             repository.repository.as_str(),
@@ -316,7 +317,7 @@ fn parse_repository_catalog(manifest: &str) -> Result<Vec<LibretroRepository>, P
         &mut branch,
     )?;
     if repositories.is_empty() {
-        return Err(PortError(
+        return Err(PortError::new(
             "Libretro repository metadata did not contain any usable repositories".to_owned(),
         ));
     }
@@ -335,7 +336,7 @@ fn push_repository(
         return Ok(());
     };
     let repository_value = repository.take().ok_or_else(|| {
-        PortError(format!(
+        PortError::new(format!(
             "Libretro repository metadata is missing a URL for platform {platform_value}"
         ))
     })?;
@@ -353,7 +354,7 @@ fn repository_name(url: &str) -> Result<String, PortError> {
         .rsplit('/')
         .next()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| PortError(format!("invalid Libretro repository URL: {url}")))?;
+        .ok_or_else(|| PortError::new(format!("invalid Libretro repository URL: {url}")))?;
     Ok(repository.to_owned())
 }
 
@@ -376,7 +377,7 @@ impl ReferenceCatalogSourcePort for NoIntroReferenceCatalog {
             return Ok(Vec::new());
         }
         let file = File::open(source_path).map_err(|error| {
-            PortError(format!(
+            PortError::new(format!(
                 "failed to open No-Intro datafile {}: {error}",
                 source_path.display()
             ))
@@ -403,7 +404,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
     loop {
         match xml
             .read_event_into(&mut buffer)
-            .map_err(|error| PortError(format!("invalid No-Intro XML: {error}")))?
+            .map_err(|error| PortError::new(format!("invalid No-Intro XML: {error}")))?
         {
             Event::Start(element) => match element.name().as_ref() {
                 "header" => in_header = true,
@@ -413,7 +414,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
                 }
                 "game" => {
                     let raw_name = attribute_value(&element, "name")?.ok_or_else(|| {
-                        PortError("No-Intro game entry is missing its name".to_owned())
+                        PortError::new("No-Intro game entry is missing its name".to_owned())
                     })?;
                     current_game = Some(NoIntroGame::new(raw_name, source_location));
                 }
@@ -434,13 +435,13 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
             }
             Event::GeneralRef(reference) if reading_header_name => {
                 if let Some(character) = reference.resolve_char_ref().map_err(|error| {
-                    PortError(format!("invalid No-Intro XML character reference: {error}"))
+                    PortError::new(format!("invalid No-Intro XML character reference: {error}"))
                 })? {
                     header_name.push(character);
                 } else if let Some(value) = resolve_xml_entity(reference.as_ref()) {
                     header_name.push_str(value);
                 } else {
-                    return Err(PortError(format!(
+                    return Err(PortError::new(format!(
                         "unsupported No-Intro XML entity reference: &{};",
                         reference.as_ref()
                     )));
@@ -454,10 +455,12 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
                 "header" => in_header = false,
                 "game" => {
                     let game = current_game.take().ok_or_else(|| {
-                        PortError("No-Intro game closing tag has no matching entry".to_owned())
+                        PortError::new("No-Intro game closing tag has no matching entry".to_owned())
                     })?;
                     let platform = platform.as_deref().ok_or_else(|| {
-                        PortError("No-Intro datafile header is missing a platform name".to_owned())
+                        PortError::new(
+                            "No-Intro datafile header is missing a platform name".to_owned(),
+                        )
                     })?;
                     releases.push(game.finish(platform));
                     if releases.len() >= max_games {
@@ -473,7 +476,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
     }
 
     if platform.is_none() {
-        return Err(PortError(
+        return Err(PortError::new(
             "No-Intro datafile header is missing a platform name".to_owned(),
         ));
     }
@@ -584,12 +587,12 @@ fn attribute_value(
 ) -> Result<Option<String>, PortError> {
     for attribute in element.attributes() {
         let attribute = attribute
-            .map_err(|error| PortError(format!("invalid No-Intro XML attribute: {error}")))?;
+            .map_err(|error| PortError::new(format!("invalid No-Intro XML attribute: {error}")))?;
         if attribute.key.as_ref() == name {
             let value = attribute
                 .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map_err(|error| {
-                    PortError(format!("invalid No-Intro XML attribute value: {error}"))
+                    PortError::new(format!("invalid No-Intro XML attribute value: {error}"))
                 })?;
             return Ok(Some(value.into_owned()));
         }

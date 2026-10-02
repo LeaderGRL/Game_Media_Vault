@@ -16,7 +16,7 @@ impl ObjectStorePort for FakeObjectStore {
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
-            .map_err(|error| PortError(error.to_string()))?;
+            .map_err(|error| PortError::new(error.to_string()))?;
         assert_eq!(bytes, b"cover bytes");
         Ok(StoredObject {
             hash: "abc123".to_owned(),

@@ -241,7 +241,7 @@ fn rejects_region_filters_without_source_region_evidence() {
 
     let error = connector.discover(&request).unwrap_err();
 
-    assert!(error.0.contains("region"));
+    assert!(error.message().contains("region"));
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn rejects_language_filters_without_source_language_evidence() {
 
     let error = connector.discover(&request).unwrap_err();
 
-    assert!(error.0.contains("language"));
+    assert!(error.message().contains("language"));
 }
 
 fn discover_one(game: &str) -> game_media_vault_domain::AssetCandidate {

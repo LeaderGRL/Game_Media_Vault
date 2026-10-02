@@ -421,7 +421,7 @@ impl RunRepositoryPort for FakeVault {
             .work
             .iter_mut()
             .find(|work| work.item.key == work_key)
-            .ok_or_else(|| PortError(format!("work {work_key} does not exist")))?;
+            .ok_or_else(|| PortError::new(format!("work {work_key} does not exist")))?;
         work.state = WorkState::Done;
         if let Some(status) = self.status_after_next_completion.borrow_mut().take() {
             run.status = status;
@@ -515,7 +515,7 @@ impl ReviewRepositoryPort for FakeVault {
                     && (work.state == WorkState::Queued
                         || work.state == WorkState::Parked(review_item.id))
             })
-            .ok_or_else(|| PortError(format!("queued work {work_key} does not exist")))?;
+            .ok_or_else(|| PortError::new(format!("queued work {work_key} does not exist")))?;
         work.state = WorkState::Parked(review_item.id);
         self.candidate_links
             .borrow_mut()
@@ -808,7 +808,7 @@ impl ObjectStorePort for FakeStore {
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
-            .map_err(|error| PortError(error.to_string()))?;
+            .map_err(|error| PortError::new(error.to_string()))?;
         let stored = StoredObject {
             hash: format!("hash-of-{}-bytes", bytes.len()),
             byte_len: bytes.len() as u64,
@@ -862,7 +862,7 @@ impl ConnectorPort for FakeConnector {
         _request: &AcquisitionRequest,
     ) -> Result<Option<String>, PortError> {
         if self.plan_check_fails {
-            return Err(PortError("fixture source unreachable".to_owned()));
+            return Err(PortError::new("fixture source unreachable".to_owned()));
         }
         Ok(self.unsupported_reason.clone())
     }
@@ -870,14 +870,14 @@ impl ConnectorPort for FakeConnector {
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         *self.discover_calls.borrow_mut() += 1;
         if self.discovery_fails {
-            return Err(PortError("fixture discovery unavailable".to_owned()));
+            return Err(PortError::new("fixture discovery unavailable".to_owned()));
         }
         Ok(self.candidates.clone())
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         if self.failing_downloads.contains(&candidate.source_url) {
-            return Err(PortError("fixture download failed".to_owned()));
+            return Err(PortError::new("fixture download failed".to_owned()));
         }
         self.downloads
             .borrow_mut()

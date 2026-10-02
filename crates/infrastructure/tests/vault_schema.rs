@@ -39,7 +39,7 @@ fn catalog_from_a_newer_schema_version_is_refused_unchanged() {
 
     let error = SqliteCatalog::open_existing(&path).err().unwrap();
 
-    assert!(error.0.contains("newer"), "{error}");
+    assert!(error.message().contains("newer"), "{error}");
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
@@ -57,7 +57,7 @@ fn vault_shaped_database_without_the_application_id_is_refused_unchanged() {
     let error = SqliteCatalog::open_existing(&path).err().unwrap();
 
     assert!(
-        error.0.contains("not a Game Media Vault catalog"),
+        error.message().contains("not a Game Media Vault catalog"),
         "{error}"
     );
     assert_eq!(fs::read(&path).unwrap(), before);
@@ -76,7 +76,7 @@ fn creating_a_vault_over_an_unrelated_database_is_refused_unchanged() {
     let error = SqliteCatalog::open(&path).err().unwrap();
 
     assert!(
-        error.0.contains("not a Game Media Vault catalog"),
+        error.message().contains("not a Game Media Vault catalog"),
         "{error}"
     );
     assert_eq!(fs::read(&path).unwrap(), before);
@@ -96,7 +96,10 @@ fn catalog_from_an_unsupported_older_schema_version_is_refused_unchanged() {
 
     let error = SqliteCatalog::open_existing(&path).err().unwrap();
 
-    assert!(error.0.contains("unsupported schema version 1"), "{error}");
+    assert!(
+        error.message().contains("unsupported schema version 1"),
+        "{error}"
+    );
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
