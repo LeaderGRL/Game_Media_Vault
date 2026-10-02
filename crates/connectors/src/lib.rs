@@ -1,4 +1,4 @@
-use std::{io::Read, path::Path, sync::OnceLock};
+use std::{io::Read, path::Path, sync::OnceLock, thread, time::Duration};
 
 use game_media_vault_application::{ConnectorPort, PortError, ReferenceCatalogSourcePort};
 use game_media_vault_domain::{
@@ -9,7 +9,10 @@ use game_media_vault_domain::{
 mod datafile;
 mod launchbox;
 mod naming;
+mod retry;
 mod xml;
+
+pub use retry::RetryPolicy;
 
 pub use launchbox::{
     LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
@@ -17,7 +20,11 @@ pub use launchbox::{
 
 use datafile::{DatafileSource, read_datafile};
 use naming::parse_release_name;
-use reqwest::{StatusCode, blocking::Client};
+use reqwest::{
+    StatusCode,
+    blocking::{Client, Response},
+    header::RETRY_AFTER,
+};
 use url::Url;
 
 pub const LIBRETRO_THUMBNAILS_SOURCE_ID: &str = "libretro-thumbnails";
@@ -55,39 +62,86 @@ pub trait HttpTransport {
 
 pub struct ReqwestHttpTransport {
     client: Client,
+    retry: RetryPolicy,
 }
 
 impl Default for ReqwestHttpTransport {
     fn default() -> Self {
+        Self::with_retry_policy(RetryPolicy::default())
+    }
+}
+
+impl ReqwestHttpTransport {
+    pub fn with_retry_policy(retry: RetryPolicy) -> Self {
         Self {
             client: Client::builder()
                 .user_agent("game-media-vault/0.1")
                 .build()
                 .expect("failed to build the HTTP client"),
+            retry,
         }
+    }
+
+    fn attempt(&self, url: &str) -> Result<Response, FailedRequest> {
+        let response = self.client.get(url).send().map_err(|error| FailedRequest {
+            message: format!("download of {url} failed: {error}"),
+            // A request that could not even be built fails the same way every time.
+            transient: !error.is_builder(),
+            unavailable: false,
+            retry_after: None,
+        })?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let retry_after = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse().ok())
+            .map(Duration::from_secs);
+        Err(FailedRequest {
+            message: format!("download returned HTTP {status} for {url}"),
+            transient: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+            // The server no longer has the resource: asking again cannot help.
+            unavailable: matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE),
+            retry_after,
+        })
     }
 }
 
+/// Why one request failed, and whether asking again may succeed.
+struct FailedRequest {
+    message: String,
+    transient: bool,
+    unavailable: bool,
+    retry_after: Option<Duration>,
+}
+
 impl HttpTransport for ReqwestHttpTransport {
+    /// Retries transient failures (connection failures, HTTP 429 and 5xx) as the retry policy
+    /// allows; any other refusal fails at once.
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .map_err(|error| PortError::new(format!("download of {url} failed: {error}")))?;
-        let status = response.status();
-        if !status.is_success() {
-            let message = format!("download returned HTTP {status} for {url}");
-            // The server no longer has the resource: asking again cannot help.
-            return Err(
-                if matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
-                    PortError::unavailable(message)
-                } else {
-                    PortError::new(message)
-                },
-            );
+        let mut attempts = 1;
+        loop {
+            match self.attempt(url) {
+                Ok(response) => return Ok(Box::new(response)),
+                Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
+                    thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));
+                    attempts += 1;
+                }
+                Err(failure) if failure.unavailable => {
+                    return Err(PortError::unavailable(failure.message));
+                }
+                Err(failure) if attempts > 1 => {
+                    return Err(PortError::new(format!(
+                        "{} (gave up after {attempts} attempts)",
+                        failure.message
+                    )));
+                }
+                Err(failure) => return Err(PortError::new(failure.message)),
+            }
         }
-        Ok(Box::new(response))
     }
 }
 
