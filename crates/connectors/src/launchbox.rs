@@ -206,9 +206,13 @@ impl DatasetCache {
         Some(lock)
     }
 
-    /// Forgets the cached copy, so the next discovery downloads the dataset whole.
-    fn forget(&self) {
+    /// Forgets the cached copy `validators` describe, so the next discovery downloads the dataset
+    /// whole. A copy another discovery stored since stays.
+    fn forget(&self, validators: &Validators) {
         let _refreshing = self.lock();
+        if self.validators() != *validators {
+            return;
+        }
         // Validators first: a copy left without them is never read again.
         let _ = fs::remove_file(self.validators_file());
         let _ = fs::remove_file(self.archive());
@@ -296,19 +300,20 @@ where
             return Err(PortError::new(reason));
         }
         let wanted = WantedGames::of(request);
-        let (dataset, cached) = self.download_dataset()?;
+        let (dataset, copy) = self.download_dataset()?;
         let first = candidates_in(dataset, request, &wanted, &image_types);
         let Some(cache) = self.cache.as_ref().filter(|_| first.is_err()) else {
             return first;
         };
         // A copy whose metadata does not read is never read again, and a cached one is
         // downloaded whole once more.
-        cache.forget();
-        if !cached {
+        cache.forget(&copy.validators);
+        if !copy.cached {
             return first;
         }
-        let (dataset, _) = self.download_dataset()?;
-        candidates_in(dataset, request, &wanted, &image_types).inspect_err(|_| cache.forget())
+        let (dataset, copy) = self.download_dataset()?;
+        candidates_in(dataset, request, &wanted, &image_types)
+            .inspect_err(|_| cache.forget(&copy.validators))
     }
 
     fn download(
@@ -324,20 +329,23 @@ where
     T: HttpTransport,
 {
     /// The dataset archive, read from the machine cache while LaunchBox has not republished
-    /// it, and otherwise downloaded to a file, since reading a ZIP needs to seek; with whether
-    /// it is the cached copy.
-    fn download_dataset(&self) -> Result<(Dataset, bool), PortError> {
-        let (file, cached) = match &self.cache {
+    /// it, and otherwise downloaded to a file, since reading a ZIP needs to seek; with which copy
+    /// it is.
+    fn download_dataset(&self) -> Result<(Dataset, Copy), PortError> {
+        let (file, copy) = match &self.cache {
             Some(cache) => self.cached_dataset(cache)?,
             None => (
                 spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?)?,
-                false,
+                Copy {
+                    cached: false,
+                    validators: Validators::default(),
+                },
             ),
         };
         let archive = zip::ZipArchive::new(file).map_err(|error| {
             PortError::invalid_source_data(format!("unreadable LaunchBox dataset archive: {error}"))
         })?;
-        Ok((Dataset { archive }, cached))
+        Ok((Dataset { archive }, copy))
     }
 }
 
@@ -348,17 +356,24 @@ where
     /// The cached copy if it is still current, or the dataset LaunchBox serves now, which
     /// replaces it once it reads as an archive. The dataset is downloaded to a temporary file
     /// first, so a cache that cannot be written never fails the discovery.
-    fn cached_dataset(&self, cache: &DatasetCache) -> Result<(File, bool), PortError> {
+    fn cached_dataset(&self, cache: &DatasetCache) -> Result<(File, Copy), PortError> {
         // Discoveries of the machine refresh the copy one at a time, each reading the validators
         // the previous one left, so a republished dataset downloads once.
         let _refreshing = cache.lock();
+        let known = cache.validators();
         let fetched = match self
             .transport
-            .get_if_changed(LAUNCHBOX_METADATA_URL, &cache.validators())?
+            .get_if_changed(LAUNCHBOX_METADATA_URL, &known)?
         {
             Fetched::Unchanged => {
                 if let Some(copy) = cache.copy() {
-                    return Ok((copy, true));
+                    return Ok((
+                        copy,
+                        Copy {
+                            cached: true,
+                            validators: known,
+                        },
+                    ));
                 }
                 // The copy vanished, or no longer reads as an archive, since its validators
                 // were read: it is downloaded whole again.
@@ -378,7 +393,13 @@ where
             let _ = cache.store(&dataset, &validators);
         }
         dataset.rewind().map_err(buffer_failed)?;
-        Ok((dataset, false))
+        Ok((
+            dataset,
+            Copy {
+                cached: false,
+                validators,
+            },
+        ))
     }
 }
 
@@ -448,6 +469,14 @@ fn candidates_in(
         });
     })?;
     Ok(candidates)
+}
+
+/// Which copy of the dataset a discovery reads.
+struct Copy {
+    /// Whether it is the cached copy, rather than one just downloaded.
+    cached: bool,
+    /// The validators LaunchBox sent with it.
+    validators: Validators,
 }
 
 /// Whether `dataset` opens as a ZIP archive.
@@ -726,5 +755,38 @@ fn launchbox_xml_error(error: quick_xml::Error) -> PortError {
             PortError::new(format!("failed to read the LaunchBox dataset: {error}"))
         }
         error => PortError::invalid_source_data(format!("invalid LaunchBox XML: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    fn stored(cache: &DatasetCache, bytes: &[u8], etag: &str) -> Validators {
+        let mut copy = tempfile::tempfile().unwrap();
+        copy.write_all(bytes).unwrap();
+        let validators = Validators {
+            etag: Some(etag.to_owned()),
+            last_modified: None,
+        };
+        cache.store(&copy, &validators).unwrap();
+        validators
+    }
+
+    #[test]
+    fn forgetting_a_failed_copy_keeps_the_one_another_discovery_stored_since() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DatasetCache::at(dir.path());
+        let failed = stored(&cache, b"first copy", "\"v1\"");
+        let refreshed = stored(&cache, b"second copy", "\"v2\"");
+
+        cache.forget(&failed);
+        assert_eq!(cache.validators(), refreshed);
+
+        cache.forget(&refreshed);
+        assert_eq!(cache.validators(), Validators::default());
+        assert!(!cache.archive().exists());
     }
 }
