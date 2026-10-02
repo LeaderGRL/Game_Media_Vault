@@ -581,3 +581,60 @@ fn acquires_box_spines() {
         Some("Box - Spine")
     );
 }
+
+#[test]
+fn acquires_arcade_cabinets_control_panels_and_circuit_boards_of_arcade_games() {
+    let transport = FixtureTransport::serving(metadata_archive(&[(
+        "Metadata.xml",
+        r#"<LaunchBox>
+  <Game>
+    <Name>1942</Name>
+    <DatabaseID>192</DatabaseID>
+    <Platform>Arcade</Platform>
+  </Game>
+  <GameImage><DatabaseID>192</DatabaseID><FileName>cabinet.png</FileName><Type>Arcade - Cabinet</Type></GameImage>
+  <GameImage><DatabaseID>192</DatabaseID><FileName>panel.png</FileName><Type>Arcade - Control Panel</Type></GameImage>
+  <GameImage><DatabaseID>192</DatabaseID><FileName>board.png</FileName><Type>Arcade - Circuit Board</Type></GameImage>
+</LaunchBox>"#,
+    )]));
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    // MAME and FBNeo both name the platform LaunchBox calls Arcade.
+    for platform in ["MAME", "FBNeo - Arcade Games"] {
+        let candidates = connector
+            .discover(&request(|draft| {
+                draft.platforms = vec![platform.to_owned()];
+                draft.games = GameSelection::Explicit(vec!["1942".to_owned()]);
+                draft.asset_types = vec![
+                    AssetTypeSelector::ArcadeCabinet,
+                    AssetTypeSelector::ControlPanel,
+                    AssetTypeSelector::Pcb,
+                ];
+            }))
+            .unwrap();
+
+        let acquired: Vec<(AssetType, Option<&str>, &str)> = candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.asset_type,
+                    candidate.source_asset_label.as_deref(),
+                    candidate.platform.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            acquired,
+            [
+                (AssetType::ArcadeCabinet, Some("Arcade - Cabinet"), platform),
+                (
+                    AssetType::ControlPanel,
+                    Some("Arcade - Control Panel"),
+                    platform
+                ),
+                (AssetType::Pcb, Some("Arcade - Circuit Board"), platform),
+            ],
+            "{platform}"
+        );
+    }
+}

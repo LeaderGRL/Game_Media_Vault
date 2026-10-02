@@ -419,11 +419,14 @@ pub enum AssetType {
     CartridgeFront,
     CartridgeBack,
     Disc,
+    Pcb,
     Screenshot,
     TitleScreen,
     Logo,
     WallpaperArtwork,
     Flyer,
+    ArcadeCabinet,
+    ControlPanel,
     Marquee,
 }
 
@@ -441,7 +444,7 @@ impl AssetTypeSelector {
 
 impl AssetType {
     /// Every stored type, in taxonomy order.
-    pub const ALL: [AssetType; 13] = [
+    pub const ALL: [AssetType; 16] = [
         Self::BoxFront,
         Self::BoxBack,
         Self::Spine,
@@ -449,11 +452,14 @@ impl AssetType {
         Self::CartridgeFront,
         Self::CartridgeBack,
         Self::Disc,
+        Self::Pcb,
         Self::Screenshot,
         Self::TitleScreen,
         Self::Logo,
         Self::WallpaperArtwork,
         Self::Flyer,
+        Self::ArcadeCabinet,
+        Self::ControlPanel,
         Self::Marquee,
     ];
 
@@ -467,11 +473,14 @@ impl AssetType {
             Self::CartridgeFront => AssetTypeSelector::CartridgeFront,
             Self::CartridgeBack => AssetTypeSelector::CartridgeBack,
             Self::Disc => AssetTypeSelector::Disc,
+            Self::Pcb => AssetTypeSelector::Pcb,
             Self::Screenshot => AssetTypeSelector::Screenshot,
             Self::TitleScreen => AssetTypeSelector::TitleScreen,
             Self::Logo => AssetTypeSelector::Logo,
             Self::WallpaperArtwork => AssetTypeSelector::WallpaperArtwork,
             Self::Flyer => AssetTypeSelector::Flyer,
+            Self::ArcadeCabinet => AssetTypeSelector::ArcadeCabinet,
+            Self::ControlPanel => AssetTypeSelector::ControlPanel,
             Self::Marquee => AssetTypeSelector::Marquee,
         }
     }
@@ -482,14 +491,16 @@ impl AssetType {
             Self::BoxFront | Self::BoxBack | Self::Spine | Self::Box3dRender => {
                 AssetTypeSelector::Packaging
             }
-            Self::CartridgeFront | Self::CartridgeBack | Self::Disc => {
+            Self::CartridgeFront | Self::CartridgeBack | Self::Disc | Self::Pcb => {
                 AssetTypeSelector::PhysicalMedia
             }
             Self::Screenshot | Self::TitleScreen | Self::Logo | Self::WallpaperArtwork => {
                 AssetTypeSelector::DigitalMedia
             }
             Self::Flyer => AssetTypeSelector::PromotionalAndHistorical,
-            Self::Marquee => AssetTypeSelector::HardwareArcade,
+            Self::ArcadeCabinet | Self::ControlPanel | Self::Marquee => {
+                AssetTypeSelector::HardwareArcade
+            }
         }
     }
 
@@ -503,11 +514,14 @@ impl AssetType {
             Self::CartridgeFront => "cartridge_front",
             Self::CartridgeBack => "cartridge_back",
             Self::Disc => "disc",
+            Self::Pcb => "pcb",
             Self::Screenshot => "screenshot",
             Self::TitleScreen => "title_screen",
             Self::Logo => "logo",
             Self::WallpaperArtwork => "wallpaper_artwork",
             Self::Flyer => "flyer",
+            Self::ArcadeCabinet => "arcade_cabinet",
+            Self::ControlPanel => "control_panel",
             Self::Marquee => "marquee",
         }
     }

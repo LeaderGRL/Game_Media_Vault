@@ -161,3 +161,23 @@ fn a_box_front_back_and_spine_complete_the_packaging_profile() {
     assert_eq!(coverage.status, CoverageStatus::PackagingComplete);
     assert!(coverage.profiles[0].missing.is_empty());
 }
+
+#[test]
+fn an_arcade_board_with_its_marquee_and_circuit_board_is_physically_complete() {
+    let coverage = coverage_of(
+        "MAME",
+        vec![
+            asset(3, AssetType::Marquee),
+            asset(4, AssetType::Pcb),
+            asset(5, AssetType::Flyer),
+            asset(6, AssetType::ControlPanel),
+            // A cabinet is no requirement of any profile.
+            asset(7, AssetType::ArcadeCabinet),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(coverage.status, CoverageStatus::PhysicalComplete);
+    // A bezel is still missing for the Archival profile.
+    assert_eq!(coverage.profiles[2].missing, [Bezel]);
+}
