@@ -61,7 +61,7 @@ The user-defined selection of platforms, games, regions, languages, asset types,
 _Avoid_: Crawl when the request may target explicit games only
 
 **Acquisition Plan**:
-The Sources an Acquisition Request contacts, the requested Asset Types each of them acquires, the selected Sources left out with their reasons, and which Sources cover each requested Asset Type selector.
+The Sources an Acquisition Request contacts, the requested Asset Types each of them acquires, the selected Sources left out with their reasons, and which Sources acquire each requested Asset Type selector.
 _Avoid_: Schedule when no execution order is implied
 
 **Acquisition Run**:

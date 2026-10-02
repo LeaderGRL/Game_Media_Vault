@@ -1,6 +1,6 @@
 use game_media_vault_domain::{
-    AcquisitionRequestValidationError, AcquisitionRunStatus, MatchingPolicyValidationError,
-    ReviewStatus,
+    AcquisitionRequestValidationError, AcquisitionRunStatus, AssetTypeSelector,
+    MatchingPolicyValidationError, ReviewStatus,
 };
 use thiserror::Error;
 
@@ -57,8 +57,17 @@ pub enum ApplicationError {
     RunNotExecutable { status: AcquisitionRunStatus },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
-    #[error("no selected source can serve this plan{}", excluded_reasons(excluded))]
-    NoSourceServesPlan { excluded: Vec<ExcludedSource> },
+    #[error("the engine cannot execute this acquisition request yet: {0}")]
+    UnsupportedRequest(&'static str),
+    #[error(
+        "no selected source acquires {}{}",
+        selector_names(uncovered),
+        excluded_reasons(excluded)
+    )]
+    UncoveredAssetTypes {
+        uncovered: Vec<AssetTypeSelector>,
+        excluded: Vec<ExcludedSource>,
+    },
     #[error("review item #{0} does not exist")]
     ReviewItemNotFound(i64),
     #[error(
@@ -133,7 +142,8 @@ impl ApplicationError {
             Self::ConnectorNotSelected { .. }
             | Self::ConnectorCannotDownload { .. }
             | Self::UnsupportedConnectorPlan { .. }
-            | Self::NoSourceServesPlan { .. }
+            | Self::UnsupportedRequest(_)
+            | Self::UncoveredAssetTypes { .. }
             | Self::PreviewConnectorUnavailable { .. }
             | Self::ReviewPreviewTooLarge { .. } => ErrorKind::Unsupported,
             Self::ConnectorCandidateSourceMismatch { .. } | Self::UnsafeCandidateLocator { .. } => {
@@ -143,6 +153,14 @@ impl ApplicationError {
             Self::Port(_) => ErrorKind::External,
         }
     }
+}
+
+fn selector_names(selectors: &[AssetTypeSelector]) -> String {
+    let names: Vec<String> = selectors
+        .iter()
+        .map(|selector| format!("{selector:?}"))
+        .collect();
+    names.join(", ")
 }
 
 /// Why each excluded Source was left out, in parentheses, or nothing when none was selected.

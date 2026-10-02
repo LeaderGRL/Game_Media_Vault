@@ -1,12 +1,13 @@
 use std::{cell::Cell, io::Read};
 
 use game_media_vault_application::{
-    AcquisitionPlan, ApplicationError, ConnectorPort, ExcludedSource, PlannedSource, PortError,
-    SelectorCoverage, plan_acquisition,
+    AcquisitionPlan, ApplicationError, ConnectorPort, ErrorKind, ExcludedSource, PlannedSource,
+    PortError, SelectorCoverage, plan_acquisition,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, GameSelection, RetentionPolicy, SourceSelection,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, QualityRequirements, RetentionPolicy,
+    SourceSelection,
 };
 
 /// A connector that records whether its plan check ran; it is never asked to discover.
@@ -57,8 +58,8 @@ impl ConnectorPort for StubConnector {
     }
 }
 
-fn request(sources: SourceSelection, asset_types: Vec<AssetTypeSelector>) -> AcquisitionRequest {
-    AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+fn draft(sources: SourceSelection, asset_types: Vec<AssetTypeSelector>) -> AcquisitionRequestDraft {
+    AcquisitionRequestDraft {
         sources,
         platforms: vec!["Nintendo - Game Boy".to_owned()],
         games: GameSelection::Explicit(vec!["Tetris (World) (Rev 1)".to_owned()]),
@@ -68,8 +69,11 @@ fn request(sources: SourceSelection, asset_types: Vec<AssetTypeSelector>) -> Acq
         quality: None,
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
-    })
-    .unwrap()
+    }
+}
+
+fn request(sources: SourceSelection, asset_types: Vec<AssetTypeSelector>) -> AcquisitionRequest {
+    AcquisitionRequest::try_from_draft(draft(sources, asset_types)).unwrap()
 }
 
 fn plan(request: &AcquisitionRequest, connectors: &[&StubConnector]) -> AcquisitionPlan {
@@ -114,11 +118,7 @@ fn auto_fills_each_requested_type_from_the_sources_that_acquire_it() {
     let plan = plan(
         &request(
             SourceSelection::Auto,
-            vec![
-                AssetTypeSelector::BoxFront,
-                AssetTypeSelector::Screenshot,
-                AssetTypeSelector::Manual,
-            ],
+            vec![AssetTypeSelector::BoxFront, AssetTypeSelector::Screenshot],
         ),
         &[&boxes, &snaps],
     );
@@ -146,10 +146,6 @@ fn auto_fills_each_requested_type_from_the_sources_that_acquire_it() {
             SelectorCoverage {
                 selector: AssetTypeSelector::Screenshot,
                 sources: vec!["snap-source".to_owned()],
-            },
-            SelectorCoverage {
-                selector: AssetTypeSelector::Manual,
-                sources: Vec::new(),
             },
         ]
     );
@@ -194,11 +190,11 @@ fn auto_leaves_out_sources_that_cannot_serve_the_request_and_says_why() {
 }
 
 #[test]
-fn a_selected_source_without_a_connector_or_a_plan_no_source_serves_is_refused() {
+fn a_selected_source_without_a_connector_is_refused() {
     let libretro = connector("libretro-thumbnails", vec![AssetType::BoxFront]);
     let connectors: Vec<&dyn ConnectorPort> = vec![&libretro];
 
-    let unknown = plan_acquisition(
+    let error = plan_acquisition(
         &request(
             SourceSelection::Explicit(vec!["screenscraper".to_owned()]),
             vec![AssetTypeSelector::BoxFront],
@@ -206,24 +202,10 @@ fn a_selected_source_without_a_connector_or_a_plan_no_source_serves_is_refused()
         &connectors,
     )
     .unwrap_err();
-    let unserved = plan_acquisition(
-        &request(SourceSelection::Auto, vec![AssetTypeSelector::Manual]),
-        &connectors,
-    )
-    .unwrap_err();
 
     assert!(
-        matches!(unknown, ApplicationError::UnsupportedConnectorPlan { .. }),
-        "{unknown}"
-    );
-    assert!(
-        matches!(unserved, ApplicationError::NoSourceServesPlan { .. }),
-        "{unserved}"
-    );
-    assert_eq!(
-        unserved.to_string(),
-        "no selected source can serve this plan \
-         (libretro-thumbnails: acquires none of the requested asset types)"
+        matches!(error, ApplicationError::UnsupportedConnectorPlan { .. }),
+        "{error}"
     );
 }
 
@@ -250,4 +232,91 @@ fn a_source_that_cannot_download_media_is_left_out_without_being_consulted() {
         }]
     );
     assert!(!index.consulted.get());
+}
+
+fn uncovered(error: ApplicationError) -> (Vec<AssetTypeSelector>, Vec<ExcludedSource>) {
+    match error {
+        ApplicationError::UncoveredAssetTypes {
+            uncovered,
+            excluded,
+        } => (uncovered, excluded),
+        other => panic!("expected uncovered asset types, got {other}"),
+    }
+}
+
+#[test]
+fn a_requested_type_no_selected_source_acquires_is_refused_before_consulting_any() {
+    let libretro = connector("libretro-thumbnails", vec![AssetType::BoxFront]);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&libretro];
+
+    let error = plan_acquisition(
+        &request(
+            SourceSelection::Auto,
+            vec![AssetTypeSelector::BoxFront, AssetTypeSelector::Manual],
+        ),
+        &connectors,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert_eq!(
+        uncovered(error),
+        (vec![AssetTypeSelector::Manual], Vec::new())
+    );
+    assert!(!libretro.consulted.get());
+}
+
+#[test]
+fn a_family_is_refused_since_it_still_selects_types_no_source_acquires() {
+    let libretro = connector("libretro-thumbnails", vec![AssetType::BoxFront]);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&libretro];
+
+    let error = plan_acquisition(
+        &request(SourceSelection::Auto, vec![AssetTypeSelector::Packaging]),
+        &connectors,
+    )
+    .unwrap_err();
+
+    assert_eq!(uncovered(error).0, vec![AssetTypeSelector::Packaging]);
+}
+
+#[test]
+fn a_type_left_uncovered_by_refusing_sources_is_refused_with_their_reasons() {
+    let refusing = StubConnector {
+        refusal: Some("no repository for Nintendo - Game Boy"),
+        ..connector("libretro-thumbnails", vec![AssetType::BoxFront])
+    };
+    let unrelated = connector("snap-source", vec![AssetType::Screenshot]);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&refusing, &unrelated];
+
+    let error = plan_acquisition(
+        &request(SourceSelection::Auto, vec![AssetTypeSelector::BoxFront]),
+        &connectors,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "no selected source acquires BoxFront (snap-source: acquires none of the requested \
+         asset types; libretro-thumbnails: no repository for Nintendo - Game Boy)"
+    );
+}
+
+#[test]
+fn requirements_the_engine_cannot_apply_are_refused_before_consulting_any_source() {
+    let libretro = connector("libretro-thumbnails", vec![AssetType::BoxFront]);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&libretro];
+    let request = AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+        quality: Some(QualityRequirements {
+            min_bitrate_kbps: Some(320),
+            ..QualityRequirements::default()
+        }),
+        ..draft(SourceSelection::Auto, vec![AssetTypeSelector::BoxFront])
+    })
+    .unwrap();
+
+    let error = plan_acquisition(&request, &connectors).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(!libretro.consulted.get());
 }
