@@ -13,6 +13,18 @@ import {
   pixelSizeProblem,
   sourceLabel,
 } from "./acquisition";
+import {
+  BUILT_IN_PRESETS,
+  RequestPreset,
+  applyPreset,
+  applySavedPreset,
+  defaultPresetStorage,
+  deleteCustomPreset,
+  isBuiltInPresetName,
+  loadCustomPresets,
+  renameCustomPreset,
+  saveCustomPreset,
+} from "./presets";
 import { errorMessage } from "./types";
 
 interface AcquireViewProps {
@@ -20,13 +32,32 @@ interface AcquireViewProps {
   onStart: (request: AcquisitionRequestDraft) => void;
   /** Explains which Sources the request would contact; the button shows only with it. */
   onCheckPlan?: (request: AcquisitionRequestDraft) => Promise<AcquisitionPlan>;
+  /** Where custom presets persist; the webview's local storage by default. */
+  presetStorage?: Storage;
 }
 
 /**
  * Compact Acquisition Request builder; the backend validates the submitted draft, except pixel
  * sizes the request could not carry, which are refused here.
  */
-export function AcquireView({ starting, onStart, onCheckPlan }: AcquireViewProps) {
+export function AcquireView({
+  starting,
+  onStart,
+  onCheckPlan,
+  presetStorage: givenPresetStorage,
+}: AcquireViewProps) {
+  // Kept for the life of the view, so a session-only fallback keeps what it saved.
+  const [presetStorage] = useState(() => givenPresetStorage ?? defaultPresetStorage());
+  const [customPresets, setCustomPresets] = useState<RequestPreset[]>(() =>
+    loadCustomPresets(presetStorage),
+  );
+  const [presetName, setPresetName] = useState(BUILT_IN_PRESETS[0].name);
+  const [presetDraftName, setPresetDraftName] = useState("");
+  const [presetProblem, setPresetProblem] = useState<string | null>(null);
+  const selectedPreset = [...BUILT_IN_PRESETS, ...customPresets].find(
+    (preset) => preset.name === presetName,
+  );
+  const customSelected = customPresets.some((preset) => preset.name === presetName);
   const [form, setForm] = useState<AcquisitionForm>(emptyAcquisitionForm);
   const [formProblem, setFormProblem] = useState<string | null>(null);
   const [plan, setPlan] = useState<AcquisitionPlan | null>(null);
@@ -64,6 +95,73 @@ export function AcquireView({ starting, onStart, onCheckPlan }: AcquireViewProps
     }
   }
 
+  /** Runs `change` on the saved presets, then reads them back as a new session would. */
+  function changePresets(change: () => void): boolean {
+    try {
+      change();
+      setPresetProblem(null);
+      return true;
+    } catch {
+      setPresetProblem("Presets cannot be saved in this window.");
+      return false;
+    } finally {
+      setCustomPresets(loadCustomPresets(presetStorage));
+    }
+  }
+
+  /** The typed preset name, or `null` after saying why it cannot name a saved preset. */
+  function draftName(): string | null {
+    const name = presetDraftName.trim();
+    if (name.length === 0) {
+      setPresetProblem("Name the preset first.");
+      return null;
+    }
+    if (isBuiltInPresetName(name)) {
+      setPresetProblem(`"${name}" is a built-in preset.`);
+      return null;
+    }
+    return name;
+  }
+
+  function savePreset() {
+    const name = draftName();
+    if (name !== null && changePresets(() => saveCustomPreset(presetStorage, name, form))) {
+      setPresetName(name);
+    }
+  }
+
+  /** A built-in preset fills its fields in; a saved one stands for a whole request. */
+  function applySelectedPreset() {
+    if (selectedPreset !== undefined) {
+      update(customSelected ? applySavedPreset(selectedPreset) : applyPreset(form, selectedPreset));
+    }
+  }
+
+  function renamePreset() {
+    const name = customSelected ? draftName() : null;
+    if (
+      name !== null &&
+      customPresets.some((preset) => preset.name === name && preset.name !== presetName)
+    ) {
+      setPresetProblem(`A saved preset is already named "${name}".`);
+      return;
+    }
+    if (
+      name !== null &&
+      changePresets(() => renameCustomPreset(presetStorage, presetName, name))
+    ) {
+      setPresetName(name);
+    }
+  }
+
+  function deletePreset() {
+    if (!customSelected) {
+      return;
+    }
+    changePresets(() => deleteCustomPreset(presetStorage, presetName));
+    setPresetName(BUILT_IN_PRESETS[0].name);
+  }
+
   function toggle(values: string[], value: string): string[] {
     return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
   }
@@ -79,6 +177,61 @@ export function AcquireView({ starting, onStart, onCheckPlan }: AcquireViewProps
 
   return (
     <form className="acquire-form" aria-label="Acquisition request" onSubmit={submit}>
+      <fieldset>
+        <legend>Presets</legend>
+        <label>
+          Preset
+          <select value={presetName} onChange={(event) => setPresetName(event.target.value)}>
+            <optgroup label="Built-in">
+              {BUILT_IN_PRESETS.map((preset) => (
+                <option key={preset.name}>{preset.name}</option>
+              ))}
+            </optgroup>
+            {customPresets.length > 0 ? (
+              <optgroup label="Saved">
+                {customPresets.map((preset) => (
+                  <option key={preset.name}>{preset.name}</option>
+                ))}
+              </optgroup>
+            ) : null}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={selectedPreset === undefined}
+          onClick={applySelectedPreset}
+        >
+          Apply preset
+        </button>
+        <label>
+          Preset name
+          <input
+            value={presetDraftName}
+            onChange={(event) => setPresetDraftName(event.target.value)}
+            // Enter saves the preset instead of submitting the request around it.
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                savePreset();
+              }
+            }}
+          />
+        </label>
+        <button type="button" onClick={savePreset}>
+          Save preset
+        </button>
+        <button type="button" disabled={!customSelected} onClick={renamePreset}>
+          Rename preset
+        </button>
+        <button type="button" disabled={!customSelected} onClick={deletePreset}>
+          Delete preset
+        </button>
+        {presetProblem ? (
+          <p className="error-message" role="alert">
+            {presetProblem}
+          </p>
+        ) : null}
+      </fieldset>
       <fieldset>
         <legend>Sources</legend>
         <label className="choice">
