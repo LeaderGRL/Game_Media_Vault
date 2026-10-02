@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 blake3.workspace = true
+image.workspace = true
 imagesize.workspace = true
 game-media-vault-application.workspace = true
 game-media-vault-domain.workspace = true
@@ -17,4 +18,5 @@ serde_json.workspace = true
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+image.workspace = true
 tempfile.workspace = true
