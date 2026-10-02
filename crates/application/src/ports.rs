@@ -8,6 +8,8 @@ use game_media_vault_domain::{
 };
 use thiserror::Error;
 
+use crate::ApiKey;
+
 /// Failure of a port adapter: storage, network or another environmental failure, or a Source
 /// that answered with data breaking the connector contract.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -293,6 +295,12 @@ pub trait RunRepositoryPort: Send + Sync {
 pub trait ConnectorPort: Send + Sync {
     fn source_id(&self) -> &'static str;
 
+    /// Whether the Source needs an API key, which the connector reads from this machine's
+    /// credential store.
+    fn needs_api_key(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> ConnectorCapabilities;
 
     /// Why this connector cannot execute `request` beyond its declared capabilities (for
@@ -320,6 +328,10 @@ pub trait ConnectorPort: Send + Sync {
 impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
     fn source_id(&self) -> &'static str {
         (**self).source_id()
+    }
+
+    fn needs_api_key(&self) -> bool {
+        (**self).needs_api_key()
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
@@ -350,6 +362,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
 impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
     fn source_id(&self) -> &'static str {
         (**self).source_id()
+    }
+
+    fn needs_api_key(&self) -> bool {
+        (**self).needs_api_key()
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
@@ -418,4 +434,17 @@ pub trait MachineSettingsPort {
 
     /// Records whether `source_id` takes part in acquisitions on this machine.
     fn set_source_enabled(&self, source_id: &str, enabled: bool) -> Result<(), PortError>;
+}
+
+/// This machine's secure credential store, such as the OS keychain, which every vault it opens
+/// shares. It alone keeps API keys: never the vault, logs, exports or provenance.
+pub trait CredentialStorePort: Send + Sync {
+    /// The API key stored for `source_id`, if any.
+    fn api_key(&self, source_id: &str) -> Result<Option<ApiKey>, PortError>;
+
+    /// Stores `key` for `source_id`, replacing the one stored before.
+    fn set_api_key(&self, source_id: &str, key: &ApiKey) -> Result<(), PortError>;
+
+    /// Forgets the API key of `source_id`, if one is stored.
+    fn clear_api_key(&self, source_id: &str) -> Result<(), PortError>;
 }

@@ -1,6 +1,7 @@
 //! Use cases of Game Media Vault, shared by the CLI and the Tauri shell.
 
 mod acquisition;
+mod credentials;
 mod derived;
 mod documents;
 mod error;
@@ -18,6 +19,7 @@ mod verify;
 pub use acquisition::{
     DownloadLimits, acquire_run_with_connectors, start_acquisition_run_with_connectors,
 };
+pub use credentials::{ApiKey, CredentialState};
 pub use derived::{
     DerivationFailure, DerivationSummary, DerivativeRepositoryPort, DerivedStorePort,
     MediaTransformPort, OriginalObject, derive_assets,
@@ -48,8 +50,8 @@ pub use plan::{
     AcquisitionPlan, ExcludedSource, PlannedSource, SelectorCoverage, plan_acquisition,
 };
 pub use ports::{
-    CandidateAssetOutcome, CatalogPort, ConnectorPort, MachineSettingsPort, ObjectStorePort,
-    ParkedReview, PortError, ReferenceCatalogRead, ReferenceCatalogRepositoryPort,
+    CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort, MachineSettingsPort,
+    ObjectStorePort, ParkedReview, PortError, ReferenceCatalogRead, ReferenceCatalogRepositoryPort,
     ReferenceCatalogSourcePort, ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{
@@ -62,8 +64,9 @@ pub use runs::{
     start_acquisition_run,
 };
 pub use sources::{
-    MachineConnector, MachineConnectors, SourceDescription, SourceFailureSummary, describe_sources,
-    machine_connectors, machine_registry, set_source_enabled, summarize_source_failures,
+    Machine, MachineConnector, MachineConnectors, SourceDescription, SourceFailureSummary,
+    clear_source_api_key, describe_sources, machine_connectors, machine_registry,
+    set_source_api_key, set_source_enabled, summarize_source_failures,
 };
 pub use verify::{
     CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,

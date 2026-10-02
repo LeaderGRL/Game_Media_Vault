@@ -15,7 +15,9 @@ vault; `game-media-vault source failures` and the desktop Sources view summarize
 
 These Sources are registered connectors; `game-media-vault source list` describes them, and
 `game-media-vault source disable <source>` keeps one out of every acquisition on this machine
-until `source enable <source>`.
+until `source enable <source>`. A Source that needs an API key reads it from this machine's
+secure credential store, where `game-media-vault source key set <source>` stores the key it reads
+from standard input (ADR 0005).
 
 ### Libretro Thumbnails (`libretro-thumbnails`)
 

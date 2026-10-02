@@ -8,8 +8,9 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
-    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
+    ApiKey, CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort,
+    MachineSettingsPort, ObjectStorePort, ParkedReview, PortError, ReviewDecisionOutcome,
+    ReviewRepositoryPort, RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -1063,6 +1064,8 @@ pub struct FakeConnector {
     pub plan_check_fails: bool,
     /// Asset Types the connector declares it can acquire.
     pub asset_types: Vec<AssetType>,
+    /// Whether the Source needs an API key.
+    pub needs_api_key: bool,
 }
 
 impl FakeConnector {
@@ -1079,6 +1082,7 @@ impl FakeConnector {
             unsupported_reason: None,
             plan_check_fails: false,
             asset_types: vec![AssetType::BoxFront],
+            needs_api_key: false,
         }
     }
 }
@@ -1086,6 +1090,10 @@ impl FakeConnector {
 impl ConnectorPort for FakeConnector {
     fn source_id(&self) -> &'static str {
         self.source_id
+    }
+
+    fn needs_api_key(&self) -> bool {
+        self.needs_api_key
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
@@ -1140,5 +1148,54 @@ pub struct FailingRead;
 impl Read for FailingRead {
     fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
         Err(std::io::Error::other("fixture connection reset"))
+    }
+}
+
+/// Machine settings kept in memory.
+#[derive(Default)]
+pub struct FakeSettings {
+    pub disabled: Shared<Vec<String>>,
+}
+
+impl MachineSettingsPort for FakeSettings {
+    fn disabled_sources(&self) -> Result<Vec<String>, PortError> {
+        Ok(self.disabled.borrow().clone())
+    }
+
+    fn set_source_enabled(&self, source_id: &str, enabled: bool) -> Result<(), PortError> {
+        let mut disabled = self.disabled.borrow_mut();
+        disabled.retain(|disabled| disabled != source_id);
+        if !enabled {
+            disabled.push(source_id.to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// A credential store kept in memory, by Source.
+#[derive(Default)]
+pub struct FakeCredentials {
+    pub keys: Shared<BTreeMap<String, String>>,
+}
+
+impl CredentialStorePort for FakeCredentials {
+    fn api_key(&self, source_id: &str) -> Result<Option<ApiKey>, PortError> {
+        Ok(self
+            .keys
+            .borrow()
+            .get(source_id)
+            .map(|key| ApiKey::new(key.as_str()).unwrap()))
+    }
+
+    fn set_api_key(&self, source_id: &str, key: &ApiKey) -> Result<(), PortError> {
+        self.keys
+            .borrow_mut()
+            .insert(source_id.to_owned(), key.expose().to_owned());
+        Ok(())
+    }
+
+    fn clear_api_key(&self, source_id: &str) -> Result<(), PortError> {
+        self.keys.borrow_mut().remove(source_id);
+        Ok(())
     }
 }

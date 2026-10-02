@@ -5,56 +5,115 @@ use game_media_vault_domain::{
 };
 use serde::Serialize;
 
-use crate::{ApplicationError, ConnectorPort, MachineSettingsPort, PortError, RunRepositoryPort};
+use crate::{
+    ApiKey, ApplicationError, ConnectorPort, CredentialState, CredentialStorePort,
+    MachineSettingsPort, PortError, RunRepositoryPort,
+};
+
+/// What this machine keeps for every vault it opens: its settings and its credentials.
+#[derive(Clone, Copy)]
+pub struct Machine<'a> {
+    pub settings: &'a dyn MachineSettingsPort,
+    pub credentials: &'a dyn CredentialStorePort,
+}
 
 /// What planning knows about a registered Source: the Asset Types it acquires, whether it
-/// downloads media directly, and whether it takes part in acquisitions on this machine.
+/// downloads media directly, whether it takes part in acquisitions on this machine, and whether
+/// this machine stores the credential it needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SourceDescription {
     pub source_id: String,
     pub asset_types: Vec<AssetType>,
     pub direct_media_download: bool,
     pub enabled: bool,
+    pub credential: CredentialState,
 }
 
 /// Describes the registered `connectors` in registry order, from the capabilities planning
-/// uses and the `disabled_sources` of this machine; no Source is consulted.
+/// uses and what this `machine` keeps; no Source is consulted, and no credential is shown.
 pub fn describe_sources(
     connectors: &[&dyn ConnectorPort],
-    disabled_sources: &[String],
-) -> Vec<SourceDescription> {
+    machine: Machine<'_>,
+) -> Result<Vec<SourceDescription>, ApplicationError> {
+    let disabled_sources = machine.settings.disabled_sources()?;
     connectors
         .iter()
         .map(|connector| {
             let capabilities = connector.capabilities();
-            SourceDescription {
+            let credential = if !connector.needs_api_key() {
+                CredentialState::NotNeeded
+            } else if machine
+                .credentials
+                .api_key(connector.source_id())?
+                .is_some()
+            {
+                CredentialState::Stored
+            } else {
+                CredentialState::Missing
+            };
+            Ok(SourceDescription {
                 source_id: connector.source_id().to_owned(),
                 asset_types: capabilities.asset_types,
                 direct_media_download: capabilities.direct_media_download,
                 enabled: !disabled_sources
                     .iter()
                     .any(|disabled| disabled == connector.source_id()),
-            }
+                credential,
+            })
         })
         .collect()
+}
+
+/// The registered connector of `source_id`.
+fn registered<'a>(
+    connectors: &[&'a dyn ConnectorPort],
+    source_id: &str,
+) -> Result<&'a dyn ConnectorPort, ApplicationError> {
+    connectors
+        .iter()
+        .copied()
+        .find(|connector| connector.source_id() == source_id)
+        .ok_or_else(|| ApplicationError::SourceNotRegistered(source_id.to_owned()))
 }
 
 /// Enables or disables the registered Source `source_id` on this machine, for every vault it
 /// opens, and describes the registered `connectors` as they are now.
 pub fn set_source_enabled(
-    settings: &dyn MachineSettingsPort,
+    machine: Machine<'_>,
     connectors: &[&dyn ConnectorPort],
     source_id: &str,
     enabled: bool,
 ) -> Result<Vec<SourceDescription>, ApplicationError> {
-    if !connectors
-        .iter()
-        .any(|connector| connector.source_id() == source_id)
-    {
-        return Err(ApplicationError::SourceNotRegistered(source_id.to_owned()));
+    registered(connectors, source_id)?;
+    machine.settings.set_source_enabled(source_id, enabled)?;
+    describe_sources(connectors, machine)
+}
+
+/// Stores on this machine the API key the registered Source `source_id` needs, for every vault
+/// it opens, and describes the registered `connectors` as they are now.
+pub fn set_source_api_key(
+    machine: Machine<'_>,
+    connectors: &[&dyn ConnectorPort],
+    source_id: &str,
+    key: &ApiKey,
+) -> Result<Vec<SourceDescription>, ApplicationError> {
+    if !registered(connectors, source_id)?.needs_api_key() {
+        return Err(ApplicationError::SourceNeedsNoApiKey(source_id.to_owned()));
     }
-    settings.set_source_enabled(source_id, enabled)?;
-    Ok(describe_sources(connectors, &settings.disabled_sources()?))
+    machine.credentials.set_api_key(source_id, key)?;
+    describe_sources(connectors, machine)
+}
+
+/// Forgets the API key this machine stores for the registered Source `source_id`, and
+/// describes the registered `connectors` as they are now.
+pub fn clear_source_api_key(
+    machine: Machine<'_>,
+    connectors: &[&dyn ConnectorPort],
+    source_id: &str,
+) -> Result<Vec<SourceDescription>, ApplicationError> {
+    registered(connectors, source_id)?;
+    machine.credentials.clear_api_key(source_id)?;
+    describe_sources(connectors, machine)
 }
 
 /// The failures executions recorded for one Source.
@@ -127,6 +186,10 @@ impl<C> MachineConnector<C> {
 impl<C: ConnectorPort> ConnectorPort for MachineConnector<C> {
     fn source_id(&self) -> &'static str {
         self.connector.source_id()
+    }
+
+    fn needs_api_key(&self) -> bool {
+        self.connector.needs_api_key()
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {

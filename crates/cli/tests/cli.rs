@@ -7,9 +7,9 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestValidationError, ApplicationError, CatalogPort, ConnectorPort,
-    ObjectStorePort, ParkedReview, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
-    RunRepositoryPort, candidate_identity,
+    AcquisitionRequestValidationError, ApiKey, ApplicationError, CatalogPort, ConnectorPort,
+    CredentialStorePort, Machine, ObjectStorePort, ParkedReview, PortError,
+    ReferenceCatalogRepositoryPort, ReviewRepositoryPort, RunRepositoryPort, candidate_identity,
 };
 use game_media_vault_cli::CliError;
 use game_media_vault_domain::{
@@ -18,7 +18,9 @@ use game_media_vault_domain::{
     PersistAsset, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
     ReviewMatchCandidate, SourceFailureStage, SourceId,
 };
-use game_media_vault_infrastructure::{ContentAddressedStore, MachineSettingsFile, SqliteCatalog};
+use game_media_vault_infrastructure::{
+    ContentAddressedStore, MachineSettingsFile, NoCredentials, SqliteCatalog,
+};
 use tempfile::tempdir;
 
 struct FixtureConnector;
@@ -1625,6 +1627,7 @@ fn source_list_describes_the_registered_sources_without_a_vault() {
             "asset_types": ["box_front"],
             "direct_media_download": true,
             "enabled": true,
+            "credential": "not_needed",
         }])
     );
     assert!(!vault.exists());
@@ -1791,7 +1794,11 @@ fn a_source_disabled_on_this_machine_takes_no_part_in_plans_until_enabled_again(
         game_media_vault_cli::run_on_machine(
             cli_args(&vault, args),
             &[&FixtureConnector],
-            &settings,
+            Machine {
+                settings: &settings,
+                credentials: &NoCredentials,
+            },
+            &mut std::io::empty(),
         )
     };
     let plan = [
@@ -1833,9 +1840,147 @@ fn an_unregistered_source_cannot_be_disabled() {
             &["source", "disable", "unknown-source"],
         ),
         &[&FixtureConnector],
-        &settings,
+        Machine {
+            settings: &settings,
+            credentials: &NoCredentials,
+        },
+        &mut std::io::empty(),
     )
     .unwrap_err();
 
     assert!(error.to_string().contains("unknown-source"), "{error}");
+}
+
+/// A Source that needs an API key and is never reached.
+struct KeyedConnector;
+
+impl ConnectorPort for KeyedConnector {
+    fn source_id(&self) -> &'static str {
+        "keyed-source"
+    }
+
+    fn needs_api_key(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::Logo],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Err(PortError::new("never reached".to_owned()))
+    }
+}
+
+/// A credential store kept in memory.
+#[derive(Default)]
+struct MemoryCredentials(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+impl CredentialStorePort for MemoryCredentials {
+    fn api_key(&self, source_id: &str) -> Result<Option<ApiKey>, PortError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(source_id)
+            .map(|key| ApiKey::new(key).unwrap()))
+    }
+
+    fn set_api_key(&self, source_id: &str, key: &ApiKey) -> Result<(), PortError> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(source_id.to_owned(), key.expose().to_owned());
+        Ok(())
+    }
+
+    fn clear_api_key(&self, source_id: &str) -> Result<(), PortError> {
+        self.0.lock().unwrap().remove(source_id);
+        Ok(())
+    }
+}
+
+#[test]
+fn an_api_key_is_read_from_standard_input_and_never_printed() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+    let credentials = MemoryCredentials::default();
+    let run = |args: &[&str], input: &[u8]| {
+        game_media_vault_cli::run_on_machine(
+            cli_args(&vault, args),
+            &[&KeyedConnector],
+            Machine {
+                settings: &settings,
+                credentials: &credentials,
+            },
+            &mut Cursor::new(input.to_vec()),
+        )
+    };
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&run(&["source", "list"], b"").unwrap()).unwrap();
+    let stored = run(&["source", "key", "set", "keyed-source"], b"user-key-123\n").unwrap();
+    let kept = credentials.0.lock().unwrap().get("keyed-source").cloned();
+    let cleared: serde_json::Value =
+        serde_json::from_str(&run(&["source", "key", "clear", "keyed-source"], b"").unwrap())
+            .unwrap();
+
+    assert_eq!(listed[0]["credential"], "missing");
+    assert!(!stored.contains("user-key-123"), "{stored}");
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored[0]["credential"], "stored");
+    assert_eq!(kept.as_deref(), Some("user-key-123"));
+    assert_eq!(cleared[0]["credential"], "missing");
+}
+
+#[test]
+fn an_api_key_is_never_taken_from_the_command_line() {
+    let temp = tempdir().unwrap();
+
+    let error = game_media_vault_cli::run_on_machine(
+        cli_args(
+            &temp.path().join("vault"),
+            &["source", "key", "set", "keyed-source", "user-key-123"],
+        ),
+        &[&KeyedConnector],
+        Machine {
+            settings: &MachineSettingsFile::at(temp.path().join("settings.json")),
+            credentials: &MemoryCredentials::default(),
+        },
+        &mut std::io::empty(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, CliError::Parse(_)), "{error}");
+}
+
+#[test]
+fn an_empty_standard_input_stores_no_api_key() {
+    let temp = tempdir().unwrap();
+    let credentials = MemoryCredentials::default();
+
+    let error = game_media_vault_cli::run_on_machine(
+        cli_args(
+            &temp.path().join("vault"),
+            &["source", "key", "set", "keyed-source"],
+        ),
+        &[&KeyedConnector],
+        Machine {
+            settings: &MachineSettingsFile::at(temp.path().join("settings.json")),
+            credentials: &credentials,
+        },
+        &mut std::io::empty(),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("API key"), "{error}");
+    assert!(credentials.0.lock().unwrap().is_empty());
 }

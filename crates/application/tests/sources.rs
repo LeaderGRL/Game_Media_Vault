@@ -1,32 +1,35 @@
 mod support;
 
-use std::sync::Mutex;
-
 use game_media_vault_application::{
-    ApplicationError, ConnectorPort, ErrorKind, MachineSettingsPort, PortError, SourceDescription,
-    describe_sources, set_source_enabled,
+    ApiKey, ApplicationError, ConnectorPort, CredentialState, ErrorKind, Machine,
+    MachineSettingsPort, SourceDescription, clear_source_api_key, describe_sources,
+    set_source_api_key, set_source_enabled,
 };
 use game_media_vault_domain::AssetType;
-use support::FakeConnector;
+use support::{FakeConnector, FakeCredentials, FakeSettings};
 
-/// Machine settings kept in memory.
+/// A machine whose settings and credentials are kept in memory.
 #[derive(Default)]
-struct FakeSettings {
-    disabled: Mutex<Vec<String>>,
+struct FakeMachine {
+    settings: FakeSettings,
+    credentials: FakeCredentials,
 }
 
-impl MachineSettingsPort for FakeSettings {
-    fn disabled_sources(&self) -> Result<Vec<String>, PortError> {
-        Ok(self.disabled.lock().unwrap().clone())
-    }
-
-    fn set_source_enabled(&self, source_id: &str, enabled: bool) -> Result<(), PortError> {
-        let mut disabled = self.disabled.lock().unwrap();
-        disabled.retain(|disabled| disabled != source_id);
-        if !enabled {
-            disabled.push(source_id.to_owned());
+impl FakeMachine {
+    fn machine(&self) -> Machine<'_> {
+        Machine {
+            settings: &self.settings,
+            credentials: &self.credentials,
         }
-        Ok(())
+    }
+}
+
+/// A Source that needs an API key.
+fn keyed() -> FakeConnector {
+    FakeConnector {
+        source_id: "keyed-source",
+        needs_api_key: true,
+        ..FakeConnector::new(Vec::new())
     }
 }
 
@@ -39,8 +42,9 @@ fn sources_are_described_with_the_capabilities_planning_uses() {
         ..FakeConnector::new(Vec::new())
     };
     let connectors: Vec<&dyn ConnectorPort> = vec![&boxes, &snaps];
+    let machine = FakeMachine::default();
 
-    let sources = describe_sources(&connectors, &[]);
+    let sources = describe_sources(&connectors, machine.machine()).unwrap();
 
     assert_eq!(
         sources,
@@ -50,12 +54,14 @@ fn sources_are_described_with_the_capabilities_planning_uses() {
                 asset_types: vec![AssetType::BoxFront],
                 direct_media_download: true,
                 enabled: true,
+                credential: CredentialState::NotNeeded,
             },
             SourceDescription {
                 source_id: "snap-source".to_owned(),
                 asset_types: vec![AssetType::Screenshot, AssetType::TitleScreen],
                 direct_media_download: true,
                 enabled: true,
+                credential: CredentialState::NotNeeded,
             },
         ]
     );
@@ -67,8 +73,13 @@ fn sources_are_described_with_the_capabilities_planning_uses() {
 fn a_source_disabled_on_this_machine_is_described_as_such() {
     let boxes = FakeConnector::new(Vec::new());
     let connectors: Vec<&dyn ConnectorPort> = vec![&boxes];
+    let machine = FakeMachine::default();
+    machine
+        .settings
+        .set_source_enabled(boxes.source_id(), false)
+        .unwrap();
 
-    let sources = describe_sources(&connectors, &[boxes.source_id().to_owned()]);
+    let sources = describe_sources(&connectors, machine.machine()).unwrap();
 
     assert!(!sources[0].enabled);
     assert_eq!(sources[0].asset_types, [AssetType::BoxFront]);
@@ -78,29 +89,120 @@ fn a_source_disabled_on_this_machine_is_described_as_such() {
 fn sources_are_enabled_and_disabled_on_this_machine() {
     let boxes = FakeConnector::new(Vec::new());
     let connectors: Vec<&dyn ConnectorPort> = vec![&boxes];
-    let settings = FakeSettings::default();
+    let machine = FakeMachine::default();
 
-    let disabled = set_source_enabled(&settings, &connectors, boxes.source_id(), false).unwrap();
+    let disabled =
+        set_source_enabled(machine.machine(), &connectors, boxes.source_id(), false).unwrap();
     assert!(!disabled[0].enabled);
-    assert_eq!(settings.disabled_sources().unwrap(), [boxes.source_id()]);
+    assert_eq!(
+        machine.settings.disabled_sources().unwrap(),
+        [boxes.source_id()]
+    );
 
-    let enabled = set_source_enabled(&settings, &connectors, boxes.source_id(), true).unwrap();
+    let enabled =
+        set_source_enabled(machine.machine(), &connectors, boxes.source_id(), true).unwrap();
     assert!(enabled[0].enabled);
-    assert!(settings.disabled_sources().unwrap().is_empty());
+    assert!(machine.settings.disabled_sources().unwrap().is_empty());
 }
 
 #[test]
 fn a_source_without_a_registered_connector_cannot_be_disabled() {
     let boxes = FakeConnector::new(Vec::new());
     let connectors: Vec<&dyn ConnectorPort> = vec![&boxes];
-    let settings = FakeSettings::default();
+    let machine = FakeMachine::default();
 
-    let error = set_source_enabled(&settings, &connectors, "unknown-source", false).unwrap_err();
+    let error =
+        set_source_enabled(machine.machine(), &connectors, "unknown-source", false).unwrap_err();
 
     assert_eq!(
         error,
         ApplicationError::SourceNotRegistered("unknown-source".to_owned())
     );
     assert_eq!(error.kind(), ErrorKind::NotFound);
-    assert!(settings.disabled_sources().unwrap().is_empty());
+    assert!(machine.settings.disabled_sources().unwrap().is_empty());
+}
+
+#[test]
+fn an_api_key_never_shows_in_debug_output() {
+    let key = ApiKey::new("secret-123").unwrap();
+
+    assert!(!format!("{key:?}").contains("secret-123"));
+    assert_eq!(key.expose(), "secret-123");
+}
+
+#[test]
+fn a_blank_api_key_is_refused() {
+    let error = ApiKey::new(" \t ").unwrap_err();
+
+    assert_eq!(error, ApplicationError::InvalidApiKey);
+    assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+}
+
+#[test]
+fn a_source_needing_an_api_key_says_whether_this_machine_stores_one() {
+    let keyed = keyed();
+    let connectors: Vec<&dyn ConnectorPort> = vec![&keyed];
+    let machine = FakeMachine::default();
+    let credential = |sources: &[SourceDescription]| sources[0].credential;
+
+    let missing = describe_sources(&connectors, machine.machine()).unwrap();
+    let stored = set_source_api_key(
+        machine.machine(),
+        &connectors,
+        "keyed-source",
+        &ApiKey::new("  key-of-the-user\n").unwrap(),
+    )
+    .unwrap();
+    let kept = machine.credentials.keys.borrow().clone();
+    let cleared = clear_source_api_key(machine.machine(), &connectors, "keyed-source").unwrap();
+
+    assert_eq!(credential(&missing), CredentialState::Missing);
+    assert_eq!(credential(&stored), CredentialState::Stored);
+    // The key is kept trimmed, and only by the credential store.
+    assert_eq!(kept["keyed-source"], "key-of-the-user");
+    assert_eq!(credential(&cleared), CredentialState::Missing);
+    assert!(machine.credentials.keys.borrow().is_empty());
+}
+
+#[test]
+fn a_source_that_needs_no_api_key_is_given_none() {
+    let boxes = FakeConnector::new(Vec::new());
+    let connectors: Vec<&dyn ConnectorPort> = vec![&boxes];
+    let machine = FakeMachine::default();
+
+    let error = set_source_api_key(
+        machine.machine(),
+        &connectors,
+        boxes.source_id(),
+        &ApiKey::new("key").unwrap(),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::SourceNeedsNoApiKey(boxes.source_id().to_owned())
+    );
+    assert_eq!(error.kind(), ErrorKind::InvalidRequest);
+    assert!(machine.credentials.keys.borrow().is_empty());
+}
+
+#[test]
+fn an_unregistered_source_is_given_no_api_key() {
+    let keyed = keyed();
+    let connectors: Vec<&dyn ConnectorPort> = vec![&keyed];
+    let machine = FakeMachine::default();
+
+    let error = set_source_api_key(
+        machine.machine(),
+        &connectors,
+        "unknown-source",
+        &ApiKey::new("key").unwrap(),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::SourceNotRegistered("unknown-source".to_owned())
+    );
+    assert!(machine.credentials.keys.borrow().is_empty());
 }
