@@ -25,7 +25,7 @@ const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_thres
 /** Releases per Library page. */
 const LIBRARY_PAGE_SIZE = 100;
 
-const EMPTY_LIBRARY_PAGE: LibraryPage = { releases: [], total: 0, next_after: null };
+const EMPTY_LIBRARY_PAGE: LibraryPage = { releases: [], total: 0, next_after: null, as_of: 0 };
 
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
@@ -56,6 +56,8 @@ export function App() {
   const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>(NO_LIBRARY_FILTERS);
   const [libraryTotal, setLibraryTotal] = useState(0);
   const [libraryNextAfter, setLibraryNextAfter] = useState<number | null>(null);
+  // The newest Release Edition the first page searched; later pages keep to its results.
+  const [libraryAsOf, setLibraryAsOf] = useState<number | null>(null);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<View>("library");
   const [loading, setLoading] = useState(false);
@@ -68,8 +70,11 @@ export function App() {
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
 
-  /** Searches a page of the Library with the current filters, from the start or `after`. */
-  function searchLibrary(after: number | null = null) {
+  /**
+   * Searches a page of the Library with the current filters: the first one, or the one after
+   * `after` among the results of the first page, whose `as_of` it passes back.
+   */
+  function searchLibrary(after: number | null = null, asOf: number | null = null) {
     const filters = libraryFiltersRef.current;
     const text = filters.text.trim();
     return invoke<LibraryPage>("search_library", {
@@ -77,6 +82,7 @@ export function App() {
         text: text === "" ? null : text,
         statuses: filters.statuses,
         after,
+        as_of: asOf,
         limit: LIBRARY_PAGE_SIZE,
       },
     });
@@ -86,6 +92,7 @@ export function App() {
     setEntries(page.releases);
     setLibraryTotal(page.total);
     setLibraryNextAfter(page.next_after);
+    setLibraryAsOf(page.as_of);
   }
 
   async function applyLibraryFilters(filters: LibraryFilters) {
@@ -109,7 +116,7 @@ export function App() {
     const loadingVaultRoot = loadedVaultRoot;
     const generation = vaultDataGeneration.current;
     try {
-      const page = await searchLibrary(libraryNextAfter);
+      const page = await searchLibrary(libraryNextAfter, libraryAsOf);
       if (
         activeVaultRoot.current === loadingVaultRoot &&
         generation === vaultDataGeneration.current

@@ -119,6 +119,8 @@ export interface LibraryPage {
   total: number;
   /** The cursor of the next page, when one follows. */
   next_after: number | null;
+  /** The newest Release Edition the search considered, passed back for later pages. */
+  as_of: number;
 }
 
 export interface AssetCandidate {

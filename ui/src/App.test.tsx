@@ -18,7 +18,7 @@ function searchLibrary(query: Record<string, unknown>) {
   libraryQueries.push(query);
   return Promise.resolve(invokeMock("list_library")).then((listing: unknown) =>
     Array.isArray(listing)
-      ? { releases: listing, total: listing.length, next_after: null }
+      ? { releases: listing, total: listing.length, next_after: null, as_of: 0 }
       : listing,
   );
 }
@@ -135,8 +135,8 @@ describe("App", () => {
       if (command === "list_library") {
         return Promise.resolve(
           libraryQueries.at(-1)?.after === 2
-            ? { releases: [vagrantStory], total: 2, next_after: null }
-            : { releases: [entry], total: 2, next_after: 2 },
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
         );
       }
       return Promise.resolve([]);
@@ -150,6 +150,8 @@ describe("App", () => {
 
     expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
     expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    // The next page keeps to the releases the first page searched.
+    expect(libraryQueries.at(-1)).toMatchObject({ after: 2, as_of: 9 });
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
