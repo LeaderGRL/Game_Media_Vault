@@ -9,7 +9,7 @@ use support::*;
 #[test]
 fn a_run_exports_its_request_as_a_versioned_document() {
     let vault = FakeVault::default();
-    let run = vault.create_run(request()).unwrap();
+    let run = vault.get_run(vault.start_run()).unwrap().unwrap();
 
     let document = export_acquisition_request(&vault, run.id).unwrap();
 
@@ -31,7 +31,7 @@ fn a_run_exports_its_request_as_a_versioned_document() {
 #[test]
 fn an_exported_document_reads_back_as_the_same_draft() {
     let vault = FakeVault::default();
-    let run = vault.create_run(request()).unwrap();
+    let run = vault.get_run(vault.start_run()).unwrap().unwrap();
     let json = serde_json::to_string(&export_acquisition_request(&vault, run.id).unwrap()).unwrap();
 
     let draft = draft_from_document(serde_json::from_str(&json).unwrap()).unwrap();
