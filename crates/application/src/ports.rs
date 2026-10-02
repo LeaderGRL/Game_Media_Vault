@@ -249,6 +249,16 @@ pub trait RunRepositoryPort: Send + Sync {
         skipped_sources: &[String],
     ) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
+    /// The oldest `per_source` queued work items of each Source outside `skipped_sources`, while
+    /// the run is running: every Source's oldest item first, in queue order, then every Source's
+    /// second, and so on. Reading them changes nothing.
+    fn queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+        per_source: usize,
+    ) -> Result<Vec<AcquisitionWorkItem>, PortError>;
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 
     /// Completes `work_key` as unavailable: its Source no longer serves the candidate media, so

@@ -651,3 +651,37 @@ fn source_failures_are_kept_in_recording_order_across_reopen() {
             .all(|failure| failure.recorded_at > 1_600_000_000)
     );
 }
+
+#[test]
+fn queued_work_lists_the_oldest_items_of_each_source_while_the_run_runs() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("a1"), work("a2"), work("a3")])
+        .unwrap();
+    let other = |key: &str| {
+        let mut item = work(key);
+        item.candidate.source_id = SourceId::from("other-source");
+        item
+    };
+    catalog
+        .record_discovery(run.id, "other-source", &[other("b1"), other("b2")])
+        .unwrap();
+    let keys = |skipped: &[String], per_source: usize| -> Vec<String> {
+        catalog
+            .queued_work(run.id, skipped, per_source)
+            .unwrap()
+            .into_iter()
+            .map(|item| item.key)
+            .collect()
+    };
+
+    // Every Source's oldest item comes before any second one.
+    assert_eq!(keys(&[], 2), ["a1", "b1", "a2", "b2"]);
+    assert_eq!(keys(&[SOURCE_ID.to_owned()], 2), ["b1", "b2"]);
+    catalog.complete_work(run.id, "a1").unwrap();
+    assert_eq!(keys(&[], 1), ["a2", "b1"]);
+    pause_acquisition_run(&catalog, run.id).unwrap();
+    assert!(keys(&[], 2).is_empty());
+}

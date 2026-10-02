@@ -1414,10 +1414,9 @@ fn a_failed_download_ahead_of_work_settled_elsewhere_still_fails_its_source() {
     let (smb, tetris) = (candidate("Super Mario Bros."), candidate("Tetris"));
     let vault = FakeVault::with_library(vec![release_for(&smb, 73), release_for(&tetris, 74)]);
     // Another execution of the run completes the work this execution downloads ahead, right
-    // before this execution reads the queue to process it: the round's first read after the
-    // two that prefetch it.
+    // before this execution first reads the queue to process it.
     *vault.work_leaving_before_queue_read.borrow_mut() = Some((
-        3,
+        1,
         WorkLeaving {
             key: candidate_identity(SOURCE_ID, &smb),
             requeued: false,
@@ -1431,8 +1430,8 @@ fn a_failed_download_ahead_of_work_settled_elsewhere_still_fails_its_source() {
 
     assert!(matches!(error, ApplicationError::Port(_)), "{error}");
     assert_eq!(vault.source_failures.borrow().len(), 1);
-    // The Source's remaining work waits for a later execution.
-    assert!(connector.downloads.borrow().is_empty());
+    // The Source's remaining work waits for a later execution, though downloaded ahead.
+    assert!(vault.records.borrow().is_empty());
     let run = vault.run(run_id);
     assert_eq!(run.status, AcquisitionRunStatus::Running);
     assert_eq!(run.queued_work, 1);
@@ -1445,7 +1444,7 @@ fn a_failed_download_ahead_of_work_requeued_meanwhile_fails_its_source_before_la
     // Another execution parks the work this execution downloads ahead right before this
     // execution reads the queue to process it, and a human accepts it right after that read.
     *vault.work_leaving_before_queue_read.borrow_mut() = Some((
-        3,
+        1,
         WorkLeaving {
             key: candidate_identity(SOURCE_ID, &smb),
             requeued: true,

@@ -184,6 +184,8 @@ pub struct FakeVault {
     /// Simulates a pause landing while a download thread reads the run status: the next read
     /// waits this long, then finds the run paused.
     pub pause_during_next_status_read: Shared<Option<std::time::Duration>>,
+    /// Simulates a pause the next read of the run status sees, resumed right after it.
+    pub paused_at_next_status_read: Shared<bool>,
     /// Simulates a human rejecting the first Review Item right before the Nth next read of a
     /// Review Item, counting from one.
     pub rejection_before_review_read: Shared<Option<usize>>,
@@ -394,6 +396,9 @@ impl RunRepositoryPort for FakeVault {
     }
 
     fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        if std::mem::take(&mut *self.paused_at_next_status_read.borrow_mut()) {
+            return Ok(Some(AcquisitionRunStatus::Paused));
+        }
         let pause_after = self.pause_during_next_status_read.borrow_mut().take();
         if let Some(delay) = pause_after {
             std::thread::sleep(delay);
@@ -520,6 +525,38 @@ impl RunRepositoryPort for FakeVault {
             set_state(&leaving.key, WorkState::Queued);
         }
         Ok(next)
+    }
+
+    fn queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+        per_source: usize,
+    ) -> Result<Vec<AcquisitionWorkItem>, PortError> {
+        let runs = self.runs.borrow();
+        let run = &runs[&run_id];
+        if run.status != AcquisitionRunStatus::Running {
+            return Ok(Vec::new());
+        }
+        // Each item with its position among its Source's queued items.
+        let mut taken: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut positioned: Vec<(usize, usize, AcquisitionWorkItem)> = run
+            .work
+            .iter()
+            .filter(|work| work.state == WorkState::Queued)
+            .enumerate()
+            .filter_map(|(order, work)| {
+                let source = work.item.candidate.source_id.as_str();
+                if skipped_sources.iter().any(|skipped| skipped == source) {
+                    return None;
+                }
+                let position = taken.entry(source).or_default();
+                *position += 1;
+                (*position <= per_source).then(|| (*position, order, work.item.clone()))
+            })
+            .collect();
+        positioned.sort_by_key(|(position, order, _)| (*position, *order));
+        Ok(positioned.into_iter().map(|(_, _, item)| item).collect())
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
