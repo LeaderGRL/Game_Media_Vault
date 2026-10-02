@@ -26,3 +26,30 @@ fn the_webview_runs_under_a_restrictive_content_security_policy() {
         "{csp}"
     );
 }
+
+#[test]
+fn the_webview_fetches_vault_objects_and_nothing_beyond_the_shell() {
+    let config = tauri_config();
+    let csp = config["app"]["security"]["csp"].as_str().unwrap();
+    let connect_src: Vec<&str> = csp
+        .split(';')
+        .map(str::trim)
+        .find_map(|directive| directive.strip_prefix("connect-src "))
+        .expect("connect-src must be restricted")
+        .split_whitespace()
+        .collect();
+
+    // The 3D preview fetches models from the object protocol and decodes their textures from
+    // blob URLs; the shell's IPC is the only other destination.
+    assert_eq!(
+        connect_src,
+        [
+            "'self'",
+            "ipc:",
+            "http://ipc.localhost",
+            "gmv-object:",
+            "http://gmv-object.localhost",
+            "blob:",
+        ]
+    );
+}

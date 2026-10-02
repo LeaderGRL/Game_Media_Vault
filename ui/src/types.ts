@@ -365,6 +365,19 @@ export interface DerivationSummary {
   failed: { original_hash: string; reason: string }[];
 }
 
+/** What building the packaging models of the Library did, release by release. */
+export interface PackagingModelSummary {
+  /** Models built and recorded. */
+  generated: number;
+  /** Releases whose model from their Preferred Assets already exists. */
+  up_to_date: number;
+  /** Releases a template fits whose Packaging profile still misses Asset Types. */
+  incomplete: { release_edition_id: number; missing: string[] }[];
+  /** Releases whose packaging family is unknown or has no template yet. */
+  without_template: number;
+  failed: { release_edition_id: number; reason: string }[];
+}
+
 /** The kinds of reference catalog files the desktop imports. */
 export type ReferenceCatalogKind = "no_intro" | "redump" | "mame_software_list";
 

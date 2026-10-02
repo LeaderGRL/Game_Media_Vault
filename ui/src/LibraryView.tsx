@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 
 import { ASSET_TYPE_FAMILIES, assetTypeLabel } from "./acquisition";
+import { PackagingModelPreview } from "./PackagingModelPreview";
 import {
   filenameMediaType,
   type CoverageProfile,
@@ -37,6 +38,11 @@ interface LibraryViewProps {
   renderingThumbnails?: boolean;
   /** Outcome of the latest thumbnail rendering. */
   thumbnailStatus?: string | null;
+  /** Builds the 3D boxes complete releases lack; the button shows only with it. */
+  onBuildPackagingModels?: () => void;
+  buildingPackagingModels?: boolean;
+  /** Outcome of the latest 3D box build. */
+  packagingModelStatus?: string | null;
 }
 
 /** Longest edge of the thumbnails the Library shows instead of their originals. */
@@ -61,6 +67,9 @@ export function LibraryView({
   onRenderThumbnails,
   renderingThumbnails = false,
   thumbnailStatus = null,
+  onBuildPackagingModels,
+  buildingPackagingModels = false,
+  packagingModelStatus = null,
 }: LibraryViewProps) {
   return (
     <>
@@ -70,6 +79,18 @@ export function LibraryView({
             {renderingThumbnails ? "Rendering thumbnails…" : "Render thumbnails"}
           </button>
           {thumbnailStatus ? <p role="status">{thumbnailStatus}</p> : null}
+        </div>
+      ) : null}
+      {onBuildPackagingModels ? (
+        <div className="library-actions">
+          <button
+            type="button"
+            disabled={buildingPackagingModels}
+            onClick={onBuildPackagingModels}
+          >
+            {buildingPackagingModels ? "Building 3D boxes…" : "Build 3D boxes"}
+          </button>
+          {packagingModelStatus ? <p role="status">{packagingModelStatus}</p> : null}
         </div>
       ) : null}
       {onSearch ? (
@@ -247,6 +268,7 @@ function LibraryResults({ entries, objectUrl, filtered }: LibraryResultsProps) {
               </dl>
             ) : null}
             <ReleaseCoverageNote coverage={entry.coverage} />
+            <PackagingModelNote entry={entry} objectUrl={objectUrl} />
           </div>
 
           <div className="release-assets">
@@ -398,6 +420,48 @@ function ReleaseCoverageNote({ coverage }: { coverage: ReleaseCoverage | null })
           </span>
         ))}
     </div>
+  );
+}
+
+/** Packaging families a 3D template builds, as SPEC §17 lists them. */
+const TEMPLATED_FAMILIES: PackagingFamily[] = ["cardboard_box"];
+
+/** The 3D box of a release, or what it still needs for one. */
+function PackagingModelNote({
+  entry,
+  objectUrl,
+}: {
+  entry: LibraryEntry;
+  objectUrl: (objectHash: string) => string;
+}) {
+  if (entry.packaging_model !== null) {
+    return (
+      <PackagingModelPreview
+        url={objectUrl(entry.packaging_model.object_hash)}
+        label={"3D box of " + entry.game_title}
+      />
+    );
+  }
+  const coverage = entry.coverage;
+  if (coverage === null) {
+    return null;
+  }
+  if (!TEMPLATED_FAMILIES.includes(coverage.packaging_family)) {
+    return (
+      <p className="packaging-model-note">
+        No 3D template for {PACKAGING_FAMILY_LABELS[coverage.packaging_family].toLowerCase()}{" "}
+        packaging yet
+      </p>
+    );
+  }
+  const missing =
+    coverage.profiles.find((profile) => profile.profile === "packaging")?.missing ?? [];
+  return (
+    <p className="packaging-model-note">
+      {missing.length > 0
+        ? "3D box needs " + missing.map(assetTypeLabel).join(", ")
+        : "3D box not built yet"}
+    </p>
   );
 }
 

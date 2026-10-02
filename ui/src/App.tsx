@@ -19,6 +19,7 @@ import type {
   LibraryEntry,
   LibraryFilters,
   LibraryPage,
+  PackagingModelSummary,
   ReferenceImportInput,
   ReferenceImportSummary,
   ReviewDecision,
@@ -88,6 +89,10 @@ export function App() {
   const renderingThumbnailVaults = useRef(new Set<string>());
   const [renderingThumbnails, setRenderingThumbnails] = useState(false);
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
+  // Vaults whose packaging models are building, kept like thumbnail renderings.
+  const buildingModelVaults = useRef(new Set<string>());
+  const [buildingModels, setBuildingModels] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
   // Vaults whose reference import runs: the backend keeps importing a vault while another is
   // loaded, so loading it again shows its import instead of offering to start another.
   const importingReferenceVaults = useRef(new Set<string>());
@@ -258,6 +263,8 @@ export function App() {
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
     setRenderingThumbnails(renderingThumbnailVaults.current.has(vaultKey));
+    setModelStatus(null);
+    setBuildingModels(buildingModelVaults.current.has(vaultKey));
     setImportingReference(importingReferenceVaults.current.has(vaultKey));
     setReferenceImportStatus(null);
     setReviewItems([]);
@@ -280,6 +287,7 @@ export function App() {
         vaultKey = identity;
         activeVaultRoot.current = identity;
         setRenderingThumbnails(renderingThumbnailVaults.current.has(identity));
+        setBuildingModels(buildingModelVaults.current.has(identity));
         setImportingReference(importingReferenceVaults.current.has(identity));
         setExecutingRunIds(new Set(executionsByVault.current.get(identity)));
       }
@@ -586,6 +594,65 @@ export function App() {
       return;
     }
     // A search shown meanwhile cleared the rendering failure.
+    if (failure !== null && reportsHere()) {
+      setError(errorMessage(failure.reason));
+    }
+  }
+
+  /**
+   * Builds the packaging models complete releases lack, one build per vault, then shows them,
+   * even after a failure that left some built.
+   */
+  async function buildPackagingModels() {
+    if (
+      loadedVaultRoot === null ||
+      openedVaultRoot.current !== loadedVaultRoot ||
+      buildingModelVaults.current.has(loadedVaultRoot)
+    ) {
+      return;
+    }
+    const buildingVaultRoot = loadedVaultRoot;
+    buildingModelVaults.current.add(buildingVaultRoot);
+    // The build's vault reports it, even while it reopens; another vault loaded meanwhile
+    // neither shows nor reports it.
+    const reportsHere = () => activeVaultRoot.current === buildingVaultRoot;
+    setBuildingModels(true);
+    setModelStatus(null);
+    setError(null);
+    let failure: { reason: unknown } | null = null;
+    try {
+      const summary = await invoke<PackagingModelSummary>("derive_packaging_models");
+      if (reportsHere()) {
+        setModelStatus(describePackagingModels(summary));
+      }
+    } catch (reason) {
+      failure = { reason };
+    } finally {
+      buildingModelVaults.current.delete(buildingVaultRoot);
+      if (reportsHere()) {
+        setBuildingModels(false);
+      }
+    }
+    if (!reportsHere()) {
+      return;
+    }
+    if (failure !== null) {
+      setError(errorMessage(failure.reason));
+    }
+    // A reopening of the vault searches the Library itself once the vault is open.
+    if (openedVaultRoot.current !== buildingVaultRoot) {
+      return;
+    }
+    // Even a failed build may have recorded models before failing.
+    try {
+      await showChangedLibrary(buildingVaultRoot);
+    } catch (reason) {
+      if (reportsHere()) {
+        setError(errorMessage((failure ?? { reason }).reason));
+      }
+      return;
+    }
+    // A search shown meanwhile cleared the build failure.
     if (failure !== null && reportsHere()) {
       setError(errorMessage(failure.reason));
     }
@@ -910,6 +977,11 @@ export function App() {
           }
           renderingThumbnails={renderingThumbnails}
           thumbnailStatus={thumbnailStatus}
+          onBuildPackagingModels={
+            loadedVaultRoot === null ? undefined : () => void buildPackagingModels()
+          }
+          buildingPackagingModels={buildingModels}
+          packagingModelStatus={modelStatus}
         />
         </>
       ) : null}
@@ -964,6 +1036,26 @@ function describeReferenceImport(summary: ReferenceImportSummary) {
   }
   const skipped = summary.skipped_records === 1 ? "record" : "records";
   return `${imported}; ${summary.skipped_records} malformed ${skipped} skipped.`;
+}
+
+function describePackagingModels(summary: PackagingModelSummary) {
+  const releases = (count: number) => `${count} ${count === 1 ? "release" : "releases"}`;
+  const parts = [`Built ${summary.generated} 3D ${summary.generated === 1 ? "box" : "boxes"}`];
+  if (summary.up_to_date > 0) {
+    parts.push(`${summary.up_to_date} already built`);
+  }
+  if (summary.incomplete.length > 0) {
+    const count = summary.incomplete.length;
+    parts.push(`${releases(count)} ${count === 1 ? "misses" : "miss"} scans`);
+  }
+  if (summary.without_template > 0) {
+    const count = summary.without_template;
+    parts.push(`${releases(count)} ${count === 1 ? "has" : "have"} no 3D template`);
+  }
+  if (summary.failed.length > 0) {
+    parts.push(`${releases(summary.failed.length)} could not be built`);
+  }
+  return parts.join("; ") + ".";
 }
 
 function describeThumbnailRendering(summary: DerivationSummary) {

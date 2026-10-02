@@ -341,6 +341,52 @@ describe("App", () => {
     );
   });
 
+  it("builds the 3D boxes the Library lacks and shows them", async () => {
+    const model = {
+      recipe: {
+        transform: "packaging_model",
+        template: "cardboard_box",
+        back_hash: "back1",
+        spine_hash: "spine1",
+      },
+      object_hash: "model1",
+      byte_len: 4096,
+      media_type: "model/gltf-binary",
+      width: null,
+      height: null,
+    };
+    let built = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_packaging_models") {
+        built = true;
+        return Promise.resolve({
+          generated: 1,
+          up_to_date: 2,
+          incomplete: [{ release_edition_id: 5, missing: ["spine"] }],
+          without_template: 3,
+          failed: [{ release_edition_id: 6, reason: "front scan: cannot decode the original" }],
+        });
+      }
+      if (command === "list_library") {
+        return Promise.resolve([built ? { ...entry, packaging_model: model } : entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Build 3D boxes" }));
+
+    expect(
+      await screen.findByText(
+        "Built 1 3D box; 2 already built; 1 release misses scans; 3 releases have no 3D template; 1 release could not be built.",
+      ),
+    ).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("derive_packaging_models");
+    expect(await screen.findByRole("figure", { name: "3D box of Metal Gear Solid" })).toBeInTheDocument();
+  });
+
   it("reports the originals skipped as unsupported formats", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(

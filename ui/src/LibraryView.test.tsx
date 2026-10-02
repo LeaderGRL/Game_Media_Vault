@@ -1,8 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LibraryView } from "./LibraryView";
 import type { AssetType, LibraryEntry } from "./types";
+
+// The 3D scene needs WebGL, which jsdom lacks; the tests drive it instead.
+const { showModel } = vi.hoisted(() => ({ showModel: vi.fn() }));
+vi.mock("./modelScene", () => ({ showModel }));
 
 const entry: LibraryEntry = {
   game_id: 1,
@@ -411,5 +415,92 @@ describe("LibraryView", () => {
         "no-intro · identifier (sha1): 74591CC9504F3BDEBDAE9D9F8F9D7D68A6B4873B · C:/catalogs/Nintendo - Game Boy.dat",
       ),
     ).toBeInTheDocument();
+  });
+});
+
+describe("LibraryView packaging models", () => {
+  const model = {
+    recipe: {
+      transform: "packaging_model" as const,
+      template: "cardboard_box" as const,
+      back_hash: "back1",
+      spine_hash: "spine1",
+    },
+    object_hash: "model1",
+    byte_len: 4096,
+    media_type: "model/gltf-binary",
+    width: null,
+    height: null,
+  };
+  const cardboardBox = (missing: string[]) => ({
+    packaging_family: "cardboard_box" as const,
+    status: "partial" as const,
+    profiles: [
+      { profile: "packaging" as const, required: ["box_front", "box_back", "spine"], missing },
+    ],
+  });
+
+  beforeEach(() => {
+    showModel.mockReset();
+    showModel.mockReturnValue(() => {});
+  });
+
+  it("previews the 3D box of a release and lets it be turned", async () => {
+    showModel.mockImplementation((_host, _url, events) => {
+      events.onReady();
+      return () => {};
+    });
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[{ ...entry, coverage: cardboardBox([]), packaging_model: model }]}
+      />,
+    );
+
+    expect(screen.getByRole("figure", { name: "3D box of Metal Gear Solid" })).toBeInTheDocument();
+    expect(await screen.findByText("Drag to turn the box")).toBeInTheDocument();
+    expect(showModel).toHaveBeenCalledWith(
+      expect.any(HTMLElement),
+      "gmv-object://localhost/model1",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the Library when the 3D preview cannot be shown", async () => {
+    showModel.mockImplementation((_host, _url, events) => {
+      events.onError(new Error("Error creating WebGL context."));
+      return () => {};
+    });
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[{ ...entry, coverage: cardboardBox([]), packaging_model: model }]}
+      />,
+    );
+
+    expect(await screen.findByText("3D preview unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("explains what a release without a 3D box still needs", () => {
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          { ...entry, release_edition_id: 1, coverage: cardboardBox(["box_back", "spine"]) },
+          { ...entry, release_edition_id: 2, coverage: cardboardBox([]) },
+          {
+            ...entry,
+            release_edition_id: 3,
+            coverage: { ...cardboardBox([]), packaging_family: "jewel_case" },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("3D box needs Box Back, Spine")).toBeInTheDocument();
+    expect(screen.getByText("3D box not built yet")).toBeInTheDocument();
+    expect(screen.getByText("No 3D template for jewel case packaging yet")).toBeInTheDocument();
+    expect(showModel).not.toHaveBeenCalled();
   });
 });
