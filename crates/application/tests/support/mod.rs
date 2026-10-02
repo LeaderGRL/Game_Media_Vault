@@ -184,6 +184,8 @@ pub struct FakeVault {
     /// Simulates a pause landing while a download thread reads the run status: the next read
     /// waits this long, then finds the run paused.
     pub pause_during_next_status_read: Shared<Option<std::time::Duration>>,
+    /// Simulates a pause the next read of the run status sees, resumed right after it.
+    pub paused_at_next_status_read: Shared<bool>,
     /// Simulates a human rejecting the first Review Item right before the Nth next read of a
     /// Review Item, counting from one.
     pub rejection_before_review_read: Shared<Option<usize>>,
@@ -394,6 +396,9 @@ impl RunRepositoryPort for FakeVault {
     }
 
     fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        if std::mem::take(&mut *self.paused_at_next_status_read.borrow_mut()) {
+            return Ok(Some(AcquisitionRunStatus::Paused));
+        }
         let pause_after = self.pause_during_next_status_read.borrow_mut().take();
         if let Some(delay) = pause_after {
             std::thread::sleep(delay);

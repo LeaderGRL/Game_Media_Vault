@@ -571,3 +571,41 @@ fn work_bound_for_review_takes_no_place_in_a_sources_lookahead() {
     assert_eq!(imported, Ok(2));
     assert_eq!(vault.review_items.borrow().len(), 2);
 }
+
+#[test]
+fn an_execution_resumed_after_a_download_saw_it_paused_downloads_its_later_work() {
+    let (done, finished) = mpsc::channel();
+    // A hung execution fails the test instead of holding up the suite.
+    thread::spawn(move || {
+        let candidates: Vec<AssetCandidate> = ["First", "Second", "Third"]
+            .iter()
+            .map(|title| box_front("a", title))
+            .collect();
+        let vault = FakeVault::with_library(
+            candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| release_for(candidate, index as i64 + 1))
+                .collect(),
+        );
+        // The first download ahead sees the run paused, which a human resumes right after.
+        *vault.paused_at_next_status_read.borrow_mut() = true;
+        let only = slow("a", candidates, None, None);
+
+        let imported = execute(
+            &vault,
+            &[&only],
+            DownloadLimits {
+                max_concurrent: 1,
+                max_per_source: 1,
+            },
+        );
+        let _ = done.send(imported);
+    });
+
+    let imported = finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the execution hung");
+
+    assert_eq!(imported, Ok(3));
+}

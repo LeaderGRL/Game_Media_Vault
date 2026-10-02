@@ -112,8 +112,8 @@ fn fetch(
     }
 }
 
-/// Starts the downloads of an execution in the order its rounds read their work ahead, as room
-/// frees up: no more than `max_concurrent` at once, nor more than `max_per_source` from any one
+/// Gives the downloads of an execution room in the order its rounds read their work ahead, as
+/// room frees up: no more than `max_concurrent` at once, nor more than `max_per_source` from any one
 /// Source. A download waiting for room in its Source lets later downloads of other Sources start,
 /// never later ones of its own Source, and a download the execution makes itself, for the work
 /// it processes, goes before every queued one.
@@ -220,7 +220,8 @@ impl<'a> Dispatcher<'a> {
         }
     }
 
-    /// Starts no further download, and drops the waiting ones, whose results are never sent.
+    /// Starts no further download once the execution ends, and drops the waiting ones, whose
+    /// results are never sent.
     fn stop(&self) {
         let mut state = lock(&self.state);
         state.stopped = true;
@@ -997,14 +998,14 @@ impl<'a> Acquisition<'a> {
             scope.spawn(move || {
                 while let Some((job, _room)) = dispatcher.next_job() {
                     // A pause or a cancellation starts no further download, even while the
-                    // execution still awaits one already under way.
+                    // execution still awaits one already under way. The download is dropped, its
+                    // work staying queued; a resume the execution sees makes it itself.
                     let running = matches!(
                         runs.run_status(run_id),
                         Ok(Some(AcquisitionRunStatus::Running))
                     );
                     if !running {
-                        dispatcher.stop();
-                        break;
+                        continue;
                     }
                     // The execution may have stopped awaiting this result.
                     let _ = job
