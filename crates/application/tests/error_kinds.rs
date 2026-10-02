@@ -59,6 +59,13 @@ fn application_errors_expose_a_stable_kind_for_frontends() {
             ErrorKind::External,
             "external",
         ),
+        (
+            ApplicationError::Port(PortError::invalid_source_data(
+                "invalid No-Intro XML".to_owned(),
+            )),
+            ErrorKind::SourceFailure,
+            "source_failure",
+        ),
     ];
 
     for (error, kind, name) in cases {

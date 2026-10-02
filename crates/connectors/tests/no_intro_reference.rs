@@ -299,3 +299,20 @@ fn platform_names_drop_dat_variant_qualifiers() {
                 == "40:Nintendo - Nintendo Entertainment SystemSuper Mario Bros. (World)"
     }));
 }
+
+#[test]
+fn a_malformed_dat_is_invalid_source_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("broken.dat");
+    std::fs::write(
+        &path,
+        "<datafile><header><name>Nintendo - Game Boy</name></header><game>",
+    )
+    .unwrap();
+
+    let error = NoIntroReferenceCatalog::new()
+        .read_releases(&path, 10)
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}

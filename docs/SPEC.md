@@ -564,7 +564,7 @@ Errors are classified into stable kinds shared by every frontend. The desktop sh
 | 3 | `not_found` | unknown run or Review Item, or a missing Release Edition an operation relies on |
 | 4 | `conflict` | the current state forbids the operation |
 | 5 | `unsupported` | valid but not supported for this Source or plan yet |
-| 6 | `source_failure` | a Source broke the connector contract |
+| 6 | `source_failure` | a Source broke the connector contract, e.g. malformed metadata or a reference catalog that does not parse |
 
 The desktop webview never reads files directly. Original objects of the opened vault are served read-only by the `gmv-object` protocol, addressed by their BLAKE3 hash only (`400` for anything else, `404` for a missing object, `409` without an open vault), with a media type derived from the object's signature and `nosniff`; the Content Security Policy allows images from that protocol alone besides the app itself.
 

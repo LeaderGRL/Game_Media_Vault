@@ -200,7 +200,7 @@ where
         }
         let bytes = self.transport.get_bytes(LIBRETRO_GITMODULES_URL)?;
         let manifest = std::str::from_utf8(&bytes).map_err(|error| {
-            PortError::new(format!("invalid Libretro repository metadata: {error}"))
+            PortError::invalid_source_data(format!("invalid Libretro repository metadata: {error}"))
         })?;
         let repositories = parse_repository_catalog(manifest)?;
         Ok(self.repositories.get_or_init(|| repositories))
@@ -317,7 +317,7 @@ fn parse_repository_catalog(manifest: &str) -> Result<Vec<LibretroRepository>, P
         &mut branch,
     )?;
     if repositories.is_empty() {
-        return Err(PortError::new(
+        return Err(PortError::invalid_source_data(
             "Libretro repository metadata did not contain any usable repositories".to_owned(),
         ));
     }
@@ -336,7 +336,7 @@ fn push_repository(
         return Ok(());
     };
     let repository_value = repository.take().ok_or_else(|| {
-        PortError::new(format!(
+        PortError::invalid_source_data(format!(
             "Libretro repository metadata is missing a URL for platform {platform_value}"
         ))
     })?;
@@ -354,7 +354,9 @@ fn repository_name(url: &str) -> Result<String, PortError> {
         .rsplit('/')
         .next()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| PortError::new(format!("invalid Libretro repository URL: {url}")))?;
+        .ok_or_else(|| {
+            PortError::invalid_source_data(format!("invalid Libretro repository URL: {url}"))
+        })?;
     Ok(repository.to_owned())
 }
 
@@ -402,10 +404,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
     let mut releases = Vec::with_capacity(max_games.min(256));
 
     loop {
-        match xml
-            .read_event_into(&mut buffer)
-            .map_err(|error| PortError::new(format!("invalid No-Intro XML: {error}")))?
-        {
+        match xml.read_event_into(&mut buffer).map_err(xml_error)? {
             Event::Start(element) => match element.name().as_ref() {
                 "header" => in_header = true,
                 "name" if in_header => {
@@ -414,7 +413,9 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
                 }
                 "game" => {
                     let raw_name = attribute_value(&element, "name")?.ok_or_else(|| {
-                        PortError::new("No-Intro game entry is missing its name".to_owned())
+                        PortError::invalid_source_data(
+                            "No-Intro game entry is missing its name".to_owned(),
+                        )
                     })?;
                     current_game = Some(NoIntroGame::new(raw_name, source_location));
                 }
@@ -435,13 +436,15 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
             }
             Event::GeneralRef(reference) if reading_header_name => {
                 if let Some(character) = reference.resolve_char_ref().map_err(|error| {
-                    PortError::new(format!("invalid No-Intro XML character reference: {error}"))
+                    PortError::invalid_source_data(format!(
+                        "invalid No-Intro XML character reference: {error}"
+                    ))
                 })? {
                     header_name.push(character);
                 } else if let Some(value) = resolve_xml_entity(reference.as_ref()) {
                     header_name.push_str(value);
                 } else {
-                    return Err(PortError::new(format!(
+                    return Err(PortError::invalid_source_data(format!(
                         "unsupported No-Intro XML entity reference: &{};",
                         reference.as_ref()
                     )));
@@ -455,10 +458,12 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
                 "header" => in_header = false,
                 "game" => {
                     let game = current_game.take().ok_or_else(|| {
-                        PortError::new("No-Intro game closing tag has no matching entry".to_owned())
+                        PortError::invalid_source_data(
+                            "No-Intro game closing tag has no matching entry".to_owned(),
+                        )
                     })?;
                     let platform = platform.as_deref().ok_or_else(|| {
-                        PortError::new(
+                        PortError::invalid_source_data(
                             "No-Intro datafile header is missing a platform name".to_owned(),
                         )
                     })?;
@@ -476,7 +481,7 @@ fn parse_no_intro_datafile<R: std::io::BufRead>(
     }
 
     if platform.is_none() {
-        return Err(PortError::new(
+        return Err(PortError::invalid_source_data(
             "No-Intro datafile header is missing a platform name".to_owned(),
         ));
     }
@@ -586,13 +591,16 @@ fn attribute_value(
     name: &str,
 ) -> Result<Option<String>, PortError> {
     for attribute in element.attributes() {
-        let attribute = attribute
-            .map_err(|error| PortError::new(format!("invalid No-Intro XML attribute: {error}")))?;
+        let attribute = attribute.map_err(|error| {
+            PortError::invalid_source_data(format!("invalid No-Intro XML attribute: {error}"))
+        })?;
         if attribute.key.as_ref() == name {
             let value = attribute
                 .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map_err(|error| {
-                    PortError::new(format!("invalid No-Intro XML attribute value: {error}"))
+                    PortError::invalid_source_data(format!(
+                        "invalid No-Intro XML attribute value: {error}"
+                    ))
                 })?;
             return Ok(Some(value.into_owned()));
         }
@@ -602,4 +610,15 @@ fn attribute_value(
 
 fn source_record_identifier(platform: &str, raw_name: &str) -> String {
     format!("{}:{platform}{raw_name}", platform.len())
+}
+
+/// A No-Intro datafile that cannot be read is an environmental failure; one that does not
+/// parse is invalid source data.
+fn xml_error(error: quick_xml::Error) -> PortError {
+    match error {
+        quick_xml::Error::Io(error) => {
+            PortError::new(format!("failed to read No-Intro datafile: {error}"))
+        }
+        error => PortError::invalid_source_data(format!("invalid No-Intro XML: {error}")),
+    }
 }

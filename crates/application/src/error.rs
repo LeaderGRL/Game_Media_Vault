@@ -133,6 +133,7 @@ impl ApplicationError {
             Self::ConnectorCandidateSourceMismatch { .. } | Self::UnsafeCandidateLocator { .. } => {
                 ErrorKind::SourceFailure
             }
+            Self::Port(error) if error.is_invalid_source_data() => ErrorKind::SourceFailure,
             Self::Port(_) => ErrorKind::External,
         }
     }

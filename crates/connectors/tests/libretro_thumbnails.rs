@@ -367,3 +367,23 @@ fn refuses_platforms_without_a_libretro_repository_before_a_run_starts() {
 
     assert!(reason.contains("Nintendo - Famicom Disk Sytem"), "{reason}");
 }
+
+/// Answers every request with bytes that are not UTF-8.
+struct MalformedMetadataTransport;
+
+impl HttpTransport for MalformedMetadataTransport {
+    fn get_stream(&self, _url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(vec![0xff, 0xfe, 0xfd])))
+    }
+}
+
+#[test]
+fn malformed_repository_metadata_is_invalid_source_data() {
+    let connector = LibretroThumbnailsConnector::with_transport(MalformedMetadataTransport);
+
+    let error = connector
+        .discover(&request(vec![AssetTypeSelector::BoxFront]))
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}
