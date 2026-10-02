@@ -37,13 +37,16 @@ These Sources are registered connectors; `game-media-vault source list` describe
   - arcade marquees, cabinets, control panels and circuit boards.
 
   The image type each comes from is kept as its source label.
-- **Reached at:** `gamesdb.launchbox-app.com/Metadata.zip`, the daily dataset, which each
-  discovery downloads whole, and `images.launchbox-app.com` for the images.
+- **Reached at:** `gamesdb.launchbox-app.com/Metadata.zip`, the daily dataset, and
+  `images.launchbox-app.com` for the images. The dataset is kept once for the whole machine, in
+  the OS cache directory under `game-media-vault/launchbox`, and downloaded again only once
+  LaunchBox republishes it.
 - **Configuration:** none. Platforms are mapped to LaunchBox's names, for every platform whose
   packaging family the coverage table knows except the Nintendo DSi, which LaunchBox does not
   list; MAME and FBNeo releases are looked up under its `Arcade` platform.
 - **Limits:** it refuses language filters and platforms it has no name for. The dataset is
-  large, and is downloaded again by every discovery.
+  large, so the first discovery on a machine, and the first after LaunchBox republishes it,
+  download it whole.
 
 ## Reference catalogs
 

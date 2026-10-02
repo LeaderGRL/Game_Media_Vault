@@ -1,12 +1,19 @@
 use std::{
     collections::HashSet,
     io::{Cursor, Read, Write},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
 };
 
 use game_media_vault_application::{ConnectorPort, PortError};
 use game_media_vault_connectors::{
-    HttpTransport, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
+    DatasetCache, Fetched, HttpTransport, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL,
+    LaunchBoxGamesDbConnector, Validators,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType,
@@ -661,4 +668,231 @@ fn accepts_every_platform_whose_packaging_the_coverage_knows() {
         .collect();
 
     assert!(refused.is_empty(), "{refused:#?}");
+}
+
+/// Serves one version of the dataset at a time, answering conditional requests as LaunchBox
+/// does, and counts how often it sends the dataset whole.
+struct VersionedTransport {
+    version: Mutex<(Vec<u8>, &'static str)>,
+    dataset_sent: AtomicUsize,
+    known: Mutex<Vec<Validators>>,
+    /// Told once when the dataset is next sent whole, which then takes a while.
+    sending: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+impl VersionedTransport {
+    fn serving(archive: Vec<u8>, etag: &'static str) -> Self {
+        Self {
+            version: Mutex::new((archive, etag)),
+            dataset_sent: AtomicUsize::new(0),
+            known: Mutex::new(Vec::new()),
+            sending: Mutex::new(None),
+        }
+    }
+
+    fn publish(&self, archive: Vec<u8>, etag: &'static str) {
+        *self.version.lock().unwrap() = (archive, etag);
+    }
+}
+
+impl HttpTransport for &VersionedTransport {
+    fn get_stream(&self, _url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(b"launchbox image fixture".to_vec())))
+    }
+
+    fn get_if_changed(&self, url: &str, known: &Validators) -> Result<Fetched, PortError> {
+        assert_eq!(url, LAUNCHBOX_METADATA_URL);
+        self.known.lock().unwrap().push(known.clone());
+        let (archive, etag) = self.version.lock().unwrap().clone();
+        if known.etag.as_deref() == Some(etag) {
+            return Ok(Fetched::Unchanged);
+        }
+        self.dataset_sent.fetch_add(1, Ordering::SeqCst);
+        let sending = self.sending.lock().unwrap().take();
+        if let Some(sending) = sending {
+            sending.send(()).unwrap();
+            thread::sleep(Duration::from_millis(300));
+        }
+        Ok(Fetched::Changed {
+            body: Box::new(Cursor::new(archive)),
+            validators: Validators {
+                etag: Some(etag.to_owned()),
+                last_modified: None,
+            },
+        })
+    }
+}
+
+fn dataset_with_image(file_name: &str) -> Vec<u8> {
+    metadata_archive(&[(
+        "Metadata.xml",
+        &format!(
+            r#"<LaunchBox>
+  <Game>
+    <Name>Super Mario Bros.</Name>
+    <DatabaseID>140</DatabaseID>
+    <Platform>Nintendo Entertainment System</Platform>
+  </Game>
+  <GameImage><DatabaseID>140</DatabaseID><FileName>{file_name}</FileName><Type>Box - Front</Type></GameImage>
+</LaunchBox>"#
+        ),
+    )])
+}
+
+fn cached_connector<'a>(
+    transport: &'a VersionedTransport,
+    cache: &std::path::Path,
+) -> LaunchBoxGamesDbConnector<&'a VersionedTransport> {
+    LaunchBoxGamesDbConnector::with_transport_and_cache(transport, DatasetCache::at(cache))
+}
+
+#[test]
+fn a_dataset_unchanged_since_the_last_discovery_is_read_from_the_machine_cache() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+
+    let first = connector.discover(&request(|_| {})).unwrap();
+    let again = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&first), locators(&again));
+    assert_eq!(locators(&first).len(), 1);
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 1);
+    // The second discovery named the version it held.
+    let known = transport.known.lock().unwrap();
+    assert_eq!(known[1].etag.as_deref(), Some("\"v1\""));
+}
+
+#[test]
+fn a_republished_dataset_replaces_the_cached_one() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    connector.discover(&request(|_| {})).unwrap();
+
+    transport.publish(dataset_with_image("front-v2.png"), "\"v2\"");
+    let republished = connector.discover(&request(|_| {})).unwrap();
+    let again = connector.discover(&request(|_| {})).unwrap();
+
+    assert!(locators(&republished)[0].ends_with("front-v2.png"));
+    assert_eq!(locators(&again), locators(&republished));
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn every_vault_of_the_machine_shares_the_cached_dataset() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+
+    // Each vault, or process, builds its own connector over the one machine cache.
+    cached_connector(&transport, cache.path())
+        .discover(&request(|_| {}))
+        .unwrap();
+    let other = cached_connector(&transport, cache.path())
+        .discover(&request(|_| {}))
+        .unwrap();
+
+    assert_eq!(locators(&other).len(), 1);
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_cache_that_cannot_be_written_never_fails_a_discovery() {
+    let blocked = tempfile::NamedTempFile::new().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    // A file where the cache directory should be.
+    let connector = cached_connector(&transport, &blocked.path().join("cache"));
+
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+}
+
+#[test]
+fn a_dataset_that_does_not_read_as_an_archive_is_never_cached() {
+    let cache = tempfile::tempdir().unwrap();
+    // LaunchBox answers with a page that is no archive, under the dataset's validators.
+    let transport = VersionedTransport::serving(b"<html>maintenance</html>".to_vec(), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    assert!(connector.discover(&request(|_| {})).is_err());
+
+    transport.publish(dataset_with_image("front-v1.png"), "\"v1\"");
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+}
+
+#[test]
+fn a_cached_copy_damaged_on_disk_is_downloaded_again() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    connector.discover(&request(|_| {})).unwrap();
+    // The copy is cut short on disk while its validators stay.
+    std::fs::write(cache.path().join("Metadata.zip"), b"PK").unwrap();
+
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+    let again = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+    assert_eq!(locators(&again), locators(&candidates));
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn discoveries_of_the_machine_refresh_its_cached_dataset_one_at_a_time() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let (sending, sent) = mpsc::channel();
+    *transport.sending.lock().unwrap() = Some(sending);
+
+    let (first, other) = thread::scope(|scope| {
+        let first =
+            scope.spawn(|| cached_connector(&transport, cache.path()).discover(&request(|_| {})));
+        // Another vault discovers while the first one downloads the dataset whole.
+        sent.recv().unwrap();
+        let other = cached_connector(&transport, cache.path()).discover(&request(|_| {}));
+        (first.join().unwrap(), other)
+    });
+
+    assert_eq!(locators(&first.unwrap()).len(), 1);
+    assert_eq!(locators(&other.unwrap()).len(), 1);
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_cached_copy_whose_metadata_no_longer_reads_is_downloaded_again() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    connector.discover(&request(|_| {})).unwrap();
+    // The copy still opens as an archive, but its metadata is gone.
+    std::fs::write(
+        cache.path().join("Metadata.zip"),
+        metadata_archive(&[("Other.xml", "<LaunchBox/>")]),
+    )
+    .unwrap();
+
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+    let again = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+    assert_eq!(locators(&again), locators(&candidates));
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_dataset_whose_metadata_does_not_read_is_not_kept() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport =
+        VersionedTransport::serving(metadata_archive(&[("Other.xml", "<LaunchBox/>")]), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    assert!(connector.discover(&request(|_| {})).is_err());
+
+    transport.publish(dataset_with_image("front-v1.png"), "\"v1\"");
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+    // The second discovery held no copy to name.
+    assert_eq!(transport.known.lock().unwrap()[1].etag, None);
 }
