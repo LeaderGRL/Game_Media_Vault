@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { AcquireView } from "./AcquireView";
@@ -126,5 +126,32 @@ describe("AcquireView", () => {
     await waitFor(() =>
       expect(screen.queryByText("Box Front: Libretro Thumbnails")).not.toBeInTheDocument(),
     );
+  });
+
+  it("drops plan checks that end after the request changed", async () => {
+    let resolveCheck: (plan: unknown) => void = () => {};
+    let rejectCheck: (reason: unknown) => void = () => {};
+    const checkPlan = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((resolve) => (resolveCheck = resolve)))
+      .mockReturnValueOnce(new Promise((_, reject) => (rejectCheck = reject)));
+    render(<AcquireView starting={false} onStart={vi.fn()} onCheckPlan={checkPlan} />);
+    fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
+    fireEvent.click(screen.getByLabelText("Screenshot"));
+    fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
+    fireEvent.click(screen.getByLabelText("Screenshot"));
+
+    await act(async () => {
+      resolveCheck({
+        sources: [{ source_id: "libretro-thumbnails", asset_types: ["box_front"] }],
+        excluded: [],
+        coverage: [{ selector: "box_front", sources: ["libretro-thumbnails"] }],
+      });
+      rejectCheck({ kind: "unsupported", message: "a stale refusal" });
+    });
+
+    expect(checkPlan).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Box Front: Libretro Thumbnails")).not.toBeInTheDocument();
+    expect(screen.queryByText("a stale refusal")).not.toBeInTheDocument();
   });
 });
