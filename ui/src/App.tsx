@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
@@ -491,7 +491,7 @@ export function App() {
         </button>
       </nav>
 
-      {activeView === "library" ? <LibraryView entries={entries} /> : null}
+      {activeView === "library" ? <LibraryView entries={entries} objectUrl={originalObjectUrl} /> : null}
       {activeView === "review" ? (
         <ReviewView
           items={reviewItems}
@@ -522,4 +522,9 @@ function withoutRun(runIds: Set<number>, runId: number) {
   const next = new Set(runIds);
   next.delete(runId);
   return next;
+}
+
+/** Original objects are served by the desktop shell's `gmv-object` protocol. */
+function originalObjectUrl(objectHash: string) {
+  return convertFileSrc(objectHash, "gmv-object");
 }

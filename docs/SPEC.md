@@ -547,6 +547,8 @@ Errors are classified into stable kinds shared by every frontend. The desktop sh
 | 5 | `unsupported` | valid but not supported for this Source or plan yet |
 | 6 | `source_failure` | a Source broke the connector contract |
 
+The desktop webview never reads files directly. Original objects of the opened vault are served read-only by the `gmv-object` protocol, addressed by their BLAKE3 hash only (`400` for anything else, `404` for a missing object, `409` without an open vault), with a media type derived from the object's signature and `nosniff`; the Content Security Policy allows images from that protocol alone besides the app itself.
+
 ## 22. Performance Principles
 
 - Streaming downloads; avoid loading large media into memory unnecessarily.

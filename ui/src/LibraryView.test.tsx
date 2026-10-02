@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { LibraryView } from "./LibraryView";
@@ -30,9 +30,45 @@ const entry: LibraryEntry = {
   ],
 };
 
+const objectUrl = (hash: string) => "gmv-object://localhost/" + hash;
+
 describe("LibraryView", () => {
+  it("shows image originals from the vault object store", () => {
+    render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
+
+    const original = screen.getByRole("img", { name: "Box Front of Metal Gear Solid" });
+    expect(original).toHaveAttribute("src", "gmv-object://localhost/abc123");
+    expect(original).toHaveAttribute("loading", "lazy");
+  });
+
+  it("replaces an original the vault cannot serve with a placeholder", () => {
+    render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
+
+    fireEvent.error(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" }));
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByText("Original unavailable")).toBeInTheDocument();
+  });
+
+  it("does not render non-image originals as images", () => {
+    render(
+      <LibraryView
+        entries={[
+          {
+            ...entry,
+            assets: [{ ...entry.assets[0], original_filename: "manual.pdf" }],
+          },
+        ]}
+        objectUrl={objectUrl}
+      />,
+    );
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByText("manual.pdf")).toBeInTheDocument();
+  });
+
   it("shows the imported release and Box Front provenance", () => {
-    render(<LibraryView entries={[entry]} />);
+    render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
 
     expect(screen.getByRole("heading", { name: "Metal Gear Solid" })).toBeInTheDocument();
     expect(screen.getByText("PlayStation · France · Original")).toBeInTheDocument();
@@ -44,6 +80,7 @@ describe("LibraryView", () => {
   it("keeps provenance entries distinct when providers share a location", () => {
     render(
       <LibraryView
+        objectUrl={objectUrl}
         entries={[
           {
             ...entry,
@@ -80,6 +117,7 @@ describe("LibraryView", () => {
   it("shows an assetless No-Intro release with its source assertions", () => {
     render(
       <LibraryView
+        objectUrl={objectUrl}
         entries={[
           {
             game_id: 10,

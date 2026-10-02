@@ -22,7 +22,7 @@ use game_media_vault_domain::{
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use serde::Serialize;
-use tauri::{State, ipc::Response};
+use tauri::{Manager, State, http, ipc::Response};
 
 /// Error returned by every command: a stable `kind` the frontend can branch on and a
 /// human-readable `message`.
@@ -379,9 +379,86 @@ fn cancel_acquisition_run(
     cancel_acquisition_run_in_vault(&session.root()?, run_id)
 }
 
+/// URI scheme serving original objects of the open vault to the webview.
+pub const OBJECT_PROTOCOL: &str = "gmv-object";
+
+/// Answers `gmv-object` requests: the path must be a BLAKE3 object hash of the open vault, so
+/// the webview can only read original objects, never arbitrary files.
+pub fn object_response(session: &VaultSession, path: &str) -> http::Response<Vec<u8>> {
+    let hash = path.trim_start_matches('/');
+    let is_object_hash = hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !is_object_hash {
+        return plain_response(http::StatusCode::BAD_REQUEST, "not an object hash");
+    }
+    let Ok(vault_root) = session.root() else {
+        return plain_response(http::StatusCode::CONFLICT, "no vault is open");
+    };
+    match std::fs::read(ContentAddressedStore::new(vault_root).object_path(hash)) {
+        Ok(bytes) => http::Response::builder()
+            .status(http::StatusCode::OK)
+            .header(http::header::CONTENT_TYPE, sniff_media_type(&bytes))
+            // Objects are immutable: the same hash always serves the same bytes.
+            .header(
+                http::header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            )
+            // Unknown bytes stay opaque instead of being sniffed into renderable documents.
+            .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .body(bytes)
+            .unwrap_or_else(|_| {
+                plain_response(http::StatusCode::INTERNAL_SERVER_ERROR, "invalid response")
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            plain_response(http::StatusCode::NOT_FOUND, "object not found")
+        }
+        Err(_) => plain_response(http::StatusCode::INTERNAL_SERVER_ERROR, "object unreadable"),
+    }
+}
+
+fn plain_response(status: http::StatusCode, message: &str) -> http::Response<Vec<u8>> {
+    let mut response = http::Response::new(message.as_bytes().to_vec());
+    *response.status_mut() = status;
+    response
+}
+
+/// Media type of common image formats from their signature; originals carry no extension.
+fn sniff_media_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"BM") {
+        "image/bmp"
+    } else if bytes.len() >= 12 && &bytes[4..12] == b"ftypavif" {
+        "image/avif"
+    } else if bytes.starts_with(b"%PDF-") {
+        "application/pdf"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(VaultSession::default())
+        .register_asynchronous_uri_scheme_protocol(
+            OBJECT_PROTOCOL,
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                let path = request.uri().path().to_owned();
+                // Reading originals must not block the webview's event loop.
+                tauri::async_runtime::spawn_blocking(move || {
+                    responder.respond(object_response(&app.state::<VaultSession>(), &path));
+                });
+            },
+        )
         .invoke_handler(tauri::generate_handler![
             open_vault,
             list_library,

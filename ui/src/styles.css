@@ -332,6 +332,24 @@ input:focus {
   gap: 14px;
 }
 
+.asset-original {
+  width: 160px;
+  max-height: 220px;
+  border: 1px solid #2c3442;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #10141b;
+}
+
+.asset-original.unavailable {
+  display: grid;
+  height: 120px;
+  margin: 0;
+  place-items: center;
+  color: #8e98aa;
+  font-size: 13px;
+}
+
 .no-assets {
   margin: 0;
   color: #8e98aa;
