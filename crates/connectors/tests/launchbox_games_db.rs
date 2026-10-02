@@ -859,3 +859,40 @@ fn discoveries_of_the_machine_refresh_its_cached_dataset_one_at_a_time() {
     assert_eq!(locators(&other.unwrap()).len(), 1);
     assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn a_cached_copy_whose_metadata_no_longer_reads_is_downloaded_again() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    connector.discover(&request(|_| {})).unwrap();
+    // The copy still opens as an archive, but its metadata is gone.
+    std::fs::write(
+        cache.path().join("Metadata.zip"),
+        metadata_archive(&[("Other.xml", "<LaunchBox/>")]),
+    )
+    .unwrap();
+
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+    let again = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+    assert_eq!(locators(&again), locators(&candidates));
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_dataset_whose_metadata_does_not_read_is_not_kept() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport =
+        VersionedTransport::serving(metadata_archive(&[("Other.xml", "<LaunchBox/>")]), "\"v1\"");
+    let connector = cached_connector(&transport, cache.path());
+    assert!(connector.discover(&request(|_| {})).is_err());
+
+    transport.publish(dataset_with_image("front-v1.png"), "\"v1\"");
+    let candidates = connector.discover(&request(|_| {})).unwrap();
+
+    assert_eq!(locators(&candidates).len(), 1);
+    // The second discovery held no copy to name.
+    assert_eq!(transport.known.lock().unwrap()[1].etag, None);
+}

@@ -206,6 +206,14 @@ impl DatasetCache {
         Some(lock)
     }
 
+    /// Forgets the cached copy, so the next discovery downloads the dataset whole.
+    fn forget(&self) {
+        let _refreshing = self.lock();
+        // Validators first: a copy left without them is never read again.
+        let _ = fs::remove_file(self.validators_file());
+        let _ = fs::remove_file(self.archive());
+    }
+
     /// The cached copy, unless it vanished or no longer reads as an archive.
     fn copy(&self) -> Option<File> {
         let mut copy = File::open(self.archive()).ok()?;
@@ -288,67 +296,19 @@ where
             return Err(PortError::new(reason));
         }
         let wanted = WantedGames::of(request);
-        let mut dataset = self.download_dataset()?;
-
-        let mut games = HashMap::new();
-        for_each_record(dataset.metadata()?, "Game", |fields| {
-            let (Some(id), Some(name), Some(platform)) = (
-                fields.get("DatabaseID"),
-                fields.get("Name"),
-                fields.get("Platform"),
-            ) else {
-                return;
-            };
-            if let Some(game) = wanted.game(name, platform) {
-                games.insert(id.clone(), game);
-            }
-        })?;
-
-        let regions: HashSet<String> = request
-            .regions()
-            .iter()
-            .map(|region| region.trim().to_lowercase())
-            .collect();
-        let mut candidates = Vec::new();
-        for_each_record(dataset.metadata()?, "GameImage", |fields| {
-            let (Some(id), Some(file_name), Some(image_type)) = (
-                fields.get("DatabaseID"),
-                fields.get("FileName"),
-                fields.get("Type"),
-            ) else {
-                return;
-            };
-            let Some(game) = games.get(id) else {
-                return;
-            };
-            let Some((asset_type, _)) = image_types.iter().find(|(_, name)| name == image_type)
-            else {
-                return;
-            };
-            let region = fields
-                .get("Region")
-                .map(|region| no_intro_region(region))
-                .unwrap_or_else(|| "Unknown".to_owned());
-            if !regions.is_empty() && !regions.contains(&region.to_lowercase()) {
-                return;
-            }
-            let Some(source_url) = image_url(file_name) else {
-                return;
-            };
-            candidates.push(AssetCandidate {
-                provider_candidate_id: Some(format!("{id}/{file_name}")),
-                game_title: game.title.clone(),
-                platform: game.platform.clone(),
-                region,
-                edition_name: "Unspecified".to_owned(),
-                asset_type: *asset_type,
-                source_id: SourceId::from(LAUNCHBOX_GAMES_DB_SOURCE_ID),
-                source_asset_label: Some(image_type.clone()),
-                source_url,
-                original_filename: file_name.clone(),
-            });
-        })?;
-        Ok(candidates)
+        let (dataset, cached) = self.download_dataset()?;
+        let first = candidates_in(dataset, request, &wanted, &image_types);
+        let Some(cache) = self.cache.as_ref().filter(|_| first.is_err()) else {
+            return first;
+        };
+        // A copy whose metadata does not read is never read again, and a cached one is
+        // downloaded whole once more.
+        cache.forget();
+        if !cached {
+            return first;
+        }
+        let (dataset, _) = self.download_dataset()?;
+        candidates_in(dataset, request, &wanted, &image_types).inspect_err(|_| cache.forget())
     }
 
     fn download(
@@ -364,16 +324,20 @@ where
     T: HttpTransport,
 {
     /// The dataset archive, read from the machine cache while LaunchBox has not republished
-    /// it, and otherwise downloaded to a file, since reading a ZIP needs to seek.
-    fn download_dataset(&self) -> Result<Dataset, PortError> {
-        let file = match &self.cache {
+    /// it, and otherwise downloaded to a file, since reading a ZIP needs to seek; with whether
+    /// it is the cached copy.
+    fn download_dataset(&self) -> Result<(Dataset, bool), PortError> {
+        let (file, cached) = match &self.cache {
             Some(cache) => self.cached_dataset(cache)?,
-            None => spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?)?,
+            None => (
+                spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?)?,
+                false,
+            ),
         };
         let archive = zip::ZipArchive::new(file).map_err(|error| {
             PortError::invalid_source_data(format!("unreadable LaunchBox dataset archive: {error}"))
         })?;
-        Ok(Dataset { archive })
+        Ok((Dataset { archive }, cached))
     }
 }
 
@@ -384,7 +348,7 @@ where
     /// The cached copy if it is still current, or the dataset LaunchBox serves now, which
     /// replaces it once it reads as an archive. The dataset is downloaded to a temporary file
     /// first, so a cache that cannot be written never fails the discovery.
-    fn cached_dataset(&self, cache: &DatasetCache) -> Result<File, PortError> {
+    fn cached_dataset(&self, cache: &DatasetCache) -> Result<(File, bool), PortError> {
         // Discoveries of the machine refresh the copy one at a time, each reading the validators
         // the previous one left, so a republished dataset downloads once.
         let _refreshing = cache.lock();
@@ -394,7 +358,7 @@ where
         {
             Fetched::Unchanged => {
                 if let Some(copy) = cache.copy() {
-                    return Ok(copy);
+                    return Ok((copy, true));
                 }
                 // The copy vanished, or no longer reads as an archive, since its validators
                 // were read: it is downloaded whole again.
@@ -414,8 +378,76 @@ where
             let _ = cache.store(&dataset, &validators);
         }
         dataset.rewind().map_err(buffer_failed)?;
-        Ok(dataset)
+        Ok((dataset, false))
     }
+}
+
+/// The candidates `dataset` holds for `request`: its records of the `wanted` games, then their
+/// images of the requested `image_types`.
+fn candidates_in(
+    mut dataset: Dataset,
+    request: &AcquisitionRequest,
+    wanted: &WantedGames,
+    image_types: &[(AssetType, &str)],
+) -> Result<Vec<AssetCandidate>, PortError> {
+    let mut games = HashMap::new();
+    for_each_record(dataset.metadata()?, "Game", |fields| {
+        let (Some(id), Some(name), Some(platform)) = (
+            fields.get("DatabaseID"),
+            fields.get("Name"),
+            fields.get("Platform"),
+        ) else {
+            return;
+        };
+        if let Some(game) = wanted.game(name, platform) {
+            games.insert(id.clone(), game);
+        }
+    })?;
+
+    let regions: HashSet<String> = request
+        .regions()
+        .iter()
+        .map(|region| region.trim().to_lowercase())
+        .collect();
+    let mut candidates = Vec::new();
+    for_each_record(dataset.metadata()?, "GameImage", |fields| {
+        let (Some(id), Some(file_name), Some(image_type)) = (
+            fields.get("DatabaseID"),
+            fields.get("FileName"),
+            fields.get("Type"),
+        ) else {
+            return;
+        };
+        let Some(game) = games.get(id) else {
+            return;
+        };
+        let Some((asset_type, _)) = image_types.iter().find(|(_, name)| name == image_type) else {
+            return;
+        };
+        let region = fields
+            .get("Region")
+            .map(|region| no_intro_region(region))
+            .unwrap_or_else(|| "Unknown".to_owned());
+        if !regions.is_empty() && !regions.contains(&region.to_lowercase()) {
+            return;
+        }
+        let Some(source_url) = image_url(file_name) else {
+            return;
+        };
+        candidates.push(AssetCandidate {
+            provider_candidate_id: Some(format!("{id}/{file_name}")),
+            game_title: game.title.clone(),
+            platform: game.platform.clone(),
+            region,
+            edition_name: "Unspecified".to_owned(),
+            asset_type: *asset_type,
+            source_id: SourceId::from(LAUNCHBOX_GAMES_DB_SOURCE_ID),
+            source_asset_label: Some(image_type.clone()),
+            source_url,
+            original_filename: file_name.clone(),
+        });
+    })?;
+    Ok(candidates)
 }
 
 /// Whether `dataset` opens as a ZIP archive.
