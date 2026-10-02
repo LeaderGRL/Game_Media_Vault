@@ -579,6 +579,45 @@ describe("App", () => {
     },
   );
 
+  it("leaves reporting to a filter search that replaced the refresh after a rendering", async () => {
+    let finishRendering: ((summary: unknown) => void) | undefined;
+    let failRefresh: ((reason: unknown) => void) | undefined;
+    let rendered = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_thumbnails") {
+        return new Promise((resolve) => {
+          finishRendering = (summary) => {
+            rendered = true;
+            resolve(summary);
+          };
+        });
+      }
+      if (command === "list_library") {
+        // The refresh after the rendering fails once a filter search replaced it.
+        return rendered && failRefresh === undefined
+          ? new Promise((_, reject) => {
+              failRefresh = reject;
+            })
+          : Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    await waitFor(() => expect(finishRendering).toBeDefined());
+    await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
+    await waitFor(() => expect(failRefresh).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue("metal"));
+
+    await act(async () => failRefresh?.({ kind: "external", message: "catalog busy" }));
+
+    expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
+  });
+
   it("offers no Library search before a vault is loaded", () => {
     render(<App />);
 

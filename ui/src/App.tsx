@@ -511,12 +511,18 @@ export function App() {
       return;
     }
     const generation = supersedeLibraryRequests();
-    const library = await searchLibrary();
-    if (
-      openedVaultRoot.current === renderingVaultRoot &&
-      generation === vaultDataGeneration.current
-    ) {
-      showLibraryPage(library);
+    const isCurrent = () =>
+      openedVaultRoot.current === renderingVaultRoot && generation === vaultDataGeneration.current;
+    try {
+      const library = await searchLibrary();
+      if (isCurrent()) {
+        showLibraryPage(library);
+      }
+    } catch (reason) {
+      // A search or refresh that replaced this one reports for itself.
+      if (isCurrent()) {
+        throw reason;
+      }
     }
   }
 
