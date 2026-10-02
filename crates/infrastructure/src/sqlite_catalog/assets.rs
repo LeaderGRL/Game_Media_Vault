@@ -375,22 +375,12 @@ fn record_provenance(
 }
 
 pub(super) fn asset_type_to_str(asset_type: AssetType) -> &'static str {
-    match asset_type {
-        AssetType::BoxFront => "box_front",
-        AssetType::Screenshot => "screenshot",
-        AssetType::TitleScreen => "title_screen",
-    }
+    asset_type.as_str()
 }
 
 pub(super) fn parse_asset_type(value: &str) -> Result<AssetType, PortError> {
-    match value {
-        "box_front" => Ok(AssetType::BoxFront),
-        "screenshot" => Ok(AssetType::Screenshot),
-        "title_screen" => Ok(AssetType::TitleScreen),
-        other => Err(PortError::new(format!(
-            "unknown asset type in catalog: {other}"
-        ))),
-    }
+    AssetType::from_name(value)
+        .ok_or_else(|| PortError::new(format!("unknown asset type in catalog: {value}")))
 }
 
 /// Removes the candidate's provenance, except on `keep_release_edition_id`. Assets left without

@@ -187,9 +187,15 @@ fn profile_additions(
 /// `None` when the platform's packaging family is unknown, since no universal checklist fits.
 pub fn release_coverage(platform: &str, assets: &[LibraryAsset]) -> Option<ReleaseCoverage> {
     let packaging_family = packaging_family(platform)?;
+    // The front of a cartridge shows the cartridge itself, which the checklists require.
     let present: Vec<AssetTypeSelector> = assets
         .iter()
-        .map(|asset| asset.asset_type.selector())
+        .flat_map(|asset| {
+            let selector = asset.asset_type.selector();
+            let shown = (selector == AssetTypeSelector::CartridgeFront)
+                .then_some(AssetTypeSelector::Cartridge);
+            std::iter::once(selector).chain(shown)
+        })
         .collect();
     let mut required: Vec<AssetTypeSelector> = Vec::new();
     let mut profiles = Vec::new();
