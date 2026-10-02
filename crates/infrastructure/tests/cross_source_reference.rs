@@ -136,7 +136,7 @@ fn the_same_release_from_two_sources_is_one_release_edition_carrying_both() {
 }
 
 #[test]
-fn a_shared_dump_checksum_links_releases_whose_titles_differ() {
+fn a_shared_dump_checksum_alone_links_nothing() {
     let (_temp, catalog) = catalog();
     let no_intro = import(
         &catalog,
@@ -149,6 +149,8 @@ fn a_shared_dump_checksum_links_releases_whose_titles_differ() {
         },
     );
 
+    // The catalog keeps every dump a source ever asserted, so it cannot tell the dumps of one
+    // release from those of another: a checksum is no evidence yet.
     let mame = import(
         &catalog,
         &Release {
@@ -160,11 +162,8 @@ fn a_shared_dump_checksum_links_releases_whose_titles_differ() {
         },
     );
 
-    assert_eq!(mame, no_intro);
-    assert_eq!(
-        links_of(&catalog, mame.release_edition_id, "mame-software-lists"),
-        ["linked_by=sha1"]
-    );
+    assert_ne!(mame.release_edition_id, no_intro.release_edition_id);
+    assert!(links_of(&catalog, mame.release_edition_id, "mame-software-lists").is_empty());
 }
 
 #[test]
@@ -191,7 +190,7 @@ fn releases_of_another_region_platform_or_title_stay_apart() {
             sha1: None,
         },
     );
-    // A checksum never links releases of another platform.
+    // Neither a title nor a checksum links releases of another platform.
     let nes = import(
         &catalog,
         &Release {
@@ -246,39 +245,8 @@ fn importing_a_linked_release_again_keeps_one_link() {
     assert_eq!(catalog.list_library().unwrap().len(), 1);
     assert_eq!(
         links_of(&catalog, first.release_edition_id, "mame-software-lists"),
-        ["linked_by=sha1"]
+        ["linked_by=title"]
     );
-}
-
-#[test]
-fn a_checksum_several_editions_share_links_none_of_them() {
-    let (_temp, catalog) = catalog();
-    for region in ["USA", "Europe"] {
-        import(
-            &catalog,
-            &Release {
-                source: "no-intro",
-                title: "Dr. Mario",
-                platform: GAME_BOY,
-                region,
-                sha1: Some("dddd"),
-            },
-        );
-    }
-
-    let mame = import(
-        &catalog,
-        &Release {
-            source: "mame-software-lists",
-            title: "Doctor Mario",
-            platform: GAME_BOY,
-            region: "World",
-            sha1: Some("dddd"),
-        },
-    );
-
-    assert_eq!(catalog.list_library().unwrap().len(), 3);
-    assert!(links_of(&catalog, mame.release_edition_id, "mame-software-lists").is_empty());
 }
 
 #[test]
@@ -288,20 +256,20 @@ fn canonical_values_of_a_linked_release_weigh_both_sources() {
         &catalog,
         &Release {
             source: "no-intro",
-            title: "Zelda no Densetsu 1 - The Hyrule Fantasy",
+            title: "Tetris",
             platform: GAME_BOY,
-            region: "Japan",
-            sha1: Some("cccc"),
+            region: "World",
+            sha1: Some("aaaa"),
         },
     );
     import(
         &catalog,
         &Release {
             source: "mame-software-lists",
-            title: "Zelda no Densetsu - The Hyrule Fantasy",
+            title: "TETRIS",
             platform: GAME_BOY,
-            region: "Japan",
-            sha1: Some("cccc"),
+            region: "World",
+            sha1: Some("bbbb"),
         },
     );
 
@@ -314,140 +282,42 @@ fn canonical_values_of_a_linked_release_weigh_both_sources() {
             .find(|value| value.field == field)
             .unwrap()
     };
-    // The sources agree on the region and disagree on the title.
+    // Both sources back the title, however they spell it, and the region.
+    let title = canonical(ReleaseAssertionField::Title);
+    assert_eq!(title.contributing.len(), 2);
+    assert_eq!(title.value, "Tetris");
     assert_eq!(
         canonical(ReleaseAssertionField::Region).contributing.len(),
         2
     );
-    let title = canonical(ReleaseAssertionField::Title);
-    assert_eq!(title.contributing.len() + title.conflicting.len(), 2);
-    assert_eq!(title.conflicting.len(), 1);
 }
 
 #[test]
-fn an_ambiguous_checksum_is_not_overridden_by_weaker_evidence() {
+fn a_third_source_joins_the_edition_two_sources_share() {
     let (_temp, catalog) = catalog();
-    for region in ["World", "Europe"] {
-        import(
-            &catalog,
-            &Release {
-                source: "no-intro",
-                title: "Dr. Mario",
-                platform: GAME_BOY,
-                region,
-                sha1: Some("dddd"),
-            },
-        );
-    }
-
-    // The title, platform, region and edition match exactly one of the two editions.
-    let mame = import(
-        &catalog,
-        &Release {
-            source: "mame-software-lists",
-            title: "Dr. Mario",
-            platform: GAME_BOY,
-            region: "World",
-            sha1: Some("dddd"),
-        },
-    );
-
-    assert_eq!(catalog.list_library().unwrap().len(), 3);
-    assert!(links_of(&catalog, mame.release_edition_id, "mame-software-lists").is_empty());
-}
-
-#[test]
-fn a_dump_shared_by_part_of_a_release_is_no_evidence() {
-    let (_temp, catalog) = catalog();
-    // A release of two dumps, one of which another release reuses.
-    import(
-        &catalog,
-        &Release {
-            source: "no-intro",
-            title: "Game A",
-            platform: GAME_BOY,
-            region: "World",
-            sha1: Some("prg-a,chr-shared"),
-        },
-    );
-
-    let other = import(
-        &catalog,
-        &Release {
-            source: "mame-software-lists",
-            title: "Game B",
-            platform: GAME_BOY,
-            region: "World",
-            sha1: Some("chr-shared"),
-        },
-    );
-
-    assert_eq!(catalog.list_library().unwrap().len(), 2);
-    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
-}
-
-#[test]
-fn the_same_dump_sold_in_another_region_stays_another_release() {
-    let (_temp, catalog) = catalog();
-    let world = import(
-        &catalog,
-        &Release {
-            source: "no-intro",
-            title: "Tetris",
-            platform: GAME_BOY,
-            region: "World",
-            sha1: Some("aaaa"),
-        },
-    );
-
-    let japan = import(
-        &catalog,
-        &Release {
-            source: "mame-software-lists",
-            title: "Tetris",
-            platform: GAME_BOY,
-            region: "Japan",
-            sha1: Some("aaaa"),
-        },
-    );
-
-    assert_ne!(japan.release_edition_id, world.release_edition_id);
-    assert!(links_of(&catalog, japan.release_edition_id, "mame-software-lists").is_empty());
-}
-
-#[test]
-fn a_title_another_source_asserts_links_a_third_source() {
-    let (_temp, catalog) = catalog();
-    let no_intro = import(
-        &catalog,
-        &Release {
-            source: "no-intro",
-            title: "Zelda no Densetsu 1 - The Hyrule Fantasy",
-            platform: GAME_BOY,
-            region: "Japan",
-            sha1: Some("cccc"),
-        },
-    );
+    let tetris = Release {
+        source: "no-intro",
+        title: "Tetris",
+        platform: GAME_BOY,
+        region: "World",
+        sha1: Some("aaaa"),
+    };
+    let no_intro = import(&catalog, &tetris);
     import(
         &catalog,
         &Release {
             source: "mame-software-lists",
-            title: "Zelda no Densetsu - The Hyrule Fantasy",
-            platform: GAME_BOY,
-            region: "Japan",
-            sha1: Some("cccc"),
+            ..tetris
         },
     );
 
-    // A third source spells the title as MAME does and records no checksum.
+    // Two sources titling one edition alike make one candidate, not an ambiguity.
     let third = import(
         &catalog,
         &Release {
             source: "another-catalog",
-            title: "Zelda no Densetsu - The Hyrule Fantasy",
-            platform: GAME_BOY,
-            region: "Japan",
             sha1: None,
+            ..tetris
         },
     );
 
@@ -496,93 +366,47 @@ fn a_link_moves_with_the_catalog_it_was_imported_from() {
 }
 
 #[test]
-fn an_unlinked_record_never_joins_an_edition_through_its_own_sources_game() {
+fn a_title_several_editions_share_links_none_of_them() {
     let (_temp, catalog) = catalog();
-    for (region, sha1) in [
-        ("World", Some("dddd")),
-        ("Europe", Some("dddd")),
-        ("Japan", None),
-    ] {
-        import(
-            &catalog,
-            &Release {
-                source: "no-intro",
-                title: "Tetris",
-                platform: GAME_BOY,
-                region,
-                sha1,
-            },
-        );
-    }
-    // MAME first title-links the Japanese edition, so it titles the shared Game too.
-    let mame = Release {
-        source: "mame-software-lists",
-        title: "Tetris",
+    let deluxe = Release {
+        source: "no-intro",
+        title: "Tetris DX",
         platform: GAME_BOY,
-        region: "Japan",
+        region: "World",
         sha1: None,
     };
-    import(&catalog, &mame);
-
-    // Its World record shares an ambiguous checksum, so it is linked to nothing.
-    let world = import(
+    let first = import(&catalog, &deluxe);
+    let second = import(
         &catalog,
         &Release {
-            region: "World",
-            sha1: Some("dddd"),
-            ..mame
+            source: "mame-software-lists",
+            title: "Tetris",
+            ..deluxe
+        },
+    );
+    // No-Intro then retitles its release, which keeps its edition: editions of two Games now
+    // carry the same title.
+    let mut retitled = record(&deluxe);
+    retitled.game_title = "Tetris".to_owned();
+    for assertion in &mut retitled.assertions {
+        if assertion.field == ReleaseAssertionField::Title {
+            assertion.value = "Tetris".to_owned();
+        }
+    }
+    assert_eq!(catalog.persist_reference_release(retitled).unwrap(), first);
+
+    let third = import(
+        &catalog,
+        &Release {
+            source: "another-catalog",
+            title: "Tetris",
+            ..deluxe
         },
     );
 
-    assert!(links_of(&catalog, world.release_edition_id, "mame-software-lists").is_empty());
-    let no_intro_world = catalog
-        .list_library()
-        .unwrap()
-        .into_iter()
-        .filter(|entry| entry.region == "World")
-        .count();
-    assert_eq!(no_intro_world, 2);
-}
-
-#[test]
-fn checksums_that_leave_a_dump_uncovered_are_no_evidence() {
-    let (_temp, catalog) = catalog();
-    let release = |source: &str, title: &str, chr: &str| {
-        let assertion = |qualifier: &str, value: &str| ReleaseAssertion {
-            source_id: SourceId::from(source),
-            source_location: format!("C:/catalogs/{source}.xml"),
-            field: ReleaseAssertionField::Identifier,
-            qualifier: Some(qualifier.to_owned()),
-            value: value.to_owned(),
-        };
-        ReferenceReleaseRecord {
-            game_title: title.to_owned(),
-            platform: GAME_BOY.to_owned(),
-            region: "World".to_owned(),
-            revision: None,
-            edition_name: "Standard".to_owned(),
-            assertions: vec![
-                ReleaseAssertion {
-                    field: ReleaseAssertionField::Title,
-                    qualifier: None,
-                    ..assertion("", title)
-                },
-                assertion("source_record", title),
-                // Two dumps, only one of which records a SHA-1.
-                assertion("rom_name", "game.prg"),
-                assertion("sha1", "shared-prg"),
-                assertion("rom_name", chr),
-            ],
-        }
-    };
-    catalog
-        .persist_reference_release(release("no-intro", "Game A", "a.chr"))
-        .unwrap();
-
-    let other = catalog
-        .persist_reference_release(release("mame-software-lists", "Game B", "b.chr"))
-        .unwrap();
-
-    assert_eq!(catalog.list_library().unwrap().len(), 2);
-    assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+    // Nor does the record join either edition through the Game its title names.
+    assert_ne!(third.release_edition_id, first.release_edition_id);
+    assert_ne!(third.release_edition_id, second.release_edition_id);
+    assert!(links_of(&catalog, third.release_edition_id, "another-catalog").is_empty());
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
 }

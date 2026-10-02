@@ -27,8 +27,8 @@ const MIGRATIONS: &[Migration] = &[
     add_release_assertion_value_index,
 ];
 
-/// Version 9 indexes assertions by the values reference imports look up (dump checksums and
-/// titles of other sources), which otherwise scan every assertion for each imported record.
+/// Version 9 indexes assertions by the values reference imports look up (the titles other
+/// sources assert), which otherwise scan every assertion for each imported record.
 /// The index matches `SCHEMA`.
 fn add_release_assertion_value_index(transaction: &Transaction<'_>) -> Result<(), PortError> {
     transaction
