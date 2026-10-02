@@ -58,6 +58,35 @@ export interface PreferredAsset {
   outranks: AssetPreference[];
 }
 
+export type PackagingFamily =
+  | "cardboard_box"
+  | "jewel_case"
+  | "keep_case"
+  | "cartridge_case"
+  | "arcade_board"
+  | "digital_only";
+
+export type CoverageProfile = "packaging" | "physical" | "archival";
+
+export type CoverageStatus =
+  | "partial"
+  | "packaging_complete"
+  | "physical_complete"
+  | "archival_complete";
+
+/** The Asset Types one Coverage Profile requires and those the edition still lacks. */
+export interface ProfileCoverage {
+  profile: CoverageProfile;
+  required: string[];
+  missing: string[];
+}
+
+export interface ReleaseCoverage {
+  packaging_family: PackagingFamily;
+  status: CoverageStatus;
+  profiles: ProfileCoverage[];
+}
+
 export interface LibraryEntry {
   game_id: number;
   game_title: string;
@@ -68,6 +97,8 @@ export interface LibraryEntry {
   assertions: ReleaseAssertion[];
   canonical_values: CanonicalValue[];
   preferred_assets: PreferredAsset[];
+  /** `null` when the packaging family of the platform is not known. */
+  coverage: ReleaseCoverage | null;
   assets: LibraryAsset[];
 }
 

@@ -14,6 +14,7 @@ const entry: LibraryEntry = {
   assertions: [],
   canonical_values: [],
   preferred_assets: [],
+  coverage: null,
   assets: [
     {
       asset_id: 3,
@@ -184,6 +185,45 @@ describe("LibraryView", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the coverage status and what each profile misses", () => {
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          {
+            ...entry,
+            coverage: {
+              packaging_family: "jewel_case",
+              status: "partial",
+              profiles: [
+                {
+                  profile: "packaging",
+                  required: ["box_front", "box_back", "spine"],
+                  missing: ["box_back", "spine"],
+                },
+                {
+                  profile: "physical",
+                  required: ["box_front", "box_back", "spine", "disc", "manual"],
+                  missing: ["box_back", "spine", "disc", "manual"],
+                },
+              ],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Partial · Jewel case")).toBeInTheDocument();
+    expect(screen.getByText("Packaging misses Box Back, Spine")).toBeInTheDocument();
+    expect(screen.getByText("Physical misses Box Back, Spine, Disc, Manual")).toBeInTheDocument();
+  });
+
+  it("says when a platform's coverage is not evaluated", () => {
+    render(<LibraryView objectUrl={objectUrl} entries={[entry]} />);
+
+    expect(screen.getByText("Coverage not evaluated for this platform")).toBeInTheDocument();
+  });
+
   it("shows the imported release and Box Front provenance", () => {
     render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
 
@@ -246,6 +286,7 @@ describe("LibraryView", () => {
             assets: [],
             canonical_values: [],
             preferred_assets: [],
+            coverage: null,
             assertions: [
               {
                 source_id: "no-intro",

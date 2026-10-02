@@ -2,10 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 mod canonical;
+mod coverage;
 mod preference;
 mod quality;
 
 pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
+pub use coverage::{
+    CoverageProfile, CoverageStatus, PackagingFamily, ProfileCoverage, ReleaseCoverage,
+    packaging_family, release_coverage,
+};
 pub use preference::{
     AssetPreference, Outranked, PreferenceReason, PreferredAsset, outranked_by, preferred_assets,
 };

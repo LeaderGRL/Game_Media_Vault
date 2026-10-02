@@ -1,11 +1,16 @@
 import { useState } from "react";
 
+import { ASSET_TYPE_FAMILIES } from "./acquisition";
 import {
   filenameMediaType,
+  type CoverageProfile,
+  type CoverageStatus,
   type LibraryAsset,
   type LibraryEntry,
+  type PackagingFamily,
   type PreferenceReason,
   type ReleaseAssertionField,
+  type ReleaseCoverage,
 } from "./types";
 
 interface LibraryViewProps {
@@ -57,6 +62,7 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
                 ))}
               </dl>
             ) : null}
+            <ReleaseCoverageNote coverage={entry.coverage} />
           </div>
 
           <div className="release-assets">
@@ -153,6 +159,56 @@ function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
       loading="lazy"
       onError={() => setUnavailable(true)}
     />
+  );
+}
+
+const COVERAGE_STATUS_LABELS: Record<CoverageStatus, string> = {
+  partial: "Partial",
+  packaging_complete: "Packaging Complete",
+  physical_complete: "Physical Complete",
+  archival_complete: "Archival Complete",
+};
+
+const PACKAGING_FAMILY_LABELS: Record<PackagingFamily, string> = {
+  cardboard_box: "Cardboard box",
+  jewel_case: "Jewel case",
+  keep_case: "Keep case",
+  cartridge_case: "Cartridge case",
+  arcade_board: "Arcade board",
+  digital_only: "Digital only",
+};
+
+const COVERAGE_PROFILE_LABELS: Record<CoverageProfile, string> = {
+  packaging: "Packaging",
+  physical: "Physical",
+  archival: "Archival",
+};
+
+/** Asset Type names, as the Acquire view labels them. */
+const ASSET_TYPE_LABELS = new Map(
+  ASSET_TYPE_FAMILIES.flatMap((family) => family.types).map((type) => [type.value, type.label]),
+);
+
+/** The Coverage Status of a release and what each of its profiles still misses. */
+function ReleaseCoverageNote({ coverage }: { coverage: ReleaseCoverage | null }) {
+  if (coverage === null) {
+    return <p className="coverage">Coverage not evaluated for this platform</p>;
+  }
+  return (
+    <div className="coverage">
+      <strong>
+        {COVERAGE_STATUS_LABELS[coverage.status]} ·{" "}
+        {PACKAGING_FAMILY_LABELS[coverage.packaging_family]}
+      </strong>
+      {coverage.profiles
+        .filter((profile) => profile.missing.length > 0)
+        .map((profile) => (
+          <span className="coverage-missing" key={profile.profile}>
+            {COVERAGE_PROFILE_LABELS[profile.profile]} misses{" "}
+            {profile.missing.map((assetType) => ASSET_TYPE_LABELS.get(assetType) ?? assetType).join(", ")}
+          </span>
+        ))}
+    </div>
   );
 }
 

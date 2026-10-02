@@ -31,6 +31,7 @@ const entry: LibraryEntry = {
   assertions: [],
   canonical_values: [],
   preferred_assets: [],
+  coverage: null,
   assets: [
     {
       asset_id: 3,

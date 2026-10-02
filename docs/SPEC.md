@@ -277,6 +277,19 @@ Initial status labels:
 
 Requirements vary by packaging family. A PlayStation jewel case, Nintendo DS case, SNES cardboard box, arcade board, floppy release, and digital-only release must not share one universal checklist.
 
+The coverage of a Release Edition is derived whenever the library is read. Its Packaging Family comes from its platform name (as No-Intro, Redump and Libretro name platforms; catalogs whose name ends in `(Digital)` or `(PSN)` are digital-only); a platform whose family is not known yet is not evaluated rather than held to a checklist that does not fit it. Each profile adds Asset Types to the previous one:
+
+| Packaging Family | Packaging | Physical adds | Archival adds |
+| --- | --- | --- | --- |
+| Cardboard box (NES, SNES, N64, Game Boy, Atari) | box front, box back, spine | cartridge, manual | insert |
+| Jewel case (PlayStation, Saturn, Mega-CD, Dreamcast) | box front, box back, spine | disc, manual | insert |
+| Keep case (PlayStation 2–4, PSP, GameCube, Wii, Xbox) | box front, box back, spine | disc | manual, insert |
+| Cartridge case (DS, 3DS, Switch, Vita) | box front, box back, spine | cartridge | manual, insert |
+| Arcade board (MAME, FBNeo) | marquee | PCB | flyer, control panel, bezel |
+| Digital only | box front | — (no Physical profile) | logo, icon |
+
+The Coverage Status is the last profile, in that order, whose requirements and those of every previous profile are all retained; otherwise it is `Partial`. Every profile exposes the Asset Types it still misses.
+
 Reference catalogs can also be used to measure catalog coverage, for example known Release Editions versus discovered Release Editions for a platform/territory.
 
 ## 12. Connector Architecture
