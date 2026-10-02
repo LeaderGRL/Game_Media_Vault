@@ -25,6 +25,7 @@ const entry: LibraryEntry = {
       width: 1200,
       height: 1600,
       original_filename: "mgs-front.png",
+      derived: [],
       provenance: [
         {
           source_id: "local_import",
@@ -32,6 +33,24 @@ const entry: LibraryEntry = {
           source_location: "C:/covers/mgs-front.png",
         },
       ],
+    },
+  ],
+};
+
+// Thumbnails rendered for the Library, besides one of another size.
+const withThumbnail: LibraryEntry = {
+  ...entry,
+  assets: [
+    {
+      ...entry.assets[0],
+      derived: [128, 256].map((maxEdge) => ({
+        recipe: { transform: "thumbnail", max_edge: maxEdge },
+        object_hash: "thumb" + maxEdge,
+        byte_len: 512,
+        media_type: "image/png",
+        width: (maxEdge * 3) / 4,
+        height: maxEdge,
+      })),
     },
   ],
 };
@@ -45,6 +64,26 @@ describe("LibraryView", () => {
     const original = screen.getByRole("img", { name: "Box Front of Metal Gear Solid" });
     expect(original).toHaveAttribute("src", "gmv-object://localhost/abc123");
     expect(original).toHaveAttribute("loading", "lazy");
+  });
+
+  it("shows the thumbnail rendered from an original instead of the original", () => {
+    render(<LibraryView entries={[withThumbnail]} objectUrl={objectUrl} />);
+
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
+      "src",
+      "gmv-object://localhost/thumb256",
+    );
+  });
+
+  it("shows the original when its thumbnail cannot be shown", () => {
+    render(<LibraryView entries={[withThumbnail]} objectUrl={objectUrl} />);
+
+    fireEvent.error(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" }));
+
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
+      "src",
+      "gmv-object://localhost/abc123",
+    );
   });
 
   it("replaces an original the view cannot show with a placeholder", () => {

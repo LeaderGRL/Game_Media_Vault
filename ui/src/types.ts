@@ -38,6 +38,21 @@ export interface LibraryAsset {
   height: number | null;
   original_filename: string;
   provenance: AssetProvenance[];
+  /** Outputs of recipes applied to this Asset's original. */
+  derived: DerivedAsset[];
+}
+
+/** A reproducible transformation of an original. */
+export type DerivationRecipe = { transform: "thumbnail"; max_edge: number };
+
+/** A file generated from an original by a recipe; it never replaces its original. */
+export interface DerivedAsset {
+  recipe: DerivationRecipe;
+  object_hash: string;
+  byte_len: number;
+  media_type: string;
+  width: number | null;
+  height: number | null;
 }
 
 /** What decides between two Assets of a type, checked in this order. */
