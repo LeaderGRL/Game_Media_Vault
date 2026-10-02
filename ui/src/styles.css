@@ -626,3 +626,23 @@ select:focus {
 .coverage strong {
   color: #e9edf5;
 }
+
+.library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.library-filters label:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+}
+
+.load-more {
+  display: block;
+  margin: 16px auto 0;
+}

@@ -102,6 +102,50 @@ export interface LibraryEntry {
   assets: LibraryAsset[];
 }
 
+export type LibraryStatus = "complete" | "partial" | "needs_review";
+
+/** The Library filters the desktop offers, sent with every search (Rust `LibraryQuery`). */
+export interface LibraryFilters {
+  /** Text the title contains; blank searches every title. */
+  text: string;
+  /** Values of one filter widen the search; an empty filter keeps every release. */
+  platforms: string[];
+  regions: string[];
+  sources: string[];
+  /** Asset Types or families the release has an Asset of. */
+  assetTypes: string[];
+  statuses: LibraryStatus[];
+}
+
+export const NO_LIBRARY_FILTERS: LibraryFilters = {
+  text: "",
+  platforms: [],
+  regions: [],
+  sources: [],
+  assetTypes: [],
+  statuses: [],
+};
+
+/** Whether any filter narrows the Library search. */
+export function narrowsLibrary(filters: LibraryFilters) {
+  return (
+    filters.text.trim() !== "" ||
+    [filters.platforms, filters.regions, filters.sources, filters.assetTypes, filters.statuses].some(
+      (values) => values.length > 0,
+    )
+  );
+}
+
+/** One page of matching releases (Rust `LibraryPage`). */
+export interface LibraryPage {
+  releases: LibraryEntry[];
+  total: number;
+  /** The cursor of the next page, when one follows. */
+  next_after: number | null;
+  /** The newest Release Edition the search considered, passed back for later pages. */
+  as_of: number;
+}
+
 export interface AssetCandidate {
   provider_candidate_id?: string | null;
   game_title: string;

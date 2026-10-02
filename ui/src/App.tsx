@@ -6,8 +6,14 @@ import type { AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
-import { errorMessage } from "./types";
-import type { LibraryEntry, ReviewDecision, ReviewItem } from "./types";
+import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
+import type {
+  LibraryEntry,
+  LibraryFilters,
+  LibraryPage,
+  ReviewDecision,
+  ReviewItem,
+} from "./types";
 
 type View = "library" | "review" | "acquire" | "runs";
 
@@ -15,6 +21,8 @@ type RunAction = "pause" | "resume" | "cancel";
 
 /** Default thresholds used by desktop executions (SPEC §10 keeps them configurable). */
 const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_threshold: 50 };
+
+const EMPTY_LIBRARY_PAGE: LibraryPage = { releases: [], total: 0, next_after: null, as_of: 0 };
 
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
@@ -40,6 +48,21 @@ export function App() {
   const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
+  // Searches use the filters of the latest search, including those that refresh the Library.
+  const libraryFiltersRef = useRef<LibraryFilters>(NO_LIBRARY_FILTERS);
+  const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>(NO_LIBRARY_FILTERS);
+  // Counts settled filter searches; the filter bar then shows the filters of the shown results.
+  const [libraryFiltersRevision, setLibraryFiltersRevision] = useState(0);
+  const [libraryTotal, setLibraryTotal] = useState(0);
+  const [libraryNextAfter, setLibraryNextAfter] = useState<number | null>(null);
+  // The newest Release Edition the first page searched; later pages keep to its results.
+  const [libraryAsOf, setLibraryAsOf] = useState<number | null>(null);
+  // The pending next-page request, if any: only it may apply its page or end the loading state.
+  const pageRequestRef = useRef<object | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // A filter search is pending; paging would continue the previous filters meanwhile.
+  const searchPendingRef = useRef(false);
+  const [searchingLibrary, setSearchingLibrary] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<View>("library");
   const [loading, setLoading] = useState(false);
@@ -49,8 +72,145 @@ export function App() {
   const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
   const [startingRun, setStartingRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const releaseCountLabel = `${entries.length} ${entries.length === 1 ? "release" : "releases"}`;
+  const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
+
+  /**
+   * Searches a page of the Library with `filters`: the first one, or the one after `after`
+   * among the results of the first page, whose `as_of` it passes back. The backend chooses the
+   * page size.
+   */
+  function searchLibrary(
+    filters: LibraryFilters = libraryFiltersRef.current,
+    after: number | null = null,
+    asOf: number | null = null,
+  ) {
+    const text = filters.text.trim();
+    return invoke<LibraryPage>("search_library", {
+      query: {
+        text: text === "" ? null : text,
+        platforms: filters.platforms,
+        regions: filters.regions,
+        sources: filters.sources,
+        asset_types: filters.assetTypes,
+        statuses: filters.statuses,
+        after,
+        as_of: asOf,
+      },
+    });
+  }
+
+  /** Shows a first page; a next page requested before it would extend other results. */
+  function showLibraryPage(page: LibraryPage) {
+    abandonPageRequest();
+    setEntries(page.releases);
+    setLibraryTotal(page.total);
+    setLibraryNextAfter(page.next_after);
+    setLibraryAsOf(page.as_of);
+  }
+
+  /**
+   * Searches with new filters, which apply only together with their first page: a failed
+   * search keeps the previous filters with the results they produced. Once the search settles,
+   * the filter bar shows the filters of the shown results.
+   */
+  async function applyLibraryFilters(filters: LibraryFilters) {
+    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+      return;
+    }
+    const searchingVaultRoot = loadedVaultRoot;
+    // Supersedes refreshes and pages requested with the previous filters, and a pending search
+    // whose filters the bar keeps showing until this one settles.
+    searchPendingRef.current = false;
+    const generation = supersedeLibraryRequests();
+    searchPendingRef.current = true;
+    setSearchingLibrary(true);
+    setError(null);
+    try {
+      const page = await searchLibrary(filters);
+      if (
+        activeVaultRoot.current === searchingVaultRoot &&
+        generation === vaultDataGeneration.current
+      ) {
+        libraryFiltersRef.current = filters;
+        setLibraryFilters(filters);
+        showLibraryPage(page);
+        setLibraryFiltersRevision((revision) => revision + 1);
+      }
+    } catch (reason) {
+      // A newer search or refresh reports for itself.
+      if (
+        activeVaultRoot.current === searchingVaultRoot &&
+        generation === vaultDataGeneration.current
+      ) {
+        setError(errorMessage(reason));
+        setLibraryFiltersRevision((revision) => revision + 1);
+      }
+    } finally {
+      if (generation === vaultDataGeneration.current) {
+        searchPendingRef.current = false;
+        setSearchingLibrary(false);
+      }
+    }
+  }
+
+  /**
+   * Starts a request that replaces the shown Library page: searches, refreshes and pages begun
+   * earlier no longer apply. A superseded filter search never applies its filters, so the
+   * filter bar shows the applied ones again.
+   */
+  function supersedeLibraryRequests() {
+    vaultDataGeneration.current += 1;
+    if (searchPendingRef.current) {
+      searchPendingRef.current = false;
+      setSearchingLibrary(false);
+      setLibraryFiltersRevision((revision) => revision + 1);
+    }
+    abandonPageRequest();
+    return vaultDataGeneration.current;
+  }
+
+  /** Forgets the pending next page, so the results that replace it can be paged at once. */
+  function abandonPageRequest() {
+    pageRequestRef.current = null;
+    setLoadingMore(false);
+  }
+
+  /**
+   * Appends the next page, one request at a time. It applies only to the results it extends:
+   * a search, refresh or vault load started or shown meanwhile abandons it.
+   */
+  async function loadMoreReleases() {
+    if (
+      libraryNextAfter === null ||
+      pageRequestRef.current !== null ||
+      searchingLibrary ||
+      openedVaultRoot.current !== loadedVaultRoot
+    ) {
+      return;
+    }
+    const request = {};
+    pageRequestRef.current = request;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await searchLibrary(libraryFiltersRef.current, libraryNextAfter, libraryAsOf);
+      if (pageRequestRef.current === request) {
+        setEntries((current) => [...current, ...page.releases]);
+        setLibraryTotal(page.total);
+        setLibraryNextAfter(page.next_after);
+      }
+    } catch (reason) {
+      // An abandoned page leaves reporting to whatever replaced its results.
+      if (pageRequestRef.current === request) {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      if (pageRequestRef.current === request) {
+        abandonPageRequest();
+      }
+    }
+  }
 
   async function loadVault(create: boolean) {
     const requestedVaultRoot = vaultRoot;
@@ -62,7 +222,8 @@ export function App() {
     reviewRefreshRequestGeneration.current += 1;
     setLoading(true);
     setError(null);
-    setEntries([]);
+    supersedeLibraryRequests();
+    showLibraryPage(EMPTY_LIBRARY_PAGE);
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -77,7 +238,7 @@ export function App() {
       }
       openedVaultRoot.current = requestedVaultRoot;
       const [library, reviews] = await Promise.all([
-        invoke<LibraryEntry[]>("list_library"),
+        searchLibrary(),
         invoke<ReviewItem[]>("list_review_items"),
       ]);
       if (
@@ -88,7 +249,7 @@ export function App() {
       }
       // A decision made meanwhile refreshes both lists itself; this load read them before it.
       if (reviewMutationGeneration.current === reviewGenerationAtLoadStart) {
-        setEntries(library);
+        showLibraryPage(library);
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(requestedVaultRoot);
@@ -142,10 +303,11 @@ export function App() {
       });
       reviewRefreshRequestGeneration.current += 1;
       const resolvingRefreshGeneration = reviewRefreshRequestGeneration.current;
+      const libraryGeneration = supersedeLibraryRequests();
       // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
       const [reviews, library] = await Promise.all([
         invoke<ReviewItem[]>("list_review_items"),
-        invoke<LibraryEntry[]>("list_library"),
+        searchLibrary(),
         // Accepting requeues parked work and may reopen completed runs.
         refreshRuns(resolvingVaultRoot),
       ]);
@@ -156,7 +318,9 @@ export function App() {
         return;
       }
       setReviewItems(reviews);
-      setEntries(library);
+      if (libraryGeneration === vaultDataGeneration.current) {
+        showLibraryPage(library);
+      }
     } catch (reason) {
       if (activeVaultRoot.current === resolvingVaultRoot) {
         setError(errorMessage(reason));
@@ -164,17 +328,20 @@ export function App() {
         // detaching its asset; show the current reviews and library.
         reviewRefreshRequestGeneration.current += 1;
         const refusalRefreshGeneration = reviewRefreshRequestGeneration.current;
+        const refusalLibraryGeneration = supersedeLibraryRequests();
         try {
           const [reviews, library] = await Promise.all([
             invoke<ReviewItem[]>("list_review_items"),
-            invoke<LibraryEntry[]>("list_library"),
+            searchLibrary(),
           ]);
           if (
             activeVaultRoot.current === resolvingVaultRoot &&
             refusalRefreshGeneration === reviewRefreshRequestGeneration.current
           ) {
             setReviewItems(reviews);
-            setEntries(library);
+            if (refusalLibraryGeneration === vaultDataGeneration.current) {
+              showLibraryPage(library);
+            }
           }
         } catch {
           // The refused decision stays the reported error.
@@ -234,20 +401,27 @@ export function App() {
     if (openedVaultRoot.current !== expectedVaultRoot) {
       return;
     }
-    vaultDataGeneration.current += 1;
-    const generation = vaultDataGeneration.current;
+    const generation = supersedeLibraryRequests();
+    reviewRefreshRequestGeneration.current += 1;
+    const reviewRefreshGeneration = reviewRefreshRequestGeneration.current;
     const reviewGenerationAtStart = reviewMutationGeneration.current;
     const [library, reviews] = await Promise.all([
-      invoke<LibraryEntry[]>("list_library"),
+      searchLibrary(),
       invoke<ReviewItem[]>("list_review_items"),
     ]);
-    // A newer refresh or a review decision made meanwhile read both lists after this one.
+    // A review decision made meanwhile read both lists after this one.
     if (
-      activeVaultRoot.current === expectedVaultRoot &&
-      generation === vaultDataGeneration.current &&
-      reviewMutationGeneration.current === reviewGenerationAtStart
+      activeVaultRoot.current !== expectedVaultRoot ||
+      reviewMutationGeneration.current !== reviewGenerationAtStart
     ) {
-      setEntries(library);
+      return;
+    }
+    // A filter search replaces only the Library page; the Review Items stay this refresh's
+    // unless a newer refresh read them.
+    if (generation === vaultDataGeneration.current) {
+      showLibraryPage(library);
+    }
+    if (reviewRefreshGeneration === reviewRefreshRequestGeneration.current) {
       setReviewItems(reviews);
     }
   }
@@ -466,7 +640,7 @@ export function App() {
           className={activeView === "library" ? "active" : ""}
           onClick={() => showView("library")}
         >
-          Library ({entries.length})
+          Library ({libraryTotal})
         </button>
         <button
           type="button"
@@ -491,7 +665,21 @@ export function App() {
         </button>
       </nav>
 
-      {activeView === "library" ? <LibraryView entries={entries} objectUrl={originalObjectUrl} /> : null}
+      {activeView === "library" ? (
+        <LibraryView
+          entries={entries}
+          objectUrl={originalObjectUrl}
+          filters={libraryFilters}
+          filtersRevision={libraryFiltersRevision}
+          onSearch={
+            loadedVaultRoot === null ? undefined : (filters) => void applyLibraryFilters(filters)
+          }
+          canLoadMore={libraryNextAfter !== null}
+          loadingMore={loadingMore}
+          searching={searchingLibrary}
+          onLoadMore={() => void loadMoreReleases()}
+        />
+      ) : null}
       {activeView === "review" ? (
         <ReviewView
           items={reviewItems}

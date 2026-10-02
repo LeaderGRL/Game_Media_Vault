@@ -3,10 +3,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReviewItem } from "./types";
 
-const { invokeMock, openVaultMock } = vi.hoisted(() => ({
+const { invokeMock, openVaultMock, libraryQueries } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openVaultMock: vi.fn(),
+  libraryQueries: [] as Record<string, unknown>[],
 }));
+
+/**
+ * Tests script Library listings as `list_library` arrays; the App searches pages of them, so
+ * a search answers with the scripted listing as a single page and records its query. A
+ * scripted value that is already a page is returned as is.
+ */
+function searchLibrary(query: Record<string, unknown>) {
+  libraryQueries.push(query);
+  return Promise.resolve(invokeMock("list_library")).then((listing: unknown) =>
+    Array.isArray(listing)
+      ? { releases: listing, total: listing.length, next_after: null, as_of: 0 }
+      : listing,
+  );
+}
 
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them.
@@ -16,7 +31,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string, args?: Record<string, unknown>) =>
     command === "open_vault"
       ? openVaultMock(args)
-      : invokeMock(command, ...(args === undefined ? [] : [args])),
+      : command === "search_library"
+        ? searchLibrary(args?.query as Record<string, unknown>)
+        : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
@@ -95,6 +112,255 @@ describe("App", () => {
     );
     openVaultMock.mockReset();
     openVaultMock.mockResolvedValue(undefined);
+  });
+
+  it("searches the Library with the filters entered", async () => {
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    libraryQueries.length = 0;
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
+    fireEvent.change(screen.getByLabelText("Platforms (one per line)"), {
+      target: { value: "Nintendo - Game Boy\n\n Nintendo - Game Boy Color " },
+    });
+    fireEvent.change(screen.getByLabelText("Regions (one per line)"), {
+      target: { value: "USA, Europe" },
+    });
+    fireEvent.change(screen.getByLabelText("Sources (one per line)"), {
+      target: { value: "no-intro" },
+    });
+    const assetTypes = screen.getByLabelText("Asset Types") as HTMLSelectElement;
+    for (const option of Array.from(assetTypes.options)) {
+      option.selected = option.value === "box_front" || option.value === "screenshot";
+    }
+    fireEvent.change(assetTypes);
+    fireEvent.click(screen.getByLabelText("Partial"));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(libraryQueries).toHaveLength(1));
+    // Several values of one filter widen the search; the backend applies its default page size.
+    expect(libraryQueries[0]).toEqual({
+      text: "mario",
+      platforms: ["Nintendo - Game Boy", "Nintendo - Game Boy Color"],
+      regions: ["USA, Europe"],
+      sources: ["no-intro"],
+      asset_types: ["box_front", "screenshot"],
+      statuses: ["partial"],
+      after: null,
+      as_of: null,
+    });
+  });
+
+  it("does not page while a filter search is pending", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+
+    expect(screen.getByRole("button", { name: "Load more" })).toBeDisabled();
+  });
+
+  it("ignores the failure of a search a newer one superseded", async () => {
+    let failFirstSearch: ((reason: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "first") {
+          return new Promise((_resolve, reject) => {
+            failFirstSearch = reject;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "first" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(failFirstSearch).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "second" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "second" }));
+    await act(async () => failFirstSearch?.({ kind: "external", message: "catalog busy" }));
+
+    expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
+  });
+
+  it("drops a page requested before a review decision refreshed the Library", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    let finishPage: ((page: unknown) => void) | undefined;
+    const rejected = { ...reviewItem, decision: { decision: "reject" }, status: "rejected" };
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.after === 2) {
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      if (command === "list_review_items") {
+        return Promise.resolve([decided ? rejected : reviewItem]);
+      }
+      if (command === "resolve_review_item") {
+        decided = true;
+        return Promise.resolve(rejected);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(finishPage).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+    expect(await screen.findByText("Rejected")).toBeInTheDocument();
+    await act(async () =>
+      finishPage?.({ releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
+  });
+
+  it("offers no Library search before a vault is loaded", () => {
+    render(<App />);
+
+    expect(screen.queryByRole("form", { name: "Library filters" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the previous results and filters when a search fails", async () => {
+    let failNextSearch = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (failNextSearch) {
+          failNextSearch = false;
+          return Promise.reject({ kind: "external", message: "catalog busy" });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    failNextSearch = true;
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(await screen.findByText("catalog busy")).toBeInTheDocument();
+    // The filter bar shows the filters of the shown results again.
+    expect(screen.getByLabelText("Search titles")).toHaveValue("");
+
+    // The next page still continues the search that produced the shown results.
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ after: 2 }));
+    expect(libraryQueries.at(-1)).toMatchObject({ text: null });
+    // A search that succeeds clears the earlier failure.
+    await waitFor(() => expect(screen.queryByText("catalog busy")).not.toBeInTheDocument());
+  });
+
+  it("shows the filters of a search that ended while the Library was hidden", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "metal") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: "Review (0)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    await act(async () => finishSearch?.([entry]));
+
+    expect(screen.getByLabelText("Search titles")).toHaveValue("metal");
+  });
+
+  it("requests one next page at a time", async () => {
+    let finishPage: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.after === 2) {
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    libraryQueries.length = 0;
+
+    const loadMore = screen.getByRole("button", { name: "Load more" });
+    fireEvent.click(loadMore);
+    fireEvent.click(loadMore);
+    await waitFor(() => expect(finishPage).toBeDefined());
+
+    expect(libraryQueries).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Loading more…" })).toBeDisabled();
+  });
+
+  it("loads the next page of releases", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByText("2 releases · 0 reviews")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    // The next page keeps to the releases the first page searched.
+    expect(libraryQueries.at(-1)).toMatchObject({ after: 2, as_of: 9 });
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
   it("clears the previous vault entries when loading another vault fails", async () => {
@@ -1481,5 +1747,216 @@ describe("App acquisition", () => {
       await screen.findByText("Load a vault before starting an acquisition."),
     ).toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith("start_acquisition_run", expect.anything());
+  });
+});
+
+describe("App Library requests", () => {
+  const runToExecute = {
+    id: 1,
+    request: {
+      sources: { mode: "explicit", values: ["libretro-thumbnails"] },
+      platforms: ["Nintendo - Game Boy"],
+      games: { mode: "explicit", values: ["Tetris (World) (Rev 1)"] },
+      regions: [],
+      languages: [],
+      asset_types: ["box_front"],
+      quality: null,
+      retention: "keep_everything",
+      limits: {},
+    },
+    status: "running",
+    queued_work: 1,
+    awaiting_review_work: 0,
+    completed_work: 0,
+    below_quality_work: 0,
+    outranked_work: 0,
+  };
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openVaultMock.mockReset();
+    openVaultMock.mockResolvedValue(undefined);
+    libraryQueries.length = 0;
+  });
+
+  it("ignores the failure of a page a newer search superseded", async () => {
+    let failPage: ((reason: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.after === 2) {
+          return new Promise((_resolve, reject) => {
+            failPage = reject;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(failPage).toBeDefined());
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" }));
+    await act(async () => failPage?.({ kind: "external", message: "catalog busy" }));
+
+    expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Review Items an execution refresh read while a filter search ran", async () => {
+    let executed = false;
+    let finishRefreshPage: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve(runToExecute);
+      }
+      if (command === "list_review_items") {
+        return Promise.resolve(executed ? [reviewItem] : []);
+      }
+      if (command === "list_library") {
+        if (executed && libraryQueries.at(-1)?.text === null && !finishRefreshPage) {
+          // The Library page of the refresh after the execution arrives late.
+          return new Promise((resolve) => {
+            finishRefreshPage = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishRefreshPage).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" }));
+    await act(async () => finishRefreshPage?.([]));
+
+    // The newer search keeps its page; the refresh still brings the run's Review Item.
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review (1)" })).toBeInTheDocument();
+  });
+
+  it("pages the results of a search that superseded a pending page", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        const query = libraryQueries.at(-1);
+        if (query?.after === 2 && query?.text === null) {
+          // The page of the previous results never settles.
+          return new Promise(() => {});
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByRole("button", { name: "Loading more…" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal", after: 2 }));
+  });
+
+  it("drops a page that extends results a pending refresh then replaced", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    let executed = false;
+    let finishRefreshPage: ((page: unknown) => void) | undefined;
+    let finishPage: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve(runToExecute);
+      }
+      if (command === "list_library") {
+        const query = libraryQueries.at(-1);
+        if (query?.after === 2) {
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        }
+        if (executed && !finishRefreshPage) {
+          return new Promise((resolve) => {
+            finishRefreshPage = resolve;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishRefreshPage).toBeDefined());
+
+    // The page continues the results shown before the execution refresh.
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(finishPage).toBeDefined());
+    await act(async () =>
+      finishRefreshPage?.({ releases: [entry], total: 1, next_after: null, as_of: 10 }),
+    );
+    await act(async () =>
+      finishPage?.({ releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }),
+    );
+
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
+  });
+
+  it("shows the applied filters again when a refresh supersedes a pending search", async () => {
+    let finishExecution: ((run: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) => {
+          finishExecution = resolve;
+        });
+      }
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          // The search never settles; the refresh after the execution supersedes it.
+          return new Promise(() => {});
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishExecution).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "mario" }));
+
+    await act(async () => finishExecution?.(runToExecute));
+
+    // The refresh searched with the applied filters, which the filter bar shows again.
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: null }));
+    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue(""));
   });
 });

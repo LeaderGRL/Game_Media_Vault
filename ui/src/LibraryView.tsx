@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { FormEvent, useState } from "react";
 
 import { ASSET_TYPE_FAMILIES } from "./acquisition";
 import {
@@ -7,6 +7,10 @@ import {
   type CoverageStatus,
   type LibraryAsset,
   type LibraryEntry,
+  type LibraryFilters,
+  type LibraryStatus,
+  NO_LIBRARY_FILTERS,
+  narrowsLibrary,
   type PackagingFamily,
   type PreferenceReason,
   type ReleaseAssertionField,
@@ -17,11 +21,172 @@ interface LibraryViewProps {
   entries: LibraryEntry[];
   /** URL under which the desktop shell serves the original object with this hash. */
   objectUrl: (objectHash: string) => string;
+  /** Filters of the current search; the filter bar shows only with `onSearch`. */
+  filters?: LibraryFilters;
+  /** Changes whenever a search settles, resetting the filter bar to `filters`. */
+  filtersRevision?: number;
+  onSearch?: (filters: LibraryFilters) => void;
+  canLoadMore?: boolean;
+  /** Whether the next page is loading, which disables asking for it again. */
+  loadingMore?: boolean;
+  /** Whether a filter search is pending, which blocks paging the previous results. */
+  searching?: boolean;
+  onLoadMore?: () => void;
 }
 
-export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
+const STATUS_OPTIONS: [LibraryStatus, string][] = [
+  ["complete", "Complete"],
+  ["partial", "Partial"],
+  ["needs_review", "Needs review"],
+];
+
+export function LibraryView({
+  entries,
+  objectUrl,
+  filters = NO_LIBRARY_FILTERS,
+  filtersRevision = 0,
+  onSearch,
+  canLoadMore = false,
+  loadingMore = false,
+  searching = false,
+  onLoadMore,
+}: LibraryViewProps) {
+  return (
+    <>
+      {onSearch ? (
+        <LibraryFilterBar key={filtersRevision} filters={filters} onSearch={onSearch} />
+      ) : null}
+      <LibraryResults
+        entries={entries}
+        objectUrl={objectUrl}
+        filtered={narrowsLibrary(filters)}
+      />
+      {canLoadMore && onLoadMore ? (
+        <button
+          type="button"
+          className="load-more"
+          disabled={loadingMore || searching}
+          onClick={onLoadMore}
+        >
+          {loadingMore ? "Loading more…" : "Load more"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+/** One value per line, without blank lines or surrounding spaces. */
+function lines(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+/** Library filters, applied together when the search is submitted. */
+function LibraryFilterBar({
+  filters,
+  onSearch,
+}: {
+  filters: LibraryFilters;
+  onSearch: (filters: LibraryFilters) => void;
+}) {
+  const [text, setText] = useState(filters.text);
+  const [platforms, setPlatforms] = useState(filters.platforms.join("\n"));
+  const [regions, setRegions] = useState(filters.regions.join("\n"));
+  const [sources, setSources] = useState(filters.sources.join("\n"));
+  const [assetTypes, setAssetTypes] = useState(filters.assetTypes);
+  const [statuses, setStatuses] = useState(filters.statuses);
+
+  function toggle(status: LibraryStatus) {
+    setStatuses((current) =>
+      current.includes(status) ? current.filter((value) => value !== status) : [...current, status],
+    );
+  }
+
+  return (
+    <form
+      className="library-filters"
+      aria-label="Library filters"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        onSearch({
+          text,
+          platforms: lines(platforms),
+          regions: lines(regions),
+          sources: lines(sources),
+          assetTypes,
+          statuses,
+        });
+      }}
+    >
+      <label>
+        Search titles
+        <input value={text} onChange={(event) => setText(event.target.value)} />
+      </label>
+      <label>
+        Platforms (one per line)
+        <textarea rows={2} value={platforms} onChange={(event) => setPlatforms(event.target.value)} />
+      </label>
+      <label>
+        Regions (one per line)
+        <textarea rows={2} value={regions} onChange={(event) => setRegions(event.target.value)} />
+      </label>
+      <label>
+        Sources (one per line)
+        <textarea rows={2} value={sources} onChange={(event) => setSources(event.target.value)} />
+      </label>
+      <label>
+        Asset Types
+        <select
+          multiple
+          value={assetTypes}
+          onChange={(event) =>
+            setAssetTypes(Array.from(event.target.selectedOptions, (option) => option.value))
+          }
+        >
+          {ASSET_TYPE_FAMILIES.map((family) => (
+            <optgroup label={family.label} key={family.value}>
+              <option value={family.value}>All {family.label}</option>
+              {family.types.map((type) => (
+                <option value={type.value} key={type.value}>
+                  {type.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+      {STATUS_OPTIONS.map(([status, label]) => (
+        <label className="choice" key={status}>
+          <input
+            type="checkbox"
+            checked={statuses.includes(status)}
+            onChange={() => toggle(status)}
+          />
+          {label}
+        </label>
+      ))}
+      <button type="submit">Search</button>
+    </form>
+  );
+}
+
+interface LibraryResultsProps {
+  entries: LibraryEntry[];
+  objectUrl: (objectHash: string) => string;
+  /** Whether filters narrowed the search, which explains an empty result. */
+  filtered: boolean;
+}
+
+function LibraryResults({ entries, objectUrl, filtered }: LibraryResultsProps) {
   if (entries.length === 0) {
-    return (
+    return filtered ? (
+      <section className="empty-state" aria-live="polite">
+        <h2>No releases match these filters</h2>
+        <p>Change or clear the filters to see more of the Library.</p>
+      </section>
+    ) : (
       <section className="empty-state" aria-live="polite">
         <h2>Library is empty</h2>
         <p>Import media or reference data, then load the same vault here.</p>
