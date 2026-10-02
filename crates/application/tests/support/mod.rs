@@ -8,15 +8,16 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError, ReviewDecisionOutcome,
-    ReviewRepositoryPort, RunRepositoryPort,
+    CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
+    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchingPolicy, MediaInfo,
-    NewReviewItem, PersistAsset, QualityShortfall, RetentionPolicy, ReviewDecision, ReviewItem,
-    ReviewStatus, SourceId, SourceSelection, StoredObject,
+    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryAsset, LibraryEntry,
+    MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PersistAsset, QualityShortfall,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceId, SourceSelection,
+    StoredObject, outranked_by,
 };
 
 pub const SOURCE_ID: &str = "libretro-thumbnails";
@@ -135,6 +136,7 @@ pub struct FakeWork {
     pub item: AcquisitionWorkItem,
     pub state: WorkState,
     pub shortfalls: Vec<QualityShortfall>,
+    pub outranked: Option<Outranked>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +213,15 @@ impl FakeVault {
             .work
             .iter()
             .flat_map(|work| work.shortfalls.clone())
+            .collect()
+    }
+
+    /// Why each outranked work item of the run was not linked, in work order.
+    pub fn outranked(&self, run_id: i64) -> Vec<Outranked> {
+        self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .filter_map(|work| work.outranked.clone())
             .collect()
     }
 
@@ -305,6 +316,11 @@ impl RunRepositoryPort for FakeVault {
                     .iter()
                     .filter(|work| !work.shortfalls.is_empty())
                     .count() as u64,
+                outranked_work: run
+                    .work
+                    .iter()
+                    .filter(|work| work.outranked.is_some())
+                    .count() as u64,
             }
         });
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
@@ -377,6 +393,7 @@ impl RunRepositoryPort for FakeVault {
                     item: item.clone(),
                     state: WorkState::Queued,
                     shortfalls: Vec::new(),
+                    outranked: None,
                 });
             }
         }
@@ -588,17 +605,42 @@ impl ReviewRepositoryPort for FakeVault {
         run_id: i64,
         candidate_identity: &str,
         record: PersistAsset,
-    ) -> Result<Option<ImportedAsset>, PortError> {
+        retention: RetentionPolicy,
+    ) -> Result<CandidateAssetOutcome, PortError> {
+        if retention == RetentionPolicy::KeepBestPerType
+            && let Some(release_edition_id) = record.existing_release_edition_id
+            && let Some(outranked) = outranked_by(
+                &StoredObject {
+                    hash: record.object_hash.clone(),
+                    byte_len: record.byte_len,
+                    media: record.media.clone(),
+                },
+                &self.retained_assets(release_edition_id, record.asset_type),
+            )
+        {
+            let recorded = outranked.clone();
+            return Ok(
+                if self.settle_unlinked(run_id, candidate_identity, release_edition_id, |work| {
+                    work.outranked = Some(recorded);
+                })? {
+                    CandidateAssetOutcome::Outranked(outranked)
+                } else {
+                    CandidateAssetOutcome::HumanDecisionConflict
+                },
+            );
+        }
         self.open_scheduled_review();
         if let Some(existing) = self.find_review_item(candidate_identity)? {
             self.apply_pending_human_decision(existing.id);
             let current = self.get_review_item(existing.id)?.unwrap();
             match (current.status, current.decision) {
-                (ReviewStatus::Rejected, _) => return Ok(None),
+                (ReviewStatus::Rejected, _) => {
+                    return Ok(CandidateAssetOutcome::HumanDecisionConflict);
+                }
                 (ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))
                     if record.existing_release_edition_id != Some(release_edition_id) =>
                 {
-                    return Ok(None);
+                    return Ok(CandidateAssetOutcome::HumanDecisionConflict);
                 }
                 (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
                     self.close_automatically(existing.id, ReviewStatus::AutoResolved);
@@ -619,7 +661,7 @@ impl ReviewRepositoryPort for FakeVault {
             .borrow_mut()
             .insert(candidate_identity.to_owned(), imported.release_edition_id);
         self.complete_work(run_id, candidate_identity)?;
-        Ok(Some(imported))
+        Ok(CandidateAssetOutcome::Linked(imported))
     }
 
     fn complete_candidate_below_quality(
@@ -628,6 +670,23 @@ impl ReviewRepositoryPort for FakeVault {
         candidate_identity: &str,
         release_edition_id: i64,
         shortfalls: &[QualityShortfall],
+    ) -> Result<bool, PortError> {
+        self.settle_unlinked(run_id, candidate_identity, release_edition_id, |work| {
+            work.shortfalls = shortfalls.to_vec();
+        })
+    }
+}
+
+impl FakeVault {
+    /// Settles a candidate matched to `release_edition_id` without linking it, as the review
+    /// repository does for below-quality and outranked originals; `false` when a human decision
+    /// conflicts.
+    fn settle_unlinked(
+        &self,
+        run_id: i64,
+        candidate_identity: &str,
+        release_edition_id: i64,
+        record_outcome: impl FnOnce(&mut FakeWork),
     ) -> Result<bool, PortError> {
         self.open_scheduled_review();
         if let Some(existing) = self.find_review_item(candidate_identity)? {
@@ -671,8 +730,40 @@ impl ReviewRepositoryPort for FakeVault {
             .iter_mut()
             .find(|work| work.item.key == candidate_identity)
             .unwrap();
-        work.shortfalls = shortfalls.to_vec();
+        record_outcome(work);
         Ok(true)
+    }
+
+    /// Assets retained for the edition and type: the library's and those persisted since.
+    fn retained_assets(&self, release_edition_id: i64, asset_type: AssetType) -> Vec<LibraryAsset> {
+        let mut retained: Vec<LibraryAsset> = self
+            .library
+            .borrow()
+            .iter()
+            .filter(|entry| entry.release_edition_id == release_edition_id)
+            .flat_map(|entry| entry.assets.clone())
+            .filter(|asset| asset.asset_type == asset_type)
+            .collect();
+        retained.extend(
+            self.records
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| {
+                    record.existing_release_edition_id == Some(release_edition_id)
+                        && record.asset_type == asset_type
+                })
+                .map(|(index, record)| LibraryAsset {
+                    asset_id: index as i64 + 1,
+                    asset_type: record.asset_type,
+                    object_hash: record.object_hash.clone(),
+                    byte_len: record.byte_len,
+                    media: record.media.clone(),
+                    original_filename: record.original_filename.clone(),
+                    provenance: Vec::new(),
+                }),
+        );
+        retained
     }
 }
 

@@ -20,7 +20,7 @@ pub use imports::{
     import_local_box_front, import_reference_catalog, list_library,
 };
 pub use ports::{
-    CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
+    CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,
     ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReviewDecisionOutcome,
     ReviewRepositoryPort, RunRepositoryPort,
 };

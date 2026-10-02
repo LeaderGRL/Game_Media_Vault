@@ -22,6 +22,7 @@ const run: AcquisitionRun = {
   awaiting_review_work: 1,
   completed_work: 4,
   below_quality_work: 0,
+  outranked_work: 0,
 };
 
 function renderRuns(
@@ -102,6 +103,17 @@ describe("RunsView", () => {
     const card = screen.getByRole("article", { name: "Run #3" });
     expect(
       within(card).getByText("2 queued · 1 awaiting review · 4 completed (1 below quality)"),
+    ).toBeInTheDocument();
+  });
+
+  it("counts the completed work a retained Asset outranked", () => {
+    renderRuns([{ ...run, below_quality_work: 1, outranked_work: 2 }]);
+
+    const card = screen.getByRole("article", { name: "Run #3" });
+    expect(
+      within(card).getByText(
+        "2 queued · 1 awaiting review · 4 completed (1 below quality, 2 outranked)",
+      ),
     ).toBeInTheDocument();
   });
 

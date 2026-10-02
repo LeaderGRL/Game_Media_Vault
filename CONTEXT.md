@@ -65,7 +65,7 @@ One persisted execution of an Acquisition Request, including its progress, disco
 _Avoid_: Session
 
 **Retention Policy**:
-The policy controlling whether all accepted Assets are retained or only the preferred Asset per matching scope.
+The policy controlling whether a run retains every accepted Asset (Keep Everything) or only originals that become the Preferred Asset of their Release Edition and Asset Type (Keep Best Per Type).
 _Avoid_: Deduplication policy
 
 ## Review and Coverage

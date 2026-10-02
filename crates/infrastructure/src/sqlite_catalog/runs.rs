@@ -31,6 +31,7 @@ impl RunRepositoryPort for SqliteCatalog {
             awaiting_review_work: 0,
             completed_work: 0,
             below_quality_work: 0,
+            outranked_work: 0,
         })
     }
 
@@ -207,28 +208,35 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                     COUNT(work.id) FILTER (WHERE work.state = 'queued'),
                     COUNT(work.id) FILTER (WHERE work.state = 'parked'),
                     COUNT(work.id) FILTER (WHERE work.state = 'done'),
-                    COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL)
+                    COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL),
+                    COUNT(work.id) FILTER (WHERE work.outranked_json IS NOT NULL)
              FROM acquisition_runs AS run
              LEFT JOIN acquisition_run_work AS work ON work.run_id = run.id
              WHERE run.id = ?1
              GROUP BY run.id",
             params![run_id],
             |row| {
+                // Queued, parked, done, below-quality and outranked work.
+                let mut counts = [0_i64; 5];
+                for (index, count) in counts.iter_mut().enumerate() {
+                    *count = row.get(3 + index)?;
+                }
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
+                    counts,
                 ))
             },
         )
         .optional()
         .map_err(sql_error)?;
-    let Some((request_json, request_schema_version, status, queued, parked, done, below_quality)) =
-        row
+    let Some((
+        request_json,
+        request_schema_version,
+        status,
+        [queued, parked, done, below_quality, outranked],
+    )) = row
     else {
         return Ok(None);
     };
@@ -249,6 +257,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         awaiting_review_work: count(parked),
         completed_work: count(done),
         below_quality_work: count(below_quality),
+        outranked_work: count(outranked),
     }))
 }
 

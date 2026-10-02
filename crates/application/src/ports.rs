@@ -3,8 +3,8 @@ use std::{io::Read, path::Path};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
-    PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReviewDecision, ReviewItem,
-    ReviewStatus, StoredObject,
+    Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, RetentionPolicy,
+    ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
 };
 use thiserror::Error;
 
@@ -63,6 +63,16 @@ pub enum ParkedReview {
     Settled,
 }
 
+/// Outcome of persisting an Asset acquired for a candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateAssetOutcome {
+    Linked(ImportedAsset),
+    /// Keep Best Per Type: a retained Asset stays preferred, so nothing was linked.
+    Outranked(Outranked),
+    /// A human rejected the candidate or accepted another Release Edition; nothing changed.
+    HumanDecisionConflict,
+}
+
 /// Review Items, one per candidate identity. Every method is atomic.
 pub trait ReviewRepositoryPort {
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
@@ -107,14 +117,20 @@ pub trait ReviewRepositoryPort {
     /// keeps the candidate linked to a single Release Edition: links of the same candidate to
     /// other editions are removed, an undecided Review Item is closed as `AutoResolved`
     /// (completing the work parked on it), and the candidate's work in `run_id` is completed.
-    /// Persists nothing and returns `None` when a human rejected the candidate or accepted
-    /// another Release Edition.
+    ///
+    /// Under Keep Best Per Type, an original that a retained Asset of the same Release Edition
+    /// and type outranks is not linked: the candidate is settled as for a below-quality
+    /// original (see `complete_candidate_below_quality`) and its work records why. The retained
+    /// Assets are compared in the same transaction.
+    ///
+    /// Changes nothing when a human rejected the candidate or accepted another Release Edition.
     fn persist_candidate_asset(
         &self,
         run_id: i64,
         candidate_identity: &str,
         record: PersistAsset,
-    ) -> Result<Option<ImportedAsset>, PortError>;
+        retention: RetentionPolicy,
+    ) -> Result<CandidateAssetOutcome, PortError>;
 
     /// Completes the candidate's work in `run_id` without linking its original, which fell
     /// short of the run's quality requirements, and records the shortfalls so the candidate

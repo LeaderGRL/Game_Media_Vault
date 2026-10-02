@@ -197,7 +197,7 @@ Quality requirements can independently constrain:
 
 The engine should not discard a candidate solely because another candidate is better until the configured Retention Policy has been applied.
 
-Requirements are measured on the stored original (its media type and pixel size, read from its bytes): minimum width, height, longest edge and pixel count, and accepted media types. Every acquired Asset is an original, so `original_only` always holds. An original that falls short is not linked; its work completes with the shortfalls recorded (shown as "below quality" run counts) and its object stays unreferenced until vault verification. The match still settles the candidate: an undecided Review Item is closed as `auto_resolved`, the work parked on it in other runs is requeued so each run applies its own requirements, and links of the candidate to other Release Editions are removed. Requirements the engine cannot measure or apply yet (compression ratio, bitrate, preferences and best-available mode, which need Keep Best Per Type) are refused before discovery.
+Requirements are measured on the stored original (its media type and pixel size, read from its bytes): minimum width, height, longest edge and pixel count, and accepted media types. Every acquired Asset is an original, so `original_only` always holds. An original that falls short is not linked; its work completes with the shortfalls recorded (shown as "below quality" run counts) and its object stays unreferenced until vault verification. The match still settles the candidate: an undecided Review Item is closed as `auto_resolved`, the work parked on it in other runs is requeued so each run applies its own requirements, and links of the candidate to other Release Editions are removed. Requirements the engine cannot measure or apply yet (compression ratio, bitrate, and the scan type, source priority and best-available preferences, which need a configurable scoring policy) are refused before discovery.
 
 ## 8. Retention Policies
 
@@ -212,6 +212,8 @@ The best accepted Asset for the matching Release Edition and Asset Type becomes 
 Preference scoring is explainable. The UI must be able to show why one candidate outranked another.
 
 The Preferred Asset of each Release Edition and Asset Type is derived from its retained Assets whenever the library is read: the original with the most pixels wins (an unknown pixel size ranks below every known one), then the one with more bytes at the same pixel count, which usually means less compression, then the one acquired first. Each other Asset of the type carries the reason it ranks lower.
+
+A Keep Best Per Type run links an acquired original only if it would become the Preferred Asset, comparing it with the retained Assets in the same transaction as the link. An outranked original is not linked: its work completes with the outranking Asset and the reason recorded (shown as "outranked" run counts), and the candidate is settled as for a below-quality original. Bytes a retained Asset already holds add provenance to it. Keep Best Per Type never detaches Assets other runs or imports retained; they only stop being preferred (ADR 0004).
 
 ## 9. Release Edition Identity
 

@@ -3,12 +3,12 @@ mod support;
 use std::cell::RefCell;
 
 use game_media_vault_application::{
-    ApplicationError, ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
-    list_review_items, load_review_preview, resolve_review_item,
+    ApplicationError, CandidateAssetOutcome, ParkedReview, PortError, ReviewDecisionOutcome,
+    ReviewRepositoryPort, list_review_items, load_review_preview, resolve_review_item,
 };
 use game_media_vault_domain::{
-    AssetCandidate, ImportedAsset, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset,
-    QualityShortfall, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
+    AssetCandidate, MatchEvidence, MatchSignal, NewReviewItem, PersistAsset, QualityShortfall,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, SourceId,
 };
 use support::*;
 
@@ -188,7 +188,8 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         _run_id: i64,
         _candidate_identity: &str,
         _record: PersistAsset,
-    ) -> Result<Option<ImportedAsset>, PortError> {
+        _retention: RetentionPolicy,
+    ) -> Result<CandidateAssetOutcome, PortError> {
         unreachable!()
     }
 

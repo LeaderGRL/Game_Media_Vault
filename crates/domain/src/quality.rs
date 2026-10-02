@@ -93,9 +93,13 @@ impl QualityRequirements {
         } else if self.min_bitrate_kbps.is_some() {
             Some("bitrates cannot be measured yet")
         } else if self.preferred_scan_type.is_some() || !self.preferred_source_priority.is_empty() {
-            Some("preferences need Keep Best Per Type, which is not supported yet")
+            Some(
+                "scan type and source preferences need a configurable scoring policy, which is not supported yet",
+            )
         } else if self.best_available {
-            Some("best-available mode needs Keep Best Per Type, which is not supported yet")
+            Some(
+                "best-available mode needs a configurable scoring policy, which is not supported yet",
+            )
         } else {
             None
         }

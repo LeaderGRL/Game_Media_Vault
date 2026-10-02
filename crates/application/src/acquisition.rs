@@ -9,9 +9,9 @@ use game_media_vault_domain::{
 use url::Url;
 
 use crate::{
-    ApplicationError, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview,
-    ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request, candidate_identity,
-    load_acquisition_run,
+    ApplicationError, CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort,
+    ParkedReview, ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request,
+    candidate_identity, load_acquisition_run,
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -28,6 +28,7 @@ struct Acquisition<'a> {
     matching_policy: ValidatedMatchingPolicy,
     releases: Vec<LibraryEntry>,
     quality: Option<QualityRequirements>,
+    retention: RetentionPolicy,
 }
 
 enum Step {
@@ -79,6 +80,7 @@ pub fn acquire_run_with_connector(
         matching_policy,
         releases: catalog.list_library()?,
         quality: run.request.quality().cloned(),
+        retention: run.request.retention(),
     };
     let mut imported_assets = Vec::new();
     loop {
@@ -151,11 +153,6 @@ fn validate_connector_plan(
         .and_then(QualityRequirements::unsupported_requirement)
     {
         return Err(unsupported(reason));
-    }
-    if request.retention() != RetentionPolicy::KeepEverything {
-        return Err(unsupported(
-            "Keep Best Per Type is not supported by this execution path",
-        ));
     }
     if request.limits() != &AcquisitionLimits::default() {
         return Err(unsupported(
@@ -365,12 +362,15 @@ impl Acquisition<'_> {
             });
         }
         let record = self.asset_record(work, release, candidate_match, stored);
-        match self
-            .reviews
-            .persist_candidate_asset(self.run_id, &work.key, record)?
-        {
-            Some(imported) => Ok(Step::Done(Some(imported))),
-            None => Ok(Step::Retry),
+        match self.reviews.persist_candidate_asset(
+            self.run_id,
+            &work.key,
+            record,
+            self.retention,
+        )? {
+            CandidateAssetOutcome::Linked(imported) => Ok(Step::Done(Some(imported))),
+            CandidateAssetOutcome::Outranked(_) => Ok(Step::Done(None)),
+            CandidateAssetOutcome::HumanDecisionConflict => Ok(Step::Retry),
         }
     }
 

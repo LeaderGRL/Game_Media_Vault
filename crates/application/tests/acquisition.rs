@@ -7,9 +7,10 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
-    AssetCandidate, AssetTypeSelector, ImportedAsset, LibraryEntry, MatchConfidence,
-    MatchingPolicy, MediaInfo, NewReviewItem, QualityRequirements, QualityShortfall,
-    RetentionPolicy, ReviewDecision, ReviewStatus, SourceId, SourceSelection,
+    AssetCandidate, AssetType, AssetTypeSelector, ImportedAsset, LibraryAsset, LibraryEntry,
+    MatchConfidence, MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PreferenceReason,
+    QualityRequirements, QualityShortfall, RetentionPolicy, ReviewDecision, ReviewStatus, SourceId,
+    SourceSelection,
 };
 use support::*;
 
@@ -769,14 +770,129 @@ fn rejects_quality_requirements_the_engine_cannot_measure_yet() {
             ApplicationError::UnsupportedConnectorPlan { .. }
         ));
     }
+}
 
-    let error = plan_error(request_with(|draft| {
-        draft.retention = RetentionPolicy::KeepBestPerType;
-    }));
-    assert!(matches!(
-        error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
-    ));
+fn keep_best_run(vault: &FakeVault) -> i64 {
+    vault
+        .create_run(request_with(|draft| {
+            draft.retention = RetentionPolicy::KeepBestPerType;
+        }))
+        .unwrap()
+        .id
+}
+
+fn with_retained_box_front(release: LibraryEntry, asset_id: i64, media: MediaInfo) -> LibraryEntry {
+    LibraryEntry {
+        assets: vec![LibraryAsset {
+            asset_id,
+            asset_type: AssetType::BoxFront,
+            object_hash: format!("retained-{asset_id}"),
+            byte_len: 90_000,
+            media,
+            original_filename: "front.png".to_owned(),
+            provenance: Vec::new(),
+        }],
+        ..release
+    }
+}
+
+#[test]
+fn keep_best_per_type_links_an_original_that_becomes_the_preferred_asset() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![with_retained_box_front(
+        release_for(&smb, 73),
+        40,
+        png(640, 900),
+    )]);
+    let run_id = keep_best_run(&vault);
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![smb]),
+        run_id,
+        &FakeStore::storing(png(1200, 1600)),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.run(run_id).outranked_work, 0);
+}
+
+#[test]
+fn keep_best_per_type_retains_no_original_a_retained_one_outranks() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![with_retained_box_front(
+        release_for(&smb, 73),
+        40,
+        png(1200, 1600),
+    )]);
+    let run_id = keep_best_run(&vault);
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![smb]),
+        run_id,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    assert!(vault.records.borrow().is_empty());
+    let run = vault.run(run_id);
+    assert_eq!((run.completed_work, run.outranked_work), (1, 1));
+    assert_eq!(
+        vault.outranked(run_id),
+        vec![Outranked {
+            preferred_asset_id: 40,
+            reason: PreferenceReason::MorePixels {
+                preferred: 1_920_000,
+                other: Some(576_000),
+            },
+        }]
+    );
+}
+
+#[test]
+fn keep_everything_links_an_original_a_retained_one_outranks() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![with_retained_box_front(
+        release_for(&smb, 73),
+        40,
+        png(1200, 1600),
+    )]);
+    let run_id = vault.start_run();
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![smb]),
+        run_id,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+}
+
+#[test]
+fn an_outranked_original_still_settles_the_review_of_a_now_certain_match() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault =
+        FakeVault::with_library(vec![with_retained_box_front(release, 40, png(1200, 1600))]);
+    let first_run = park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    let keep_best = keep_best_run(&vault);
+
+    execute_storing(
+        &vault,
+        &FakeConnector::new(vec![threshold]),
+        keep_best,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert_eq!(vault.run(keep_best).outranked_work, 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+    // Nothing was linked, so the parked run applies its own retention to the candidate.
+    assert_eq!(vault.work_states(first_run), vec![WorkState::Queued]);
 }
 
 fn quality_run(vault: &FakeVault, quality: QualityRequirements) -> i64 {

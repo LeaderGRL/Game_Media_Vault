@@ -6,7 +6,9 @@ mod preference;
 mod quality;
 
 pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
-pub use preference::{AssetPreference, PreferenceReason, PreferredAsset, preferred_assets};
+pub use preference::{
+    AssetPreference, Outranked, PreferenceReason, PreferredAsset, outranked_by, preferred_assets,
+};
 pub use quality::QualityShortfall;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +200,8 @@ pub struct AcquisitionRun {
     pub completed_work: u64,
     /// Completed work whose original fell short of the quality requirements.
     pub below_quality_work: u64,
+    /// Completed work whose original a retained Asset outranks under Keep Best Per Type.
+    pub outranked_work: u64,
 }
 
 /// One discovered Asset Candidate to process within an Acquisition Run. The key is the

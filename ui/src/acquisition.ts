@@ -35,6 +35,8 @@ export interface AcquisitionRun {
   completed_work: number;
   /** Completed work whose original fell short of the quality requirements. */
   below_quality_work: number;
+  /** Completed work whose original a retained Asset outranks under Keep Best Per Type. */
+  outranked_work: number;
 }
 
 /** Sources the desktop app can currently execute. */
