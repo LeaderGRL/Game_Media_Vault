@@ -3,11 +3,12 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
 import type { AcquisitionPlan, AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
-import { LibraryView } from "./LibraryView";
+import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
+  DerivationSummary,
   LibraryEntry,
   LibraryFilters,
   LibraryPage,
@@ -71,6 +72,8 @@ export function App() {
   const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
   const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
   const [startingRun, setStartingRun] = useState(false);
+  const [renderingThumbnails, setRenderingThumbnails] = useState(false);
+  const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -224,6 +227,7 @@ export function App() {
     setError(null);
     supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
+    setThumbnailStatus(null);
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -423,6 +427,41 @@ export function App() {
     }
     if (reviewRefreshGeneration === reviewRefreshRequestGeneration.current) {
       setReviewItems(reviews);
+    }
+  }
+
+  /** Renders the thumbnails the Library lacks, then shows them with the applied filters. */
+  async function renderThumbnails() {
+    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+      return;
+    }
+    const renderingVaultRoot = loadedVaultRoot;
+    setRenderingThumbnails(true);
+    setThumbnailStatus(null);
+    setError(null);
+    try {
+      const summary = await invoke<DerivationSummary>("derive_thumbnails", {
+        max_edge: LIBRARY_THUMBNAIL_EDGE,
+      });
+      if (activeVaultRoot.current !== renderingVaultRoot) {
+        return;
+      }
+      setThumbnailStatus(describeThumbnailRendering(summary));
+      const generation = supersedeLibraryRequests();
+      const library = await searchLibrary();
+      if (
+        activeVaultRoot.current === renderingVaultRoot &&
+        generation === vaultDataGeneration.current
+      ) {
+        showLibraryPage(library);
+      }
+    } catch (reason) {
+      // Another vault loaded meanwhile reports its own failures.
+      if (activeVaultRoot.current === renderingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      setRenderingThumbnails(false);
     }
   }
 
@@ -678,6 +717,11 @@ export function App() {
           loadingMore={loadingMore}
           searching={searchingLibrary}
           onLoadMore={() => void loadMoreReleases()}
+          onRenderThumbnails={
+            loadedVaultRoot === null ? undefined : () => void renderThumbnails()
+          }
+          renderingThumbnails={renderingThumbnails}
+          thumbnailStatus={thumbnailStatus}
         />
       ) : null}
       {activeView === "review" ? (
@@ -719,4 +763,13 @@ function withoutRun(runIds: Set<number>, runId: number) {
 /** Original objects are served by the desktop shell's `gmv-object` protocol. */
 function originalObjectUrl(objectHash: string) {
   return convertFileSrc(objectHash, "gmv-object");
+}
+
+function describeThumbnailRendering(summary: DerivationSummary) {
+  const rendered = `Rendered ${summary.derived} ${summary.derived === 1 ? "thumbnail" : "thumbnails"}`;
+  const failed = summary.failed.length;
+  if (failed === 0) {
+    return rendered + ".";
+  }
+  return `${rendered}; ${failed} ${failed === 1 ? "original" : "originals"} could not be rendered.`;
 }

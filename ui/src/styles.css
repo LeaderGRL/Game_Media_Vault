@@ -651,3 +651,14 @@ select:focus {
   margin: 0 0 12px;
   padding-left: 20px;
 }
+
+.library-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.library-actions p {
+  margin: 0;
+}

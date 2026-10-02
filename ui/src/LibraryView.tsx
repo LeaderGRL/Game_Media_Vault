@@ -32,6 +32,11 @@ interface LibraryViewProps {
   /** Whether a filter search is pending, which blocks paging the previous results. */
   searching?: boolean;
   onLoadMore?: () => void;
+  /** Renders the thumbnails the originals lack; the button shows only with it. */
+  onRenderThumbnails?: () => void;
+  renderingThumbnails?: boolean;
+  /** Outcome of the latest thumbnail rendering. */
+  thumbnailStatus?: string | null;
 }
 
 /** Longest edge of the thumbnails the Library shows instead of their originals. */
@@ -53,9 +58,20 @@ export function LibraryView({
   loadingMore = false,
   searching = false,
   onLoadMore,
+  onRenderThumbnails,
+  renderingThumbnails = false,
+  thumbnailStatus = null,
 }: LibraryViewProps) {
   return (
     <>
+      {onRenderThumbnails ? (
+        <div className="library-actions">
+          <button type="button" disabled={renderingThumbnails} onClick={onRenderThumbnails}>
+            {renderingThumbnails ? "Rendering thumbnails…" : "Render thumbnails"}
+          </button>
+          {thumbnailStatus ? <p role="status">{thumbnailStatus}</p> : null}
+        </div>
+      ) : null}
       {onSearch ? (
         <LibraryFilterBar key={filtersRevision} filters={filters} onSearch={onSearch} />
       ) : null}

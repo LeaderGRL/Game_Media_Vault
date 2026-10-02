@@ -272,6 +272,48 @@ describe("App", () => {
     );
   });
 
+  it("renders missing thumbnails and shows them in the Library", async () => {
+    const thumbnail = {
+      recipe: { transform: "thumbnail", max_edge: 256 },
+      object_hash: "thumb256",
+      byte_len: 512,
+      media_type: "image/png",
+      width: 192,
+      height: 256,
+    };
+    let rendered = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "derive_thumbnails") {
+        rendered = true;
+        return Promise.resolve({
+          derived: 1,
+          skipped: 0,
+          failed: [{ original_hash: "def456", reason: "cannot decode the original" }],
+        });
+      }
+      if (command === "list_library") {
+        return Promise.resolve([
+          rendered ? { ...entry, assets: [{ ...entry.assets[0], derived: [thumbnail] }] } : entry,
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+
+    expect(
+      await screen.findByText("Rendered 1 thumbnail; 1 original could not be rendered."),
+    ).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("derive_thumbnails", { max_edge: 256 });
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
+      "src",
+      "http://gmv-object.localhost/thumb256",
+    );
+  });
+
   it("offers no Library search before a vault is loaded", () => {
     render(<App />);
 

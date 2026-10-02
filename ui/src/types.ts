@@ -332,3 +332,11 @@ export function errorMessage(reason: unknown): string {
   }
   return String(reason);
 }
+
+/** Outcome of rendering a recipe for every original that lacks its output. */
+export interface DerivationSummary {
+  derived: number;
+  /** Originals the recipe cannot read. */
+  skipped: number;
+  failed: { original_hash: string; reason: string }[];
+}
