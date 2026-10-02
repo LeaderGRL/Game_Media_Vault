@@ -1142,11 +1142,13 @@ dependencies = [
 name = "game-media-vault-connectors"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "game-media-vault-application",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
  "quick-xml",
  "reqwest 0.12.28",
+ "serde_json",
  "tempfile",
  "url",
  "zip",

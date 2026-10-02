@@ -3,8 +3,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{self, File},
     io::{self, BufRead, BufReader, Seek},
+    path::PathBuf,
 };
 
 use game_media_vault_application::{ConnectorPort, PortError};
@@ -12,10 +13,12 @@ use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
 };
 use quick_xml::{Reader, events::Event};
+use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::{
-    HttpTransport, ReqwestHttpTransport, naming::parse_release_name, xml::push_xml_reference,
+    Fetched, HttpTransport, ReqwestHttpTransport, Validators, naming::parse_release_name,
+    xml::push_xml_reference,
 };
 
 pub const LAUNCHBOX_GAMES_DB_SOURCE_ID: &str = "launchbox-games-db";
@@ -106,11 +109,16 @@ const REGIONS: &[(&str, &str)] = &[
 
 pub struct LaunchBoxGamesDbConnector<T = ReqwestHttpTransport> {
     transport: T,
+    cache: Option<DatasetCache>,
 }
 
 impl LaunchBoxGamesDbConnector<ReqwestHttpTransport> {
+    /// Keeps the dataset in the machine's cache, when the OS has a cache directory.
     pub fn new() -> Self {
-        Self::with_transport(ReqwestHttpTransport::default())
+        Self {
+            transport: ReqwestHttpTransport::default(),
+            cache: DatasetCache::machine(),
+        }
     }
 }
 
@@ -121,8 +129,93 @@ impl Default for LaunchBoxGamesDbConnector<ReqwestHttpTransport> {
 }
 
 impl<T> LaunchBoxGamesDbConnector<T> {
+    /// Downloads the dataset whole on every discovery.
     pub fn with_transport(transport: T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            cache: None,
+        }
+    }
+
+    /// Keeps the dataset in `cache` and downloads it again only once LaunchBox republishes it.
+    pub fn with_transport_and_cache(transport: T, cache: DatasetCache) -> Self {
+        Self {
+            transport,
+            cache: Some(cache),
+        }
+    }
+}
+
+/// A copy of the LaunchBox dataset kept for the whole machine, so every vault shares it, with
+/// the validators LaunchBox sent with it.
+#[derive(Debug, Clone)]
+pub struct DatasetCache {
+    dir: PathBuf,
+}
+
+impl DatasetCache {
+    pub fn at(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    /// The cache in the OS standard cache directory, when the OS has one.
+    pub fn machine() -> Option<Self> {
+        dirs::cache_dir().map(|dir| Self::at(dir.join("game-media-vault").join("launchbox")))
+    }
+
+    fn archive(&self) -> PathBuf {
+        self.dir.join("Metadata.zip")
+    }
+
+    fn validators_file(&self) -> PathBuf {
+        self.dir.join("Metadata.zip.validators.json")
+    }
+
+    /// The validators of the cached copy; none without a copy, so it is fetched whole.
+    fn validators(&self) -> Validators {
+        if !self.archive().is_file() {
+            return Validators::default();
+        }
+        let recorded = fs::read(self.validators_file())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let field = |name: &str| {
+            recorded
+                .as_ref()
+                .and_then(|recorded| recorded.get(name))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        Validators {
+            etag: field("etag"),
+            last_modified: field("last_modified"),
+        }
+    }
+
+    /// Prepares a new copy beside the current one, unless the cache directory is unusable.
+    fn stage(&self) -> io::Result<NamedTempFile> {
+        fs::create_dir_all(&self.dir)?;
+        NamedTempFile::new_in(&self.dir)
+    }
+
+    /// Makes `staged` the cached copy, described by `validators`, and returns it opened. A copy
+    /// another process holds open stays as it is, and `staged` serves this discovery alone.
+    fn replace(&self, staged: NamedTempFile, validators: &Validators) -> io::Result<File> {
+        // Validators of the previous copy must never describe the new one.
+        let _ = fs::remove_file(self.validators_file());
+        let mut file = match staged.persist(self.archive()) {
+            Ok(file) => {
+                let recorded = serde_json::json!({
+                    "etag": validators.etag,
+                    "last_modified": validators.last_modified,
+                });
+                let _ = fs::write(self.validators_file(), recorded.to_string());
+                file
+            }
+            Err(error) => error.file.into_file(),
+        };
+        file.rewind()?;
+        Ok(file)
     }
 }
 
@@ -254,23 +347,64 @@ impl<T> LaunchBoxGamesDbConnector<T>
 where
     T: HttpTransport,
 {
-    /// Spools the dataset archive to a temporary file, since reading a ZIP needs to seek.
+    /// The dataset archive, read from the machine cache while LaunchBox has not republished
+    /// it, and otherwise downloaded to a file, since reading a ZIP needs to seek.
     fn download_dataset(&self) -> Result<Dataset, PortError> {
-        let mut stream = self.transport.get_stream(LAUNCHBOX_METADATA_URL)?;
-        let mut file = tempfile::tempfile().map_err(|error| {
-            PortError::new(format!("failed to buffer the LaunchBox dataset: {error}"))
-        })?;
-        io::copy(&mut stream, &mut file).map_err(|error| {
-            PortError::new(format!("failed to download the LaunchBox dataset: {error}"))
-        })?;
-        file.rewind().map_err(|error| {
-            PortError::new(format!("failed to buffer the LaunchBox dataset: {error}"))
-        })?;
+        let file = match &self.cache {
+            Some(cache) => self.cached_dataset(cache)?,
+            None => spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?)?,
+        };
         let archive = zip::ZipArchive::new(file).map_err(|error| {
             PortError::invalid_source_data(format!("unreadable LaunchBox dataset archive: {error}"))
         })?;
         Ok(Dataset { archive })
     }
+}
+
+impl<T> LaunchBoxGamesDbConnector<T>
+where
+    T: HttpTransport,
+{
+    /// The cached copy if it is still current, or the dataset LaunchBox serves now, which
+    /// replaces it. A cache that cannot be written never fails the discovery.
+    fn cached_dataset(&self, cache: &DatasetCache) -> Result<File, PortError> {
+        match self
+            .transport
+            .get_if_changed(LAUNCHBOX_METADATA_URL, &cache.validators())?
+        {
+            Fetched::Unchanged => match File::open(cache.archive()) {
+                Ok(file) => Ok(file),
+                // The copy vanished since its validators were read.
+                Err(_) => spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?),
+            },
+            Fetched::Changed {
+                mut body,
+                validators,
+            } => match cache.stage() {
+                Ok(mut staged) => {
+                    io::copy(&mut body, &mut staged).map_err(download_failed)?;
+                    cache.replace(staged, &validators).map_err(buffer_failed)
+                }
+                Err(_) => spool(body),
+            },
+        }
+    }
+}
+
+/// Downloads `body` to a temporary file.
+fn spool(mut body: Box<dyn io::Read + Send>) -> Result<File, PortError> {
+    let mut file = tempfile::tempfile().map_err(buffer_failed)?;
+    io::copy(&mut body, &mut file).map_err(download_failed)?;
+    file.rewind().map_err(buffer_failed)?;
+    Ok(file)
+}
+
+fn download_failed(error: io::Error) -> PortError {
+    PortError::new(format!("failed to download the LaunchBox dataset: {error}"))
+}
+
+fn buffer_failed(error: io::Error) -> PortError {
+    PortError::new(format!("failed to buffer the LaunchBox dataset: {error}"))
 }
 
 struct Dataset {
