@@ -259,7 +259,8 @@ impl Dataset {
     }
 }
 
-/// A game record the request selects, titled and placed on a platform as the request names them.
+/// A game record the request selects, titled as the request names it (as No-Intro does when
+/// the request selects every game) and placed on the platform the request names.
 struct WantedGame {
     title: String,
     platform: String,
@@ -332,7 +333,7 @@ impl WantedGames {
     fn game(&self, name: &str, platform: &str) -> Option<WantedGame> {
         let wanted = self.platforms.get(platform)?;
         let title = match &wanted.titles {
-            None => name.to_owned(),
+            None => no_intro_title(name),
             Some(titles) => titles.get(&title_key(name))?.clone(),
         };
         Some(WantedGame {
@@ -368,17 +369,50 @@ fn no_intro_region(region: &str) -> String {
         .unwrap_or_else(|| region.trim().to_owned())
 }
 
-/// Compares titles regardless of case, spacing and a trailing article, which No-Intro moves
-/// after the title ("Legend of Zelda, The").
+const ARTICLES: [&str; 3] = ["the", "a", "an"];
+
+/// Compares titles regardless of case, spacing, subtitle separator (No-Intro writes " - ",
+/// LaunchBox ": ") and article placement: No-Intro moves a leading article after the main
+/// title ("Legend of Zelda, The - A Link to the Past").
 fn title_key(title: &str) -> String {
     let words = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lowered = words.to_lowercase();
-    for article in ["the", "a", "an"] {
-        if let Some(rest) = lowered.strip_suffix(&format!(", {article}")) {
-            return format!("{article} {rest}");
+    words
+        .to_lowercase()
+        .replace(": ", " - ")
+        .split(" - ")
+        .map(|part| {
+            ARTICLES
+                .iter()
+                .find_map(|article| {
+                    part.strip_suffix(&format!(", {article}"))
+                        .map(|rest| format!("{article} {rest}"))
+                })
+                .unwrap_or_else(|| part.to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// `title` as No-Intro writes it, so a candidate matches a Library imported from No-Intro: a
+/// leading article moves after the main title and subtitles follow " - " ("The Legend of
+/// Zelda: A Link to the Past" becomes "Legend of Zelda, The - A Link to the Past").
+fn no_intro_title(title: &str) -> String {
+    let words = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = words.replace(": ", " - ");
+    let (main, subtitles) = match normalized.split_once(" - ") {
+        Some((main, subtitles)) => (main, Some(subtitles)),
+        None => (normalized.as_str(), None),
+    };
+    let main = match main.split_once(' ') {
+        Some((article, rest)) if ARTICLES.contains(&article.to_lowercase().as_str()) => {
+            format!("{rest}, {article}")
         }
+        _ => main.to_owned(),
+    };
+    match subtitles {
+        Some(subtitles) => format!("{main} - {subtitles}"),
+        None => main,
     }
-    lowered
 }
 
 /// The image host locator of `file_name`; names that could address anything else are refused.
@@ -457,6 +491,8 @@ fn for_each_record(
     Ok(())
 }
 
+/// A dataset that cannot be read is an environmental failure; one that does not parse is
+/// invalid source data.
 fn launchbox_xml_error(error: quick_xml::Error) -> PortError {
     match error {
         quick_xml::Error::Io(error) => {

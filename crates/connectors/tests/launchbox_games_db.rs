@@ -13,6 +13,7 @@ use game_media_vault_domain::{
 };
 
 const NES: &str = "Nintendo - Nintendo Entertainment System";
+const SNES: &str = "Nintendo - Super Nintendo Entertainment System";
 
 /// A slice of the LaunchBox Games Database, with the records discovery must skip.
 const METADATA_XML: &str = r#"<?xml version="1.0" standalone="yes"?>
@@ -36,6 +37,11 @@ const METADATA_XML: &str = r#"<?xml version="1.0" standalone="yes"?>
   <Game>
     <Name>Record Without An Identifier</Name>
     <Platform>Nintendo Entertainment System</Platform>
+  </Game>
+  <Game>
+    <Name>The Legend of Zelda: A Link to the Past</Name>
+    <DatabaseID>300</DatabaseID>
+    <Platform>Super Nintendo Entertainment System</Platform>
   </Game>
   <GameAlternateName>
     <AlternateName>Super Mario Brothers</AlternateName>
@@ -78,6 +84,12 @@ const METADATA_XML: &str = r#"<?xml version="1.0" standalone="yes"?>
     <DatabaseID>220</DatabaseID>
     <FileName>tetris-front.jpg</FileName>
     <Type>Box - Front</Type>
+  </GameImage>
+  <GameImage>
+    <DatabaseID>300</DatabaseID>
+    <FileName>alttp-front.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>North America</Region>
   </GameImage>
 </LaunchBox>
 "#;
@@ -237,7 +249,8 @@ fn enumerates_every_game_of_a_platform_when_all_games_are_requested() {
     );
     assert_eq!(candidates[2].asset_type, AssetType::Screenshot);
     assert_eq!(candidates[2].region, "Unknown");
-    assert_eq!(candidates[3].game_title, "The Legend of Zelda");
+    // Every game is named as No-Intro names it, so it matches a Library imported from No-Intro.
+    assert_eq!(candidates[3].game_title, "Legend of Zelda, The");
 }
 
 #[test]
@@ -318,4 +331,46 @@ fn matches_requested_releases_whatever_their_article_placement() {
     );
     // Candidates keep the title the request names, as the Library imported it.
     assert_eq!(candidates[0].game_title, "Legend of Zelda, The");
+}
+
+#[test]
+fn matches_subtitles_whichever_separator_and_article_placement() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.platforms = vec![SNES.to_owned()];
+            draft.games = GameSelection::Explicit(vec![
+                "Legend of Zelda, The - A Link to the Past (USA)".to_owned(),
+            ]);
+        }))
+        .unwrap();
+
+    assert_eq!(
+        locators(&candidates),
+        ["https://images.launchbox-app.com/alttp-front.jpg"]
+    );
+    assert_eq!(
+        candidates[0].game_title,
+        "Legend of Zelda, The - A Link to the Past"
+    );
+}
+
+#[test]
+fn names_every_game_of_a_platform_as_no_intro_does() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.platforms = vec![SNES.to_owned()];
+            draft.games = GameSelection::All;
+        }))
+        .unwrap();
+
+    assert_eq!(
+        candidates[0].game_title,
+        "Legend of Zelda, The - A Link to the Past"
+    );
 }
