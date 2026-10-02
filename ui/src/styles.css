@@ -694,3 +694,22 @@ select:focus {
 .source dd {
   margin: 0;
 }
+
+.reference-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.reference-import label {
+  display: grid;
+  gap: 6px;
+}
+
+.reference-import .error-message,
+.reference-import .hint {
+  flex-basis: 100%;
+  margin: 0;
+}
