@@ -1,9 +1,12 @@
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap};
 
 use game_media_vault_application::{
-    CorruptObject, ObjectArea, ObjectCheck, PortError, RecordedDerivative, VaultCatalogPort,
-    VaultReport, VaultStorePort, verify_vault,
+    CorruptObject, ObjectArea, ObjectCheck, PortError, RecordedDerivative, UnreadableObject,
+    VaultCatalogPort, VaultReport, VaultStorePort, verify_vault,
 };
+
+/// Marks a stored file that cannot be read.
+const UNREADABLE: &str = "!unreadable";
 
 /// What the catalog references and what the store holds, with the hash each stored file
 /// actually has.
@@ -43,6 +46,9 @@ impl VaultStorePort for FakeVault {
     fn check_object(&self, area: ObjectArea, hash: &str) -> Result<ObjectCheck, PortError> {
         Ok(match self.area(area).get(hash) {
             None => ObjectCheck::Missing,
+            Some(actual) if actual == UNREADABLE => ObjectCheck::Unreadable {
+                reason: "permission denied".to_owned(),
+            },
             Some(actual) if actual == hash => ObjectCheck::Intact,
             Some(actual) => ObjectCheck::Corrupt {
                 actual_hash: actual.clone(),
@@ -152,4 +158,117 @@ fn reports_staging_files_left_by_interrupted_stores() {
     let report = verify_vault(&vault, &vault).unwrap();
 
     assert_eq!(report.interrupted_staging, ["4242-0.tmp"]);
+}
+
+#[test]
+fn an_object_that_cannot_be_read_is_reported_and_verification_goes_on() {
+    let mut originals = intact(&["aaa", "ccc"]);
+    originals.insert("bbb".to_owned(), UNREADABLE.to_owned());
+    let vault = FakeVault {
+        referenced: vec!["aaa".to_owned(), "bbb".to_owned(), "gone".to_owned()],
+        originals,
+        ..FakeVault::default()
+    };
+
+    let report = verify_vault(&vault, &vault).unwrap();
+
+    assert_eq!(
+        report.unreadable_originals,
+        [UnreadableObject {
+            hash: "bbb".to_owned(),
+            reason: "permission denied".to_owned(),
+        }]
+    );
+    assert_eq!(report.missing_originals, ["gone"]);
+    assert_eq!(report.unreferenced_originals, ["ccc"]);
+}
+
+#[test]
+fn a_derived_object_shared_with_a_referenced_original_is_not_orphaned() {
+    let vault = FakeVault {
+        referenced: vec!["aaa".to_owned(), "bbb".to_owned()],
+        derivatives: vec![
+            // Identical outputs of two originals, one of them no longer referenced.
+            derivative("aaa", "thumb-x"),
+            derivative("old", "thumb-x"),
+            derivative("aaa", "thumb-y"),
+            derivative("bbb", "thumb-y"),
+        ],
+        originals: intact(&["aaa", "bbb"]),
+        derived: intact(&["thumb-x"]),
+        ..FakeVault::default()
+    };
+
+    let report = verify_vault(&vault, &vault).unwrap();
+
+    assert!(
+        report.orphaned_derived.is_empty(),
+        "{:?}",
+        report.orphaned_derived
+    );
+    // A missing output several Derived Assets share is reported once.
+    assert_eq!(report.missing_derived, ["thumb-y"]);
+}
+
+/// An original another task stores and records right after verification first reads the vault.
+#[derive(Default)]
+struct ConcurrentlyStoringVault {
+    referenced: RefCell<Vec<String>>,
+    originals: RefCell<Vec<String>>,
+    stored_meanwhile: RefCell<bool>,
+}
+
+impl ConcurrentlyStoringVault {
+    fn store_meanwhile(&self) {
+        if !self.stored_meanwhile.replace(true) {
+            self.originals.borrow_mut().push("late".to_owned());
+            self.referenced.borrow_mut().push("late".to_owned());
+        }
+    }
+}
+
+impl VaultCatalogPort for ConcurrentlyStoringVault {
+    fn referenced_originals(&self) -> Result<Vec<String>, PortError> {
+        let referenced = self.referenced.borrow().clone();
+        self.store_meanwhile();
+        Ok(referenced)
+    }
+
+    fn recorded_derivatives(&self) -> Result<Vec<RecordedDerivative>, PortError> {
+        Ok(Vec::new())
+    }
+}
+
+impl VaultStorePort for ConcurrentlyStoringVault {
+    fn stored_objects(&self, area: ObjectArea) -> Result<Vec<String>, PortError> {
+        let stored = match area {
+            ObjectArea::Original => self.originals.borrow().clone(),
+            ObjectArea::Derived => Vec::new(),
+        };
+        self.store_meanwhile();
+        Ok(stored)
+    }
+
+    fn check_object(&self, _area: ObjectArea, hash: &str) -> Result<ObjectCheck, PortError> {
+        Ok(
+            if self.originals.borrow().iter().any(|stored| stored == hash) {
+                ObjectCheck::Intact
+            } else {
+                ObjectCheck::Missing
+            },
+        )
+    }
+
+    fn staging_files(&self) -> Result<Vec<String>, PortError> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn an_original_stored_while_verifying_is_not_reported_unreferenced() {
+    let vault = ConcurrentlyStoringVault::default();
+
+    let report = verify_vault(&vault, &vault).unwrap();
+
+    assert!(report.is_healthy(), "{report:?}");
 }

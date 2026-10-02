@@ -107,7 +107,7 @@ impl ObjectStorePort for ContentAddressedStore {
 impl DerivedStorePort for ContentAddressedStore {
     fn open_original(&self, hash: &str) -> Result<Box<dyn Read + Send>, PortError> {
         // Only content addresses name objects, so no other path is ever opened.
-        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !is_object_hash(hash) {
             return Err(PortError::new(format!("{hash:?} is not an object hash")));
         }
         let file = File::open(self.object_path(hash)).map_err(io_error)?;
@@ -132,18 +132,41 @@ impl VaultStorePort for ContentAddressedStore {
     }
 
     fn check_object(&self, area: ObjectArea, hash: &str) -> Result<ObjectCheck, PortError> {
-        let path = self.address(area_name(area), hash);
-        match hash_file(&path) {
+        // Only content addresses name objects, so no other path is ever read.
+        if !is_object_hash(hash) {
+            return Ok(ObjectCheck::Unreadable {
+                reason: format!("{hash:?} is not an object hash"),
+            });
+        }
+        match hash_file(&self.address(area_name(area), hash)) {
             Ok(actual_hash) if actual_hash == hash => Ok(ObjectCheck::Intact),
             Ok(actual_hash) => Ok(ObjectCheck::Corrupt { actual_hash }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ObjectCheck::Missing),
-            Err(error) => Err(io_error(error)),
+            // One damaged or inaccessible object is a finding, not a reason to stop.
+            Err(error) => Ok(ObjectCheck::Unreadable {
+                reason: error.to_string(),
+            }),
         }
     }
 
+    /// Staging files of this process belong to stores still in progress, so only those of other
+    /// processes are listed.
     fn staging_files(&self) -> Result<Vec<String>, PortError> {
-        file_names(&self.root.join("staging"))
+        let own_prefix = format!("{}-", std::process::id());
+        Ok(file_names(&self.root.join("staging"))?
+            .into_iter()
+            .filter(|name| !name.starts_with(&own_prefix))
+            .collect())
     }
+}
+
+/// Whether `name` is a BLAKE3 hash as the store writes it: 64 lower-case hex digits. Upper case
+/// is refused since case-insensitive file systems would alias it to another object.
+fn is_object_hash(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn area_name(area: ObjectArea) -> &'static str {

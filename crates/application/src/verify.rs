@@ -34,6 +34,10 @@ pub enum ObjectCheck {
     Corrupt {
         actual_hash: String,
     },
+    /// The stored bytes could not be read, so they could not be checked.
+    Unreadable {
+        reason: String,
+    },
 }
 
 /// What the object store holds; checking an object rehashes its bytes.
@@ -53,6 +57,14 @@ pub struct CorruptObject {
     pub actual_hash: String,
 }
 
+/// A stored object whose bytes could not be read to check them, such as a file the vault may
+/// not open or a damaged disk sector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnreadableObject {
+    pub hash: String,
+    pub reason: String,
+}
+
 /// Every disagreement between the catalog and the object store, in catalog and then store
 /// order. Verifying changes nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -60,13 +72,16 @@ pub struct VaultReport {
     /// Originals retained Assets reference that the store lacks.
     pub missing_originals: Vec<String>,
     pub corrupt_originals: Vec<CorruptObject>,
+    pub unreadable_originals: Vec<UnreadableObject>,
     /// Stored originals no retained Asset references, such as those below the quality
     /// requirements of their run.
     pub unreferenced_originals: Vec<String>,
+    /// Outputs of recorded Derived Assets, each reported once however many record it.
     pub missing_derived: Vec<String>,
     pub corrupt_derived: Vec<CorruptObject>,
-    /// Derived Assets of originals no retained Asset references, then derived files no record
-    /// lists.
+    pub unreadable_derived: Vec<UnreadableObject>,
+    /// Outputs only Derived Assets of unreferenced originals record, then derived files no
+    /// record lists.
     pub orphaned_derived: Vec<String>,
     pub interrupted_staging: Vec<String>,
 }
@@ -77,57 +92,89 @@ impl VaultReport {
     }
 }
 
+/// Where a checked object goes in the report.
+struct ObjectFindings<'a> {
+    missing: &'a mut Vec<String>,
+    corrupt: &'a mut Vec<CorruptObject>,
+    unreadable: &'a mut Vec<UnreadableObject>,
+}
+
+impl ObjectFindings<'_> {
+    fn record(&mut self, hash: &str, check: ObjectCheck) {
+        match check {
+            ObjectCheck::Intact => {}
+            ObjectCheck::Missing => self.missing.push(hash.to_owned()),
+            ObjectCheck::Corrupt { actual_hash } => self.corrupt.push(CorruptObject {
+                hash: hash.to_owned(),
+                actual_hash,
+            }),
+            ObjectCheck::Unreadable { reason } => self.unreadable.push(UnreadableObject {
+                hash: hash.to_owned(),
+                reason,
+            }),
+        }
+    }
+}
+
 /// Compares what the catalog references with what the object store holds, rehashing every
-/// referenced object.
+/// referenced object. The store is listed before the catalog is read, so an object another
+/// task stores and records meanwhile is seen as referenced rather than unreferenced.
 pub fn verify_vault(
     catalog: &dyn VaultCatalogPort,
     store: &dyn VaultStorePort,
 ) -> Result<VaultReport, ApplicationError> {
+    let stored_originals = store.stored_objects(ObjectArea::Original)?;
+    let stored_derived = store.stored_objects(ObjectArea::Derived)?;
+    let staging = store.staging_files()?;
+    let referenced = catalog.referenced_originals()?;
+    let derivatives = catalog.recorded_derivatives()?;
     let mut report = VaultReport::default();
 
-    let referenced = catalog.referenced_originals()?;
+    let mut originals = ObjectFindings {
+        missing: &mut report.missing_originals,
+        corrupt: &mut report.corrupt_originals,
+        unreadable: &mut report.unreadable_originals,
+    };
     for hash in &referenced {
-        match store.check_object(ObjectArea::Original, hash)? {
-            ObjectCheck::Intact => {}
-            ObjectCheck::Missing => report.missing_originals.push(hash.clone()),
-            ObjectCheck::Corrupt { actual_hash } => report.corrupt_originals.push(CorruptObject {
-                hash: hash.clone(),
-                actual_hash,
-            }),
-        }
+        originals.record(hash, store.check_object(ObjectArea::Original, hash)?);
     }
-    let referenced: HashSet<String> = referenced.into_iter().collect();
-    report.unreferenced_originals = store
-        .stored_objects(ObjectArea::Original)?
+    let referenced: HashSet<&str> = referenced.iter().map(String::as_str).collect();
+    report.unreferenced_originals = stored_originals
         .into_iter()
-        .filter(|hash| !referenced.contains(hash))
+        .filter(|hash| !referenced.contains(hash.as_str()))
         .collect();
 
-    let derivatives = catalog.recorded_derivatives()?;
+    // An output several Derived Assets share is checked once, and stays in use while any of
+    // them belongs to a referenced original.
+    let mut outputs: Vec<&str> = Vec::new();
+    let mut in_use: HashSet<&str> = HashSet::new();
     for derivative in &derivatives {
-        match store.check_object(ObjectArea::Derived, &derivative.object_hash)? {
-            ObjectCheck::Intact => {}
-            ObjectCheck::Missing => report.missing_derived.push(derivative.object_hash.clone()),
-            ObjectCheck::Corrupt { actual_hash } => report.corrupt_derived.push(CorruptObject {
-                hash: derivative.object_hash.clone(),
-                actual_hash,
-            }),
+        if !outputs.contains(&derivative.object_hash.as_str()) {
+            outputs.push(&derivative.object_hash);
         }
-        if !referenced.contains(&derivative.original_hash) {
-            report.orphaned_derived.push(derivative.object_hash.clone());
+        if referenced.contains(derivative.original_hash.as_str()) {
+            in_use.insert(&derivative.object_hash);
         }
     }
-    let recorded: HashSet<&str> = derivatives
+    let mut derived = ObjectFindings {
+        missing: &mut report.missing_derived,
+        corrupt: &mut report.corrupt_derived,
+        unreadable: &mut report.unreadable_derived,
+    };
+    for output in &outputs {
+        derived.record(output, store.check_object(ObjectArea::Derived, output)?);
+    }
+    report.orphaned_derived = outputs
         .iter()
-        .map(|derivative| derivative.object_hash.as_str())
+        .filter(|output| !in_use.contains(*output))
+        .map(|output| (*output).to_owned())
+        .chain(
+            stored_derived
+                .into_iter()
+                .filter(|hash| !outputs.contains(&hash.as_str())),
+        )
         .collect();
-    let stray: Vec<String> = store
-        .stored_objects(ObjectArea::Derived)?
-        .into_iter()
-        .filter(|hash| !recorded.contains(hash.as_str()))
-        .collect();
-    report.orphaned_derived.extend(stray);
 
-    report.interrupted_staging = store.staging_files()?;
+    report.interrupted_staging = staging;
     Ok(report)
 }

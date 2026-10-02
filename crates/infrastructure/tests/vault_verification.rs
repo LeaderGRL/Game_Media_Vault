@@ -91,3 +91,52 @@ fn an_empty_vault_is_healthy() {
 
     assert!(verify_vault(&catalog, &store).unwrap().is_healthy());
 }
+
+#[test]
+fn objects_that_cannot_be_read_or_are_not_named_by_a_hash_are_reported_unreadable() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let blocked = store.store_original(&mut &b"blocked cover"[..]).unwrap();
+    catalog
+        .persist_asset(box_front("Blocked", &blocked.hash, blocked.byte_len))
+        .unwrap();
+    catalog
+        .persist_asset(box_front("Tampered", "../../outside", 1))
+        .unwrap();
+    // A directory where the object should be cannot be read as one.
+    fs::remove_file(store.object_path(&blocked.hash)).unwrap();
+    fs::create_dir(store.object_path(&blocked.hash)).unwrap();
+
+    let report = verify_vault(&catalog, &store).unwrap();
+
+    let unreadable: Vec<&str> = report
+        .unreadable_originals
+        .iter()
+        .map(|object| object.hash.as_str())
+        .collect();
+    assert_eq!(unreadable, ["../../outside", blocked.hash.as_str()]);
+    assert!(report.missing_originals.is_empty());
+}
+
+#[test]
+fn staging_files_of_this_process_are_stores_in_progress() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    fs::create_dir_all(vault.join("staging")).unwrap();
+    fs::write(
+        vault
+            .join("staging")
+            .join(format!("{}-0.tmp", std::process::id())),
+        b"storing",
+    )
+    .unwrap();
+    fs::write(vault.join("staging").join("4242-0.tmp"), b"interrupted").unwrap();
+
+    let report = verify_vault(&catalog, &store).unwrap();
+
+    assert_eq!(report.interrupted_staging, ["4242-0.tmp"]);
+}
