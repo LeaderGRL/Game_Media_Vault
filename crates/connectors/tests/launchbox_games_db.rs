@@ -1,7 +1,7 @@
 use std::{
-    cell::RefCell,
     collections::HashSet,
     io::{Cursor, Read, Write},
+    sync::Mutex,
 };
 
 use game_media_vault_application::{ConnectorPort, PortError};
@@ -133,7 +133,7 @@ fn metadata_archive(entries: &[(&str, &str)]) -> Vec<u8> {
 
 struct FixtureTransport {
     archive: Vec<u8>,
-    requests: RefCell<Vec<String>>,
+    requests: Mutex<Vec<String>>,
 }
 
 impl FixtureTransport {
@@ -147,14 +147,14 @@ impl FixtureTransport {
     fn serving(archive: Vec<u8>) -> Self {
         Self {
             archive,
-            requests: RefCell::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl HttpTransport for &FixtureTransport {
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
-        self.requests.borrow_mut().push(url.to_owned());
+        self.requests.lock().unwrap().push(url.to_owned());
         let body = if url == LAUNCHBOX_METADATA_URL {
             self.archive.clone()
         } else {
@@ -227,7 +227,10 @@ fn discovers_the_images_of_a_requested_game_from_the_dataset() {
         ]
     );
     assert_eq!(candidates[1].region, "Japan");
-    assert_eq!(*transport.requests.borrow(), [LAUNCHBOX_METADATA_URL]);
+    assert_eq!(
+        *transport.requests.lock().unwrap(),
+        [LAUNCHBOX_METADATA_URL]
+    );
 }
 
 #[test]
@@ -300,7 +303,7 @@ fn checks_plans_against_the_platforms_it_covers_without_downloading() {
         "{unknown_platform:?}"
     );
     assert!(languages.is_some());
-    assert!(transport.requests.borrow().is_empty());
+    assert!(transport.requests.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -318,7 +321,7 @@ fn downloads_a_candidate_from_its_locator() {
 
     assert_eq!(bytes, b"launchbox image fixture");
     assert_eq!(
-        transport.requests.borrow().last().unwrap(),
+        transport.requests.lock().unwrap().last().unwrap(),
         "https://images.launchbox-app.com/2d0a6c62-smb-front-us.jpg"
     );
 }
@@ -445,7 +448,7 @@ fn refuses_to_discover_with_language_filters_before_downloading() {
         .unwrap_err();
 
     assert!(error.message().contains("language"), "{}", error.message());
-    assert!(transport.requests.borrow().is_empty());
+    assert!(transport.requests.lock().unwrap().is_empty());
 }
 
 #[test]

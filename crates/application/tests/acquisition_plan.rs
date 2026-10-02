@@ -1,4 +1,7 @@
-use std::{cell::Cell, io::Read};
+use std::{
+    io::Read,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use game_media_vault_application::{
     AcquisitionPlan, ApplicationError, ConnectorPort, ErrorKind, ExcludedSource, PlannedSource,
@@ -16,7 +19,7 @@ struct StubConnector {
     asset_types: Vec<AssetType>,
     direct_media_download: bool,
     refusal: Option<&'static str>,
-    consultations: Cell<usize>,
+    consultations: AtomicUsize,
 }
 
 fn connector(source_id: &'static str, asset_types: Vec<AssetType>) -> StubConnector {
@@ -25,7 +28,7 @@ fn connector(source_id: &'static str, asset_types: Vec<AssetType>) -> StubConnec
         asset_types,
         direct_media_download: true,
         refusal: None,
-        consultations: Cell::new(0),
+        consultations: AtomicUsize::new(0),
     }
 }
 
@@ -45,7 +48,7 @@ impl ConnectorPort for StubConnector {
         &self,
         _request: &AcquisitionRequest,
     ) -> Result<Option<String>, PortError> {
-        self.consultations.set(self.consultations.get() + 1);
+        self.consultations.fetch_add(1, Ordering::SeqCst);
         Ok(self.refusal.map(str::to_owned))
     }
 
@@ -104,7 +107,7 @@ fn an_explicit_selection_contacts_only_the_selected_sources() {
             asset_types: vec![AssetType::BoxFront],
         }]
     );
-    assert_eq!(other.consultations.get(), 0);
+    assert_eq!(other.consultations.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -186,7 +189,7 @@ fn auto_leaves_out_sources_that_cannot_serve_the_request_and_says_why() {
         ]
     );
     // A source that acquires none of the requested types is not consulted.
-    assert_eq!(unrelated.consultations.get(), 0);
+    assert_eq!(unrelated.consultations.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -231,7 +234,7 @@ fn a_source_that_cannot_download_media_is_left_out_without_being_consulted() {
             reason: "cannot download media directly".to_owned(),
         }]
     );
-    assert_eq!(index.consultations.get(), 0);
+    assert_eq!(index.consultations.load(Ordering::SeqCst), 0);
 }
 
 fn uncovered(error: ApplicationError) -> (Vec<AssetTypeSelector>, Vec<ExcludedSource>) {
@@ -263,7 +266,7 @@ fn a_requested_type_no_selected_source_acquires_is_refused_before_consulting_any
         uncovered(error),
         (vec![AssetTypeSelector::Manual], Vec::new())
     );
-    assert_eq!(libretro.consultations.get(), 0);
+    assert_eq!(libretro.consultations.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -318,7 +321,7 @@ fn requirements_the_engine_cannot_apply_are_refused_before_consulting_any_source
     let error = plan_acquisition(&request, &connectors).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Unsupported);
-    assert_eq!(libretro.consultations.get(), 0);
+    assert_eq!(libretro.consultations.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -337,5 +340,5 @@ fn a_source_selected_twice_is_planned_and_consulted_once() {
     );
 
     assert_eq!(plan.sources.len(), 1);
-    assert_eq!(libretro.consultations.get(), 1);
+    assert_eq!(libretro.consultations.load(Ordering::SeqCst), 1);
 }

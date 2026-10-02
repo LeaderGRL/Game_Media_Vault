@@ -1,6 +1,6 @@
 use std::{
-    cell::RefCell,
     io::{Cursor, Read},
+    sync::Mutex,
 };
 
 use game_media_vault_application::{ConnectorPort, PortError};
@@ -27,12 +27,12 @@ const GITMODULES_FIXTURE: &str = r#"
 
 #[derive(Default)]
 struct FixtureTransport {
-    requests: RefCell<Vec<String>>,
+    requests: Mutex<Vec<String>>,
 }
 
 impl HttpTransport for FixtureTransport {
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
-        self.requests.borrow_mut().push(url.to_owned());
+        self.requests.lock().unwrap().push(url.to_owned());
         if url.ends_with("/.gitmodules") {
             Ok(GITMODULES_FIXTURE.as_bytes().to_vec())
         } else {
@@ -41,7 +41,7 @@ impl HttpTransport for FixtureTransport {
     }
 
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
-        self.requests.borrow_mut().push(url.to_owned());
+        self.requests.lock().unwrap().push(url.to_owned());
         Ok(Box::new(Cursor::new(b"libretro png fixture".to_vec())))
     }
 }
@@ -332,7 +332,7 @@ fn explains_the_requests_it_cannot_execute_before_any_discovery() {
     let base = request(vec![AssetTypeSelector::BoxFront]);
 
     assert_eq!(connector.unsupported_request_reason(&base).unwrap(), None);
-    transport.requests.borrow_mut().clear();
+    transport.requests.lock().unwrap().clear();
     for (request, topic) in [
         (
             request_with(|draft| draft.games = GameSelection::All),
@@ -354,7 +354,7 @@ fn explains_the_requests_it_cannot_execute_before_any_discovery() {
         assert!(reason.contains(topic), "{reason}");
     }
     // Selections Libretro can never satisfy are refused without reaching the source.
-    assert!(transport.requests.borrow().is_empty());
+    assert!(transport.requests.lock().unwrap().is_empty());
 }
 
 #[test]

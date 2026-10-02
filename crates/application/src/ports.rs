@@ -64,8 +64,9 @@ impl PortError {
     }
 }
 
-/// Immutable content-addressed store of original bytes.
-pub trait ObjectStorePort {
+/// Immutable content-addressed store of original bytes. Executions store originals from several
+/// threads at once.
+pub trait ObjectStorePort: Send + Sync {
     /// Streams original bytes into the store and returns their identity. Publishing is atomic
     /// and idempotent: identical bytes resolve to the same verified object. Originals are
     /// stored before the catalog references them, so an interrupted import can only leave an
@@ -273,8 +274,9 @@ pub trait RunRepositoryPort {
 ///
 /// Discovered candidates are persisted, so `AssetCandidate::source_url` must be a stable,
 /// absolute URL without userinfo, query or fragment. Connectors that need API keys, sessions or
-/// signed URLs add them inside `download`, which receives the persisted candidate.
-pub trait ConnectorPort {
+/// signed URLs add them inside `download`, which receives the persisted candidate. Executions
+/// download from several threads at once.
+pub trait ConnectorPort: Send + Sync {
     fn source_id(&self) -> &'static str;
 
     fn capabilities(&self) -> ConnectorCapabilities;

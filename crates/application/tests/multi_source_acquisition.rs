@@ -1,6 +1,6 @@
 mod support;
 
-use std::{cell::RefCell, io::Read};
+use std::io::Read;
 
 use game_media_vault_application::{
     ApplicationError, ConnectorPort, PortError, RunRepositoryPort, acquire_run_with_connectors,
@@ -243,7 +243,7 @@ fn a_source_whose_downloads_fail_leaves_the_others_progressing() {
 /// A connector that runs `during_discovery` while it discovers, as a human acting meanwhile.
 struct ActingConnector<'a> {
     inner: FakeConnector,
-    during_discovery: &'a dyn Fn(),
+    during_discovery: &'a (dyn Fn() + Sync),
 }
 
 impl ConnectorPort for ActingConnector<'_> {
@@ -432,7 +432,7 @@ fn sources_take_turns_so_a_long_queue_does_not_hold_back_the_others() {
     let snaps = snap_connector(vec![snap.clone()]);
     let run = start(&vault, auto_draft(), &[&box_source, &snaps]).unwrap();
     // Every download, whichever Source served it, in the order the execution asked for it.
-    let downloads = RefCell::new(Vec::new());
+    let downloads = Shared::new(Vec::new());
     let logged_boxes = LoggingConnector {
         inner: box_source,
         log: &downloads,
@@ -460,7 +460,7 @@ fn sources_take_turns_so_a_long_queue_does_not_hold_back_the_others() {
 /// A connector that also records each download in a log shared with other connectors.
 struct LoggingConnector<'a> {
     inner: FakeConnector,
-    log: &'a RefCell<Vec<String>>,
+    log: &'a Shared<Vec<String>>,
 }
 
 impl ConnectorPort for LoggingConnector<'_> {

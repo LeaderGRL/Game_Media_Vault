@@ -128,7 +128,7 @@ impl ConnectorPort for ThreadRecordingConnector {
 
 struct BlockingConnector {
     download_started: mpsc::Sender<()>,
-    continue_download: mpsc::Receiver<()>,
+    continue_download: Mutex<mpsc::Receiver<()>>,
 }
 
 impl ConnectorPort for BlockingConnector {
@@ -149,6 +149,8 @@ impl ConnectorPort for BlockingConnector {
             .send(())
             .map_err(|error| PortError::new(error.to_string()))?;
         self.continue_download
+            .lock()
+            .unwrap()
             .recv()
             .map_err(|error| PortError::new(error.to_string()))?;
         FixtureConnector.download(candidate)
@@ -359,7 +361,7 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
                     started.id,
                     vec![Box::new(BlockingConnector {
                         download_started: download_started_tx,
-                        continue_download: continue_download_rx,
+                        continue_download: Mutex::new(continue_download_rx),
                     })],
                     matching_policy(),
                 ),

@@ -1,6 +1,6 @@
 use std::{
-    cell::RefCell,
     io::{Cursor, Read},
+    sync::Mutex,
 };
 
 use game_media_vault_application::{
@@ -17,7 +17,7 @@ use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::tempdir;
 
 struct PreviewConnector {
-    downloads: RefCell<Vec<String>>,
+    downloads: Mutex<Vec<String>>,
 }
 
 impl ConnectorPort for PreviewConnector {
@@ -41,7 +41,8 @@ impl ConnectorPort for PreviewConnector {
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         self.downloads
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push(candidate.source_url.clone());
         Ok(Box::new(Cursor::new(b"preview bytes".to_vec())))
     }
@@ -185,7 +186,7 @@ fn tauri_review_preview_returns_backend_media_bytes() {
     let (_, review_item_id) = seed_parked_review(&catalog, preview_candidate.clone());
     drop(catalog);
     let connector = PreviewConnector {
-        downloads: RefCell::new(Vec::new()),
+        downloads: Mutex::new(Vec::new()),
     };
 
     let preview =
@@ -194,7 +195,7 @@ fn tauri_review_preview_returns_backend_media_bytes() {
 
     assert_eq!(preview, b"preview bytes");
     assert_eq!(
-        connector.downloads.borrow().as_slice(),
+        connector.downloads.lock().unwrap().as_slice(),
         &[preview_candidate.source_url]
     );
 }
