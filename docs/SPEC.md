@@ -608,6 +608,8 @@ The application should be able to verify the vault by checking:
 - interrupted staging files;
 - stale work items.
 
+`game-media-vault verify`, and the desktop `verify_vault` command on a blocking worker, compare the catalog with the stored bytes and repair nothing. Every original a retained Asset references and every recorded Derived Asset is hashed again: one the store lacks is reported missing, one whose bytes hash to another address corrupt, and one that cannot be read (or whose recorded hash is not a lower-case BLAKE3 hash, which is never looked up) unreadable, without stopping the verification. An output several Derived Assets share is checked and reported once. Stored originals no retained Asset references (such as those below the quality requirements of their run) are reported unreferenced; outputs that only Derived Assets of such originals record, and derived files no record lists, orphaned; files left in `staging/` interrupted (except those of stores this process is still running). The store is listed before the catalog is read, so an object another task stores and records meanwhile is not reported unreferenced; staging files of another process still storing look interrupted. The report says whether the vault is healthy, that is whether it found nothing. Stale work items, re-inspecting the media of originals recorded before media inspection, and repair actions are not covered yet.
+
 ## 24. Configuration and Secrets
 
 Source credentials and API tokens are configuration, never catalog metadata. Secrets must use OS-appropriate protected storage when available and must not be written into exported Acquisition Requests, logs, or source provenance records.

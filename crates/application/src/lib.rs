@@ -11,6 +11,7 @@ mod plan;
 mod ports;
 mod review;
 mod runs;
+mod verify;
 
 pub use acquisition::{acquire_run_with_connector, start_acquisition_run_for_connector};
 pub use derived::{
@@ -51,4 +52,8 @@ pub use runs::{
     build_acquisition_request, cancel_acquisition_run, complete_acquisition_run,
     list_acquisition_runs, load_acquisition_run, pause_acquisition_run, resume_acquisition_run,
     start_acquisition_run,
+};
+pub use verify::{
+    CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, UnreadableObject, VaultCatalogPort,
+    VaultReport, VaultStorePort, verify_vault,
 };

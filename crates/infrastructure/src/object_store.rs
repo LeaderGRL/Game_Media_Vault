@@ -1,16 +1,33 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
-use game_media_vault_application::{DerivedStorePort, ObjectStorePort, PortError};
+use game_media_vault_application::{
+    DerivedStorePort, ObjectArea, ObjectCheck, ObjectStorePort, PortError, VaultStorePort,
+};
 use game_media_vault_domain::{MediaInfo, StoredObject};
 
 use crate::media::MediaInspector;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Staging files of the stores this process is running, which verification must not take for
+/// interrupted ones.
+static STAGING_IN_PROGRESS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+fn staging_in_progress() -> MutexGuard<'static, BTreeSet<PathBuf>> {
+    // The set stays consistent even if a holder panicked.
+    STAGING_IN_PROGRESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// BLAKE3-addressed store of immutable original bytes (ADR 0002).
 pub struct ContentAddressedStore {
@@ -105,7 +122,7 @@ impl ObjectStorePort for ContentAddressedStore {
 impl DerivedStorePort for ContentAddressedStore {
     fn open_original(&self, hash: &str) -> Result<Box<dyn Read + Send>, PortError> {
         // Only content addresses name objects, so no other path is ever opened.
-        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !is_object_hash(hash) {
             return Err(PortError::new(format!("{hash:?} is not an object hash")));
         }
         let file = File::open(self.object_path(hash)).map_err(io_error)?;
@@ -118,6 +135,62 @@ impl DerivedStorePort for ContentAddressedStore {
     }
 }
 
+impl VaultStorePort for ContentAddressedStore {
+    fn stored_objects(&self, area: ObjectArea) -> Result<Vec<String>, PortError> {
+        let mut hashes = Vec::new();
+        for first in subdirectories(&self.root.join(area_name(area)))? {
+            for second in subdirectories(&first)? {
+                hashes.extend(file_names(&second)?);
+            }
+        }
+        Ok(hashes)
+    }
+
+    fn check_object(&self, area: ObjectArea, hash: &str) -> Result<ObjectCheck, PortError> {
+        // Only content addresses name objects, so no other path is ever read.
+        if !is_object_hash(hash) {
+            return Ok(ObjectCheck::Unreadable {
+                reason: format!("{hash:?} is not an object hash"),
+            });
+        }
+        match hash_file(&self.address(area_name(area), hash)) {
+            Ok(actual_hash) if actual_hash == hash => Ok(ObjectCheck::Intact),
+            Ok(actual_hash) => Ok(ObjectCheck::Corrupt { actual_hash }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ObjectCheck::Missing),
+            // One damaged or inaccessible object is a finding, not a reason to stop.
+            Err(error) => Ok(ObjectCheck::Unreadable {
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    /// Staging files of the stores this process is running are left out; any other is listed.
+    fn staging_files(&self) -> Result<Vec<String>, PortError> {
+        let staging_dir = self.root.join("staging");
+        let in_progress = staging_in_progress();
+        Ok(file_names(&staging_dir)?
+            .into_iter()
+            .filter(|name| !in_progress.contains(&staging_dir.join(name)))
+            .collect())
+    }
+}
+
+/// Whether `name` is a BLAKE3 hash as the store writes it: 64 lower-case hex digits. Upper case
+/// is refused since case-insensitive file systems would alias it to another object.
+fn is_object_hash(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn area_name(area: ObjectArea) -> &'static str {
+    match area {
+        ObjectArea::Original => "objects",
+        ObjectArea::Derived => "derived",
+    }
+}
+
 struct StagedObject {
     staging_path: PathBuf,
     stored: StoredObject,
@@ -127,7 +200,59 @@ impl Drop for StagedObject {
     fn drop(&mut self) {
         // Already moved when publication succeeded.
         let _ = fs::remove_file(&self.staging_path);
+        staging_in_progress().remove(&self.staging_path);
     }
+}
+
+/// The BLAKE3 hash of the bytes stored at `path`.
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    let mut input = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// The names of the files directly under `directory`, sorted; none when it does not exist.
+fn file_names(directory: &Path) -> Result<Vec<String>, PortError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(error)),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        if entry.file_type().map_err(io_error)?.is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The directories directly under `directory`, sorted; none when it does not exist.
+fn subdirectories(directory: &Path) -> Result<Vec<PathBuf>, PortError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(error)),
+    };
+    let mut directories = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        if entry.file_type().map_err(io_error)?.is_dir() {
+            directories.push(entry.path());
+        }
+    }
+    directories.sort();
+    Ok(directories)
 }
 
 fn verify_existing_object(
@@ -150,18 +275,7 @@ fn verify_existing_object(
         )));
     }
 
-    let mut input = File::open(path).map_err(io_error)?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = input.read(&mut buffer).map_err(io_error)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-
-    let actual_hash = hasher.finalize().to_hex().to_string();
+    let actual_hash = hash_file(path).map_err(io_error)?;
     if actual_hash != expected_hash {
         return Err(PortError::new(format!(
             "object integrity check failed: {} hashes to {actual_hash}, expected {expected_hash}",
@@ -182,7 +296,10 @@ fn create_staging_file(staging_dir: &Path) -> Result<(PathBuf, File), PortError>
             .write(true)
             .open(&staging_path)
         {
-            Ok(file) => return Ok((staging_path, file)),
+            Ok(file) => {
+                staging_in_progress().insert(staging_path.clone());
+                return Ok((staging_path, file));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error(error)),
         }

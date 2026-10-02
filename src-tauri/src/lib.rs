@@ -5,7 +5,7 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary, ErrorKind,
-    LibraryPage, LibraryQuery, PortError,
+    LibraryPage, LibraryQuery, PortError, VaultReport,
     acquire_run_with_connector as acquire_run_with_connector_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
@@ -18,6 +18,7 @@ use game_media_vault_application::{
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
     search_library as search_library_use_case, start_acquisition_run_for_connector,
+    verify_vault as verify_vault_use_case,
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
@@ -143,6 +144,20 @@ pub async fn derive_thumbnails_in_vault_async(
     .map_err(|error| CommandError::worker_failed("thumbnail rendering", error))?
 }
 
+/// Compares the catalog with the stored bytes, on a blocking worker since every referenced
+/// object is hashed again. Nothing is repaired.
+pub async fn verify_vault_async(vault_root: PathBuf) -> Result<VaultReport, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let catalog = open_existing_catalog(&vault_root)?;
+        Ok(verify_vault_use_case(
+            &catalog,
+            &ContentAddressedStore::new(&vault_root),
+        )?)
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("vault verification", error))?
+}
+
 /// Searches the vault's Library with the query every frontend shares.
 pub fn search_library_in_vault(
     vault_root: &Path,
@@ -203,6 +218,11 @@ async fn derive_thumbnails(
     max_edge: u32,
 ) -> Result<DerivationSummary, CommandError> {
     derive_thumbnails_in_vault_async(session.root()?, max_edge).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn verify_vault(session: State<'_, VaultSession>) -> Result<VaultReport, CommandError> {
+    verify_vault_async(session.root()?).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -501,6 +521,7 @@ pub fn run() {
             list_library,
             search_library,
             derive_thumbnails,
+            verify_vault,
             list_review_items,
             resolve_review_item,
             load_review_preview,

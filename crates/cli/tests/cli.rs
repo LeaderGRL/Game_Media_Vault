@@ -1380,3 +1380,51 @@ fn a_request_document_that_cannot_be_read_is_an_invalid_request() {
 
     assert_eq!(error.exit_code(), 2, "{error}");
 }
+
+#[test]
+fn verify_reports_originals_the_vault_lost_without_repairing_anything() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("cover-front.png");
+    std::fs::write(&source, b"cover bytes").unwrap();
+    run_in_vault(
+        &vault,
+        &[
+            "import-box-front",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "Sony - PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let healthy: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["verify"]).unwrap()).unwrap();
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let hash = library[0]["assets"][0]["object_hash"].as_str().unwrap();
+    std::fs::remove_file(
+        vault
+            .join("objects")
+            .join(&hash[0..2])
+            .join(&hash[2..4])
+            .join(hash),
+    )
+    .unwrap();
+
+    let report: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["verify"]).unwrap()).unwrap();
+
+    assert_eq!(healthy["healthy"], true);
+    assert_eq!(report["healthy"], false);
+    assert_eq!(report["missing_originals"], serde_json::json!([hash]));
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    assert_eq!(library.as_array().unwrap().len(), 1);
+}
