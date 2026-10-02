@@ -410,6 +410,7 @@ impl AcquisitionRequest {
 pub enum AssetType {
     BoxFront,
     BoxBack,
+    Spine,
     #[serde(rename = "box_3d_render")]
     Box3dRender,
     CartridgeFront,
@@ -437,9 +438,10 @@ impl AssetTypeSelector {
 
 impl AssetType {
     /// Every stored type, in taxonomy order.
-    pub const ALL: [AssetType; 12] = [
+    pub const ALL: [AssetType; 13] = [
         Self::BoxFront,
         Self::BoxBack,
+        Self::Spine,
         Self::Box3dRender,
         Self::CartridgeFront,
         Self::CartridgeBack,
@@ -457,6 +459,7 @@ impl AssetType {
         match self {
             Self::BoxFront => AssetTypeSelector::BoxFront,
             Self::BoxBack => AssetTypeSelector::BoxBack,
+            Self::Spine => AssetTypeSelector::Spine,
             Self::Box3dRender => AssetTypeSelector::Box3dRender,
             Self::CartridgeFront => AssetTypeSelector::CartridgeFront,
             Self::CartridgeBack => AssetTypeSelector::CartridgeBack,
@@ -473,7 +476,9 @@ impl AssetType {
     /// The family selector this type belongs to.
     pub fn family(self) -> AssetTypeSelector {
         match self {
-            Self::BoxFront | Self::BoxBack | Self::Box3dRender => AssetTypeSelector::Packaging,
+            Self::BoxFront | Self::BoxBack | Self::Spine | Self::Box3dRender => {
+                AssetTypeSelector::Packaging
+            }
             Self::CartridgeFront | Self::CartridgeBack | Self::Disc => {
                 AssetTypeSelector::PhysicalMedia
             }
@@ -490,6 +495,7 @@ impl AssetType {
         match self {
             Self::BoxFront => "box_front",
             Self::BoxBack => "box_back",
+            Self::Spine => "spine",
             Self::Box3dRender => "box_3d_render",
             Self::CartridgeFront => "cartridge_front",
             Self::CartridgeBack => "cartridge_back",

@@ -25,9 +25,10 @@ const IMAGE_BASE_URL: &str = "https://images.launchbox-app.com/";
 const METADATA_ENTRY: &str = "Metadata.xml";
 
 /// The image types acquired and the Asset Type each holds.
-const IMAGE_TYPES: [(AssetType, &str); 12] = [
+const IMAGE_TYPES: [(AssetType, &str); 13] = [
     (AssetType::BoxFront, "Box - Front"),
     (AssetType::BoxBack, "Box - Back"),
+    (AssetType::Spine, "Box - Spine"),
     (AssetType::Box3dRender, "Box - 3D"),
     (AssetType::CartridgeFront, "Cart - Front"),
     (AssetType::CartridgeBack, "Cart - Back"),

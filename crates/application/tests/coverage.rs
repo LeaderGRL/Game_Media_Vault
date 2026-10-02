@@ -145,3 +145,19 @@ fn a_cartridge_back_alone_does_not_meet_the_cartridge_requirement() {
 
     assert!(coverage.profiles[1].missing.contains(&Cartridge));
 }
+
+#[test]
+fn a_box_front_back_and_spine_complete_the_packaging_profile() {
+    let coverage = coverage_of(
+        "Nintendo - Super Nintendo Entertainment System",
+        vec![
+            box_front(3),
+            asset(4, AssetType::BoxBack),
+            asset(5, AssetType::Spine),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(coverage.status, CoverageStatus::PackagingComplete);
+    assert!(coverage.profiles[0].missing.is_empty());
+}
