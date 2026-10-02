@@ -9,6 +9,15 @@ use super::{SqliteCatalog, sql_error};
 
 const ACQUISITION_REQUEST_SCHEMA_VERSION: i64 = 1;
 
+/// The oldest queued work of one Source of a run, at most `?3` items, oldest first. Its Source
+/// expression matches `idx_run_work_source`, so the lookup reads those items alone.
+const QUEUED_WORK_OF_SOURCE: &str = "
+    SELECT id, work_key, candidate_json
+    FROM acquisition_run_work
+    WHERE run_id = ?1 AND json_extract(candidate_json, '$.source_id') = ?2 AND state = 'queued'
+    ORDER BY id
+    LIMIT ?3";
+
 impl RunRepositoryPort for SqliteCatalog {
     fn create_run(
         &self,
@@ -215,39 +224,56 @@ impl RunRepositoryPort for SqliteCatalog {
         skipped_sources: &[String],
         per_source: usize,
     ) -> Result<Vec<AcquisitionWorkItem>, PortError> {
-        let skipped_sources_json = serde_json::to_string(skipped_sources).map_err(|error| {
-            PortError::new(format!("failed to serialize skipped sources: {error}"))
-        })?;
         let per_source = i64::try_from(per_source).unwrap_or(i64::MAX);
-        let connection = self.connect()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT work_key, candidate_json
-                 FROM (
-                     SELECT work.id, work.work_key, work.candidate_json,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY json_extract(work.candidate_json, '$.source_id')
-                                ORDER BY work.id
-                            ) AS position
-                     FROM acquisition_run_work AS work
-                     INNER JOIN acquisition_runs AS run ON run.id = work.run_id
-                     WHERE work.run_id = ?1 AND work.state = 'queued' AND run.status = 'running'
-                       AND json_extract(work.candidate_json, '$.source_id')
-                           NOT IN (SELECT value FROM json_each(?2))
-                 )
-                 WHERE position <= ?3
-                 ORDER BY position, id",
+        let mut connection = self.connect()?;
+        // One snapshot for the run's status and every Source's lookup.
+        let transaction = connection.transaction().map_err(sql_error)?;
+        let running = transaction
+            .query_row(
+                "SELECT status = 'running' FROM acquisition_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get::<_, bool>(0),
             )
-            .map_err(sql_error)?;
-        let rows = statement
-            .query_map(params![run_id, skipped_sources_json, per_source], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
+            .optional()
             .map_err(sql_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap_or(false);
+        if !running {
+            return Ok(Vec::new());
+        }
+        let sources: Vec<String> = transaction
+            .prepare("SELECT source_id FROM acquisition_run_discoveries WHERE run_id = ?1")
+            .map_err(sql_error)?
+            .query_map(params![run_id], |row| row.get(0))
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<_>>()
             .map_err(sql_error)?;
-        rows.into_iter()
-            .map(|(key, candidate_json)| {
+        let mut statement = transaction
+            .prepare(QUEUED_WORK_OF_SOURCE)
+            .map_err(sql_error)?;
+        let mut found = Vec::new();
+        for source_id in sources
+            .iter()
+            .filter(|source_id| !skipped_sources.contains(source_id))
+        {
+            let rows = statement
+                .query_map(params![run_id, source_id, per_source], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(sql_error)?;
+            for (position, row) in rows.enumerate() {
+                let (id, key, candidate_json) = row.map_err(sql_error)?;
+                found.push((position, id, key, candidate_json));
+            }
+        }
+        // Every Source's oldest item first, in queue order, then every Source's second.
+        found.sort_by_key(|(position, id, _, _)| (*position, *id));
+        found
+            .into_iter()
+            .map(|(_, _, key, candidate_json)| {
                 let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
                     PortError::new(format!(
                         "catalog contains an invalid work candidate: {error}"
@@ -471,4 +497,36 @@ fn run_status_to_str(status: AcquisitionRunStatus) -> &'static str {
 /// Converts a SQL `COUNT`, which is never negative.
 fn count(value: i64) -> u64 {
     u64::try_from(value).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn the_queued_work_of_a_source_is_looked_up_through_its_index() {
+        let temp = tempdir().unwrap();
+        let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+        let connection = catalog.connect().unwrap();
+
+        let plan: Vec<String> = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {QUEUED_WORK_OF_SOURCE}"))
+            .unwrap()
+            .query_map(params![1, "a-source", 2], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("USING INDEX idx_run_work_source")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
 }

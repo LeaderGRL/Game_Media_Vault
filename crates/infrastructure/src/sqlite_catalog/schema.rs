@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 11;
+const VAULT_SCHEMA_VERSION: i32 = 12;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -27,7 +27,23 @@ const MIGRATIONS: &[Migration] = &[
     add_release_assertion_value_index,
     add_source_failures,
     add_reference_dump_sets,
+    add_run_work_source_index,
 ];
+
+/// Version 12 indexes run work by the Source of its candidate, so an execution reads ahead
+/// only the few oldest queued items of each Source rather than ranking the whole queue every
+/// round. The index matches `SCHEMA`.
+fn add_run_work_source_index(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(RUN_WORK_SOURCE_INDEX)
+        .map_err(sql_error)
+}
+
+const RUN_WORK_SOURCE_INDEX: &str = "
+    CREATE INDEX idx_run_work_source ON acquisition_run_work(
+        run_id, json_extract(candidate_json, '$.source_id'), state, id
+    );
+";
 
 /// Version 11 records the dumps each reference record asserted the last time it was imported,
 /// which links the records of several sources by their dumps. Records imported before have
@@ -296,6 +312,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         .map_err(sql_error)?;
     transaction
         .execute_batch(REFERENCE_DUMP_SETS_TABLE)
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(RUN_WORK_SOURCE_INDEX)
         .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)
