@@ -407,8 +407,18 @@ impl AcquisitionRequest {
 #[serde(rename_all = "snake_case")]
 pub enum AssetType {
     BoxFront,
+    BoxBack,
+    #[serde(rename = "box_3d_render")]
+    Box3dRender,
+    CartridgeFront,
+    CartridgeBack,
+    Disc,
     Screenshot,
     TitleScreen,
+    Logo,
+    WallpaperArtwork,
+    Flyer,
+    Marquee,
 }
 
 impl AssetTypeSelector {
@@ -424,23 +434,78 @@ impl AssetTypeSelector {
 }
 
 impl AssetType {
-    pub const ALL: [AssetType; 3] = [Self::BoxFront, Self::Screenshot, Self::TitleScreen];
+    /// Every stored type, in taxonomy order.
+    pub const ALL: [AssetType; 12] = [
+        Self::BoxFront,
+        Self::BoxBack,
+        Self::Box3dRender,
+        Self::CartridgeFront,
+        Self::CartridgeBack,
+        Self::Disc,
+        Self::Screenshot,
+        Self::TitleScreen,
+        Self::Logo,
+        Self::WallpaperArtwork,
+        Self::Flyer,
+        Self::Marquee,
+    ];
 
     /// The selector naming exactly this type.
     pub fn selector(self) -> AssetTypeSelector {
         match self {
             Self::BoxFront => AssetTypeSelector::BoxFront,
+            Self::BoxBack => AssetTypeSelector::BoxBack,
+            Self::Box3dRender => AssetTypeSelector::Box3dRender,
+            Self::CartridgeFront => AssetTypeSelector::CartridgeFront,
+            Self::CartridgeBack => AssetTypeSelector::CartridgeBack,
+            Self::Disc => AssetTypeSelector::Disc,
             Self::Screenshot => AssetTypeSelector::Screenshot,
             Self::TitleScreen => AssetTypeSelector::TitleScreen,
+            Self::Logo => AssetTypeSelector::Logo,
+            Self::WallpaperArtwork => AssetTypeSelector::WallpaperArtwork,
+            Self::Flyer => AssetTypeSelector::Flyer,
+            Self::Marquee => AssetTypeSelector::Marquee,
         }
     }
 
     /// The family selector this type belongs to.
     pub fn family(self) -> AssetTypeSelector {
         match self {
-            Self::BoxFront => AssetTypeSelector::Packaging,
-            Self::Screenshot | Self::TitleScreen => AssetTypeSelector::DigitalMedia,
+            Self::BoxFront | Self::BoxBack | Self::Box3dRender => AssetTypeSelector::Packaging,
+            Self::CartridgeFront | Self::CartridgeBack | Self::Disc => {
+                AssetTypeSelector::PhysicalMedia
+            }
+            Self::Screenshot | Self::TitleScreen | Self::Logo | Self::WallpaperArtwork => {
+                AssetTypeSelector::DigitalMedia
+            }
+            Self::Flyer => AssetTypeSelector::PromotionalAndHistorical,
+            Self::Marquee => AssetTypeSelector::HardwareArcade,
         }
+    }
+
+    /// The stable name of this type, as requests, candidate identities and the catalog spell it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BoxFront => "box_front",
+            Self::BoxBack => "box_back",
+            Self::Box3dRender => "box_3d_render",
+            Self::CartridgeFront => "cartridge_front",
+            Self::CartridgeBack => "cartridge_back",
+            Self::Disc => "disc",
+            Self::Screenshot => "screenshot",
+            Self::TitleScreen => "title_screen",
+            Self::Logo => "logo",
+            Self::WallpaperArtwork => "wallpaper_artwork",
+            Self::Flyer => "flyer",
+            Self::Marquee => "marquee",
+        }
+    }
+
+    /// The type `as_str` names `name`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|asset_type| asset_type.as_str() == name)
     }
 }
 

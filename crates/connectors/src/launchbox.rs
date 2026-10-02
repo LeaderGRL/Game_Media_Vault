@@ -25,10 +25,19 @@ const IMAGE_BASE_URL: &str = "https://images.launchbox-app.com/";
 const METADATA_ENTRY: &str = "Metadata.xml";
 
 /// The image types acquired and the Asset Type each holds.
-const IMAGE_TYPES: [(AssetType, &str); 3] = [
+const IMAGE_TYPES: [(AssetType, &str); 12] = [
     (AssetType::BoxFront, "Box - Front"),
+    (AssetType::BoxBack, "Box - Back"),
+    (AssetType::Box3dRender, "Box - 3D"),
+    (AssetType::CartridgeFront, "Cart - Front"),
+    (AssetType::CartridgeBack, "Cart - Back"),
+    (AssetType::Disc, "Disc"),
     (AssetType::Screenshot, "Screenshot - Gameplay"),
     (AssetType::TitleScreen, "Screenshot - Game Title"),
+    (AssetType::Logo, "Clear Logo"),
+    (AssetType::WallpaperArtwork, "Fanart - Background"),
+    (AssetType::Flyer, "Advertisement Flyer - Front"),
+    (AssetType::Marquee, "Arcade - Marquee"),
 ];
 
 /// Platforms as No-Intro, Redump and Libretro name them, and as LaunchBox does.

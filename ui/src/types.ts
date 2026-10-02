@@ -1,4 +1,17 @@
-export type AssetType = "box_front" | "screenshot" | "title_screen";
+/** The Asset Types the catalog stores, in taxonomy order. */
+export type AssetType =
+  | "box_front"
+  | "box_back"
+  | "box_3d_render"
+  | "cartridge_front"
+  | "cartridge_back"
+  | "disc"
+  | "screenshot"
+  | "title_screen"
+  | "logo"
+  | "wallpaper_artwork"
+  | "flyer"
+  | "marquee";
 
 export interface AssetProvenance {
   source_id: string;

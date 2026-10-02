@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { LibraryView } from "./LibraryView";
-import type { LibraryEntry } from "./types";
+import type { AssetType, LibraryEntry } from "./types";
 
 const entry: LibraryEntry = {
   game_id: 1,
@@ -282,6 +282,33 @@ describe("LibraryView", () => {
     expect(images).toEqual([
       "Box Front of Metal Gear Solid",
       "Screenshot of Metal Gear Solid",
+    ]);
+  });
+
+  it("orders every stored Asset Type by the taxonomy", () => {
+    const asset = (assetId: number, assetType: AssetType) => ({
+      ...entry.assets[0],
+      asset_id: assetId,
+      asset_type: assetType,
+      object_hash: "hash" + assetId,
+    });
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          {
+            ...entry,
+            assets: [asset(5, "logo"), asset(6, "cartridge_front"), asset(7, "box_back")],
+          },
+        ]}
+      />,
+    );
+
+    const images = screen.getAllByRole("img").map((image) => image.getAttribute("alt"));
+    expect(images).toEqual([
+      "Box Back of Metal Gear Solid",
+      "Cartridge Front of Metal Gear Solid",
+      "Logo of Metal Gear Solid",
     ]);
   });
 

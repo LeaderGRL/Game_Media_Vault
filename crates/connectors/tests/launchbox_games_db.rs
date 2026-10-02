@@ -188,18 +188,11 @@ fn locators(candidates: &[AssetCandidate]) -> Vec<&str> {
 }
 
 #[test]
-fn declares_box_fronts_screenshots_and_title_screens() {
+fn declares_every_stored_asset_type() {
     let transport = FixtureTransport::new();
     let capabilities = LaunchBoxGamesDbConnector::with_transport(&transport).capabilities();
 
-    assert_eq!(
-        capabilities.asset_types,
-        [
-            AssetType::BoxFront,
-            AssetType::Screenshot,
-            AssetType::TitleScreen
-        ]
-    );
+    assert_eq!(capabilities.asset_types, AssetType::ALL);
     assert!(capabilities.direct_media_download);
 }
 
@@ -515,5 +508,47 @@ fn checks_bound_games_against_the_platforms_it_covers() {
             .as_deref()
             .is_some_and(|reason| reason.contains("Philips - Videopac+")),
         "{reason:?}"
+    );
+}
+
+#[test]
+fn acquires_each_requested_media_type_it_maps_and_no_sibling() {
+    let transport = FixtureTransport::serving(metadata_archive(&[(
+        "Metadata.xml",
+        r#"<LaunchBox>
+  <Game>
+    <Name>Super Mario Bros.</Name>
+    <DatabaseID>140</DatabaseID>
+    <Platform>Nintendo Entertainment System</Platform>
+  </Game>
+  <GameImage><DatabaseID>140</DatabaseID><FileName>back.jpg</FileName><Type>Box - Back</Type></GameImage>
+  <GameImage><DatabaseID>140</DatabaseID><FileName>logo.png</FileName><Type>Clear Logo</Type></GameImage>
+  <GameImage><DatabaseID>140</DatabaseID><FileName>cart.png</FileName><Type>Cart - Front</Type></GameImage>
+  <GameImage><DatabaseID>140</DatabaseID><FileName>banner.png</FileName><Type>Banner</Type></GameImage>
+</LaunchBox>"#,
+    )]));
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.asset_types = vec![AssetTypeSelector::BoxBack, AssetTypeSelector::Logo];
+        }))
+        .unwrap();
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| (candidate.asset_type, candidate.original_filename.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (AssetType::BoxBack, "back.jpg"),
+            (AssetType::Logo, "logo.png")
+        ]
+    );
+    assert!(
+        connector
+            .capabilities()
+            .asset_types
+            .contains(&AssetType::CartridgeFront)
     );
 }

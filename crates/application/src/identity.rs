@@ -56,9 +56,5 @@ fn push_part(identity: &mut String, value: &str) {
 }
 
 fn asset_type_part(asset_type: AssetType) -> &'static str {
-    match asset_type {
-        AssetType::BoxFront => "box_front",
-        AssetType::Screenshot => "screenshot",
-        AssetType::TitleScreen => "title_screen",
-    }
+    asset_type.as_str()
 }
