@@ -37,3 +37,40 @@ fn loads_an_asset_imported_into_the_selected_vault() {
         "cover-front.png"
     );
 }
+
+#[test]
+fn searches_the_selected_vault_with_the_shared_library_query() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    for (title, file) in [("Metal Gear Solid", "mgs.png"), ("Vagrant Story", "vs.png")] {
+        let source = temp.path().join(file);
+        fs::write(&source, title.as_bytes()).unwrap();
+        import_local_box_front(
+            &catalog,
+            &store,
+            ImportLocalBoxFrontRequest {
+                existing_game_id: None,
+                game_title: title.to_owned(),
+                platform: "Sony - PlayStation".to_owned(),
+                region: "France".to_owned(),
+                edition_name: "Original".to_owned(),
+                source_path: source,
+            },
+        )
+        .unwrap();
+    }
+
+    let page = game_media_vault_tauri::search_library_in_vault(
+        &vault,
+        &game_media_vault_application::LibraryQuery {
+            text: Some("story".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(page.total, 1);
+    assert_eq!(page.releases[0].entry.game_title, "Vagrant Story");
+}

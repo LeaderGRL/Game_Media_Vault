@@ -4,8 +4,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, ApplicationError, ConnectorPort, ErrorKind, PortError,
-    acquire_run_with_connector as acquire_run_with_connector_use_case,
+    AcquisitionRequestInput, ApplicationError, ConnectorPort, ErrorKind, LibraryPage, LibraryQuery,
+    PortError, acquire_run_with_connector as acquire_run_with_connector_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
@@ -14,7 +14,8 @@ use game_media_vault_application::{
     load_review_preview as load_review_preview_use_case,
     pause_acquisition_run as pause_acquisition_run_use_case,
     resolve_review_item as resolve_review_item_use_case,
-    resume_acquisition_run as resume_acquisition_run_use_case, start_acquisition_run_for_connector,
+    resume_acquisition_run as resume_acquisition_run_use_case,
+    search_library as search_library_use_case, start_acquisition_run_for_connector,
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
@@ -118,6 +119,15 @@ pub fn load_library(vault_root: &Path) -> Result<Vec<LibraryRelease>, CommandErr
     Ok(list_library_use_case(&open_existing_catalog(vault_root)?)?)
 }
 
+/// Searches the vault's Library with the query every frontend shares.
+pub fn search_library_in_vault(
+    vault_root: &Path,
+    query: &LibraryQuery,
+) -> Result<LibraryPage, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    Ok(search_library_use_case(&catalog, &catalog, query)?)
+}
+
 pub fn load_review_items(vault_root: &Path) -> Result<Vec<ReviewItem>, CommandError> {
     Ok(list_review_items_use_case(&open_existing_catalog(
         vault_root,
@@ -161,6 +171,14 @@ pub async fn load_review_preview_in_vault_with_connector_async(
 #[tauri::command(rename_all = "snake_case")]
 fn list_library(session: State<'_, VaultSession>) -> Result<Vec<LibraryRelease>, CommandError> {
     load_library(&session.root()?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn search_library(
+    session: State<'_, VaultSession>,
+    query: LibraryQuery,
+) -> Result<LibraryPage, CommandError> {
+    search_library_in_vault(&session.root()?, &query)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -441,6 +459,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_vault,
             list_library,
+            search_library,
             list_review_items,
             resolve_review_item,
             load_review_preview,
