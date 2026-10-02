@@ -68,6 +68,10 @@ _Avoid_: Schedule when no execution order is implied
 One persisted execution of an Acquisition Request, including its progress, discoveries, downloads, failures, retries, and final statistics.
 _Avoid_: Session
 
+**Source Failure**:
+A failure of a Source that an execution met while discovering or downloading, recorded with its run, stage and message as history. A later success leaves it as it is.
+_Avoid_: Unavailable media, which a Source reported as permanently gone rather than failing
+
 **Retention Policy**:
 The policy controlling whether a run retains every accepted Asset (Keep Everything) or only originals that become the Preferred Asset of their Release Edition and Asset Type (Keep Best Per Type).
 _Avoid_: Deduplication policy
@@ -93,3 +97,11 @@ _Avoid_: Download status
 **Packaging Family**:
 How the releases of a platform are packaged, such as a cardboard box, a CD jewel case, a keep case, a cartridge case, an arcade board or a digital release. It decides what each Coverage Profile requires.
 _Avoid_: Box type when the release has no box
+
+**Packaging Template**:
+The geometry and texture slots that the Packaging Models of a Packaging Family are generated with, such as a cardboard box textured with its front, back and spine.
+_Avoid_: Mesh or model when the reusable shape is meant
+
+**Packaging Model**:
+A Derived Asset showing the packaging of a Release Edition in 3D, generated from a Packaging Template and the Preferred Asset of each of its texture slots. It names the exact scans it shows and stays in use only while all of them are retained.
+_Avoid_: Box 3D Render, which is an acquired image rather than a generated model
