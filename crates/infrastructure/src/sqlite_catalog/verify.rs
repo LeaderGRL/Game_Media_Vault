@@ -1,6 +1,7 @@
 use game_media_vault_application::{
     PortError, RecordedDerivative, UnfinishedWork, VaultCatalogPort, VaultRepairCatalogPort,
 };
+use game_media_vault_domain::DerivationRecipe;
 
 use super::{SqliteCatalog, reviews::parse_review_status, runs::parse_run_status, sql_error};
 
@@ -26,21 +27,35 @@ impl VaultCatalogPort for SqliteCatalog {
         let connection = self.connect()?;
         let mut statement = connection
             .prepare(
-                "SELECT original_hash, object_hash
+                "SELECT original_hash, object_hash, recipe_json
                  FROM derived_objects
                  ORDER BY original_hash, recipe_key",
             )
             .map_err(sql_error)?;
-        statement
+        let rows = statement
             .query_map([], |row| {
-                Ok(RecordedDerivative {
-                    original_hash: row.get(0)?,
-                    object_hash: row.get(1)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(sql_error)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(sql_error)
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .map(|(original_hash, object_hash, recipe_json)| {
+                let recipe: DerivationRecipe =
+                    serde_json::from_str(&recipe_json).map_err(|error| {
+                        PortError::new(format!("catalog contains an invalid recipe: {error}"))
+                    })?;
+                Ok(RecordedDerivative {
+                    original_hash,
+                    object_hash,
+                    other_originals: recipe.other_originals(),
+                })
+            })
+            .collect()
     }
 
     fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError> {

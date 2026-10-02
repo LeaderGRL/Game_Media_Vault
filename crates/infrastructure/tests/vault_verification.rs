@@ -8,8 +8,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
-    DerivationRecipe, GameSelection, NewReviewItem, PersistAsset, RetentionPolicy, SourceId,
-    SourceSelection, StoredObject,
+    DerivationRecipe, GameSelection, NewReviewItem, PackagingTemplate, PersistAsset,
+    RetentionPolicy, SourceId, SourceSelection, StoredObject,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -321,6 +321,49 @@ fn forgetting_orphaned_derived_assets_keeps_a_thumbnail_a_retained_original_shar
     assert_eq!(catalog.originals_without(&THUMBNAIL).unwrap().len(), 0);
     assert!(summary.remaining.orphaned_derived.is_empty());
     assert_eq!(summary.remaining.unreferenced_originals, [loose.hash]);
+}
+
+#[test]
+fn a_packaging_model_whose_back_scan_is_no_longer_retained_is_orphaned_and_removed() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    let front = store.store_original(&mut &b"front scan"[..]).unwrap();
+    let spine = store.store_original(&mut &b"spine scan"[..]).unwrap();
+    for (title, object) in [("Front", &front), ("Spine", &spine)] {
+        catalog
+            .persist_asset(box_front(title, &object.hash, object.byte_len))
+            .unwrap();
+    }
+    let model = store.store_derived(&mut &b"model"[..]).unwrap();
+    // The model shows a back scan no retained Asset references.
+    let recipe = DerivationRecipe::PackagingModel {
+        template: PackagingTemplate::CardboardBox,
+        back_hash: "f".repeat(64),
+        spine_hash: spine.hash.clone(),
+    };
+    catalog
+        .record_derivative(&front.hash, &recipe, &model)
+        .unwrap();
+
+    assert_eq!(
+        verify_vault(&catalog, &store).unwrap().orphaned_derived,
+        std::slice::from_ref(&model.hash)
+    );
+    let summary = repair_vault(
+        &catalog,
+        &store,
+        RepairActions {
+            remove_orphaned_derived: true,
+            ..RepairActions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.removed_derived, std::slice::from_ref(&model.hash));
+    assert!(!store.derived_path(&model.hash).exists());
+    assert!(summary.remaining.is_healthy(), "{:?}", summary.remaining);
 }
 
 #[test]

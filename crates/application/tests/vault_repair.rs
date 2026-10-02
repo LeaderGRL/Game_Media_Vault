@@ -96,6 +96,7 @@ fn derivative(original_hash: &str, object_hash: &str) -> RecordedDerivative {
     RecordedDerivative {
         original_hash: original_hash.to_owned(),
         object_hash: object_hash.to_owned(),
+        other_originals: Vec::new(),
     }
 }
 
@@ -257,4 +258,33 @@ fn leaves_unreadable_derived_files_in_place() {
     assert_eq!(summary.forgotten_derived, [derivative("old", "locked")]);
     assert!(summary.removed_derived.is_empty());
     assert!(vault.derived.borrow().contains_key("locked"));
+}
+
+#[test]
+fn forgets_a_packaging_model_whose_back_or_spine_scan_is_no_longer_referenced() {
+    let model = RecordedDerivative {
+        other_originals: vec!["old-back".to_owned(), "spine".to_owned()],
+        ..derivative("front", "model")
+    };
+    let vault = FakeVault {
+        referenced: vec!["front".to_owned(), "spine".to_owned()],
+        derivatives: RefCell::new(vec![model.clone()]),
+        originals: RefCell::new(intact(&["front", "spine"])),
+        derived: RefCell::new(intact(&["model"])),
+        ..FakeVault::default()
+    };
+
+    let summary = repair_vault(
+        &vault,
+        &vault,
+        RepairActions {
+            remove_orphaned_derived: true,
+            ..RepairActions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.forgotten_derived, [model]);
+    assert_eq!(summary.removed_derived, ["model"]);
+    assert!(summary.remaining.is_healthy(), "{:?}", summary.remaining);
 }

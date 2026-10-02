@@ -34,6 +34,18 @@ impl DerivationRecipe {
             ),
         }
     }
+
+    /// The originals the recipe reads besides the one its output is recorded under.
+    pub fn other_originals(&self) -> Vec<String> {
+        match self {
+            Self::Thumbnail { .. } => Vec::new(),
+            Self::PackagingModel {
+                back_hash,
+                spine_hash,
+                ..
+            } => vec![back_hash.clone(), spine_hash.clone()],
+        }
+    }
 }
 
 /// The geometry and texture slots of generated 3D packaging for a packaging family.
