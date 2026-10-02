@@ -17,6 +17,7 @@ import {
   BUILT_IN_PRESETS,
   RequestPreset,
   applyPreset,
+  applySavedPreset,
   defaultPresetStorage,
   deleteCustomPreset,
   isBuiltInPresetName,
@@ -129,8 +130,22 @@ export function AcquireView({
     }
   }
 
+  /** A built-in preset fills its fields in; a saved one stands for a whole request. */
+  function applySelectedPreset() {
+    if (selectedPreset !== undefined) {
+      update(customSelected ? applySavedPreset(selectedPreset) : applyPreset(form, selectedPreset));
+    }
+  }
+
   function renamePreset() {
     const name = customSelected ? draftName() : null;
+    if (
+      name !== null &&
+      customPresets.some((preset) => preset.name === name && preset.name !== presetName)
+    ) {
+      setPresetProblem(`A saved preset is already named "${name}".`);
+      return;
+    }
     if (
       name !== null &&
       changePresets(() => renameCustomPreset(presetStorage, presetName, name))
@@ -184,13 +199,23 @@ export function AcquireView({
         <button
           type="button"
           disabled={selectedPreset === undefined}
-          onClick={() => selectedPreset && update(applyPreset(form, selectedPreset))}
+          onClick={applySelectedPreset}
         >
           Apply preset
         </button>
         <label>
           Preset name
-          <input value={presetDraftName} onChange={(event) => setPresetDraftName(event.target.value)} />
+          <input
+            value={presetDraftName}
+            onChange={(event) => setPresetDraftName(event.target.value)}
+            // Enter saves the preset instead of submitting the request around it.
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                savePreset();
+              }
+            }}
+          />
         </label>
         <button type="button" onClick={savePreset}>
           Save preset
