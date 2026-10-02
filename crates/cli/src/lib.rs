@@ -8,18 +8,18 @@ use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
     DEFAULT_LIBRARY_PAGE_SIZE, ErrorKind, ImportLocalBoxFrontRequest,
     ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, PortError,
-    acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run,
+    acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run, derive_assets,
     import_local_box_front, import_reference_catalog, list_acquisition_runs, list_library,
     list_review_items, load_acquisition_run, pause_acquisition_run, resolve_review_item,
     resume_acquisition_run, search_library, start_acquisition_run_for_connector,
 };
 use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, GameSelection,
-    MatchingPolicy, PlatformBoundGameSelector, QualityRequirements, RetentionPolicy,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, DerivationRecipe,
+    GameSelection, MatchingPolicy, PlatformBoundGameSelector, QualityRequirements, RetentionPolicy,
     ReviewDecision, SourceSelection,
 };
-use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use game_media_vault_infrastructure::{ContentAddressedStore, ImageTransformer, SqliteCatalog};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -97,6 +97,12 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         max_games: usize,
+    },
+    /// Renders the thumbnail of every retained original that has none yet.
+    DeriveThumbnails {
+        /// Longest edge of the thumbnails, in pixels.
+        #[arg(long, default_value_t = 256)]
+        max_edge: u32,
     },
     Library,
     /// Searches the Library and prints one page of matching releases.
@@ -460,6 +466,16 @@ where
                 "Imported Box Front as asset #{} ({}, {} bytes)",
                 imported.asset_id, imported.object_hash, imported.byte_len
             ))
+        }
+        Command::DeriveThumbnails { max_edge } => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            let store = ContentAddressedStore::new(&cli.vault);
+            Ok(serde_json::to_string_pretty(&derive_assets(
+                &catalog,
+                &store,
+                &ImageTransformer,
+                &DerivationRecipe::Thumbnail { max_edge },
+            )?)?)
         }
         Command::ImportNoIntro { file, max_games } => {
             let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;

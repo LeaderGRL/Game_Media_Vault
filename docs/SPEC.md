@@ -451,6 +451,10 @@ Initial transformations may include:
 - texture preparation;
 - generated box geometry/3D representation.
 
+A recipe identifies its transformation and parameters (`thumbnail-png-256`, say). Its output for an original is generated once and recorded under the original's hash and the recipe, so Assets sharing identical bytes share their Derived Assets and running the same recipe again reuses what exists. Outputs are content-addressed like originals but stored apart, under `derived/`; originals are only read. A transformation that fails is reported and the others still run; originals the transformer cannot read are skipped. Every library Asset lists the Derived Assets of its original.
+
+The first recipe renders thumbnails: a raster original (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, PNM, QOI or TGA) is scaled down to fit its longest edge within the bound, keeping its aspect ratio, and encoded as PNG; smaller images keep their size. `game-media-vault derive-thumbnails --max-edge 256` renders the thumbnails every retained original lacks.
+
 A transformation must never mutate the original object.
 
 ## 17. 3D Packaging
