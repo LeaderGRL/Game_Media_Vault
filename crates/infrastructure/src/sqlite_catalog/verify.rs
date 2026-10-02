@@ -1,4 +1,6 @@
-use game_media_vault_application::{PortError, RecordedDerivative, VaultCatalogPort};
+use game_media_vault_application::{
+    PortError, RecordedDerivative, VaultCatalogPort, VaultRepairCatalogPort,
+};
 
 use super::{SqliteCatalog, sql_error};
 
@@ -39,5 +41,26 @@ impl VaultCatalogPort for SqliteCatalog {
             .map_err(sql_error)?
             .collect::<rusqlite::Result<_>>()
             .map_err(sql_error)
+    }
+}
+
+impl VaultRepairCatalogPort for SqliteCatalog {
+    fn forget_derivatives(&self, derivatives: &[RecordedDerivative]) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction().map_err(sql_error)?;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "DELETE FROM derived_objects
+                     WHERE original_hash = ?1 AND object_hash = ?2",
+                )
+                .map_err(sql_error)?;
+            for derivative in derivatives {
+                statement
+                    .execute([&derivative.original_hash, &derivative.object_hash])
+                    .map_err(sql_error)?;
+            }
+        }
+        transaction.commit().map_err(sql_error)
     }
 }
