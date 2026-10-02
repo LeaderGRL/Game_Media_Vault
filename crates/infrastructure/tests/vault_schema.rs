@@ -23,7 +23,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 5);
+    assert_eq!(pragma(&path, "user_version"), 6);
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media, quality shortfall or outranked columns.
+    // Rebuild the version 2 layout, which had no media, quality shortfall or outranked columns nor Derived Assets.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -140,13 +140,14 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              ALTER TABLE assets DROP COLUMN height;
              ALTER TABLE acquisition_run_work DROP COLUMN quality_shortfalls_json;
              ALTER TABLE acquisition_run_work DROP COLUMN outranked_json;
+             DROP TABLE derived_objects;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 5);
+    assert_eq!(pragma(&path, "user_version"), 6);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }

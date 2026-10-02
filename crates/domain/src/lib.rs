@@ -3,6 +3,7 @@ use std::fmt;
 
 mod canonical;
 mod coverage;
+mod derived;
 mod preference;
 mod quality;
 
@@ -11,6 +12,7 @@ pub use coverage::{
     CoverageProfile, CoverageStatus, PackagingFamily, ProfileCoverage, ReleaseCoverage,
     packaging_family, release_coverage,
 };
+pub use derived::{DerivationRecipe, DerivedAsset};
 pub use preference::{
     AssetPreference, Outranked, PreferenceReason, PreferredAsset, outranked_by, preferred_assets,
 };
@@ -891,6 +893,8 @@ pub struct LibraryAsset {
     pub media: MediaInfo,
     pub original_filename: String,
     pub provenance: Vec<AssetProvenance>,
+    /// Outputs of recipes applied to this Asset's original.
+    pub derived: Vec<DerivedAsset>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -791,6 +791,7 @@ fn with_retained_box_front(release: LibraryEntry, asset_id: i64, media: MediaInf
             media,
             original_filename: "front.png".to_owned(),
             provenance: Vec::new(),
+            derived: Vec::new(),
         }],
         ..release
     }

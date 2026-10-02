@@ -761,6 +761,7 @@ impl FakeVault {
                     media: record.media.clone(),
                     original_filename: record.original_filename.clone(),
                     provenance: Vec::new(),
+                    derived: Vec::new(),
                 }),
         );
         retained

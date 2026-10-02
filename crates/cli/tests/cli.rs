@@ -1168,3 +1168,50 @@ fn search_pages_through_matching_releases() {
     assert_eq!(titles(&mario), ["Super Mario Land"]);
     assert_eq!(search(&["--status", "needs-review"])["total"], 0);
 }
+
+#[test]
+fn derive_thumbnails_renders_each_original_once() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("cover-front.png");
+    image::RgbImage::from_pixel(400, 300, image::Rgb([200, 30, 30]))
+        .save(&source)
+        .unwrap();
+    run_in_vault(
+        &vault,
+        &[
+            "import-box-front",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "Sony - PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let summary: serde_json::Value = serde_json::from_str(
+        &run_in_vault(&vault, &["derive-thumbnails", "--max-edge", "100"]).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(summary["derived"], 1);
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let derived = &library[0]["assets"][0]["derived"][0];
+    assert_eq!(derived["recipe"]["transform"], "thumbnail");
+    assert_eq!(
+        (derived["width"].as_u64(), derived["height"].as_u64()),
+        (Some(100), Some(75))
+    );
+    let again: serde_json::Value = serde_json::from_str(
+        &run_in_vault(&vault, &["derive-thumbnails", "--max-edge", "100"]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(again["derived"], 0);
+}

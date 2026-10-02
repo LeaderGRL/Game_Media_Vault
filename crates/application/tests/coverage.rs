@@ -16,6 +16,7 @@ fn box_front(asset_id: i64) -> LibraryAsset {
         media: MediaInfo::unknown(),
         original_filename: "front.png".to_owned(),
         provenance: Vec::new(),
+        derived: Vec::new(),
     }
 }
 

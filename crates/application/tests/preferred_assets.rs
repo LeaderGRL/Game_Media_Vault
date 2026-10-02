@@ -20,6 +20,7 @@ fn original(asset_id: i64, width: Option<u32>, height: Option<u32>, byte_len: u6
         },
         original_filename: format!("front-{asset_id}.png"),
         provenance: Vec::new(),
+        derived: Vec::new(),
     }
 }
 

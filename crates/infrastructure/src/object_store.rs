@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use game_media_vault_application::{ObjectStorePort, PortError};
+use game_media_vault_application::{DerivedStorePort, ObjectStorePort, PortError};
 use game_media_vault_domain::{MediaInfo, StoredObject};
 
 use crate::media::MediaInspector;
@@ -23,13 +23,18 @@ impl ContentAddressedStore {
     }
 
     pub fn object_path(&self, hash: &str) -> PathBuf {
+        self.address("objects", hash)
+    }
+
+    /// Where a Derived Asset with this hash lives, apart from the originals.
+    pub fn derived_path(&self, hash: &str) -> PathBuf {
+        self.address("derived", hash)
+    }
+
+    fn address(&self, area: &str, hash: &str) -> PathBuf {
         let first = hash.get(0..2).unwrap_or("__");
         let second = hash.get(2..4).unwrap_or("__");
-        self.root
-            .join("objects")
-            .join(first)
-            .join(second)
-            .join(hash)
+        self.root.join(area).join(first).join(second).join(hash)
     }
 
     /// Streams the bytes into a private staging file while hashing them.
@@ -65,9 +70,10 @@ impl ContentAddressedStore {
         Ok(staged)
     }
 
-    /// Moves the staged file to its content address, or verifies the object already there.
-    fn publish(&self, staged: StagedObject) -> Result<StoredObject, PortError> {
-        let target = self.object_path(&staged.stored.hash);
+    /// Moves the staged file to its content address in `area`, or verifies the object already
+    /// there.
+    fn publish(&self, staged: StagedObject, area: &str) -> Result<StoredObject, PortError> {
+        let target = self.address(area, &staged.stored.hash);
         let parent = target
             .parent()
             .ok_or_else(|| PortError::new("object path has no parent directory".into()))?;
@@ -92,7 +98,23 @@ impl ContentAddressedStore {
 impl ObjectStorePort for ContentAddressedStore {
     fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         let staged = self.stage(reader)?;
-        self.publish(staged)
+        self.publish(staged, "objects")
+    }
+}
+
+impl DerivedStorePort for ContentAddressedStore {
+    fn open_original(&self, hash: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        // Only content addresses name objects, so no other path is ever opened.
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(PortError::new(format!("{hash:?} is not an object hash")));
+        }
+        let file = File::open(self.object_path(hash)).map_err(io_error)?;
+        Ok(Box::new(file))
+    }
+
+    fn store_derived(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
+        let staged = self.stage(reader)?;
+        self.publish(staged, "derived")
     }
 }
 
