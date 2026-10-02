@@ -424,3 +424,24 @@ fn the_desktop_starts_only_runs_its_connector_can_execute() {
             .is_empty()
     );
 }
+
+#[test]
+fn the_desktop_explains_a_plan_without_a_vault() {
+    let plan = game_media_vault_tauri::plan_acquisition_with_connector(
+        AcquisitionRequestInput {
+            sources: SourceSelection::Auto,
+            ..request_input()
+        },
+        &FixtureConnector,
+    )
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(plan).unwrap(),
+        serde_json::json!({
+            "sources": [{ "source_id": "libretro-thumbnails", "asset_types": ["box_front"] }],
+            "excluded": [],
+            "coverage": [{ "selector": "box_front", "sources": ["libretro-thumbnails"] }],
+        })
+    );
+}

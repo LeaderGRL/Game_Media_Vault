@@ -772,6 +772,74 @@ fn acquire_refuses_a_plan_its_connector_cannot_execute() {
 }
 
 #[test]
+fn plan_explains_which_source_acquires_each_requested_type_without_starting_a_run() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let plan: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &vault,
+            &[
+                "plan",
+                "--auto-source",
+                "--platform",
+                "Nintendo - Nintendo Entertainment System",
+                "--game",
+                "Super Mario Bros. (World)",
+                "--asset-type",
+                "box-front",
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        plan,
+        serde_json::json!({
+            "sources": [{ "source_id": "libretro-thumbnails", "asset_types": ["box_front"] }],
+            "excluded": [],
+            "coverage": [{ "selector": "box_front", "sources": ["libretro-thumbnails"] }],
+        })
+    );
+    // Planning leaves the vault untouched.
+    assert!(!vault.join("catalog.sqlite3").exists());
+}
+
+#[test]
+fn plan_refuses_a_request_no_selected_source_serves() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let error = game_media_vault_cli::run_with_connector(
+        cli_args(
+            &vault,
+            &[
+                "plan",
+                "--source",
+                "libretro-thumbnails",
+                "--platform",
+                "Nintendo - Famicom Disk Sytem",
+                "--game",
+                "Zelda no Densetsu",
+                "--asset-type",
+                "box-front",
+            ],
+        ),
+        &RefusingConnector,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 5);
+    assert!(
+        error
+            .to_string()
+            .contains("libretro-thumbnails: the fixture Source declares no such platform"),
+        "{error}"
+    );
+}
+
+#[test]
 fn acquire_accepts_canonical_3d_asset_type_names() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
