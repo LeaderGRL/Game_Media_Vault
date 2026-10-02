@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 8;
+const VAULT_SCHEMA_VERSION: i32 = 9;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -24,7 +24,22 @@ const MIGRATIONS: &[Migration] = &[
     add_derived_objects,
     add_run_planned_sources,
     add_work_unavailable_reason,
+    add_release_assertion_value_index,
 ];
+
+/// Version 9 indexes assertions by the values reference imports look up (the titles other
+/// sources assert), which otherwise scan every assertion for each imported record.
+/// The index matches `SCHEMA`.
+fn add_release_assertion_value_index(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(RELEASE_ASSERTION_VALUE_INDEX)
+        .map_err(sql_error)
+}
+
+const RELEASE_ASSERTION_VALUE_INDEX: &str = "
+    CREATE INDEX idx_release_assertion_value
+        ON release_assertions(field, qualifier, normalized_value);
+";
 
 /// Version 8 records why completed work could not be acquired because its Source no longer serves
 /// the media. The column matches the `acquisition_run_work` layout of `SCHEMA`.
@@ -228,6 +243,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
     transaction.execute_batch(SCHEMA).map_err(sql_error)?;
     transaction
         .execute_batch(DERIVED_OBJECTS_TABLE)
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(RELEASE_ASSERTION_VALUE_INDEX)
         .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)

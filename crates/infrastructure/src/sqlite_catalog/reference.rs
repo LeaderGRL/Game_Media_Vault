@@ -77,24 +77,83 @@ fn persist_reference_release_in_transaction(
         .map_err(sql_error)?
     {
         persist_release_assertions(transaction, release_edition_id, &record.assertions)?;
+        // The evidence of a link moves with the catalog that made it, as its other claims do.
+        let links: Vec<String> = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT value FROM release_assertions
+                     WHERE release_edition_id = ?1 AND source_id = ?2
+                       AND field = 'identifier' AND qualifier = 'linked_by'",
+                )
+                .map_err(sql_error)?;
+            statement
+                .query_map(params![release_edition_id, source_id], |row| row.get(0))
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(sql_error)?
+        };
+        let links: Vec<ReleaseAssertion> = links
+            .into_iter()
+            .map(|evidence| link_assertion(identity, evidence))
+            .collect();
+        persist_release_assertions(transaction, release_edition_id, &links)?;
         return Ok(ImportedReleaseEdition {
             game_id,
             release_edition_id,
         });
     }
 
+    // Another source may already describe this release: its assertions then join that edition,
+    // with the evidence of the link.
+    let edition = NormalizedEdition {
+        title: &normalized_title,
+        platform: &normalized_platform,
+        region: &normalized_region,
+        edition: &normalized_edition,
+    };
+    if let Some((game_id, release_edition_id, evidence)) =
+        linked_release_edition(transaction, &source_id, &edition)?
+    {
+        let link = link_assertion(identity, evidence.to_owned());
+        persist_release_assertions(transaction, release_edition_id, &record.assertions)?;
+        persist_release_assertions(transaction, release_edition_id, &[link])?;
+        return Ok(ImportedReleaseEdition {
+            game_id,
+            release_edition_id,
+        });
+    }
+
+    // The Game a source titled so on this platform, this source's own first. Never one holding
+    // this edition with another source's claims: the record was not linked to that edition, so
+    // joining it would merge them without evidence.
     let game_id = match transaction
         .query_row(
             "SELECT r.game_id
-             FROM release_assertions a
-             JOIN release_editions r ON r.id = a.release_edition_id
-             WHERE a.source_id = ?1
-               AND a.field = 'title'
-               AND a.normalized_value = ?2
-               AND r.normalized_platform = ?3
-             ORDER BY r.id
+             FROM release_assertions t
+             JOIN release_editions r ON r.id = t.release_edition_id
+             WHERE t.field = 'title'
+               AND t.qualifier = ''
+               AND t.normalized_value = ?1
+               AND r.normalized_platform = ?2
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM release_editions e
+                   JOIN release_assertions x ON x.release_edition_id = e.id
+                   WHERE e.game_id = r.game_id
+                     AND e.normalized_platform = ?2
+                     AND e.normalized_region = ?3
+                     AND e.normalized_edition_name = ?4
+                     AND x.source_id != ?5
+               )
+             ORDER BY t.source_id = ?5 DESC, r.id
              LIMIT 1",
-            params![source_id, normalized_title, normalized_platform],
+            params![
+                normalized_title,
+                normalized_platform,
+                normalized_region,
+                normalized_edition,
+                source_id
+            ],
             |row| row.get(0),
         )
         .optional()
@@ -154,6 +213,75 @@ fn persist_reference_release_in_transaction(
         game_id,
         release_edition_id,
     })
+}
+
+/// The claim of the source of `identity` that it linked a record to an edition by `evidence`.
+fn link_assertion(identity: &ReleaseAssertion, evidence: String) -> ReleaseAssertion {
+    ReleaseAssertion {
+        source_id: identity.source_id.clone(),
+        source_location: identity.source_location.clone(),
+        field: ReleaseAssertionField::Identifier,
+        qualifier: Some("linked_by".to_owned()),
+        value: evidence,
+    }
+}
+
+/// The normalized identity of the release edition a record describes.
+struct NormalizedEdition<'a> {
+    title: &'a str,
+    platform: &'a str,
+    region: &'a str,
+    edition: &'a str,
+}
+
+/// The release edition another source asserts the record describes too, with the evidence that
+/// links them: the one edition of its platform, region and edition another source titled the
+/// same. Several such editions link none of them. Dump checksums link nothing yet: the catalog
+/// keeps every claim a source ever made, so it cannot tell the dumps one catalog edition
+/// asserts together, nor how many share a checksum.
+fn linked_release_edition(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    edition: &NormalizedEdition<'_>,
+) -> Result<Option<(i64, i64, &'static str)>, PortError> {
+    // Starting from the matching title assertions lets the assertion value index find them.
+    let editions = editions_where(
+        transaction,
+        "SELECT DISTINCT r.game_id, r.id
+         FROM release_assertions t
+         JOIN release_editions r ON r.id = t.release_edition_id
+         WHERE t.field = 'title'
+           AND t.qualifier = ''
+           AND t.normalized_value = ?1
+           AND t.source_id != ?5
+           AND r.normalized_platform = ?2
+           AND r.normalized_region = ?3
+           AND r.normalized_edition_name = ?4",
+        params![
+            edition.title,
+            edition.platform,
+            edition.region,
+            edition.edition,
+            source_id
+        ],
+    )?;
+    Ok(match editions.as_slice() {
+        [(game_id, release_edition_id)] => Some((*game_id, *release_edition_id, "title")),
+        _ => None,
+    })
+}
+
+fn editions_where(
+    transaction: &Transaction<'_>,
+    query: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<Vec<(i64, i64)>, PortError> {
+    let mut statement = transaction.prepare(query).map_err(sql_error)?;
+    statement
+        .query_map(parameters, |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_error)
 }
 
 fn persist_release_assertions(

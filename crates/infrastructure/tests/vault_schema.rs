@@ -26,7 +26,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 8);
+    assert_eq!(pragma(&path, "user_version"), 9);
 }
 
 #[test]
@@ -146,13 +146,14 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              DROP TABLE derived_objects;
              ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
              ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
+             DROP INDEX idx_release_assertion_value;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 8);
+    assert_eq!(pragma(&path, "user_version"), 9);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }
@@ -183,15 +184,57 @@ fn runs_from_version_6_plan_the_sources_their_request_selects() {
         .execute_batch(
             "ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
              ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
+             DROP INDEX idx_release_assertion_value;
              PRAGMA user_version = 6;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 8);
+    assert_eq!(pragma(&path, "user_version"), 9);
     assert_eq!(
         catalog.get_run(run.id).unwrap().unwrap().planned_sources,
         ["libretro-thumbnails"]
     );
+}
+
+fn has_index(path: &std::path::Path, name: &str) -> bool {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+
+#[test]
+fn assertions_are_indexed_by_the_values_reference_imports_look_up() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+
+    SqliteCatalog::open(&path).unwrap();
+
+    assert!(has_index(&path, "idx_release_assertion_value"));
+}
+
+#[test]
+fn catalogs_from_version_8_gain_the_assertion_value_index() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    SqliteCatalog::open(&path).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX idx_release_assertion_value;
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
+
+    SqliteCatalog::open_existing(&path).unwrap();
+
+    assert_eq!(pragma(&path, "user_version"), 9);
+    assert!(has_index(&path, "idx_release_assertion_value"));
 }
