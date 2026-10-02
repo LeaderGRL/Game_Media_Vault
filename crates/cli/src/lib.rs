@@ -42,6 +42,12 @@ pub enum CliError {
     /// A request document that cannot be read or does not parse.
     #[error("{0}")]
     InvalidDocument(String),
+    /// An execution that stopped on `error`, leaving the run as `output` shows it.
+    #[error("{error}")]
+    Execution {
+        output: String,
+        error: ApplicationError,
+    },
 }
 
 impl CliError {
@@ -52,6 +58,7 @@ impl CliError {
             Self::Parse(error) => return error.exit_code(),
             Self::Validation(_) | Self::InvalidDocument(_) => ErrorKind::InvalidRequest,
             Self::Application(error) => error.kind(),
+            Self::Execution { error, .. } => error.kind(),
             Self::Port(_) | Self::Serialization(_) => ErrorKind::External,
         };
         match kind {
@@ -61,6 +68,14 @@ impl CliError {
             ErrorKind::Unsupported => 5,
             ErrorKind::SourceFailure => 6,
             ErrorKind::External => 1,
+        }
+    }
+
+    /// What the command printed before it failed, for stdout: the run a failed execution left.
+    pub fn output(&self) -> Option<&str> {
+        match self {
+            Self::Execution { output, .. } => Some(output),
+            _ => None,
         }
     }
 }
@@ -586,7 +601,7 @@ pub fn execute_acquisition_run_in_vault_with_connectors(
 ) -> Result<AcquisitionRun, CliError> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))?;
     let object_store = ContentAddressedStore::new(vault_root);
-    acquire_run_with_connectors(
+    if let Err(error) = acquire_run_with_connectors(
         &catalog,
         &catalog,
         &catalog,
@@ -594,7 +609,20 @@ pub fn execute_acquisition_run_in_vault_with_connectors(
         connectors,
         run_id,
         matching_policy,
-    )?;
+    ) {
+        // An execution that stopped partway still reports where it left the run; an invalid
+        // invocation never started one.
+        if error.kind() == ErrorKind::InvalidRequest {
+            return Err(error.into());
+        }
+        return Err(match load_acquisition_run(&catalog, run_id) {
+            Ok(run) => CliError::Execution {
+                output: serde_json::to_string_pretty(&run)?,
+                error,
+            },
+            Err(_) => error.into(),
+        });
+    }
     Ok(load_acquisition_run(&catalog, run_id)?)
 }
 
