@@ -1,8 +1,8 @@
 mod support;
 
 use game_media_vault_application::{
-    ConnectorPort, acquire_run_with_connectors, start_acquisition_run_with_connectors,
-    summarize_source_failures,
+    ConnectorPort, DownloadLimits, acquire_run_with_connectors,
+    start_acquisition_run_with_connectors, summarize_source_failures,
 };
 use game_media_vault_domain::{
     AcquisitionRequestDraft, AssetCandidate, AssetType, AssetTypeSelector, SourceFailureStage,
@@ -54,6 +54,7 @@ fn run_with(vault: &FakeVault, connectors: &[&FakeConnector], executions: usize)
             &registry,
             run.id,
             matching_policy(),
+            DownloadLimits::default(),
         );
     }
     run.id

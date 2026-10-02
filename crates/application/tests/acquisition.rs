@@ -1,7 +1,7 @@
 mod support;
 
 use game_media_vault_application::{
-    ApplicationError, ErrorKind, ReviewRepositoryPort, RunRepositoryPort,
+    ApplicationError, DownloadLimits, ErrorKind, ReviewRepositoryPort, RunRepositoryPort,
     acquire_run_with_connectors, candidate_identity, resolve_review_item,
     start_acquisition_run_with_connectors,
 };
@@ -28,6 +28,7 @@ fn execute_with(
         &[connector],
         run_id,
         matching_policy,
+        DownloadLimits::default(),
     )
 }
 
@@ -53,6 +54,7 @@ fn execute_storing(
         &[connector],
         run_id,
         matching_policy(),
+        DownloadLimits::default(),
     )
 }
 

@@ -15,7 +15,9 @@ mod runs;
 mod sources;
 mod verify;
 
-pub use acquisition::{acquire_run_with_connectors, start_acquisition_run_with_connectors};
+pub use acquisition::{
+    DownloadLimits, acquire_run_with_connectors, start_acquisition_run_with_connectors,
+};
 pub use derived::{
     DerivationFailure, DerivationSummary, DerivativeRepositoryPort, DerivedStorePort,
     MediaTransformPort, OriginalObject, derive_assets,

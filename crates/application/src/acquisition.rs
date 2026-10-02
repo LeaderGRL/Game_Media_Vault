@@ -1,4 +1,14 @@
-use std::{cell::Cell, io::Read};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, VecDeque},
+    io::Read,
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+};
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -8,6 +18,7 @@ use game_media_vault_domain::{
     SourceFailureStage, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
     match_asset_candidate_to_release, review_matches_for_asset_candidate,
 };
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
@@ -21,6 +32,19 @@ use crate::{
 /// A concurrent human decision can close a Review Item between reading it and writing the
 /// automatic outcome. Human decisions are final, so a second attempt always settles.
 const REVIEW_RACE_ATTEMPTS: usize = 3;
+
+/// How many downloads an execution runs at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadLimits {
+    /// Downloads under way at once across every Source; zero counts as one.
+    pub max_concurrent: usize,
+}
+
+impl Default for DownloadLimits {
+    fn default() -> Self {
+        Self { max_concurrent: 4 }
+    }
+}
 
 struct Acquisition<'a> {
     runs: &'a dyn RunRepositoryPort,
@@ -36,6 +60,108 @@ struct Acquisition<'a> {
     /// Whether the last failure came from the Source of the processed work, such as a failed
     /// download, rather than from the vault.
     source_failed: Cell<bool>,
+    /// Downloads started ahead of processing, by work key.
+    prefetched: RefCell<HashMap<String, mpsc::Receiver<Fetched>>>,
+    /// The downloads the execution may run at once, shared by every download it starts.
+    slots: Arc<Slots>,
+    /// Set once the execution stops, so that downloads not started yet never start.
+    stopped: Arc<AtomicBool>,
+}
+
+/// What downloading and storing a candidate's original gave.
+enum Fetched {
+    Stored(StoredObject),
+    /// The Source no longer serves the media, for this reason.
+    Unavailable(String),
+    /// The Source failed to serve the media, before or partway through its body.
+    SourceFailed(ApplicationError),
+    /// The vault failed to store it.
+    VaultFailed(ApplicationError),
+}
+
+/// Downloads `candidate` with its Source's connector and stores its original.
+fn fetch(
+    connector: &dyn ConnectorPort,
+    object_store: &dyn ObjectStorePort,
+    candidate: &AssetCandidate,
+) -> Fetched {
+    let mut stream = match connector.download(candidate) {
+        Ok(stream) => stream,
+        Err(error) if error.is_unavailable() => {
+            return Fetched::Unavailable(error.message().to_owned());
+        }
+        Err(error) => return Fetched::SourceFailed(error.into()),
+    };
+    let failed = Cell::new(false);
+    let mut body = SourceBody {
+        stream: stream.as_mut(),
+        failed: &failed,
+    };
+    match object_store.store_original(&mut body) {
+        Ok(stored) => Fetched::Stored(stored),
+        Err(error) if failed.get() => Fetched::SourceFailed(error.into()),
+        Err(error) => Fetched::VaultFailed(error.into()),
+    }
+}
+
+/// Download slots: no more downloads than slots run at once.
+struct Slots {
+    free: Mutex<usize>,
+    released: Condvar,
+}
+
+impl Slots {
+    fn new(count: usize) -> Self {
+        Self {
+            free: Mutex::new(count.max(1)),
+            released: Condvar::new(),
+        }
+    }
+
+    /// Waits for a free slot and takes it until the guard drops.
+    fn take(&self) -> SlotGuard<'_> {
+        let mut free = lock(&self.free);
+        while *free == 0 {
+            free = self
+                .released
+                .wait(free)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *free -= 1;
+        SlotGuard(self)
+    }
+}
+
+struct SlotGuard<'a>(&'a Slots);
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        *lock(&self.0.free) += 1;
+        self.0.released.notify_one();
+    }
+}
+
+/// A download panicking on another thread leaves the counts it guards valid.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Marks the execution stopped however it ends.
+struct StopOnExit<'a>(&'a AtomicBool);
+
+impl Drop for StopOnExit<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Where processing a work item leads, given its Review Item.
+enum Route {
+    /// A human accepted it for this Release Edition.
+    Accepted(i64),
+    Rejected,
+    /// The matcher decides, by its confidence.
+    Matched(AssetCandidateMatch),
 }
 
 enum Step {
@@ -53,6 +179,11 @@ enum Step {
 /// once that work is done. Each queued candidate is matched against the library through its own
 /// Source's connector and is either imported, left unattached, or parked on its Review Item
 /// until a human decides. The run completes only once every planned Source was discovered.
+///
+/// Within a round, the media of the work it will import download ahead, up to
+/// `limits.max_concurrent` at once, while the work is processed in turn as before.
+// Each port plays its own role; grouping them would only hide what an execution depends on.
+#[allow(clippy::too_many_arguments)]
 pub fn acquire_run_with_connectors(
     runs: &dyn RunRepositoryPort,
     reviews: &dyn ReviewRepositoryPort,
@@ -61,6 +192,7 @@ pub fn acquire_run_with_connectors(
     connectors: &[&dyn ConnectorPort],
     run_id: i64,
     matching_policy: MatchingPolicy,
+    limits: DownloadLimits,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
@@ -84,7 +216,25 @@ pub fn acquire_run_with_connectors(
         quality: run.request.quality().cloned(),
         retention: run.request.retention(),
         source_failed: Cell::new(false),
+        prefetched: RefCell::new(HashMap::new()),
+        slots: Arc::new(Slots::new(limits.max_concurrent)),
+        stopped: Arc::new(AtomicBool::new(false)),
     };
+    thread::scope(|scope| execute(&acquisition, &run, scope, limits))
+}
+
+fn execute<'a, 'scope>(
+    acquisition: &Acquisition<'a>,
+    run: &AcquisitionRun,
+    scope: &'scope thread::Scope<'scope, '_>,
+    limits: DownloadLimits,
+) -> Result<Vec<ImportedAsset>, ApplicationError>
+where
+    'a: 'scope,
+{
+    // Downloads not started yet never start once the execution stops, however it stops.
+    let _stop = StopOnExit(&acquisition.stopped);
+    let (runs, connectors, run_id) = (acquisition.runs, acquisition.connectors, run.id);
     let mut imported_assets = Vec::new();
     let mut source_failure = None;
     // Sources whose work failed; their remaining work waits for a later execution.
@@ -125,6 +275,10 @@ pub fn acquire_run_with_connectors(
         // has some, so a Source with a long queue or slow downloads never holds back the others.
         let mut served_this_round: Vec<String> = Vec::new();
         loop {
+            // A round downloads ahead what it will import, and processes it in order.
+            if served_this_round.is_empty() {
+                acquisition.prefetch_round(scope, &failed_sources, limits)?;
+            }
             let skipped: Vec<String> = failed_sources
                 .iter()
                 .chain(&served_this_round)
@@ -331,23 +485,18 @@ impl Acquisition<'_> {
         work: &AcquisitionWorkItem,
         review_item: Option<ReviewItem>,
     ) -> Result<Step, ApplicationError> {
-        match review_item
-            .as_ref()
-            .map(|item| (item.status, &item.decision))
-        {
-            Some((ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))) => {
-                let release = self.accepted_release(*release_edition_id)?;
+        let candidate_match = match self.route(work, review_item.as_ref()) {
+            Route::Accepted(release_edition_id) => {
+                let release = self.accepted_release(release_edition_id)?;
                 let candidate_match = confirmed_asset_candidate_match(&work.candidate, &release);
                 return self.import(work, &release, candidate_match);
             }
-            Some((ReviewStatus::Rejected, _)) => {
+            Route::Rejected => {
                 self.runs.complete_work(self.run_id, &work.key)?;
                 return Ok(Step::Done(None));
             }
-            _ => {}
-        }
-        let candidate_match =
-            match_asset_candidate_to_release(&work.candidate, &self.releases, self.matching_policy);
+            Route::Matched(candidate_match) => candidate_match,
+        };
         match candidate_match.confidence {
             MatchConfidence::High | MatchConfidence::Confirmed => {
                 // The matcher only links Release Editions taken from `self.releases`.
@@ -384,6 +533,33 @@ impl Acquisition<'_> {
                 }
             }
         }
+    }
+
+    fn route(&self, work: &AcquisitionWorkItem, review_item: Option<&ReviewItem>) -> Route {
+        match review_item.map(|item| (item.status, &item.decision)) {
+            Some((ReviewStatus::Accepted, Some(ReviewDecision::Accept { release_edition_id }))) => {
+                Route::Accepted(*release_edition_id)
+            }
+            Some((ReviewStatus::Rejected, _)) => Route::Rejected,
+            _ => Route::Matched(match_asset_candidate_to_release(
+                &work.candidate,
+                &self.releases,
+                self.matching_policy,
+            )),
+        }
+    }
+
+    /// Whether processing `work` now would download its media.
+    fn will_import(&self, work: &AcquisitionWorkItem) -> Result<bool, ApplicationError> {
+        let review_item = self.reviews.find_review_item(&work.key)?;
+        Ok(match self.route(work, review_item.as_ref()) {
+            Route::Accepted(_) => true,
+            Route::Rejected => false,
+            Route::Matched(candidate_match) => matches!(
+                candidate_match.confidence,
+                MatchConfidence::High | MatchConfidence::Confirmed
+            ),
+        })
     }
 
     fn release(&self, release_edition_id: i64) -> Result<&LibraryEntry, ApplicationError> {
@@ -458,23 +634,29 @@ impl Acquisition<'_> {
         &self,
         work: &AcquisitionWorkItem,
     ) -> Result<Option<StoredObject>, ApplicationError> {
-        let mut stream = match self.connector_for(work)?.download(&work.candidate) {
-            Ok(stream) => stream,
-            Err(error) if error.is_unavailable() => {
+        // A download started ahead is awaited; one that never started is made now.
+        let ahead = self.prefetched.borrow_mut().remove(&work.key);
+        let fetched = match ahead.and_then(|result| result.recv().ok()) {
+            Some(fetched) => fetched,
+            None => {
+                let connector = self.connector_for(work)?;
+                let _slot = self.slots.take();
+                fetch(connector, self.object_store, &work.candidate)
+            }
+        };
+        match fetched {
+            Fetched::Stored(stored) => Ok(Some(stored)),
+            Fetched::Unavailable(reason) => {
                 self.runs
-                    .complete_unavailable_work(self.run_id, &work.key, error.message())?;
-                return Ok(None);
+                    .complete_unavailable_work(self.run_id, &work.key, &reason)?;
+                Ok(None)
             }
-            Err(error) => {
+            Fetched::SourceFailed(error) => {
                 self.source_failed.set(true);
-                return Err(error.into());
+                Err(error)
             }
-        };
-        let mut body = SourceBody {
-            stream: stream.as_mut(),
-            failed: &self.source_failed,
-        };
-        Ok(Some(self.object_store.store_original(&mut body)?))
+            Fetched::VaultFailed(error) => Err(error),
+        }
     }
 
     fn asset_record(
@@ -502,6 +684,68 @@ impl Acquisition<'_> {
             source_asset_label: candidate.source_asset_label.clone(),
             source_location: candidate.source_url.clone(),
         }
+    }
+}
+
+impl<'a> Acquisition<'a> {
+    /// Starts downloading, on up to `limits.max_concurrent` threads, the media of the work the
+    /// next round will import: the oldest queued work of every Source outside `failed_sources`.
+    /// Work processing would not import, such as work bound for review, is never downloaded
+    /// ahead, and results are only awaited when their work is processed.
+    fn prefetch_round<'scope>(
+        &self,
+        scope: &'scope thread::Scope<'scope, '_>,
+        failed_sources: &[String],
+        limits: DownloadLimits,
+    ) -> Result<(), ApplicationError>
+    where
+        'a: 'scope,
+    {
+        let mut skipped = failed_sources.to_vec();
+        let mut jobs = VecDeque::new();
+        let mut prefetched = self.prefetched.borrow_mut();
+        while let Some(work) = self.runs.next_queued_work(self.run_id, &skipped)? {
+            skipped.push(work.candidate.source_id.as_str().to_owned());
+            let connector = self
+                .connectors
+                .iter()
+                .copied()
+                .find(|connector| connector.source_id() == work.candidate.source_id.as_str());
+            let Some(connector) = connector else {
+                continue;
+            };
+            if prefetched.contains_key(&work.key) || !self.will_import(&work)? {
+                continue;
+            }
+            let (sender, result) = mpsc::channel();
+            prefetched.insert(work.key, result);
+            jobs.push_back((connector, work.candidate, sender));
+        }
+        let workers = limits.max_concurrent.max(1).min(jobs.len());
+        let jobs = Arc::new(Mutex::new(jobs));
+        for _ in 0..workers {
+            let (jobs, slots, stopped) = (
+                Arc::clone(&jobs),
+                Arc::clone(&self.slots),
+                Arc::clone(&self.stopped),
+            );
+            let object_store = self.object_store;
+            scope.spawn(move || {
+                loop {
+                    let slot = slots.take();
+                    if stopped.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Some((connector, candidate, sender)) = lock(&jobs).pop_front() else {
+                        break;
+                    };
+                    // The execution may have stopped awaiting this result.
+                    let _ = sender.send(fetch(connector, object_store, &candidate));
+                    drop(slot);
+                }
+            });
+        }
+        Ok(())
     }
 }
 
