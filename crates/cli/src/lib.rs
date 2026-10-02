@@ -8,12 +8,15 @@ use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, ConnectorPort,
     DEFAULT_LIBRARY_PAGE_SIZE, ErrorKind, ImportLocalBoxFrontRequest,
     ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, PortError,
-    acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run, derive_assets,
-    import_local_box_front, import_reference_catalog, list_acquisition_runs, list_library,
-    list_review_items, load_acquisition_run, pause_acquisition_run, resolve_review_item,
-    resume_acquisition_run, search_library, start_acquisition_run_for_connector,
+    ReferenceCatalogSourcePort, acquire_run_with_connector, build_acquisition_request,
+    cancel_acquisition_run, derive_assets, import_local_box_front, import_reference_catalog,
+    list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
+    pause_acquisition_run, resolve_review_item, resume_acquisition_run, search_library,
+    start_acquisition_run_for_connector,
 };
-use game_media_vault_connectors::{LibretroThumbnailsConnector, NoIntroReferenceCatalog};
+use game_media_vault_connectors::{
+    LibretroThumbnailsConnector, NoIntroReferenceCatalog, RedumpReferenceCatalog,
+};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, DerivationRecipe,
     GameSelection, MatchingPolicy, PlatformBoundGameSelector, QualityRequirements, RetentionPolicy,
@@ -93,6 +96,13 @@ enum Command {
         file: PathBuf,
     },
     ImportNoIntro {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        max_games: usize,
+    },
+    /// Records the releases of a Redump datafile as reference data.
+    ImportRedump {
         #[arg(long)]
         file: PathBuf,
         #[arg(long)]
@@ -478,19 +488,10 @@ where
             )?)?)
         }
         Command::ImportNoIntro { file, max_games } => {
-            let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-            let source = NoIntroReferenceCatalog::new();
-            let summary = import_reference_catalog(
-                &catalog,
-                &source,
-                ImportReferenceCatalogRequest {
-                    source_path: file,
-                    max_games,
-                },
-            )?;
-            Ok(serde_json::to_string_pretty(&serde_json::json!({
-                "imported_releases": summary.imported_releases
-            }))?)
+            import_reference_datafile(&cli.vault, &NoIntroReferenceCatalog::new(), file, max_games)
+        }
+        Command::ImportRedump { file, max_games } => {
+            import_reference_datafile(&cli.vault, &RedumpReferenceCatalog::new(), file, max_games)
         }
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
@@ -562,4 +563,25 @@ where
     T: serde::de::DeserializeOwned,
 {
     serde_json::from_value(serde_json::Value::String(value.replace('-', "_")))
+}
+
+/// Records up to `max_games` releases of a reference datafile and prints how many it recorded.
+fn import_reference_datafile(
+    vault: &Path,
+    source: &dyn ReferenceCatalogSourcePort,
+    file: PathBuf,
+    max_games: usize,
+) -> Result<String, CliError> {
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3"))?;
+    let summary = import_reference_catalog(
+        &catalog,
+        source,
+        ImportReferenceCatalogRequest {
+            source_path: file,
+            max_games,
+        },
+    )?;
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "imported_releases": summary.imported_releases
+    }))?)
 }

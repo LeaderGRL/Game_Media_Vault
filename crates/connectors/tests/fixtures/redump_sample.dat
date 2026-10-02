@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>Sony - PlayStation</name>
+		<description>Sony - PlayStation - Discs (10850) (2026-09-30 21-14-52)</description>
+		<version>2026-09-30 21-14-52</version>
+		<date>2026-09-30 21-14-52</date>
+		<author>redump.org</author>
+		<homepage>redump.org</homepage>
+		<url>http://redump.org/</url>
+	</header>
+	<game name="Final Fantasy VII (USA) (Disc 1)">
+		<category>Games</category>
+		<description>Final Fantasy VII (USA) (Disc 1)</description>
+		<rom name="Final Fantasy VII (USA) (Disc 1).cue" size="99" crc="0d6b2a95" md5="9b6c0a3c8b1d2f3e4a5b6c7d8e9f0a1b" sha1="1111111111111111111111111111111111111111"/>
+		<rom name="Final Fantasy VII (USA) (Disc 1).bin" size="747435024" crc="1459cbef" md5="a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5" sha1="2222222222222222222222222222222222222222"/>
+	</game>
+	<game name="Metal Gear Solid (France) (Disc 1)">
+		<category>Games</category>
+		<description>Metal Gear Solid (France) (Disc 1)</description>
+		<rom name="Metal Gear Solid (France) (Disc 1).cue" size="88" crc="12345678" md5="00000000000000000000000000000001" sha1="3333333333333333333333333333333333333333"/>
+	</game>
+</datafile>
