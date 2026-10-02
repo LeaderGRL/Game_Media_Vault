@@ -192,6 +192,20 @@ impl DatasetCache {
         }
     }
 
+    /// Waits until no other discovery of the machine refreshes the copy, and keeps the others
+    /// waiting until the returned lock drops; none when the cache directory is unusable.
+    fn lock(&self) -> Option<File> {
+        fs::create_dir_all(&self.dir).ok()?;
+        let lock = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.dir.join("Metadata.zip.lock"))
+            .ok()?;
+        lock.lock().ok()?;
+        Some(lock)
+    }
+
     /// The cached copy, unless it vanished or no longer reads as an archive.
     fn copy(&self) -> Option<File> {
         let mut copy = File::open(self.archive()).ok()?;
@@ -371,6 +385,9 @@ where
     /// replaces it once it reads as an archive. The dataset is downloaded to a temporary file
     /// first, so a cache that cannot be written never fails the discovery.
     fn cached_dataset(&self, cache: &DatasetCache) -> Result<File, PortError> {
+        // Discoveries of the machine refresh the copy one at a time, each reading the validators
+        // the previous one left, so a republished dataset downloads once.
+        let _refreshing = cache.lock();
         let fetched = match self
             .transport
             .get_if_changed(LAUNCHBOX_METADATA_URL, &cache.validators())?

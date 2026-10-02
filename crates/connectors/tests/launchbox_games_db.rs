@@ -4,7 +4,10 @@ use std::{
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
+    thread,
+    time::Duration,
 };
 
 use game_media_vault_application::{ConnectorPort, PortError};
@@ -673,6 +676,8 @@ struct VersionedTransport {
     version: Mutex<(Vec<u8>, &'static str)>,
     dataset_sent: AtomicUsize,
     known: Mutex<Vec<Validators>>,
+    /// Told once when the dataset is next sent whole, which then takes a while.
+    sending: Mutex<Option<mpsc::Sender<()>>>,
 }
 
 impl VersionedTransport {
@@ -681,6 +686,7 @@ impl VersionedTransport {
             version: Mutex::new((archive, etag)),
             dataset_sent: AtomicUsize::new(0),
             known: Mutex::new(Vec::new()),
+            sending: Mutex::new(None),
         }
     }
 
@@ -702,6 +708,11 @@ impl HttpTransport for &VersionedTransport {
             return Ok(Fetched::Unchanged);
         }
         self.dataset_sent.fetch_add(1, Ordering::SeqCst);
+        let sending = self.sending.lock().unwrap().take();
+        if let Some(sending) = sending {
+            sending.send(()).unwrap();
+            thread::sleep(Duration::from_millis(300));
+        }
         Ok(Fetched::Changed {
             body: Box::new(Cursor::new(archive)),
             validators: Validators {
@@ -826,4 +837,25 @@ fn a_cached_copy_damaged_on_disk_is_downloaded_again() {
     assert_eq!(locators(&candidates).len(), 1);
     assert_eq!(locators(&again), locators(&candidates));
     assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn discoveries_of_the_machine_refresh_its_cached_dataset_one_at_a_time() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = VersionedTransport::serving(dataset_with_image("front-v1.png"), "\"v1\"");
+    let (sending, sent) = mpsc::channel();
+    *transport.sending.lock().unwrap() = Some(sending);
+
+    let (first, other) = thread::scope(|scope| {
+        let first =
+            scope.spawn(|| cached_connector(&transport, cache.path()).discover(&request(|_| {})));
+        // Another vault discovers while the first one downloads the dataset whole.
+        sent.recv().unwrap();
+        let other = cached_connector(&transport, cache.path()).discover(&request(|_| {}));
+        (first.join().unwrap(), other)
+    });
+
+    assert_eq!(locators(&first.unwrap()).len(), 1);
+    assert_eq!(locators(&other.unwrap()).len(), 1);
+    assert_eq!(transport.dataset_sent.load(Ordering::SeqCst), 1);
 }
