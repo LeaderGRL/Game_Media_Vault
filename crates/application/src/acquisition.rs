@@ -61,11 +61,17 @@ struct Acquisition<'a> {
     /// download, rather than from the vault.
     source_failed: Cell<bool>,
     /// Downloads started ahead of processing, by work key.
-    prefetched: RefCell<HashMap<String, mpsc::Receiver<Fetched>>>,
+    prefetched: RefCell<HashMap<String, Ahead>>,
     /// The downloads the execution may run at once, shared by every download it starts.
     slots: Arc<Slots>,
     /// Set once the execution stops, so that downloads not started yet never start.
     stopped: Arc<AtomicBool>,
+}
+
+/// A download started ahead of processing its work.
+struct Ahead {
+    source_id: String,
+    result: mpsc::Receiver<Fetched>,
 }
 
 /// What downloading and storing a candidate's original gave.
@@ -284,26 +290,43 @@ where
                 .chain(&served_this_round)
                 .cloned()
                 .collect();
-            let Some(work) = runs.next_queued_work(run_id, &skipped)? else {
+            let work = runs.next_queued_work(run_id, &skipped)?;
+            // Work downloaded ahead but settled elsewhere meanwhile, as by another execution of
+            // the run, still tells whether its Source failed; the Source's served work then
+            // waits for a later execution too.
+            let unclaimed = acquisition.unclaimed_failures(work.as_ref());
+            let source_failed = !unclaimed.is_empty();
+            for failure in unclaimed {
+                defer_failed_source(
+                    runs,
+                    run_id,
+                    failure,
+                    &mut failed_sources,
+                    &mut source_failure,
+                )?;
+            }
+            let Some(work) = work else {
                 if served_this_round.is_empty() {
                     break;
                 }
                 served_this_round.clear();
                 continue;
             };
-            served_this_round.push(work.candidate.source_id.as_str().to_owned());
+            let source_id = work.candidate.source_id.as_str().to_owned();
+            served_this_round.push(source_id.clone());
+            if source_failed {
+                continue;
+            }
             match acquisition.process(&work) {
                 Ok(imported) => imported_assets.extend(imported),
                 Err(error) if acquisition.source_failed.get() => {
-                    let source_id = work.candidate.source_id.as_str();
-                    runs.record_source_failure(
+                    defer_failed_source(
+                        runs,
                         run_id,
-                        source_id,
-                        SourceFailureStage::Download,
-                        &error.to_string(),
+                        (source_id, error),
+                        &mut failed_sources,
+                        &mut source_failure,
                     )?;
-                    failed_sources.push(source_id.to_owned());
-                    source_failure.get_or_insert(error);
                 }
                 Err(error) => return Err(error),
             }
@@ -338,6 +361,26 @@ where
         }
     }
     Ok(imported_assets)
+}
+
+/// Records that `source_id` failed to download and defers its remaining work to a later
+/// execution, keeping the first failure for the execution to return.
+fn defer_failed_source(
+    runs: &dyn RunRepositoryPort,
+    run_id: i64,
+    (source_id, error): (String, ApplicationError),
+    failed_sources: &mut Vec<String>,
+    source_failure: &mut Option<ApplicationError>,
+) -> Result<(), ApplicationError> {
+    runs.record_source_failure(
+        run_id,
+        &source_id,
+        SourceFailureStage::Download,
+        &error.to_string(),
+    )?;
+    failed_sources.push(source_id);
+    source_failure.get_or_insert(error);
+    Ok(())
 }
 
 /// The connector of a planned Source and the requested types it acquires, unless the Source has
@@ -494,7 +537,9 @@ impl Acquisition<'_> {
             Route::Rejected => {
                 // A download started ahead before the rejection still reports a failing Source.
                 let ahead = self.prefetched.borrow_mut().remove(&work.key);
-                if let Some(Ok(Fetched::SourceFailed(error))) = ahead.map(|result| result.recv()) {
+                if let Some(Ok(Fetched::SourceFailed(error))) =
+                    ahead.map(|ahead| ahead.result.recv())
+                {
                     self.source_failed.set(true);
                     return Err(error);
                 }
@@ -643,7 +688,7 @@ impl Acquisition<'_> {
     ) -> Result<Option<StoredObject>, ApplicationError> {
         // A download started ahead is awaited; one never planned is made now.
         let ahead = self.prefetched.borrow_mut().remove(&work.key);
-        let fetched = match ahead.map(|result| result.recv()) {
+        let fetched = match ahead.map(|ahead| ahead.result.recv()) {
             Some(Ok(fetched)) => fetched,
             // A download not made ahead, or whose thread stopped before starting it, starts
             // only while the run still runs.
@@ -667,6 +712,39 @@ impl Acquisition<'_> {
             }
             Fetched::VaultFailed(error) => Err(error),
         }
+    }
+
+    /// Awaits the downloads started ahead that processing `served` will not claim: every one
+    /// when nothing is served, otherwise the other ones of its Source. Their work was settled
+    /// elsewhere meanwhile, as by another execution of the run, or waits for a later round,
+    /// which downloads it again; returns the first failure of each of their Sources. Only those
+    /// failures matter: the stored originals stay unreferenced until vault verification
+    /// collects them.
+    fn unclaimed_failures(
+        &self,
+        served: Option<&AcquisitionWorkItem>,
+    ) -> Vec<(String, ApplicationError)> {
+        let unclaimed: Vec<Ahead> = self
+            .prefetched
+            .borrow_mut()
+            .extract_if(|key, ahead| {
+                served.is_none_or(|work| {
+                    *key != work.key && ahead.source_id == work.candidate.source_id.as_str()
+                })
+            })
+            .map(|(_, ahead)| ahead)
+            .collect();
+        let mut failures: Vec<(String, ApplicationError)> = Vec::new();
+        for ahead in unclaimed {
+            if let Ok(Fetched::SourceFailed(error)) = ahead.result.recv()
+                && !failures
+                    .iter()
+                    .any(|(source_id, _)| *source_id == ahead.source_id)
+            {
+                failures.push((ahead.source_id, error));
+            }
+        }
+        failures
     }
 
     fn still_running(&self) -> Result<bool, ApplicationError> {
@@ -705,7 +783,8 @@ impl<'a> Acquisition<'a> {
     /// Starts downloading, on up to `limits.max_concurrent` threads, the media of the work the
     /// next round will import: the oldest queued work of every Source outside `failed_sources`.
     /// Work processing would not import, such as work bound for review, is never downloaded
-    /// ahead, and results are only awaited when their work is processed.
+    /// ahead. Results are awaited when their work is processed, or once the round shows no
+    /// processing will claim them.
     fn prefetch_round<'scope>(
         &self,
         scope: &'scope thread::Scope<'scope, '_>,
@@ -732,7 +811,8 @@ impl<'a> Acquisition<'a> {
                 continue;
             }
             let (sender, result) = mpsc::channel();
-            prefetched.insert(work.key, result);
+            let source_id = work.candidate.source_id.as_str().to_owned();
+            prefetched.insert(work.key, Ahead { source_id, result });
             jobs.push_back((connector, work.candidate, sender));
         }
         let workers = limits.max_concurrent.max(1).min(jobs.len());

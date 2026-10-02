@@ -187,6 +187,9 @@ pub struct FakeVault {
     /// Simulates a human rejecting the first Review Item right before the Nth next read of a
     /// Review Item, counting from one.
     pub rejection_before_review_read: Shared<Option<usize>>,
+    /// Simulates another execution of the run completing a work item, given by its key, right
+    /// before the Nth next read of the queue, counting from one.
+    pub completion_elsewhere_before_queue_read: Shared<Option<(usize, String)>>,
 }
 
 impl FakeVault {
@@ -454,6 +457,26 @@ impl RunRepositoryPort for FakeVault {
         run_id: i64,
         skipped_sources: &[String],
     ) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        let completed_elsewhere = {
+            let mut countdown = self.completion_elsewhere_before_queue_read.borrow_mut();
+            match countdown.take() {
+                Some((1, key)) => Some(key),
+                Some((reads, key)) => {
+                    *countdown = Some((reads - 1, key));
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(key) = completed_elsewhere {
+            let mut runs = self.runs.borrow_mut();
+            if let Some(work) = runs
+                .get_mut(&run_id)
+                .and_then(|run| run.work.iter_mut().find(|work| work.item.key == key))
+            {
+                work.state = WorkState::Done;
+            }
+        }
         let runs = self.runs.borrow();
         let run = &runs[&run_id];
         if run.status != AcquisitionRunStatus::Running {
