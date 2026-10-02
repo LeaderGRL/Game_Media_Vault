@@ -163,7 +163,7 @@ fn tauri_exposes_the_shared_persisted_acquisition_run_state() {
     let started = game_media_vault_tauri::start_acquisition_run_in_vault(
         &vault,
         request_input(),
-        &FixtureConnector,
+        &[&FixtureConnector],
     )
     .unwrap();
     assert_eq!(started.status, AcquisitionRunStatus::Running);
@@ -214,15 +214,18 @@ fn tauri_adapter_can_execute_a_persisted_run_through_a_connector() {
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
     };
-    let started =
-        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request, &FixtureConnector)
-            .unwrap();
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(
+        &vault,
+        request,
+        &[&FixtureConnector],
+    )
+    .unwrap();
     seed_matching_release(&vault);
 
-    let completed = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
+    let completed = game_media_vault_tauri::execute_acquisition_run_in_vault(
         &vault,
         started.id,
-        &FixtureConnector,
+        &[&FixtureConnector],
         matching_policy(),
     )
     .unwrap();
@@ -251,14 +254,17 @@ fn tauri_adapter_rejects_invalid_matching_threshold_order() {
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
     };
-    let started =
-        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request, &FixtureConnector)
-            .unwrap();
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(
+        &vault,
+        request,
+        &[&FixtureConnector],
+    )
+    .unwrap();
 
-    let error = game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector(
+    let error = game_media_vault_tauri::execute_acquisition_run_in_vault(
         &vault,
         started.id,
-        &FixtureConnector,
+        &[&FixtureConnector],
         MatchingPolicy {
             high_confidence_threshold: 60,
             medium_confidence_threshold: 80,
@@ -291,19 +297,22 @@ fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
         retention: RetentionPolicy::KeepEverything,
         limits: AcquisitionLimits::default(),
     };
-    let started =
-        game_media_vault_tauri::start_acquisition_run_in_vault(&vault, request, &FixtureConnector)
-            .unwrap();
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault(
+        &vault,
+        request,
+        &[&FixtureConnector],
+    )
+    .unwrap();
     let calling_thread = thread::current().id();
     let worker_thread = Arc::new(Mutex::new(None));
 
     let completed = tauri::async_runtime::block_on(
-        game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector_async(
+        game_media_vault_tauri::execute_acquisition_run_in_vault_async(
             vault,
             started.id,
-            Box::new(ThreadRecordingConnector {
+            vec![Box::new(ThreadRecordingConnector {
                 worker_thread: Arc::clone(&worker_thread),
-            }),
+            })],
             matching_policy(),
         ),
     )
@@ -335,7 +344,7 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
         let started = game_media_vault_tauri::start_acquisition_run_in_vault(
             &vault,
             request,
-            &FixtureConnector,
+            &[&FixtureConnector],
         )
         .unwrap();
         seed_matching_release(&vault);
@@ -345,13 +354,13 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
 
         let execution = thread::spawn(move || {
             tauri::async_runtime::block_on(
-                game_media_vault_tauri::execute_acquisition_run_in_vault_with_connector_async(
+                game_media_vault_tauri::execute_acquisition_run_in_vault_async(
                     execution_vault,
                     started.id,
-                    Box::new(BlockingConnector {
+                    vec![Box::new(BlockingConnector {
                         download_started: download_started_tx,
                         continue_download: continue_download_rx,
-                    }),
+                    })],
                     matching_policy(),
                 ),
             )
@@ -391,9 +400,9 @@ fn tauri_async_start_checks_the_plan_off_the_calling_thread() {
         game_media_vault_tauri::start_acquisition_run_in_vault_async(
             vault,
             request_input(),
-            Box::new(ThreadRecordingConnector {
+            vec![Box::new(ThreadRecordingConnector {
                 worker_thread: Arc::clone(&worker_thread),
-            }),
+            })],
         ),
     )
     .unwrap();
@@ -414,7 +423,7 @@ fn the_desktop_starts_only_runs_its_connector_can_execute() {
             sources: SourceSelection::Explicit(vec!["screenscraper".to_owned()]),
             ..request_input()
         },
-        &FixtureConnector,
+        &[&FixtureConnector],
     )
     .unwrap_err();
 
@@ -428,12 +437,12 @@ fn the_desktop_starts_only_runs_its_connector_can_execute() {
 
 #[test]
 fn the_desktop_explains_a_plan_without_a_vault() {
-    let plan = game_media_vault_tauri::plan_acquisition_with_connector(
+    let plan = game_media_vault_tauri::plan_acquisition_with_connectors(
         AcquisitionRequestInput {
             sources: SourceSelection::Auto,
             ..request_input()
         },
-        &FixtureConnector,
+        &[&FixtureConnector],
     )
     .unwrap();
 

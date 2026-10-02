@@ -188,12 +188,9 @@ fn tauri_review_preview_returns_backend_media_bytes() {
         downloads: RefCell::new(Vec::new()),
     };
 
-    let preview = game_media_vault_tauri::load_review_preview_in_vault_with_connector(
-        &vault,
-        review_item_id,
-        &connector,
-    )
-    .unwrap();
+    let preview =
+        game_media_vault_tauri::load_review_preview_in_vault(&vault, review_item_id, &[&connector])
+            .unwrap();
 
     assert_eq!(preview, b"preview bytes");
     assert_eq!(

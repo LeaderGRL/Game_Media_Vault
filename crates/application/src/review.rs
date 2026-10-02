@@ -70,19 +70,22 @@ pub fn resolve_review_item(
     }
 }
 
-/// Downloads the candidate media of a Review Item through its Connector.
+/// Downloads the candidate media of a Review Item through the connector of its Source among the
+/// registered `connectors`.
 pub fn load_review_preview(
     reviews: &dyn ReviewRepositoryPort,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
     review_item_id: i64,
 ) -> Result<ReviewPreview, ApplicationError> {
     let item = load_review_item(reviews, review_item_id)?;
-    if item.candidate.source_id.as_str() != connector.source_id() {
-        return Err(ApplicationError::PreviewConnectorUnavailable {
-            connector_source_id: connector.source_id().to_owned(),
-            candidate_source_id: item.candidate.source_id.as_str().to_owned(),
-        });
-    }
+    let source_id = item.candidate.source_id.as_str();
+    let connector = connectors
+        .iter()
+        .copied()
+        .find(|connector| connector.source_id() == source_id)
+        .ok_or_else(|| ApplicationError::PreviewConnectorUnavailable {
+            candidate_source_id: source_id.to_owned(),
+        })?;
     if !connector.capabilities().direct_media_download {
         return Err(ApplicationError::ConnectorCannotDownload {
             source_id: connector.source_id().to_owned(),

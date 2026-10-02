@@ -104,7 +104,7 @@ fn request_from(vault: &Path, args: &[&str]) -> serde_json::Value {
 
 /// Runs the CLI with the fixture connector, so no command reaches the network.
 fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
-    game_media_vault_cli::run_with_connector(cli_args(vault, args), &FixtureConnector)
+    game_media_vault_cli::run_with_connectors(cli_args(vault, args), &[&FixtureConnector])
 }
 
 fn seed_review_item(vault: &Path) -> i64 {
@@ -302,10 +302,10 @@ fn cli_adapter_can_execute_a_persisted_run_through_a_connector() {
     let started: serde_json::Value = serde_json::from_str(&started).unwrap();
     let run_id = started["id"].as_i64().unwrap();
 
-    let completed = game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+    let completed = game_media_vault_cli::execute_acquisition_run_in_vault_with_connectors(
         &vault,
         run_id,
-        &FixtureConnector,
+        &[&FixtureConnector],
         MatchingPolicy {
             high_confidence_threshold: 80,
             medium_confidence_threshold: 50,
@@ -401,10 +401,10 @@ fn cli_adapter_uses_the_configured_matching_thresholds() {
     let started: serde_json::Value = serde_json::from_str(&started).unwrap();
     let run_id = started["id"].as_i64().unwrap();
 
-    game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+    game_media_vault_cli::execute_acquisition_run_in_vault_with_connectors(
         &vault,
         run_id,
-        &FixtureConnector,
+        &[&FixtureConnector],
         MatchingPolicy {
             high_confidence_threshold: 96,
             medium_confidence_threshold: 50,
@@ -439,10 +439,10 @@ fn cli_adapter_rejects_invalid_matching_threshold_order() {
     let started: serde_json::Value = serde_json::from_str(&started).unwrap();
     let run_id = started["id"].as_i64().unwrap();
 
-    let error = game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+    let error = game_media_vault_cli::execute_acquisition_run_in_vault_with_connectors(
         &vault,
         run_id,
-        &FixtureConnector,
+        &[&FixtureConnector],
         MatchingPolicy {
             high_confidence_threshold: 60,
             medium_confidence_threshold: 80,
@@ -740,7 +740,7 @@ fn acquire_refuses_a_plan_its_connector_cannot_execute() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
 
-    let error = game_media_vault_cli::run_with_connector(
+    let error = game_media_vault_cli::run_with_connectors(
         cli_args(
             &vault,
             &[
@@ -755,7 +755,7 @@ fn acquire_refuses_a_plan_its_connector_cannot_execute() {
                 "box-front",
             ],
         ),
-        &RefusingConnector,
+        &[&RefusingConnector],
     )
     .unwrap_err();
 
@@ -811,7 +811,7 @@ fn plan_refuses_a_request_no_selected_source_serves() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
 
-    let error = game_media_vault_cli::run_with_connector(
+    let error = game_media_vault_cli::run_with_connectors(
         cli_args(
             &vault,
             &[
@@ -826,7 +826,7 @@ fn plan_refuses_a_request_no_selected_source_serves() {
                 "box-front",
             ],
         ),
-        &RefusingConnector,
+        &[&RefusingConnector],
     )
     .unwrap_err();
 
@@ -1047,10 +1047,10 @@ fn libretro_box_front_auto_links_to_an_imported_no_intro_release() {
         LibretroFixtureTransport,
     );
 
-    let completed = game_media_vault_cli::execute_acquisition_run_in_vault_with_connector(
+    let completed = game_media_vault_cli::execute_acquisition_run_in_vault_with_connectors(
         &vault,
         started["id"].as_i64().unwrap(),
-        &connector,
+        &[&connector],
         MatchingPolicy {
             high_confidence_threshold: 80,
             medium_confidence_threshold: 50,
