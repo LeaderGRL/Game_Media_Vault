@@ -178,21 +178,102 @@ fn a_list_without_a_description_is_named_by_its_list_name() {
 </softwarelist>"#,
     )
     .unwrap();
-    let anonymous = temp.path().join("anonymous.xml");
-    std::fs::write(
-        &anonymous,
-        r#"<softwarelist>
+
+    let named = MameSoftwareListCatalog::new()
+        .read_releases(&named, 10)
+        .unwrap();
+
+    assert_eq!(named.releases[0].platform, "foo_cart");
+}
+
+fn read_list(
+    xml: &str,
+) -> Result<
+    game_media_vault_application::ReferenceCatalogRead,
+    game_media_vault_application::PortError,
+> {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("list.xml");
+    std::fs::write(&path, xml).unwrap();
+    MameSoftwareListCatalog::new().read_releases(&path, 10)
+}
+
+#[test]
+fn a_list_cut_short_between_entries_is_invalid_source_data() {
+    let error = read_list(
+        r#"<softwarelist name="nes" description="NES">
+  <software name="smb"><description>Super Mario Bros. (World)</description></software>"#,
+    )
+    .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}
+
+#[test]
+fn a_list_without_a_name_is_invalid_source_data() {
+    // Records of anonymous lists would share their stable identities across lists.
+    let error = read_list(
+        r#"<softwarelist description="Homebrew Console cartridges">
   <software name="demo"><description>Demo (World)</description></software>
 </softwarelist>"#,
     )
+    .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}
+
+#[test]
+fn spelled_out_regions_and_version_revisions_are_understood() {
+    let read = read_list(
+        r#"<softwarelist name="nes" description="NES">
+  <software name="a"><description>Game A (Portugal)</description></software>
+  <software name="b"><description>Game B (Denmark, Version 2.0)</description></software>
+  <software name="c"><description>Game C (USA) (v1.1)</description></software>
+</softwarelist>"#,
+    )
     .unwrap();
-    let catalog = MameSoftwareListCatalog::new();
 
-    let named = catalog.read_releases(&named, 10).unwrap();
-    let anonymous = catalog.read_releases(&anonymous, 10).unwrap();
+    let releases: Vec<(&str, Option<&str>)> = read
+        .releases
+        .iter()
+        .map(|release| (release.region.as_str(), release.revision.as_deref()))
+        .collect();
+    assert_eq!(
+        releases,
+        [
+            ("Portugal", None),
+            ("Denmark", Some("Version 2.0")),
+            ("USA", Some("v1.1"))
+        ]
+    );
+}
 
-    assert_eq!(named.releases[0].platform, "foo_cart");
-    // A list naming neither its system nor itself places its software on no platform.
-    assert!(anonymous.releases.is_empty());
-    assert_eq!(anonymous.skipped_records, 1);
+#[test]
+fn blank_metadata_is_left_out_instead_of_failing_the_import() {
+    let read = read_list(
+        r#"<softwarelist name="nes" description="NES">
+  <software name="smb">
+    <description>Super Mario Bros. (World)</description>
+    <info name="serial" value=""/>
+    <part name="cart"><dataarea name="prg"><rom name="smb.prg" crc="" sha1="1111"/></dataarea></part>
+  </software>
+</softwarelist>"#,
+    )
+    .unwrap();
+
+    let identifiers: Vec<String> = read.releases[0]
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.field == ReleaseAssertionField::Identifier)
+        .map(|assertion| assertion.qualifier.clone().unwrap_or_default())
+        .collect();
+    assert!(!identifiers.contains(&"serial".to_owned()));
+    assert!(!identifiers.contains(&"crc".to_owned()));
+    assert!(identifiers.contains(&"sha1".to_owned()));
+    assert!(
+        read.releases[0]
+            .assertions
+            .iter()
+            .all(|assertion| !assertion.value.trim().is_empty())
+    );
 }
