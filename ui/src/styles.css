@@ -627,6 +627,26 @@ select:focus {
   color: #e9edf5;
 }
 
+.packaging-model {
+  margin: 12px 0 0;
+}
+
+.packaging-model-scene {
+  width: 240px;
+  max-width: 100%;
+  height: 240px;
+  border-radius: 6px;
+  background: #181c24;
+  cursor: grab;
+}
+
+.packaging-model figcaption,
+.packaging-model-note {
+  margin: 6px 0 0;
+  color: #8e98aa;
+  font-size: 0.85rem;
+}
+
 .library-filters {
   display: flex;
   flex-wrap: wrap;
