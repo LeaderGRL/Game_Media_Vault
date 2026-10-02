@@ -4,7 +4,7 @@ use std::{
 };
 
 use game_media_vault_application::{
-    ImportReferenceCatalogRequest, PortError, ReferenceCatalogRepositoryPort,
+    ImportReferenceCatalogRequest, PortError, ReferenceCatalogRead, ReferenceCatalogRepositoryPort,
     ReferenceCatalogSourcePort, import_reference_catalog,
 };
 use game_media_vault_domain::{
@@ -19,8 +19,12 @@ impl ReferenceCatalogSourcePort for SyntheticSource {
         &self,
         _source_path: &Path,
         max_games: usize,
-    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
-        Ok((0..max_games).map(reference_release).collect())
+    ) -> Result<ReferenceCatalogRead, PortError> {
+        // A file whose malformed records the reader skipped.
+        Ok(ReferenceCatalogRead {
+            releases: (0..max_games).map(reference_release).collect(),
+            skipped_records: 3,
+        })
     }
 }
 
@@ -75,6 +79,7 @@ fn reference_import_persists_large_inputs_in_bounded_batches() {
     .unwrap();
 
     assert_eq!(summary.imported_releases, 513);
+    assert_eq!(summary.skipped_records, 3);
     assert_eq!(*catalog.batch_sizes.borrow(), vec![256, 256, 1]);
 }
 
@@ -115,11 +120,14 @@ impl ReferenceCatalogSourcePort for PathRecordingSource {
         &self,
         source_path: &Path,
         _max_games: usize,
-    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+    ) -> Result<ReferenceCatalogRead, PortError> {
         self.source_paths
             .borrow_mut()
             .push(source_path.to_path_buf());
-        Ok(vec![reference_release(0)])
+        Ok(ReferenceCatalogRead {
+            releases: vec![reference_release(0)],
+            skipped_records: 0,
+        })
     }
 }
 

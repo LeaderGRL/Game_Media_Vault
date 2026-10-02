@@ -3,7 +3,7 @@
 
 use std::{fs::File, io::BufReader, path::Path};
 
-use game_media_vault_application::PortError;
+use game_media_vault_application::{PortError, ReferenceCatalogRead};
 use game_media_vault_domain::{
     ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
@@ -21,14 +21,15 @@ pub(crate) struct DatafileSource {
     pub(crate) name: &'static str,
 }
 
-/// Reads up to `max_games` releases from the datafile at `path`.
+/// Reads up to `max_games` releases from the datafile at `path`, skipping and counting game
+/// entries too malformed to read.
 pub(crate) fn read_datafile(
     source: &DatafileSource,
     path: &Path,
     max_games: usize,
-) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+) -> Result<ReferenceCatalogRead, PortError> {
     if max_games == 0 {
-        return Ok(Vec::new());
+        return Ok(ReferenceCatalogRead::default());
     }
     let file = File::open(path).map_err(|error| {
         PortError::new(format!(
@@ -48,12 +49,18 @@ enum HeaderField {
     Version,
 }
 
+/// The game entry being read: one to import, or one skipped as malformed.
+enum GameEntry {
+    Reading(DatafileGame),
+    Skipped,
+}
+
 fn parse_datafile<R: std::io::BufRead>(
     source: &DatafileSource,
     reader: R,
     source_location: &str,
     max_games: usize,
-) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+) -> Result<ReferenceCatalogRead, PortError> {
     let mut xml = Reader::from_reader(reader);
     let mut buffer = Vec::new();
     let mut platform = None;
@@ -63,6 +70,7 @@ fn parse_datafile<R: std::io::BufRead>(
     let mut header_field = None;
     let mut current_game = None;
     let mut releases = Vec::with_capacity(max_games.min(256));
+    let mut skipped_records = 0;
 
     loop {
         match xml
@@ -80,25 +88,19 @@ fn parse_datafile<R: std::io::BufRead>(
                     header_text.clear();
                 }
                 "game" => {
-                    let raw_name = attribute_value(source, &element, "name")?.ok_or_else(|| {
-                        PortError::invalid_source_data(format!(
-                            "{} game entry is missing its name",
-                            source.name
-                        ))
-                    })?;
-                    current_game = Some(DatafileGame::new(raw_name, source_location));
+                    // An entry without a readable name identifies no release; the others still do.
+                    current_game = Some(match attribute_value(source, &element, "name") {
+                        Ok(Some(raw_name)) => {
+                            GameEntry::Reading(DatafileGame::new(raw_name, source_location))
+                        }
+                        Ok(None) | Err(_) => GameEntry::Skipped,
+                    });
                 }
-                "rom" => {
-                    if let Some(game) = current_game.as_mut() {
-                        game.read_identifiers(source, &element)?;
-                    }
-                }
+                "rom" => read_rom(source, &mut current_game, &element),
                 _ => {}
             },
             Event::Empty(element) if element.name().as_ref() == "rom" => {
-                if let Some(game) = current_game.as_mut() {
-                    game.read_identifiers(source, &element)?;
-                }
+                read_rom(source, &mut current_game, &element);
             }
             Event::Text(text) if header_field.is_some() => {
                 header_text.push_str(text.xml10_content().as_ref());
@@ -117,23 +119,33 @@ fn parse_datafile<R: std::io::BufRead>(
                     version = (!text.is_empty()).then(|| text.to_owned());
                 }
                 "header" => in_header = false,
-                "game" => {
-                    let game = current_game.take().ok_or_else(|| {
-                        PortError::invalid_source_data(format!(
+                "game" => match current_game.take() {
+                    Some(GameEntry::Reading(game)) => {
+                        let platform = platform
+                            .as_deref()
+                            .ok_or_else(|| missing_platform(source))?;
+                        releases.push(game.finish(source, platform, version.as_deref()));
+                        if releases.len() >= max_games {
+                            break;
+                        }
+                    }
+                    Some(GameEntry::Skipped) => skipped_records += 1,
+                    None => {
+                        return Err(PortError::invalid_source_data(format!(
                             "{} game closing tag has no matching entry",
                             source.name
-                        ))
-                    })?;
-                    let platform = platform
-                        .as_deref()
-                        .ok_or_else(|| missing_platform(source))?;
-                    releases.push(game.finish(source, platform, version.as_deref()));
-                    if releases.len() >= max_games {
-                        break;
+                        )));
                     }
-                }
+                },
                 _ => {}
             },
+            // A datafile cut short inside an entry is broken as a whole.
+            Event::Eof if current_game.is_some() => {
+                return Err(PortError::invalid_source_data(format!(
+                    "{} datafile ends inside a game entry",
+                    source.name
+                )));
+            }
             Event::Eof => break,
             _ => {}
         }
@@ -143,7 +155,24 @@ fn parse_datafile<R: std::io::BufRead>(
     if platform.is_none() {
         return Err(missing_platform(source));
     }
-    Ok(releases)
+    Ok(ReferenceCatalogRead {
+        releases,
+        skipped_records,
+    })
+}
+
+/// Records the identifiers of a ROM or track of the entry being read; one it cannot read makes
+/// the entry skipped.
+fn read_rom(
+    source: &DatafileSource,
+    current_game: &mut Option<GameEntry>,
+    element: &quick_xml::events::BytesStart<'_>,
+) {
+    if let Some(GameEntry::Reading(game)) = current_game
+        && game.read_identifiers(source, element).is_err()
+    {
+        *current_game = Some(GameEntry::Skipped);
+    }
 }
 
 fn missing_platform(source: &DatafileSource) -> PortError {

@@ -31,6 +31,8 @@ pub struct ImportReferenceCatalogRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceImportSummary {
     pub imported_releases: usize,
+    /// Records of the file too malformed to read, which the import skipped.
+    pub skipped_records: usize,
 }
 
 pub fn import_reference_catalog(
@@ -44,10 +46,10 @@ pub fn import_reference_catalog(
 
     let source_path = resolve_source_path(&request.source_path)?;
     let location = source_location(&source_path);
-    let releases = source.read_releases(&source_path, request.max_games)?;
+    let read = source.read_releases(&source_path, request.max_games)?;
     let mut imported_releases = 0;
     let mut batch = Vec::with_capacity(REFERENCE_IMPORT_BATCH_SIZE);
-    for mut release in releases.into_iter().take(request.max_games) {
+    for mut release in read.releases.into_iter().take(request.max_games) {
         for assertion in &mut release.assertions {
             assertion.source_location.clone_from(&location);
         }
@@ -62,7 +64,10 @@ pub fn import_reference_catalog(
         imported_releases += catalog.persist_reference_releases(batch)?.len();
     }
 
-    Ok(ReferenceImportSummary { imported_releases })
+    Ok(ReferenceImportSummary {
+        imported_releases,
+        skipped_records: read.skipped_records,
+    })
 }
 
 pub fn import_local_box_front(

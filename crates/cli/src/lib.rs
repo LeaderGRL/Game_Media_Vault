@@ -694,7 +694,8 @@ fn import_reference_datafile(
         },
     )?;
     Ok(serde_json::to_string_pretty(&serde_json::json!({
-        "imported_releases": summary.imported_releases
+        "imported_releases": summary.imported_releases,
+        "skipped_records": summary.skipped_records,
     }))?)
 }
 

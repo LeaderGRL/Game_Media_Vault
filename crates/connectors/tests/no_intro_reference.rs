@@ -4,8 +4,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    ApplicationError, ImportReferenceCatalogRequest, PortError, ReferenceCatalogRepositoryPort,
-    ReferenceCatalogSourcePort, import_reference_catalog,
+    ApplicationError, ImportReferenceCatalogRequest, PortError, ReferenceCatalogRead,
+    ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, import_reference_catalog,
 };
 use game_media_vault_connectors::NoIntroReferenceCatalog;
 use game_media_vault_domain::{
@@ -170,7 +170,8 @@ fn decodes_xml_entities_in_the_platform_header() {
 
     let releases = source
         .read_releases(&escaped_platform_fixture_path(), 1)
-        .unwrap();
+        .unwrap()
+        .releases;
 
     assert_eq!(releases.len(), 1);
     assert_eq!(releases[0].platform, "Nintendo - Game & Watch");
@@ -187,7 +188,8 @@ fn preserves_unlisted_region_claims() {
 
     let releases = source
         .read_releases(&unlisted_region_fixture_path(), 1)
-        .unwrap();
+        .unwrap()
+        .releases;
 
     assert_eq!(releases.len(), 1);
     let release = &releases[0];
@@ -205,7 +207,8 @@ fn preserves_status_tags_as_editions_and_version_tags_as_revisions() {
 
     let releases = source
         .read_releases(&metadata_tags_fixture_path(), 4)
-        .unwrap();
+        .unwrap()
+        .releases;
 
     assert_eq!(releases.len(), 4);
 
@@ -251,7 +254,7 @@ fn rejects_an_unbounded_reference_import_before_reading_the_source() {
             &self,
             _source_path: &Path,
             _max_games: usize,
-        ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+        ) -> Result<ReferenceCatalogRead, PortError> {
             panic!("source should not be read for an invalid limit");
         }
     }
@@ -273,7 +276,7 @@ fn rejects_an_unbounded_reference_import_before_reading_the_source() {
 fn connector_returns_no_releases_when_the_requested_bound_is_zero() {
     let source = NoIntroReferenceCatalog::new();
 
-    let releases = source.read_releases(&fixture_path(), 0).unwrap();
+    let releases = source.read_releases(&fixture_path(), 0).unwrap().releases;
 
     assert!(releases.is_empty());
 }
@@ -287,7 +290,8 @@ fn platform_names_drop_dat_variant_qualifiers() {
 
     let releases = NoIntroReferenceCatalog::new()
         .read_releases(&fixture, 1)
-        .unwrap();
+        .unwrap()
+        .releases;
 
     assert_eq!(
         releases[0].platform,
@@ -315,4 +319,33 @@ fn a_malformed_dat_is_invalid_source_data() {
         .unwrap_err();
 
     assert!(error.is_invalid_source_data(), "{error}");
+}
+
+#[test]
+fn malformed_game_entries_are_skipped_and_counted_without_losing_the_others() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("partly-broken.dat");
+    std::fs::write(
+        &path,
+        r#"<datafile>
+  <header><name>Nintendo - Game Boy</name></header>
+  <game name="Tetris (World)"><rom name="Tetris (World).gb" crc="46df91ad"/></game>
+  <game><rom name="nameless.gb" crc="00000000"/></game>
+  <game name="Garbled (World)"><rom name="garbled.gb" crc="&bogus;"/></game>
+  <game name="Dr. Mario (World)"><rom name="Dr. Mario (World).gb" crc="12345678"/></game>
+</datafile>"#,
+    )
+    .unwrap();
+
+    let read = NoIntroReferenceCatalog::new()
+        .read_releases(&path, 10)
+        .unwrap();
+
+    let titles: Vec<&str> = read
+        .releases
+        .iter()
+        .map(|release| release.game_title.as_str())
+        .collect();
+    assert_eq!(titles, ["Tetris", "Dr. Mario"]);
+    assert_eq!(read.skipped_records, 2);
 }

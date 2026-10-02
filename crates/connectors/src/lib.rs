@@ -1,9 +1,10 @@
 use std::{io::Read, path::Path, sync::OnceLock, thread, time::Duration};
 
-use game_media_vault_application::{ConnectorPort, PortError, ReferenceCatalogSourcePort};
+use game_media_vault_application::{
+    ConnectorPort, PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort,
+};
 use game_media_vault_domain::{
-    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection,
-    ReferenceReleaseRecord, SourceId,
+    AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
 };
 
 mod datafile;
@@ -472,7 +473,7 @@ impl ReferenceCatalogSourcePort for NoIntroReferenceCatalog {
         &self,
         source_path: &Path,
         max_games: usize,
-    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+    ) -> Result<ReferenceCatalogRead, PortError> {
         read_datafile(&NO_INTRO, source_path, max_games)
     }
 }
@@ -492,7 +493,7 @@ impl ReferenceCatalogSourcePort for RedumpReferenceCatalog {
         &self,
         source_path: &Path,
         max_games: usize,
-    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+    ) -> Result<ReferenceCatalogRead, PortError> {
         read_datafile(&REDUMP, source_path, max_games)
     }
 }

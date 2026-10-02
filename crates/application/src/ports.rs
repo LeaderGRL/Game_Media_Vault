@@ -281,6 +281,14 @@ pub trait ConnectorPort {
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 }
 
+/// The releases a reference catalog file yields, and how many of its records were too malformed
+/// to read; those never invalidate the others.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReferenceCatalogRead {
+    pub releases: Vec<ReferenceReleaseRecord>,
+    pub skipped_records: usize,
+}
+
 pub trait ReferenceCatalogSourcePort {
     /// Reads up to `max_games` releases from the canonical `source_path`. The application then
     /// records the readable location of that file on every returned assertion.
@@ -288,7 +296,7 @@ pub trait ReferenceCatalogSourcePort {
         &self,
         source_path: &Path,
         max_games: usize,
-    ) -> Result<Vec<ReferenceReleaseRecord>, PortError>;
+    ) -> Result<ReferenceCatalogRead, PortError>;
 }
 
 pub trait ReferenceCatalogRepositoryPort {
