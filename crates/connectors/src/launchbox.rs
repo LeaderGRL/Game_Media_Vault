@@ -25,7 +25,7 @@ const IMAGE_BASE_URL: &str = "https://images.launchbox-app.com/";
 const METADATA_ENTRY: &str = "Metadata.xml";
 
 /// The image types acquired and the Asset Type each holds.
-const IMAGE_TYPES: [(AssetType, &str); 13] = [
+const IMAGE_TYPES: [(AssetType, &str); 16] = [
     (AssetType::BoxFront, "Box - Front"),
     (AssetType::BoxBack, "Box - Back"),
     (AssetType::Spine, "Box - Spine"),
@@ -33,16 +33,22 @@ const IMAGE_TYPES: [(AssetType, &str); 13] = [
     (AssetType::CartridgeFront, "Cart - Front"),
     (AssetType::CartridgeBack, "Cart - Back"),
     (AssetType::Disc, "Disc"),
+    (AssetType::Pcb, "Arcade - Circuit Board"),
     (AssetType::Screenshot, "Screenshot - Gameplay"),
     (AssetType::TitleScreen, "Screenshot - Game Title"),
     (AssetType::Logo, "Clear Logo"),
     (AssetType::WallpaperArtwork, "Fanart - Background"),
     (AssetType::Flyer, "Advertisement Flyer - Front"),
+    (AssetType::ArcadeCabinet, "Arcade - Cabinet"),
+    (AssetType::ControlPanel, "Arcade - Control Panel"),
     (AssetType::Marquee, "Arcade - Marquee"),
 ];
 
 /// Platforms as No-Intro, Redump and Libretro name them, and as LaunchBox does.
 const PLATFORMS: &[(&str, &str)] = &[
+    // MAME and FBNeo emulate the arcade boards LaunchBox files under one platform.
+    ("FBNeo - Arcade Games", "Arcade"),
+    ("MAME", "Arcade"),
     ("Atari - 2600", "Atari 2600"),
     ("Atari - 7800", "Atari 7800"),
     ("Atari - Lynx", "Atari Lynx"),

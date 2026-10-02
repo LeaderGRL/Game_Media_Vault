@@ -7,11 +7,14 @@ export type AssetType =
   | "cartridge_front"
   | "cartridge_back"
   | "disc"
+  | "pcb"
   | "screenshot"
   | "title_screen"
   | "logo"
   | "wallpaper_artwork"
   | "flyer"
+  | "arcade_cabinet"
+  | "control_panel"
   | "marquee";
 
 export interface AssetProvenance {
