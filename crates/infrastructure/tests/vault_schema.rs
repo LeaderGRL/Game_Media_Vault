@@ -26,7 +26,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 7);
+    assert_eq!(pragma(&path, "user_version"), 8);
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked or planned Source columns nor Derived Assets.
+    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -145,13 +145,14 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              ALTER TABLE acquisition_run_work DROP COLUMN outranked_json;
              DROP TABLE derived_objects;
              ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
+             ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 7);
+    assert_eq!(pragma(&path, "user_version"), 8);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }
@@ -176,18 +177,19 @@ fn runs_from_version_6_plan_the_sources_their_request_selects() {
         .unwrap()
         .create_run(request, vec!["libretro-thumbnails".to_owned()])
         .unwrap();
-    // Version 6 runs recorded no plan.
+    // Version 6 runs recorded no plan, nor unavailable work.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
             "ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
+             ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
              PRAGMA user_version = 6;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 7);
+    assert_eq!(pragma(&path, "user_version"), 8);
     assert_eq!(
         catalog.get_run(run.id).unwrap().unwrap().planned_sources,
         ["libretro-thumbnails"]

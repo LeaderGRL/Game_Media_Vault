@@ -216,6 +216,8 @@ pub struct AcquisitionRun {
     pub below_quality_work: u64,
     /// Completed work whose original a retained Asset outranks under Keep Best Per Type.
     pub outranked_work: u64,
+    /// Completed work whose media its Source no longer serves.
+    pub unavailable_work: u64,
 }
 
 /// One discovered Asset Candidate to process within an Acquisition Run. The key is the

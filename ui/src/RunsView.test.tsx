@@ -23,6 +23,7 @@ const run: AcquisitionRun = {
   completed_work: 4,
   below_quality_work: 0,
   outranked_work: 0,
+  unavailable_work: 0,
 };
 
 function renderRuns(
@@ -114,6 +115,15 @@ describe("RunsView", () => {
       within(card).getByText(
         "2 queued · 1 awaiting review · 4 completed (1 below quality, 2 outranked)",
       ),
+    ).toBeInTheDocument();
+  });
+
+  it("counts the completed work whose media its Source no longer serves", () => {
+    renderRuns([{ ...run, unavailable_work: 1 }]);
+
+    const card = screen.getByRole("article", { name: "Run #3" });
+    expect(
+      within(card).getByText("2 queued · 1 awaiting review · 4 completed (1 unavailable)"),
     ).toBeInTheDocument();
   });
 

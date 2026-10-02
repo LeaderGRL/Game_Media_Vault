@@ -557,3 +557,30 @@ fn queued_work_of_skipped_sources_waits_for_a_later_execution() {
         "first-work"
     );
 }
+
+#[test]
+fn unavailable_work_is_completed_and_counted_across_reopen() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("gone"), work("kept")])
+        .unwrap();
+
+    catalog
+        .complete_unavailable_work(run.id, "gone", "download returned HTTP 404")
+        .unwrap();
+    drop(catalog);
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+
+    let run = load_acquisition_run(&reopened, run.id).unwrap();
+    assert_eq!(
+        (run.queued_work, run.completed_work, run.unavailable_work),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        reopened.next_queued_work(run.id, &[]).unwrap().unwrap().key,
+        "kept"
+    );
+}

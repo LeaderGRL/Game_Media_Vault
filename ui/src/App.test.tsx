@@ -1396,6 +1396,7 @@ describe("App acquisition", () => {
     completed_work: 0,
     below_quality_work: 0,
     outranked_work: 0,
+    unavailable_work: 0,
   };
 
   beforeEach(() => {
@@ -2142,6 +2143,7 @@ describe("App Library requests", () => {
     completed_work: 0,
     below_quality_work: 0,
     outranked_work: 0,
+    unavailable_work: 0,
   };
 
   beforeEach(() => {

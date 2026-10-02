@@ -137,6 +137,7 @@ pub struct FakeWork {
     pub state: WorkState,
     pub shortfalls: Vec<QualityShortfall>,
     pub outranked: Option<Outranked>,
+    pub unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +211,15 @@ impl FakeVault {
 
     pub fn run(&self, run_id: i64) -> AcquisitionRun {
         self.get_run(run_id).unwrap().unwrap()
+    }
+
+    /// Why each unavailable work item of the run could not be acquired, in work order.
+    pub fn unavailable_reasons(&self, run_id: i64) -> Vec<String> {
+        self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .filter_map(|work| work.unavailable.clone())
+            .collect()
     }
 
     /// Every quality shortfall recorded on the run's work, in work order.
@@ -332,6 +342,11 @@ impl RunRepositoryPort for FakeVault {
                     .iter()
                     .filter(|work| work.outranked.is_some())
                     .count() as u64,
+                unavailable_work: run
+                    .work
+                    .iter()
+                    .filter(|work| work.unavailable.is_some())
+                    .count() as u64,
             }
         });
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
@@ -408,6 +423,7 @@ impl RunRepositoryPort for FakeVault {
                     state: WorkState::Queued,
                     shortfalls: Vec::new(),
                     outranked: None,
+                    unavailable: None,
                 });
             }
         }
@@ -449,6 +465,25 @@ impl RunRepositoryPort for FakeVault {
         if let Some(status) = self.status_after_next_completion.borrow_mut().take() {
             run.status = status;
         }
+        Ok(())
+    }
+
+    fn complete_unavailable_work(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        reason: &str,
+    ) -> Result<(), PortError> {
+        let mut runs = self.runs.borrow_mut();
+        let work = runs
+            .get_mut(&run_id)
+            .unwrap()
+            .work
+            .iter_mut()
+            .find(|work| work.item.key == work_key)
+            .ok_or_else(|| PortError::new(format!("work {work_key} does not exist")))?;
+        work.state = WorkState::Done;
+        work.unavailable = Some(reason.to_owned());
         Ok(())
     }
 }
@@ -850,6 +885,8 @@ pub struct FakeConnector {
     pub failing_downloads: BTreeSet<String>,
     /// Source URLs whose download starts but fails partway through the body.
     pub failing_bodies: BTreeSet<String>,
+    /// Locators the Source no longer serves, as an HTTP 404 says.
+    pub unavailable_downloads: BTreeSet<String>,
     pub discover_calls: RefCell<u32>,
     pub downloads: RefCell<Vec<String>>,
     /// Why the connector refuses every request, if it does.
@@ -868,6 +905,7 @@ impl FakeConnector {
             discovery_fails: false,
             failing_downloads: BTreeSet::new(),
             failing_bodies: BTreeSet::new(),
+            unavailable_downloads: BTreeSet::new(),
             discover_calls: RefCell::new(0),
             downloads: RefCell::new(Vec::new()),
             unsupported_reason: None,
@@ -910,6 +948,9 @@ impl ConnectorPort for FakeConnector {
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         if self.failing_downloads.contains(&candidate.source_url) {
             return Err(PortError::new("fixture download failed".to_owned()));
+        }
+        if self.unavailable_downloads.contains(&candidate.source_url) {
+            return Err(PortError::unavailable("fixture media is gone".to_owned()));
         }
         self.downloads
             .borrow_mut()

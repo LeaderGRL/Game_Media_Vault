@@ -387,7 +387,9 @@ impl Acquisition<'_> {
         release: &LibraryEntry,
         candidate_match: AssetCandidateMatch,
     ) -> Result<Step, ApplicationError> {
-        let stored = self.store_original(work)?;
+        let Some(stored) = self.store_original(work)? else {
+            return Ok(Step::Done(None));
+        };
         // Quality is measured on the stored bytes; an original below it is not linked, and its
         // object stays unreferenced until vault verification collects it.
         let shortfalls = self
@@ -421,16 +423,29 @@ impl Acquisition<'_> {
         }
     }
 
-    fn store_original(&self, work: &AcquisitionWorkItem) -> Result<StoredObject, ApplicationError> {
-        let mut stream = self
-            .connector_for(work)?
-            .download(&work.candidate)
-            .inspect_err(|_| self.source_failed.set(true))?;
+    /// Downloads and stores the candidate's original, or completes the work as unavailable and
+    /// returns `None` when its Source no longer serves the media.
+    fn store_original(
+        &self,
+        work: &AcquisitionWorkItem,
+    ) -> Result<Option<StoredObject>, ApplicationError> {
+        let mut stream = match self.connector_for(work)?.download(&work.candidate) {
+            Ok(stream) => stream,
+            Err(error) if error.is_unavailable() => {
+                self.runs
+                    .complete_unavailable_work(self.run_id, &work.key, error.message())?;
+                return Ok(None);
+            }
+            Err(error) => {
+                self.source_failed.set(true);
+                return Err(error.into());
+            }
+        };
         let mut body = SourceBody {
             stream: stream.as_mut(),
             failed: &self.source_failed,
         };
-        Ok(self.object_store.store_original(&mut body)?)
+        Ok(Some(self.object_store.store_original(&mut body)?))
     }
 
     fn asset_record(

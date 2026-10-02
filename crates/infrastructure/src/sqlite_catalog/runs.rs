@@ -45,6 +45,7 @@ impl RunRepositoryPort for SqliteCatalog {
             completed_work: 0,
             below_quality_work: 0,
             outranked_work: 0,
+            unavailable_work: 0,
         })
     }
 
@@ -196,30 +197,49 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        let connection = self.connect()?;
-        connection
-            .execute(
-                "UPDATE acquisition_run_work SET state = 'done'
+        complete_queued_work(&self.connect()?, run_id, work_key, None)
+    }
+
+    fn complete_unavailable_work(
+        &self,
+        run_id: i64,
+        work_key: &str,
+        reason: &str,
+    ) -> Result<(), PortError> {
+        complete_queued_work(&self.connect()?, run_id, work_key, Some(reason))
+    }
+}
+
+/// Completes queued `work_key`, recording why it was unavailable if it was; work another
+/// execution completed meanwhile stays as it is.
+fn complete_queued_work(
+    connection: &Connection,
+    run_id: i64,
+    work_key: &str,
+    unavailable_reason: Option<&str>,
+) -> Result<(), PortError> {
+    connection
+        .execute(
+            "UPDATE acquisition_run_work SET state = 'done', unavailable_reason = ?3
                  WHERE run_id = ?1 AND work_key = ?2 AND state = 'queued'",
-                params![run_id, work_key],
-            )
-            .map_err(sql_error)?;
-        let exists: bool = connection
-            .query_row(
-                "SELECT EXISTS(
+            params![run_id, work_key, unavailable_reason],
+        )
+        .map_err(sql_error)?;
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(
                      SELECT 1 FROM acquisition_run_work WHERE run_id = ?1 AND work_key = ?2
                  )",
-                params![run_id, work_key],
-                |row| row.get(0),
-            )
-            .map_err(sql_error)?;
-        if exists {
-            Ok(())
-        } else {
-            Err(PortError::new(format!(
-                "acquisition run #{run_id} has no work {work_key:?}"
-            )))
-        }
+            params![run_id, work_key],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if exists {
+        Ok(())
+    } else {
+        Err(PortError::new(format!(
+            "acquisition run #{run_id} has no work {work_key:?}"
+        )))
     }
 }
 
@@ -231,7 +251,8 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                     COUNT(work.id) FILTER (WHERE work.state = 'parked'),
                     COUNT(work.id) FILTER (WHERE work.state = 'done'),
                     COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL),
-                    COUNT(work.id) FILTER (WHERE work.outranked_json IS NOT NULL)
+                    COUNT(work.id) FILTER (WHERE work.outranked_json IS NOT NULL),
+                    COUNT(work.id) FILTER (WHERE work.unavailable_reason IS NOT NULL)
              FROM acquisition_runs AS run
              LEFT JOIN acquisition_run_work AS work ON work.run_id = run.id
              WHERE run.id = ?1
@@ -239,7 +260,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
             params![run_id],
             |row| {
                 // Queued, parked, done, below-quality and outranked work.
-                let mut counts = [0_i64; 5];
+                let mut counts = [0_i64; 6];
                 for (index, count) in counts.iter_mut().enumerate() {
                     *count = row.get(4 + index)?;
                 }
@@ -259,7 +280,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         request_schema_version,
         status,
         planned_sources_json,
-        [queued, parked, done, below_quality, outranked],
+        [queued, parked, done, below_quality, outranked, unavailable],
     )) = row
     else {
         return Ok(None);
@@ -287,6 +308,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         completed_work: count(done),
         below_quality_work: count(below_quality),
         outranked_work: count(outranked),
+        unavailable_work: count(unavailable),
     }))
 }
 

@@ -382,3 +382,36 @@ fn a_run_resumed_right_after_a_pause_discovers_its_other_sources_before_completi
     assert_eq!(snaps.downloads.borrow().as_slice(), [snap.source_url]);
     assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
 }
+
+#[test]
+fn media_a_source_no_longer_serves_is_completed_as_unavailable_and_the_source_goes_on() {
+    let gone = candidate("Gone Game");
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&gone, 72), release_for(&smb, 73)]);
+    let mut boxes = FakeConnector::new(vec![gone.clone(), smb.clone()]);
+    boxes.unavailable_downloads.insert(gone.source_url.clone());
+    let run = start(
+        &vault,
+        AcquisitionRequestDraft {
+            games: game_media_vault_domain::GameSelection::Explicit(vec![
+                "Gone Game".to_owned(),
+                "Super Mario Bros.".to_owned(),
+            ]),
+            ..request_draft()
+        },
+        &[&boxes],
+    )
+    .unwrap();
+
+    let imported = execute(&vault, &[&boxes], run.id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(boxes.downloads.borrow().as_slice(), [smb.source_url]);
+    let completed = vault.run(run.id);
+    assert_eq!(completed.status, AcquisitionRunStatus::Completed);
+    assert_eq!(
+        (completed.completed_work, completed.unavailable_work),
+        (2, 1)
+    );
+    assert_eq!(vault.unavailable_reasons(run.id), ["fixture media is gone"]);
+}

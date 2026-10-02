@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 7;
+const VAULT_SCHEMA_VERSION: i32 = 8;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -23,7 +23,16 @@ const MIGRATIONS: &[Migration] = &[
     add_work_outranked,
     add_derived_objects,
     add_run_planned_sources,
+    add_work_unavailable_reason,
 ];
+
+/// Version 8 records why completed work could not be acquired because its Source no longer serves
+/// the media. The column matches the `acquisition_run_work` layout of `SCHEMA`.
+fn add_work_unavailable_reason(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch("ALTER TABLE acquisition_run_work ADD COLUMN unavailable_reason TEXT;")
+        .map_err(sql_error)
+}
 
 /// Version 7 records the Sources each run's Acquisition Plan kept. Runs before it never planned
 /// an `Auto` selection, so they keep the Sources their request selects explicitly. The column
@@ -183,6 +192,7 @@ const SCHEMA: &str = "
         review_item_id INTEGER REFERENCES review_items(id),
         quality_shortfalls_json TEXT,
         outranked_json TEXT,
+        unavailable_reason TEXT,
         UNIQUE(run_id, work_key),
         CHECK((state = 'parked') = (review_item_id IS NOT NULL))
     );
