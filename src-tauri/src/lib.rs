@@ -243,7 +243,7 @@ pub fn resolve_review_item_in_vault(
 }
 
 /// The connectors of a registry, one per Source, as the use cases take them.
-fn registry_refs(registry: &[Box<dyn ConnectorPort + Send>]) -> Vec<&dyn ConnectorPort> {
+fn registry_refs(registry: &[Box<dyn ConnectorPort>]) -> Vec<&dyn ConnectorPort> {
     registry
         .iter()
         .map(|connector| connector.as_ref() as &dyn ConnectorPort)
@@ -289,7 +289,7 @@ pub fn load_review_preview_in_vault(
 pub async fn load_review_preview_in_vault_async(
     vault_root: PathBuf,
     review_item_id: i64,
-    registry: Vec<Box<dyn ConnectorPort + Send>>,
+    registry: Vec<Box<dyn ConnectorPort>>,
 ) -> Result<Vec<u8>, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         load_review_preview_in_vault(&vault_root, review_item_id, &registry_refs(&registry))
@@ -395,7 +395,7 @@ pub fn plan_acquisition_with_connectors(
 /// Plans on a blocking worker, since connectors may consult their Source.
 pub async fn plan_acquisition_async(
     request: AcquisitionRequestInput,
-    registry: Vec<Box<dyn ConnectorPort + Send>>,
+    registry: Vec<Box<dyn ConnectorPort>>,
 ) -> Result<AcquisitionPlan, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         plan_acquisition_with_connectors(request, &registry_refs(&registry))
@@ -467,7 +467,7 @@ pub async fn import_reference_catalog_in_vault_async(
 pub async fn start_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     request: AcquisitionRequestInput,
-    registry: Vec<Box<dyn ConnectorPort + Send>>,
+    registry: Vec<Box<dyn ConnectorPort>>,
 ) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         start_acquisition_run_in_vault(&vault_root, request, &registry_refs(&registry))
@@ -499,7 +499,7 @@ pub fn execute_acquisition_run_in_vault(
 pub async fn execute_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     run_id: i64,
-    registry: Vec<Box<dyn ConnectorPort + Send>>,
+    registry: Vec<Box<dyn ConnectorPort>>,
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {

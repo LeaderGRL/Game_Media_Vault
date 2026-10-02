@@ -2,9 +2,9 @@
 #![allow(dead_code)]
 
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io::{Cursor, Read},
+    sync::{Mutex, MutexGuard},
 };
 
 use game_media_vault_application::{
@@ -153,40 +153,40 @@ pub struct FakeRun {
 /// atomic semantics.
 #[derive(Default)]
 pub struct FakeVault {
-    pub runs: RefCell<BTreeMap<i64, FakeRun>>,
-    pub review_items: RefCell<Vec<ReviewItem>>,
-    pub records: RefCell<Vec<PersistAsset>>,
-    pub library: RefCell<Vec<LibraryEntry>>,
+    pub runs: Shared<BTreeMap<i64, FakeRun>>,
+    pub review_items: Shared<Vec<ReviewItem>>,
+    pub records: Shared<Vec<PersistAsset>>,
+    pub library: Shared<Vec<LibraryEntry>>,
     /// Simulates Release Editions imported by another process right after the next library
     /// listing.
-    pub library_added_after_next_listing: RefCell<Vec<LibraryEntry>>,
+    pub library_added_after_next_listing: Shared<Vec<LibraryEntry>>,
     /// Simulates a human decision committed right before the next automatic review write.
-    pub human_decision_before_next_write: RefCell<Option<ReviewDecision>>,
+    pub human_decision_before_next_write: Shared<Option<ReviewDecision>>,
     /// Simulates a human decision on the first Review Item committed right before the run
     /// completes.
-    pub decision_before_completion: RefCell<Option<ReviewDecision>>,
+    pub decision_before_completion: Shared<Option<ReviewDecision>>,
     /// Simulates a human decision on the first Review Item committed right after the next run
     /// read.
-    pub decision_after_next_run_read: RefCell<Option<ReviewDecision>>,
+    pub decision_after_next_run_read: Shared<Option<ReviewDecision>>,
     /// Simulates a pause or cancellation landing while the next discovery runs.
-    pub status_before_next_discovery: RefCell<Option<AcquisitionRunStatus>>,
+    pub status_before_next_discovery: Shared<Option<AcquisitionRunStatus>>,
     /// Simulates a status change, such as a resume, landing right after the next run read.
-    pub status_after_next_run_read: RefCell<Option<AcquisitionRunStatus>>,
+    pub status_after_next_run_read: Shared<Option<AcquisitionRunStatus>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
-    pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
+    pub status_after_next_completion: Shared<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
     /// automatic write: an auto-link, a supersession or a work completion.
-    pub review_opened_before_next_write: RefCell<Option<NewReviewItem>>,
+    pub review_opened_before_next_write: Shared<Option<NewReviewItem>>,
     /// Release Edition each acquisition candidate is currently linked to.
-    pub candidate_links: RefCell<BTreeMap<String, i64>>,
+    pub candidate_links: Shared<BTreeMap<String, i64>>,
     /// Source failures executions recorded, in recording order.
-    pub source_failures: RefCell<Vec<SourceFailure>>,
+    pub source_failures: Shared<Vec<SourceFailure>>,
 }
 
 impl FakeVault {
     pub fn with_library(library: Vec<LibraryEntry>) -> Self {
         Self {
-            library: RefCell::new(library),
+            library: Shared::new(library),
             ..Self::default()
         }
     }
@@ -872,9 +872,28 @@ impl CatalogPort for FakeVault {
     }
 }
 
+/// A value doubles record while executions may use them from several threads, read like a
+/// `RefCell`.
+#[derive(Debug, Default)]
+pub struct Shared<T>(Mutex<T>);
+
+impl<T> Shared<T> {
+    pub fn new(value: T) -> Self {
+        Self(Mutex::new(value))
+    }
+
+    pub fn borrow(&self) -> MutexGuard<'_, T> {
+        self.0.lock().unwrap()
+    }
+
+    pub fn borrow_mut(&self) -> MutexGuard<'_, T> {
+        self.0.lock().unwrap()
+    }
+}
+
 #[derive(Default)]
 pub struct FakeStore {
-    pub stored: RefCell<Vec<Vec<u8>>>,
+    pub stored: Shared<Vec<Vec<u8>>>,
     /// Media every stored original is read as; unknown by default.
     pub media: Option<MediaInfo>,
 }
@@ -913,8 +932,8 @@ pub struct FakeConnector {
     pub failing_bodies: BTreeSet<String>,
     /// Locators the Source no longer serves, as an HTTP 404 says.
     pub unavailable_downloads: BTreeSet<String>,
-    pub discover_calls: RefCell<u32>,
-    pub downloads: RefCell<Vec<String>>,
+    pub discover_calls: Shared<u32>,
+    pub downloads: Shared<Vec<String>>,
     /// Why the connector refuses every request, if it does.
     pub unsupported_reason: Option<String>,
     /// Whether checking a plan fails, as when the source cannot be reached.
@@ -932,8 +951,8 @@ impl FakeConnector {
             failing_downloads: BTreeSet::new(),
             failing_bodies: BTreeSet::new(),
             unavailable_downloads: BTreeSet::new(),
-            discover_calls: RefCell::new(0),
-            downloads: RefCell::new(Vec::new()),
+            discover_calls: Shared::new(0),
+            downloads: Shared::new(Vec::new()),
             unsupported_reason: None,
             plan_check_fails: false,
             asset_types: vec![AssetType::BoxFront],

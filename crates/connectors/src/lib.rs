@@ -50,14 +50,15 @@ const LIBRETRO_GITMODULES_URL: &str =
     "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
 /// The connector of every implemented Source, in the order `Auto` considers them.
-pub fn registered_connectors() -> Vec<Box<dyn ConnectorPort + Send>> {
+pub fn registered_connectors() -> Vec<Box<dyn ConnectorPort>> {
     vec![
         Box::new(LibretroThumbnailsConnector::new()),
         Box::new(LaunchBoxGamesDbConnector::new()),
     ]
 }
 
-pub trait HttpTransport {
+/// Requests media and data from Sources; connectors share it across download threads.
+pub trait HttpTransport: Send + Sync {
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError>;
 
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
