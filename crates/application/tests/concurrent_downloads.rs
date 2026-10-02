@@ -16,8 +16,9 @@ use game_media_vault_application::{
     start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, LibraryEntry, SourceId, SourceSelection,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
+    AssetCandidate, AssetType, AssetTypeSelector, ConnectorCapabilities, LibraryEntry, SourceId,
+    SourceSelection,
 };
 use support::*;
 
@@ -147,20 +148,31 @@ fn execute(
     connectors: &[&SlowConnector<'_>],
     limits: DownloadLimits,
 ) -> Result<usize, String> {
+    execute_draft(vault, connectors, limits, box_fronts())
+}
+
+/// Box Fronts from whichever Sources provide them.
+fn box_fronts() -> AcquisitionRequestDraft {
+    AcquisitionRequestDraft {
+        sources: SourceSelection::Auto,
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        ..request_draft()
+    }
+}
+
+/// Starts and executes a run of `draft` with `connectors`, under `limits`.
+fn execute_draft(
+    vault: &FakeVault,
+    connectors: &[&SlowConnector<'_>],
+    limits: DownloadLimits,
+    draft: AcquisitionRequestDraft,
+) -> Result<usize, String> {
     let registry: Vec<&dyn ConnectorPort> = connectors
         .iter()
         .map(|connector| *connector as &dyn ConnectorPort)
         .collect();
-    let run = start_acquisition_run_with_connectors(
-        vault,
-        AcquisitionRequestDraft {
-            sources: SourceSelection::Auto,
-            asset_types: vec![AssetTypeSelector::BoxFront],
-            ..request_draft()
-        },
-        &registry,
-    )
-    .map_err(|error| error.to_string())?;
+    let run = start_acquisition_run_with_connectors(vault, draft, &registry)
+        .map_err(|error| error.to_string())?;
     acquire_run_with_connectors(
         vault,
         vault,
@@ -608,4 +620,42 @@ fn an_execution_resumed_after_a_download_saw_it_paused_downloads_its_later_work(
         .expect("the execution hung");
 
     assert_eq!(imported, Ok(3));
+}
+
+#[test]
+fn the_request_caps_the_downloads_under_way() {
+    let candidates: Vec<AssetCandidate> = ["a", "b", "c"]
+        .iter()
+        .map(|source_id| box_front(source_id, &format!("Game {source_id}")))
+        .collect();
+    let vault = FakeVault::with_library(
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| release_for(candidate, index as i64 + 1))
+            .collect(),
+    );
+    let in_flight = InFlight::default();
+    let connectors: Vec<SlowConnector<'_>> = ["a", "b", "c"]
+        .into_iter()
+        .zip(candidates)
+        .map(|(source_id, candidate)| slow(source_id, vec![candidate], None, Some(&in_flight)))
+        .collect();
+
+    // The execution would allow four downloads at once; the request allows one.
+    let imported = execute_draft(
+        &vault,
+        &connectors.iter().collect::<Vec<_>>(),
+        DownloadLimits::default(),
+        AcquisitionRequestDraft {
+            limits: AcquisitionLimits {
+                max_concurrent_downloads: Some(1),
+                ..AcquisitionLimits::default()
+            },
+            ..box_fronts()
+        },
+    );
+
+    assert_eq!(imported, Ok(3));
+    assert_eq!(in_flight.most.load(Ordering::SeqCst), 1);
 }

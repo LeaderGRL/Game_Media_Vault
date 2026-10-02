@@ -310,6 +310,15 @@ pub fn acquire_run_with_connectors(
         status => return Err(ApplicationError::RunNotExecutable { status }),
     }
 
+    // The request's cap on concurrent downloads, when it sets one, is the execution's.
+    let limits = DownloadLimits {
+        max_concurrent: run
+            .request
+            .limits()
+            .max_concurrent_downloads
+            .map_or(limits.max_concurrent, usize::from),
+        ..limits
+    };
     let acquisition = Acquisition {
         runs,
         catalog,

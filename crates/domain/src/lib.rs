@@ -263,6 +263,8 @@ pub enum AcquisitionRequestValidationError {
     MissingAssetTypes,
     MissingPlatforms,
     InvalidGameSelection,
+    /// A request must allow at least one download at a time.
+    NoConcurrentDownload,
 }
 
 impl fmt::Display for AcquisitionRequestValidationError {
@@ -280,6 +282,8 @@ impl fmt::Display for AcquisitionRequestValidationError {
             Self::InvalidGameSelection => {
                 formatter.write_str("acquisition request contains an invalid game selection")
             }
+            Self::NoConcurrentDownload => formatter
+                .write_str("acquisition request must allow at least one concurrent download"),
         }
     }
 }
@@ -409,6 +413,9 @@ impl AcquisitionRequest {
         let platforms = non_blank_values(draft.platforms);
         if platforms.is_empty() && !draft.games.fixes_platforms_explicitly() {
             return Err(AcquisitionRequestValidationError::MissingPlatforms);
+        }
+        if draft.limits.max_concurrent_downloads == Some(0) {
+            return Err(AcquisitionRequestValidationError::NoConcurrentDownload);
         }
 
         let regions = non_blank_values(draft.regions);
