@@ -1818,4 +1818,79 @@ describe("App Library requests", () => {
     expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review (1)" })).toBeInTheDocument();
   });
+
+  it("pages the results of a search that superseded a pending page", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        const query = libraryQueries.at(-1);
+        if (query?.after === 2 && query?.text === null) {
+          // The page of the previous results never settles.
+          return new Promise(() => {});
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByRole("button", { name: "Loading more…" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal", after: 2 }));
+  });
+
+  it("drops a page that extends results a pending refresh then replaced", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    let executed = false;
+    let finishRefreshPage: ((page: unknown) => void) | undefined;
+    let finishPage: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve(runToExecute);
+      }
+      if (command === "list_library") {
+        const query = libraryQueries.at(-1);
+        if (query?.after === 2) {
+          return new Promise((resolve) => {
+            finishPage = resolve;
+          });
+        }
+        if (executed && !finishRefreshPage) {
+          return new Promise((resolve) => {
+            finishRefreshPage = resolve;
+          });
+        }
+        return Promise.resolve({ releases: [entry], total: 2, next_after: 2, as_of: 9 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishRefreshPage).toBeDefined());
+
+    // The page continues the results shown before the execution refresh.
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(finishPage).toBeDefined());
+    await act(async () =>
+      finishRefreshPage?.({ releases: [entry], total: 1, next_after: null, as_of: 10 }),
+    );
+    await act(async () =>
+      finishPage?.({ releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }),
+    );
+
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
+  });
 });

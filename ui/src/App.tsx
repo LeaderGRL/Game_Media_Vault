@@ -55,7 +55,8 @@ export function App() {
   const [libraryNextAfter, setLibraryNextAfter] = useState<number | null>(null);
   // The newest Release Edition the first page searched; later pages keep to its results.
   const [libraryAsOf, setLibraryAsOf] = useState<number | null>(null);
-  const loadingMoreRef = useRef(false);
+  // The pending next-page request, if any: only it may apply its page or end the loading state.
+  const pageRequestRef = useRef<object | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   // A filter search is pending; paging would continue the previous filters meanwhile.
   const [searchingLibrary, setSearchingLibrary] = useState(false);
@@ -96,7 +97,9 @@ export function App() {
     });
   }
 
+  /** Shows a first page; a next page requested before it would extend other results. */
   function showLibraryPage(page: LibraryPage) {
+    abandonPageRequest();
     setEntries(page.releases);
     setLibraryTotal(page.total);
     setLibraryNextAfter(page.next_after);
@@ -148,48 +151,49 @@ export function App() {
   function supersedeLibraryRequests() {
     vaultDataGeneration.current += 1;
     setSearchingLibrary(false);
+    abandonPageRequest();
     return vaultDataGeneration.current;
   }
 
+  /** Forgets the pending next page, so the results that replace it can be paged at once. */
+  function abandonPageRequest() {
+    pageRequestRef.current = null;
+    setLoadingMore(false);
+  }
+
   /**
-   * Appends the next page, one request at a time; a refresh of the Library started meanwhile
-   * supersedes it.
+   * Appends the next page, one request at a time. It applies only to the results it extends:
+   * a search, refresh or vault load started or shown meanwhile abandons it.
    */
   async function loadMoreReleases() {
     if (
       libraryNextAfter === null ||
-      loadingMoreRef.current ||
+      pageRequestRef.current !== null ||
       searchingLibrary ||
       openedVaultRoot.current !== loadedVaultRoot
     ) {
       return;
     }
-    const loadingVaultRoot = loadedVaultRoot;
-    const generation = vaultDataGeneration.current;
-    loadingMoreRef.current = true;
+    const request = {};
+    pageRequestRef.current = request;
     setLoadingMore(true);
     setError(null);
     try {
       const page = await searchLibrary(libraryFiltersRef.current, libraryNextAfter, libraryAsOf);
-      if (
-        activeVaultRoot.current === loadingVaultRoot &&
-        generation === vaultDataGeneration.current
-      ) {
+      if (pageRequestRef.current === request) {
         setEntries((current) => [...current, ...page.releases]);
         setLibraryTotal(page.total);
         setLibraryNextAfter(page.next_after);
       }
     } catch (reason) {
-      // A newer search or refresh replaced the page this one would have extended.
-      if (
-        activeVaultRoot.current === loadingVaultRoot &&
-        generation === vaultDataGeneration.current
-      ) {
+      // An abandoned page leaves reporting to whatever replaced its results.
+      if (pageRequestRef.current === request) {
         setError(errorMessage(reason));
       }
     } finally {
-      loadingMoreRef.current = false;
-      setLoadingMore(false);
+      if (pageRequestRef.current === request) {
+        abandonPageRequest();
+      }
     }
   }
 
