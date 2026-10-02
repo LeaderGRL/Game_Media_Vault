@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Cursor, Read},
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, mpsc},
 };
 
 use game_media_vault_application::{
@@ -181,6 +181,38 @@ pub struct FakeVault {
     pub candidate_links: Shared<BTreeMap<String, i64>>,
     /// Source failures executions recorded, in recording order.
     pub source_failures: Shared<Vec<SourceFailure>>,
+    /// Simulates a pause landing while a download thread reads the run status: the next read
+    /// waits this long, then finds the run paused.
+    pub pause_during_next_status_read: Shared<Option<std::time::Duration>>,
+    /// Simulates a human rejecting the first Review Item right before the Nth next read of a
+    /// Review Item, counting from one.
+    pub rejection_before_review_read: Shared<Option<usize>>,
+    /// Simulates a work item leaving the queue right before the Nth next read of the queue,
+    /// counting from one.
+    pub work_leaving_before_queue_read: Shared<Option<(usize, WorkLeaving)>>,
+    /// Holds the Nth next read of the queue, counting from one, until told to go on.
+    pub queue_read_gate: Shared<Option<(usize, mpsc::Receiver<()>)>>,
+}
+
+/// A work item leaving the queue while an execution runs.
+pub struct WorkLeaving {
+    pub key: String,
+    /// Whether another execution of the run parks it on its Review Item, which a human accepts
+    /// right after the read, requeuing it; otherwise another execution completes it.
+    pub requeued: bool,
+}
+
+/// Counts down the reads of `hook` and takes its value on the Nth one.
+fn countdown<T>(hook: &Shared<Option<(usize, T)>>) -> Option<T> {
+    let mut hook = hook.borrow_mut();
+    match hook.take() {
+        Some((1, value)) => Some(value),
+        Some((reads, value)) => {
+            *hook = Some((reads - 1, value));
+            None
+        }
+        None => None,
+    }
 }
 
 impl FakeVault {
@@ -361,6 +393,17 @@ impl RunRepositoryPort for FakeVault {
         Ok(run)
     }
 
+    fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        let pause_after = self.pause_during_next_status_read.borrow_mut().take();
+        if let Some(delay) = pause_after {
+            std::thread::sleep(delay);
+            if let Some(run) = self.runs.borrow_mut().get_mut(&run_id) {
+                run.status = AcquisitionRunStatus::Paused;
+            }
+        }
+        Ok(self.runs.borrow().get(&run_id).map(|run| run.status))
+    }
+
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
         let ids = self.runs.borrow().keys().copied().collect::<Vec<_>>();
         Ok(ids.into_iter().map(|id| self.run(id)).collect())
@@ -437,21 +480,46 @@ impl RunRepositoryPort for FakeVault {
         run_id: i64,
         skipped_sources: &[String],
     ) -> Result<Option<AcquisitionWorkItem>, PortError> {
-        let runs = self.runs.borrow();
-        let run = &runs[&run_id];
-        if run.status != AcquisitionRunStatus::Running {
-            return Ok(None);
+        if let Some(go_on) = countdown(&self.queue_read_gate) {
+            go_on.recv().unwrap();
         }
-        Ok(run
-            .work
-            .iter()
-            .find(|work| {
-                work.state == WorkState::Queued
-                    && !skipped_sources
-                        .iter()
-                        .any(|source| source == work.item.candidate.source_id.as_str())
-            })
-            .map(|work| work.item.clone()))
+        let leaving = countdown(&self.work_leaving_before_queue_read);
+        let set_state = |key: &str, state: WorkState| {
+            let mut runs = self.runs.borrow_mut();
+            if let Some(work) = runs
+                .get_mut(&run_id)
+                .and_then(|run| run.work.iter_mut().find(|work| work.item.key == key))
+            {
+                work.state = state;
+            }
+        };
+        if let Some(leaving) = &leaving {
+            let state = if leaving.requeued {
+                WorkState::Parked(0)
+            } else {
+                WorkState::Done
+            };
+            set_state(&leaving.key, state);
+        }
+        let next = {
+            let runs = self.runs.borrow();
+            let run = &runs[&run_id];
+            (run.status == AcquisitionRunStatus::Running)
+                .then(|| {
+                    run.work.iter().find(|work| {
+                        work.state == WorkState::Queued
+                            && !skipped_sources
+                                .iter()
+                                .any(|source| source == work.item.candidate.source_id.as_str())
+                    })
+                })
+                .flatten()
+                .map(|work| work.item.clone())
+        };
+        if let Some(leaving) = leaving.filter(|leaving| leaving.requeued) {
+            set_state(&leaving.key, WorkState::Queued);
+        }
+        Ok(next)
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
@@ -529,6 +597,24 @@ impl ReviewRepositoryPort for FakeVault {
     }
 
     fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError> {
+        let reject_now = {
+            let mut countdown = self.rejection_before_review_read.borrow_mut();
+            match *countdown {
+                Some(1) => {
+                    *countdown = None;
+                    true
+                }
+                Some(reads) => {
+                    *countdown = Some(reads - 1);
+                    false
+                }
+                None => false,
+            }
+        };
+        if reject_now {
+            let review_item_id = self.review_items.borrow()[0].id;
+            self.decide_review_item(review_item_id, ReviewDecision::Reject)?;
+        }
         Ok(self
             .review_items
             .borrow()

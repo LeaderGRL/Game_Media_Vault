@@ -6,9 +6,9 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
-    ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, PackagingModelSummary,
-    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription,
-    SourceFailureSummary, VaultReport,
+    DownloadLimits, ErrorKind, ImportReferenceCatalogRequest, LibraryPage, LibraryQuery,
+    PackagingModelSummary, PortError, ReferenceCatalogSourcePort, ReferenceImportSummary,
+    SourceDescription, SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
@@ -492,6 +492,7 @@ pub fn execute_acquisition_run_in_vault(
         connectors,
         run_id,
         matching_policy,
+        DownloadLimits::default(),
     )?;
     Ok(load_acquisition_run_use_case(&catalog, run_id)?)
 }

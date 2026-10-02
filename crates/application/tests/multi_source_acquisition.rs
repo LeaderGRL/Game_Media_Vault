@@ -3,8 +3,8 @@ mod support;
 use std::io::Read;
 
 use game_media_vault_application::{
-    ApplicationError, ConnectorPort, PortError, RunRepositoryPort, acquire_run_with_connectors,
-    pause_acquisition_run, start_acquisition_run_with_connectors,
+    ApplicationError, ConnectorPort, DownloadLimits, PortError, RunRepositoryPort,
+    acquire_run_with_connectors, pause_acquisition_run, start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -70,6 +70,7 @@ fn execute(
         &registry(connectors),
         run_id,
         matching_policy(),
+        DownloadLimits::default(),
     )
 }
 
@@ -285,6 +286,7 @@ fn execute_with(
         connectors,
         run_id,
         matching_policy(),
+        DownloadLimits::default(),
     )
 }
 
@@ -431,22 +433,19 @@ fn sources_take_turns_so_a_long_queue_does_not_hold_back_the_others() {
     let box_source = FakeConnector::new(boxes.clone());
     let snaps = snap_connector(vec![snap.clone()]);
     let run = start(&vault, auto_draft(), &[&box_source, &snaps]).unwrap();
-    // Every download, whichever Source served it, in the order the execution asked for it.
-    let downloads = Shared::new(Vec::new());
-    let logged_boxes = LoggingConnector {
-        inner: box_source,
-        log: &downloads,
-    };
-    let logged_snaps = LoggingConnector {
-        inner: snaps,
-        log: &downloads,
-    };
 
     // The Box Fronts were discovered, and so queued, before the Screenshot.
-    execute_with(&vault, &[&logged_boxes, &logged_snaps], run.id).unwrap();
+    execute(&vault, &[&box_source, &snaps], run.id).unwrap();
 
+    // Downloads of a round may overlap; the work is processed, and so recorded, in turns.
+    let processed: Vec<String> = vault
+        .records
+        .borrow()
+        .iter()
+        .map(|record| record.source_location.clone())
+        .collect();
     assert_eq!(
-        *downloads.borrow(),
+        processed,
         [
             boxes[0].source_url.clone(),
             snap.source_url.clone(),
@@ -455,36 +454,4 @@ fn sources_take_turns_so_a_long_queue_does_not_hold_back_the_others() {
         ]
     );
     assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
-}
-
-/// A connector that also records each download in a log shared with other connectors.
-struct LoggingConnector<'a> {
-    inner: FakeConnector,
-    log: &'a Shared<Vec<String>>,
-}
-
-impl ConnectorPort for LoggingConnector<'_> {
-    fn source_id(&self) -> &'static str {
-        self.inner.source_id()
-    }
-
-    fn capabilities(&self) -> ConnectorCapabilities {
-        self.inner.capabilities()
-    }
-
-    fn unsupported_request_reason(
-        &self,
-        request: &AcquisitionRequest,
-    ) -> Result<Option<String>, PortError> {
-        self.inner.unsupported_request_reason(request)
-    }
-
-    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
-        self.inner.discover(request)
-    }
-
-    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
-        self.log.borrow_mut().push(candidate.source_url.clone());
-        self.inner.download(candidate)
-    }
 }

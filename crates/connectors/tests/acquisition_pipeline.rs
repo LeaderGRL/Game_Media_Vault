@@ -4,8 +4,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
-    RunRepositoryPort, acquire_run_with_connectors, resolve_review_item,
+    CatalogPort, ConnectorPort, DownloadLimits, PortError, ReferenceCatalogRepositoryPort,
+    ReviewRepositoryPort, RunRepositoryPort, acquire_run_with_connectors, resolve_review_item,
     start_acquisition_run_with_connectors,
 };
 use game_media_vault_connectors::{
@@ -128,6 +128,7 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
             high_confidence_threshold: 80,
             medium_confidence_threshold: 50,
         },
+        DownloadLimits::default(),
     )
     .unwrap();
 
@@ -217,6 +218,7 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
         &[&connector],
         run.id,
         policy,
+        DownloadLimits::default(),
     )
     .unwrap();
     assert!(imported.is_empty());
@@ -248,6 +250,7 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
         &[&NoDiscoveryConnector],
         run.id,
         policy,
+        DownloadLimits::default(),
     )
     .unwrap();
 
@@ -354,6 +357,7 @@ fn one_auto_run_acquires_from_both_sources_with_distinct_provenance() {
             high_confidence_threshold: 80,
             medium_confidence_threshold: 50,
         },
+        DownloadLimits::default(),
     )
     .unwrap();
 

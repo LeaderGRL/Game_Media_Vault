@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use game_media_vault_application::{
     AcquisitionRequestInput, AcquisitionRequestValidationError, ApplicationError, PortError,
@@ -12,13 +12,13 @@ use game_media_vault_domain::{
 use serde_json::json;
 
 struct RecordingRunRepository {
-    persisted_requests: RefCell<Vec<serde_json::Value>>,
+    persisted_requests: Mutex<Vec<serde_json::Value>>,
 }
 
 impl RecordingRunRepository {
     fn new() -> Self {
         Self {
-            persisted_requests: RefCell::new(Vec::new()),
+            persisted_requests: Mutex::new(Vec::new()),
         }
     }
 }
@@ -30,7 +30,8 @@ impl RunRepositoryPort for RecordingRunRepository {
         planned_sources: Vec<String>,
     ) -> Result<AcquisitionRun, PortError> {
         self.persisted_requests
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push(serde_json::to_value(&request).unwrap());
 
         Ok(AcquisitionRun {
@@ -48,6 +49,10 @@ impl RunRepositoryPort for RecordingRunRepository {
     }
 
     fn get_run(&self, _run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
+        Ok(None)
+    }
+
+    fn run_status(&self, _run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
         Ok(None)
     }
 
@@ -140,7 +145,7 @@ fn starting_an_acquisition_run_persists_the_validated_request() {
     assert_eq!(run.queued_work, 0);
     assert_eq!(run.completed_work, 0);
     assert_eq!(
-        runs.persisted_requests.borrow().as_slice(),
+        runs.persisted_requests.lock().unwrap().as_slice(),
         &[json!({
             "sources": { "mode": "explicit", "values": ["fixture-provider"] },
             "platforms": ["Windows"],
@@ -186,18 +191,18 @@ fn invalid_acquisition_request_is_rejected_before_persistence() {
             AcquisitionRequestValidationError::MissingSources
         )
     );
-    assert!(runs.persisted_requests.borrow().is_empty());
+    assert!(runs.persisted_requests.lock().unwrap().is_empty());
 }
 
 struct RacingRunRepository {
-    status: RefCell<AcquisitionRunStatus>,
+    status: Mutex<AcquisitionRunStatus>,
     request: AcquisitionRequest,
 }
 
 impl RacingRunRepository {
     fn new(request: AcquisitionRequest) -> Self {
         Self {
-            status: RefCell::new(AcquisitionRunStatus::Running),
+            status: Mutex::new(AcquisitionRunStatus::Running),
             request,
         }
     }
@@ -207,7 +212,7 @@ impl RacingRunRepository {
             id: 11,
             request: self.request.clone(),
             planned_sources: Vec::new(),
-            status: *self.status.borrow(),
+            status: *self.status.lock().unwrap(),
             queued_work: 0,
             awaiting_review_work: 0,
             completed_work: 0,
@@ -229,6 +234,10 @@ impl RunRepositoryPort for RacingRunRepository {
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
         Ok((run_id == 11).then(|| self.run()))
+    }
+
+    fn run_status(&self, _run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        Ok(Some(*self.status.lock().unwrap()))
     }
 
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
@@ -289,11 +298,11 @@ impl RunRepositoryPort for RacingRunRepository {
         target: AcquisitionRunStatus,
     ) -> Result<bool, PortError> {
         // Simulate a concurrent cancellation after the application validated Running.
-        *self.status.borrow_mut() = AcquisitionRunStatus::Cancelled;
-        if *self.status.borrow() != expected {
+        *self.status.lock().unwrap() = AcquisitionRunStatus::Cancelled;
+        if *self.status.lock().unwrap() != expected {
             return Ok(false);
         }
-        *self.status.borrow_mut() = target;
+        *self.status.lock().unwrap() = target;
         Ok(true)
     }
 }
@@ -323,5 +332,8 @@ fn a_stale_pause_cannot_overwrite_a_concurrent_cancellation() {
             to: AcquisitionRunStatus::Paused,
         }
     );
-    assert_eq!(*runs.status.borrow(), AcquisitionRunStatus::Cancelled);
+    assert_eq!(
+        *runs.status.lock().unwrap(),
+        AcquisitionRunStatus::Cancelled
+    );
 }

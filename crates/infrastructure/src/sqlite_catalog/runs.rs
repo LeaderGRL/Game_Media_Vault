@@ -53,6 +53,19 @@ impl RunRepositoryPort for SqliteCatalog {
         load_run(&self.connect()?, run_id)
     }
 
+    fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
+        self.connect()?
+            .query_row(
+                "SELECT status FROM acquisition_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .map(|status| parse_run_status(&status))
+            .transpose()
+    }
+
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError> {
         let connection = self.connect()?;
         let run_ids = connection

@@ -7,15 +7,15 @@ use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
-    ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, LibraryQuery,
-    LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
-    VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
-    derive_assets, derive_packaging_models, describe_sources, draft_from_document,
-    export_acquisition_request, import_local_box_front, import_reference_catalog,
-    list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
-    pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
-    resume_acquisition_run, search_library, start_acquisition_run_with_connectors,
-    summarize_source_failures, verify_vault,
+    DownloadLimits, ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest,
+    LibraryQuery, LibraryStatus, PortError, ReferenceCatalogSourcePort, RepairActions,
+    RepairSummary, VaultReport, acquire_run_with_connectors, build_acquisition_request,
+    cancel_acquisition_run, derive_assets, derive_packaging_models, describe_sources,
+    draft_from_document, export_acquisition_request, import_local_box_front,
+    import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
+    load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
+    resolve_review_item, resume_acquisition_run, search_library,
+    start_acquisition_run_with_connectors, summarize_source_failures, verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -674,6 +674,7 @@ pub fn execute_acquisition_run_in_vault_with_connectors(
         connectors,
         run_id,
         matching_policy,
+        DownloadLimits::default(),
     ) {
         // An execution that stopped partway still reports where it left the run; an invalid
         // invocation never started one.
