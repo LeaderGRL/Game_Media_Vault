@@ -1,7 +1,7 @@
 use game_media_vault_application::{PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem,
+    AcquisitionWorkItem, SourceFailure, SourceFailureStage,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -207,6 +207,79 @@ impl RunRepositoryPort for SqliteCatalog {
         reason: &str,
     ) -> Result<(), PortError> {
         complete_queued_work(&self.connect()?, run_id, work_key, Some(reason))
+    }
+
+    fn record_source_failure(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        stage: SourceFailureStage,
+        message: &str,
+    ) -> Result<(), PortError> {
+        self.connect()?
+            .execute(
+                "INSERT INTO acquisition_source_failures (run_id, source_id, stage, message)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![run_id, source_id, failure_stage_to_str(stage), message],
+            )
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
+    fn source_failures(&self) -> Result<Vec<SourceFailure>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, source_id, run_id, stage, message, recorded_at
+                 FROM acquisition_source_failures
+                 ORDER BY id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .map(
+                |(sequence, source_id, run_id, stage, message, recorded_at)| {
+                    Ok(SourceFailure {
+                        sequence,
+                        source_id,
+                        run_id,
+                        stage: parse_failure_stage(&stage)?,
+                        message,
+                        recorded_at,
+                    })
+                },
+            )
+            .collect()
+    }
+}
+
+fn failure_stage_to_str(stage: SourceFailureStage) -> &'static str {
+    match stage {
+        SourceFailureStage::Discovery => "discovery",
+        SourceFailureStage::Download => "download",
+    }
+}
+
+fn parse_failure_stage(value: &str) -> Result<SourceFailureStage, PortError> {
+    match value {
+        "discovery" => Ok(SourceFailureStage::Discovery),
+        "download" => Ok(SourceFailureStage::Download),
+        other => Err(PortError::new(format!(
+            "unknown Source failure stage in catalog: {other}"
+        ))),
     }
 }
 

@@ -7,7 +7,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, QualityShortfall, RetentionPolicy, SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, QualityShortfall, RetentionPolicy, SourceFailureStage,
+    SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::Connection;
@@ -582,5 +583,71 @@ fn unavailable_work_is_completed_and_counted_across_reopen() {
     assert_eq!(
         reopened.next_queued_work(run.id, &[]).unwrap().unwrap().key,
         "kept"
+    );
+}
+
+#[test]
+fn source_failures_are_kept_in_recording_order_across_reopen() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+
+    catalog
+        .record_source_failure(
+            run.id,
+            SOURCE_ID,
+            SourceFailureStage::Discovery,
+            "timed out",
+        )
+        .unwrap();
+    catalog
+        .record_source_failure(
+            run.id,
+            "other-source",
+            SourceFailureStage::Download,
+            "HTTP 503",
+        )
+        .unwrap();
+    drop(catalog);
+
+    let failures = SqliteCatalog::open_existing(&path)
+        .unwrap()
+        .source_failures()
+        .unwrap();
+    let described: Vec<(&str, i64, SourceFailureStage, &str)> = failures
+        .iter()
+        .map(|failure| {
+            (
+                failure.source_id.as_str(),
+                failure.run_id,
+                failure.stage,
+                failure.message.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        described,
+        [
+            (
+                SOURCE_ID,
+                run.id,
+                SourceFailureStage::Discovery,
+                "timed out"
+            ),
+            (
+                "other-source",
+                run.id,
+                SourceFailureStage::Download,
+                "HTTP 503"
+            ),
+        ]
+    );
+    assert!(failures[0].sequence < failures[1].sequence);
+    // Recorded at the time of recording, in seconds since the Unix epoch.
+    assert!(
+        failures
+            .iter()
+            .all(|failure| failure.recorded_at > 1_600_000_000)
     );
 }

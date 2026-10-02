@@ -563,7 +563,7 @@ Each Source displays:
 - current quotas/rate limits where discoverable;
 - recent success/error statistics.
 
-The desktop Sources view, which needs no vault, lists every registered Source with the Asset Types it acquires and its acquisition method, read from the same capabilities planning uses; `game-media-vault source list` prints the same descriptions as JSON. Enabled state, authentication, supported platforms, quotas and statistics are not shown yet.
+The desktop Sources view, which needs no vault, lists every registered Source with the Asset Types it acquires and its acquisition method, read from the same capabilities planning uses; `game-media-vault source list` prints the same descriptions as JSON. Executions record each Source failure in the vault as history: the run, the stage (discovery, which includes checking its part of the plan again, or download), what its connector reported, and when, in recording order. A later success leaves earlier failures as they are, and media a Source no longer serves (HTTP 404 or 410) completes as unavailable rather than failing. `game-media-vault source failures --latest 5` summarizes them per Source in source id order, with how many each Source had in all and its latest ones, newest first; Sources that never failed are left out. Connectors report no credentials in their errors, so recorded messages hold none. Enabled state, authentication, supported platforms, quotas and statistics are not shown yet.
 
 ## 21. CLI
 

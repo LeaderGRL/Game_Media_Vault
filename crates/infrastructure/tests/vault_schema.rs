@@ -3,7 +3,8 @@ use std::fs;
 use game_media_vault_application::{CatalogPort, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetType, AssetTypeSelector,
-    GameSelection, MediaInfo, PersistAsset, RetentionPolicy, SourceId, SourceSelection,
+    GameSelection, MediaInfo, PersistAsset, RetentionPolicy, SourceFailureStage, SourceId,
+    SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use rusqlite::Connection;
@@ -26,7 +27,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 9);
+    assert_eq!(pragma(&path, "user_version"), 10);
 }
 
 #[test]
@@ -134,7 +135,7 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets.
+    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets or Source failures.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -147,13 +148,14 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
              ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
              DROP INDEX idx_release_assertion_value;
+             DROP TABLE acquisition_source_failures;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 9);
+    assert_eq!(pragma(&path, "user_version"), 10);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }
@@ -185,13 +187,14 @@ fn runs_from_version_6_plan_the_sources_their_request_selects() {
             "ALTER TABLE acquisition_runs DROP COLUMN planned_sources_json;
              ALTER TABLE acquisition_run_work DROP COLUMN unavailable_reason;
              DROP INDEX idx_release_assertion_value;
+             DROP TABLE acquisition_source_failures;
              PRAGMA user_version = 6;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 9);
+    assert_eq!(pragma(&path, "user_version"), 10);
     assert_eq!(
         catalog.get_run(run.id).unwrap().unwrap().planned_sources,
         ["libretro-thumbnails"]
@@ -229,12 +232,57 @@ fn catalogs_from_version_8_gain_the_assertion_value_index() {
         .unwrap()
         .execute_batch(
             "DROP INDEX idx_release_assertion_value;
+             DROP TABLE acquisition_source_failures;
              PRAGMA user_version = 8;",
         )
         .unwrap();
 
     SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 9);
+    assert_eq!(pragma(&path, "user_version"), 10);
     assert!(has_index(&path, "idx_release_assertion_value"));
+}
+
+#[test]
+fn catalogs_from_version_9_gain_the_source_failure_log() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let run = SqliteCatalog::open(&path)
+        .unwrap()
+        .create_run(
+            AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
+                sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
+                platforms: vec!["Nintendo - Game Boy".to_owned()],
+                games: GameSelection::Explicit(vec!["Tetris (World) (Rev 1)".to_owned()]),
+                regions: Vec::new(),
+                languages: Vec::new(),
+                asset_types: vec![AssetTypeSelector::BoxFront],
+                quality: None,
+                retention: RetentionPolicy::KeepEverything,
+                limits: AcquisitionLimits::default(),
+            })
+            .unwrap(),
+            vec!["libretro-thumbnails".to_owned()],
+        )
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE acquisition_source_failures;
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+
+    let catalog = SqliteCatalog::open_existing(&path).unwrap();
+
+    assert_eq!(pragma(&path, "user_version"), 10);
+    catalog
+        .record_source_failure(
+            run.id,
+            "libretro-thumbnails",
+            SourceFailureStage::Download,
+            "connection reset",
+        )
+        .unwrap();
+    assert_eq!(catalog.source_failures().unwrap().len(), 1);
 }

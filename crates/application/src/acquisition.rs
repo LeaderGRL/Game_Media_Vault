@@ -4,9 +4,9 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, ImportedAsset,
     LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
-    QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
-    ValidatedMatchingPolicy, confirmed_asset_candidate_match, match_asset_candidate_to_release,
-    review_matches_for_asset_candidate,
+    QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
+    SourceFailureStage, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
+    match_asset_candidate_to_release, review_matches_for_asset_candidate,
 };
 use url::Url;
 
@@ -111,6 +111,12 @@ pub fn acquire_run_with_connectors(
                     }
                 }
                 Err(error) => {
+                    runs.record_source_failure(
+                        run_id,
+                        source_id,
+                        SourceFailureStage::Discovery,
+                        &error.to_string(),
+                    )?;
                     source_failure.get_or_insert(error);
                 }
             }
@@ -135,7 +141,14 @@ pub fn acquire_run_with_connectors(
             match acquisition.process(&work) {
                 Ok(imported) => imported_assets.extend(imported),
                 Err(error) if acquisition.source_failed.get() => {
-                    failed_sources.push(work.candidate.source_id.as_str().to_owned());
+                    let source_id = work.candidate.source_id.as_str();
+                    runs.record_source_failure(
+                        run_id,
+                        source_id,
+                        SourceFailureStage::Download,
+                        &error.to_string(),
+                    )?;
+                    failed_sources.push(source_id.to_owned());
                     source_failure.get_or_insert(error);
                 }
                 Err(error) => return Err(error),

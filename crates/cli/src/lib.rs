@@ -14,7 +14,8 @@ use game_media_vault_application::{
     export_acquisition_request, import_local_box_front, import_reference_catalog,
     list_acquisition_runs, list_library, list_review_items, load_acquisition_run,
     pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
-    resume_acquisition_run, search_library, start_acquisition_run_with_connectors, verify_vault,
+    resume_acquisition_run, search_library, start_acquisition_run_with_connectors,
+    summarize_source_failures, verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -313,6 +314,12 @@ enum RunCommand {
 enum SourceCommand {
     /// Lists every registered Source with the Asset Types it acquires, as planning sees them.
     List,
+    /// Summarizes the failures executions recorded for each Source of the vault.
+    Failures {
+        /// Latest failures to show for each Source.
+        #[arg(long, default_value_t = 5)]
+        latest: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -517,6 +524,14 @@ where
         Command::Source {
             command: SourceCommand::List,
         } => Ok(serde_json::to_string_pretty(&describe_sources(connectors))?),
+        Command::Source {
+            command: SourceCommand::Failures { latest },
+        } => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            Ok(serde_json::to_string_pretty(&summarize_source_failures(
+                &catalog, latest,
+            )?)?)
+        }
         Command::Review { command } => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             match command {

@@ -6,7 +6,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetTypeSelector, GameSelection, RetentionPolicy, SourceSelection,
+    AcquisitionWorkItem, AssetTypeSelector, GameSelection, RetentionPolicy, SourceFailure,
+    SourceFailureStage, SourceSelection,
 };
 use serde_json::json;
 
@@ -85,6 +86,20 @@ impl RunRepositoryPort for RecordingRunRepository {
         _reason: &str,
     ) -> Result<(), PortError> {
         Ok(())
+    }
+
+    fn record_source_failure(
+        &self,
+        _run_id: i64,
+        _source_id: &str,
+        _stage: SourceFailureStage,
+        _message: &str,
+    ) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn source_failures(&self) -> Result<Vec<SourceFailure>, PortError> {
+        Ok(Vec::new())
     }
 
     fn compare_and_set_run_status(
@@ -251,6 +266,20 @@ impl RunRepositoryPort for RacingRunRepository {
         _reason: &str,
     ) -> Result<(), PortError> {
         Ok(())
+    }
+
+    fn record_source_failure(
+        &self,
+        _run_id: i64,
+        _source_id: &str,
+        _stage: SourceFailureStage,
+        _message: &str,
+    ) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn source_failures(&self) -> Result<Vec<SourceFailure>, PortError> {
+        Ok(Vec::new())
     }
 
     fn compare_and_set_run_status(

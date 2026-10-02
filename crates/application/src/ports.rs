@@ -4,7 +4,7 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
     Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, RetentionPolicy,
-    ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
+    ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage, StoredObject,
 };
 use thiserror::Error;
 
@@ -254,6 +254,19 @@ pub trait RunRepositoryPort {
         work_key: &str,
         reason: &str,
     ) -> Result<(), PortError>;
+
+    /// Records that `source_id` failed at `stage` while `run_id` executed, with what its
+    /// connector reported.
+    fn record_source_failure(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        stage: SourceFailureStage,
+        message: &str,
+    ) -> Result<(), PortError>;
+
+    /// Every recorded Source failure, in recording order.
+    fn source_failures(&self) -> Result<Vec<SourceFailure>, PortError>;
 }
 
 /// Source-specific integration that discovers and downloads Asset Candidates.

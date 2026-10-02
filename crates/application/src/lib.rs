@@ -59,7 +59,9 @@ pub use runs::{
     list_acquisition_runs, load_acquisition_run, pause_acquisition_run, resume_acquisition_run,
     start_acquisition_run,
 };
-pub use sources::{SourceDescription, describe_sources};
+pub use sources::{
+    SourceDescription, SourceFailureSummary, describe_sources, summarize_source_failures,
+};
 pub use verify::{
     CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,
     StaleWork, StaleWorkReason, UnfinishedWork, UnreadableObject, VaultCatalogPort,
