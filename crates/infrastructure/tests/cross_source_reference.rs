@@ -612,3 +612,17 @@ fn a_checksum_that_is_no_sha1_gives_no_dump_evidence() {
     assert_eq!(catalog.list_library().unwrap().len(), 2);
     assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
 }
+
+#[test]
+fn dumps_pointing_at_an_edition_of_the_importing_source_forbid_a_title_link() {
+    let (_temp, catalog) = catalog();
+    let first = import(&catalog, &release("no-intro", "Alpha", "aaaa"));
+    // Another catalog links its differently titled release by the shared dumps.
+    import(&catalog, &release("mame-software-lists", "Beta", "aaaa"));
+
+    // The first catalog's second release of those dumps carries the other catalog's title.
+    let second = import(&catalog, &release("no-intro", "Beta", "aaaa"));
+
+    assert_ne!(second.release_edition_id, first.release_edition_id);
+    assert!(links_of(&catalog, second.release_edition_id, "no-intro").is_empty());
+}

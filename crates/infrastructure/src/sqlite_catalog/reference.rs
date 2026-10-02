@@ -263,7 +263,7 @@ struct NormalizedEdition<'a> {
 /// none of them, and dump evidence pointing at several editions forbids a title link. An edition
 /// already holding a record of the same source is never linked by dumps, since one catalog
 /// listing two releases of the same dumps describes two releases, but it counts among the
-/// editions they point at.
+/// editions they point at, and dumps pointing at it alone forbid a title link.
 fn linked_release_edition(
     transaction: &Transaction<'_>,
     source_id: &str,
@@ -305,8 +305,10 @@ fn linked_release_edition(
             .collect::<rusqlite::Result<_>>()
             .map_err(sql_error)?;
         match editions.as_slice() {
-            // An edition already holding a record of the importing source is another release.
-            [] | [(_, _, true)] => {}
+            [] => {}
+            // An edition already holding a record of the importing source is another release, which
+            // no title links either.
+            [(_, _, true)] => return Ok(None),
             [(game_id, release_edition_id, false)] => {
                 return Ok(Some((*game_id, *release_edition_id, "sha1")));
             }
