@@ -308,6 +308,12 @@ pub trait ConnectorPort: Send + Sync {
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
+
+    /// Why the Source takes no part in acquisitions at all, such as being disabled on this
+    /// machine, or `None` when it does. Executions leave its queued work waiting.
+    fn disabled_reason(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A borrowed connector serves as the connector it borrows.
@@ -334,6 +340,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         (**self).download(candidate)
     }
+
+    fn disabled_reason(&self) -> Option<String> {
+        (**self).disabled_reason()
+    }
 }
 
 /// A boxed connector serves as the connector it holds.
@@ -359,6 +369,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         (**self).download(candidate)
+    }
+
+    fn disabled_reason(&self) -> Option<String> {
+        (**self).disabled_reason()
     }
 }
 

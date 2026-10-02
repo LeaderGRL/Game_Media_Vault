@@ -418,6 +418,15 @@ where
             };
             let source_id = work.candidate.source_id.as_str().to_owned();
             served_this_round.push(source_id.clone());
+            // A Source disabled since its work was queued leaves that work waiting, untouched.
+            if let Some(reason) = acquisition.disabled_reason(&work) {
+                failed_sources.push(source_id.clone());
+                source_failure.get_or_insert(ApplicationError::UnsupportedConnectorPlan {
+                    source_id,
+                    reason,
+                });
+                continue;
+            }
             // Work of the Source downloaded ahead but no longer queued before this work, as when
             // another execution of the run settled it, tells whether the Source failed; this
             // work then waits for a later execution too.
@@ -885,6 +894,14 @@ impl Acquisition<'_> {
         failures
     }
 
+    /// Why the Source of `work` takes no part in acquisitions, if it does not.
+    fn disabled_reason(&self, work: &AcquisitionWorkItem) -> Option<String> {
+        self.connectors
+            .iter()
+            .find(|connector| connector.source_id() == work.candidate.source_id.as_str())
+            .and_then(|connector| connector.disabled_reason())
+    }
+
     fn still_running(&self) -> Result<bool, ApplicationError> {
         Ok(self.runs.run_status(self.run_id)? == Some(AcquisitionRunStatus::Running))
     }
@@ -967,6 +984,9 @@ impl<'a> Acquisition<'a> {
             let Some(connector) = connector else {
                 continue;
             };
+            if connector.disabled_reason().is_some() {
+                continue;
+            }
             let source_id = connector.source_id();
             let rank = importable.get(source_id).copied().unwrap_or(0);
             if rank == per_source {

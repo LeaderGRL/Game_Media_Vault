@@ -1,12 +1,13 @@
 mod support;
 
 use game_media_vault_application::{
-    ApplicationError, ConnectorPort, DownloadLimits, ExcludedSource, acquire_run_with_connectors,
-    machine_connectors, machine_registry, plan_acquisition, start_acquisition_run_with_connectors,
+    ApplicationError, ConnectorPort, DownloadLimits, ExcludedSource, RunRepositoryPort,
+    acquire_run_with_connectors, candidate_identity, machine_connectors, machine_registry,
+    plan_acquisition, start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
-    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, SourceId,
-    SourceSelection,
+    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AcquisitionWorkItem,
+    AssetCandidate, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -134,4 +135,60 @@ fn an_owned_registry_keeps_the_sources_disabled_on_this_machine_out_of_plans() {
     assert_eq!(plan.sources.len(), 1);
     assert_eq!(plan.excluded[0].source_id, OTHER_SOURCE);
     assert_eq!(plan.excluded[0].reason, "disabled on this machine");
+}
+
+#[test]
+fn work_a_disabled_source_already_queued_waits_untouched() {
+    // Bound for review: processing it would download nothing.
+    let (ambiguous, releases) = ambiguous_candidate_and_releases();
+    let ambiguous = AssetCandidate {
+        source_id: SourceId::from(OTHER_SOURCE),
+        ..ambiguous
+    };
+    let vault = FakeVault::with_library(releases);
+    let boxes = FakeConnector::new(Vec::new());
+    let disabled = other(Vec::new());
+    let registered: Vec<&dyn ConnectorPort> = vec![&boxes, &disabled];
+    let run = start_acquisition_run_with_connectors(
+        &vault,
+        AcquisitionRequestDraft {
+            sources: SourceSelection::Auto,
+            ..request_draft()
+        },
+        &registered,
+    )
+    .unwrap();
+    // The Source was discovered before this machine disabled it.
+    vault
+        .record_discovery(
+            run.id,
+            OTHER_SOURCE,
+            &[AcquisitionWorkItem {
+                key: candidate_identity(OTHER_SOURCE, &ambiguous),
+                candidate: ambiguous,
+            }],
+        )
+        .unwrap();
+    let machine = machine_connectors(&registered, &[OTHER_SOURCE.to_owned()]);
+
+    let error = acquire_run_with_connectors(
+        &vault,
+        &vault,
+        &vault,
+        &FakeStore::default(),
+        &machine.refs(),
+        run.id,
+        matching_policy(),
+        DownloadLimits::default(),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::UnsupportedConnectorPlan { .. }),
+        "{error}"
+    );
+    assert!(vault.review_items.borrow().is_empty());
+    let run = vault.run(run.id);
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+    assert_eq!(run.queued_work, 1);
 }

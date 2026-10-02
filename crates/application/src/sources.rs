@@ -156,6 +156,13 @@ impl<C: ConnectorPort> ConnectorPort for MachineConnector<C> {
         }
         self.connector.download(candidate)
     }
+
+    fn disabled_reason(&self) -> Option<String> {
+        if !self.enabled {
+            return Some(DISABLED_ON_THIS_MACHINE.to_owned());
+        }
+        self.connector.disabled_reason()
+    }
 }
 
 /// The registered connectors as this machine's settings leave them, in registry order.
