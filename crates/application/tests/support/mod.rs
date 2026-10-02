@@ -848,6 +848,8 @@ pub struct FakeConnector {
     pub candidates: Vec<AssetCandidate>,
     pub discovery_fails: bool,
     pub failing_downloads: BTreeSet<String>,
+    /// Source URLs whose download starts but fails partway through the body.
+    pub failing_bodies: BTreeSet<String>,
     pub discover_calls: RefCell<u32>,
     pub downloads: RefCell<Vec<String>>,
     /// Why the connector refuses every request, if it does.
@@ -865,6 +867,7 @@ impl FakeConnector {
             candidates,
             discovery_fails: false,
             failing_downloads: BTreeSet::new(),
+            failing_bodies: BTreeSet::new(),
             discover_calls: RefCell::new(0),
             downloads: RefCell::new(Vec::new()),
             unsupported_reason: None,
@@ -911,8 +914,22 @@ impl ConnectorPort for FakeConnector {
         self.downloads
             .borrow_mut()
             .push(candidate.source_url.clone());
+        if self.failing_bodies.contains(&candidate.source_url) {
+            return Ok(Box::new(
+                Cursor::new(b"partial bytes".to_vec()).chain(FailingRead),
+            ));
+        }
         Ok(Box::new(Cursor::new(
             format!("bytes of {}", candidate.original_filename).into_bytes(),
         )))
+    }
+}
+
+/// A download body whose connection drops: every read fails.
+pub struct FailingRead;
+
+impl Read for FailingRead {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("fixture connection reset"))
     }
 }

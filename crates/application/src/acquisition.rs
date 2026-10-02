@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::{cell::Cell, io::Read};
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -426,7 +426,11 @@ impl Acquisition<'_> {
             .connector_for(work)?
             .download(&work.candidate)
             .inspect_err(|_| self.source_failed.set(true))?;
-        Ok(self.object_store.store_original(stream.as_mut())?)
+        let mut body = SourceBody {
+            stream: stream.as_mut(),
+            failed: &self.source_failed,
+        };
+        Ok(self.object_store.store_original(&mut body)?)
     }
 
     fn asset_record(
@@ -454,5 +458,20 @@ impl Acquisition<'_> {
             source_asset_label: candidate.source_asset_label.clone(),
             source_location: candidate.source_url.clone(),
         }
+    }
+}
+
+/// A download body that notes when reading it fails, so a connection dropping partway is a
+/// failure of the Source rather than of the vault storing it.
+struct SourceBody<'a> {
+    stream: &'a mut (dyn Read + Send),
+    failed: &'a Cell<bool>,
+}
+
+impl Read for SourceBody<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.stream
+            .read(buffer)
+            .inspect_err(|_| self.failed.set(true))
     }
 }
