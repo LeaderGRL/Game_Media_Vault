@@ -54,14 +54,57 @@ impl ConnectorPort for FixtureConnector {
     }
 }
 
-fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
+/// Refuses every plan, as a Source that cannot satisfy a request does.
+struct RefusingConnector;
+
+impl ConnectorPort for RefusingConnector {
+    fn source_id(&self) -> &'static str {
+        "libretro-thumbnails"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        FixtureConnector.capabilities()
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        _request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        Ok(Some(
+            "the fixture Source declares no such platform".to_owned(),
+        ))
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        unreachable!("a refused plan is never discovered")
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        unreachable!("a refused plan downloads nothing")
+    }
+}
+
+fn cli_args(vault: &Path, args: &[&str]) -> Vec<OsString> {
     let mut command = vec![
         OsString::from("game-media-vault"),
         OsString::from("--vault"),
         vault.as_os_str().to_owned(),
     ];
     command.extend(args.iter().map(OsString::from));
-    game_media_vault_cli::run(command)
+    command
+}
+
+/// The validated request of an `acquire` command line, built without starting a run.
+fn request_from(vault: &Path, args: &[&str]) -> serde_json::Value {
+    serde_json::to_value(
+        game_media_vault_cli::acquisition_request_from_args(cli_args(vault, args)).unwrap(),
+    )
+    .unwrap()
+}
+
+/// Runs the CLI with the fixture connector, so no command reaches the network.
+fn run_in_vault(vault: &Path, args: &[&str]) -> Result<String, CliError> {
+    game_media_vault_cli::run_with_connector(cli_args(vault, args), &FixtureConnector)
 }
 
 fn seed_review_item(vault: &Path) -> i64 {
@@ -71,7 +114,7 @@ fn seed_review_item(vault: &Path) -> i64 {
             &[
                 "acquire",
                 "--source",
-                "fixture-provider",
+                "libretro-thumbnails",
                 "--platform",
                 "Nintendo Entertainment System",
                 "--game",
@@ -604,7 +647,8 @@ fn acquire_uses_the_shared_source_validation() {
 fn acquire_builds_the_full_request_from_cli_filters() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
-    let output = run_in_vault(
+    // No connector executes this plan yet, so the request is built without starting a run.
+    let request = game_media_vault_cli::acquisition_request_from_args(cli_args(
         &vault,
         &[
             "acquire",
@@ -659,12 +703,10 @@ fn acquire_builds_the_full_request_from_cli_filters() {
             "--max-bytes",
             "5000000000",
         ],
-    )
+    ))
     .unwrap();
 
-    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(run["status"], "running");
-    let request = &run["request"];
+    let request = serde_json::to_value(&request).unwrap();
     assert_eq!(
         request["sources"]["values"],
         serde_json::json!(["screenscraper", "game-tdb"])
@@ -694,10 +736,46 @@ fn acquire_builds_the_full_request_from_cli_filters() {
 }
 
 #[test]
+fn acquire_refuses_a_plan_its_connector_cannot_execute() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let error = game_media_vault_cli::run_with_connector(
+        cli_args(
+            &vault,
+            &[
+                "acquire",
+                "--source",
+                "libretro-thumbnails",
+                "--platform",
+                "Nintendo - Famicom Disk Sytem",
+                "--game",
+                "Zelda no Densetsu",
+                "--asset-type",
+                "box-front",
+            ],
+        ),
+        &RefusingConnector,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 5);
+    assert!(
+        error
+            .to_string()
+            .contains("the fixture Source declares no such platform"),
+        "{error}"
+    );
+    let runs: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["run", "list"]).unwrap()).unwrap();
+    assert_eq!(runs, serde_json::json!([]));
+}
+
+#[test]
 fn acquire_accepts_canonical_3d_asset_type_names() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
-    let output = run_in_vault(
+    let request = request_from(
         &vault,
         &[
             "acquire",
@@ -712,11 +790,7 @@ fn acquire_accepts_canonical_3d_asset_type_names() {
             "--asset-type",
             "3d-model",
         ],
-    )
-    .unwrap();
-
-    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
-    let request = &run["request"];
+    );
     assert_eq!(
         request["asset_types"],
         serde_json::json!(["box_3d_render", "box_3d_model", "3d_model"])
@@ -727,7 +801,7 @@ fn acquire_accepts_canonical_3d_asset_type_names() {
 fn acquire_preserves_asset_type_family_selection() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
-    let output = run_in_vault(
+    let request = request_from(
         &vault,
         &[
             "acquire",
@@ -740,11 +814,7 @@ fn acquire_preserves_asset_type_family_selection() {
             "--asset-type",
             "documentation",
         ],
-    )
-    .unwrap();
-
-    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
-    let request = &run["request"];
+    );
     assert_eq!(
         request["asset_types"],
         serde_json::json!(["packaging", "documentation"])
@@ -755,7 +825,7 @@ fn acquire_preserves_asset_type_family_selection() {
 fn acquire_preserves_platform_bound_game_targeting() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
-    let output = run_in_vault(
+    let request = request_from(
         &vault,
         &[
             "acquire",
@@ -766,11 +836,7 @@ fn acquire_preserves_platform_bound_game_targeting() {
             "--asset-type",
             "box-front",
         ],
-    )
-    .unwrap();
-
-    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
-    let request = &run["request"];
+    );
     assert_eq!(request["platforms"], serde_json::json!([]));
     assert_eq!(request["games"]["mode"], "platform_bound");
     assert_eq!(
@@ -786,7 +852,7 @@ fn acquire_preserves_platform_bound_game_targeting() {
 fn acquire_preserves_query_result_game_targeting() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
-    let output = run_in_vault(
+    let request = request_from(
         &vault,
         &[
             "acquire",
@@ -797,11 +863,7 @@ fn acquire_preserves_query_result_game_targeting() {
             "--asset-type",
             "manual",
         ],
-    )
-    .unwrap();
-
-    let run: serde_json::Value = serde_json::from_str(&output).unwrap();
-    let request = &run["request"];
+    );
     assert_eq!(request["platforms"], serde_json::json!([]));
     assert_eq!(request["games"]["mode"], "query_result");
     assert_eq!(
@@ -823,7 +885,7 @@ fn acquire_persists_a_run_that_can_be_controlled_and_listed() {
         &[
             "acquire",
             "--source",
-            "screenscraper",
+            "libretro-thumbnails",
             "--platform",
             "Windows",
             "--asset-type",
@@ -975,7 +1037,8 @@ fn exit_codes_follow_the_error_kind() {
             .contains("acquisition request must include at least one source")
     );
 
-    run_binary(
+    // Libretro refuses unbounded game selections without reaching the network.
+    let unsupported = run_binary(
         &vault,
         &[
             "acquire",
@@ -987,6 +1050,25 @@ fn exit_codes_follow_the_error_kind() {
             "box-front",
         ],
     );
+    assert_eq!(unsupported.status.code(), Some(5));
+    assert!(
+        String::from_utf8_lossy(&unsupported.stderr)
+            .contains("requires an explicit bounded game selection")
+    );
+
+    run_in_vault(
+        &vault,
+        &[
+            "acquire",
+            "--source",
+            "libretro-thumbnails",
+            "--platform",
+            "Windows",
+            "--asset-type",
+            "box-front",
+        ],
+    )
+    .unwrap();
     let missing = run_binary(&vault, &["run", "show", "99"]);
     assert_eq!(missing.status.code(), Some(3));
     assert!(
