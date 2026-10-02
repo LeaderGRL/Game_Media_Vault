@@ -9,6 +9,7 @@ pub const ACQUISITION_REQUEST_DOCUMENT_VERSION: u32 = 1;
 /// A portable Acquisition Request: the request alone, without run state, Source credentials or
 /// vault paths, so another machine can start the same acquisition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcquisitionRequestDocument {
     pub format_version: u32,
     pub request: AcquisitionRequestDraft,

@@ -1334,3 +1334,49 @@ fn a_malformed_request_document_is_an_invalid_request() {
 
     assert_eq!(error.exit_code(), 2, "{error}");
 }
+
+#[test]
+fn a_request_document_with_a_misspelled_key_is_an_invalid_request() {
+    let temp = tempdir().unwrap();
+    let document_path = temp.path().join("request.json");
+    // `min_widht` would otherwise be dropped, starting a run without its size requirement.
+    std::fs::write(
+        &document_path,
+        r#"{"format_version": 1, "request": {
+            "sources": {"mode": "explicit", "values": ["libretro-thumbnails"]},
+            "platforms": ["Nintendo - Nintendo Entertainment System"],
+            "games": {"mode": "explicit", "values": ["Super Mario Bros. (World)"]},
+            "regions": [], "languages": [], "asset_types": ["box_front"],
+            "quality": {"min_widht": 1000},
+            "retention": "keep_everything",
+            "limits": {}
+        }}"#,
+    )
+    .unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &["run", "start", document_path.to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(error.to_string().contains("min_widht"), "{error}");
+}
+
+#[test]
+fn a_request_document_that_cannot_be_read_is_an_invalid_request() {
+    let temp = tempdir().unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &[
+            "run",
+            "start",
+            temp.path().join("missing.json").to_str().unwrap(),
+        ],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+}
