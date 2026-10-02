@@ -250,20 +250,18 @@ fn parse_list<R: std::io::BufRead>(
                         )));
                     };
                     let (list_name, list_description) = list.as_ref().ok_or_else(missing_list)?;
-                    match finish_software(
-                        entry,
-                        list_name,
-                        list_description,
-                        location,
-                        mame_version,
-                    ) {
-                        Some(release) => {
-                            read.releases.push(release);
-                            if read.releases.len() >= max_games {
-                                break;
-                            }
+                    // Entries past the bound are still parsed, so the whole list is checked.
+                    if read.releases.len() < max_games {
+                        match finish_software(
+                            entry,
+                            list_name,
+                            list_description,
+                            location,
+                            mame_version,
+                        ) {
+                            Some(release) => read.releases.push(release),
+                            None => read.skipped_records += 1,
                         }
-                        None => read.skipped_records += 1,
                     }
                 }
                 _ => {}

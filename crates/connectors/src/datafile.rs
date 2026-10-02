@@ -103,7 +103,7 @@ fn parse_datafile<R: std::io::BufRead>(
                 // A self-closing entry is complete: it names a release without dumps, or none.
                 "game" => {
                     let entry = start_game(source, &element, source_location);
-                    if end_game(
+                    end_game(
                         source,
                         entry,
                         platform.as_deref(),
@@ -111,9 +111,7 @@ fn parse_datafile<R: std::io::BufRead>(
                         &mut releases,
                         &mut skipped_records,
                         max_games,
-                    )? {
-                        break;
-                    }
+                    )?;
                 }
                 _ => {}
             },
@@ -141,7 +139,7 @@ fn parse_datafile<R: std::io::BufRead>(
                             source.name
                         ))
                     })?;
-                    if end_game(
+                    end_game(
                         source,
                         entry,
                         platform.as_deref(),
@@ -149,9 +147,7 @@ fn parse_datafile<R: std::io::BufRead>(
                         &mut releases,
                         &mut skipped_records,
                         max_games,
-                    )? {
-                        break;
-                    }
+                    )?;
                 }
                 _ => {}
             },
@@ -192,8 +188,9 @@ fn start_game(
     }
 }
 
-/// Ends `entry`: a readable one becomes a release, another is counted as skipped. Returns whether
-/// `max_games` releases are read.
+/// Ends `entry`: a readable one becomes a release while fewer than `max_games` are read, another
+/// is counted as skipped. Entries past the bound are still parsed, so the whole datafile is
+/// checked.
 fn end_game(
     source: &DatafileSource,
     entry: GameEntry,
@@ -202,18 +199,18 @@ fn end_game(
     releases: &mut Vec<ReferenceReleaseRecord>,
     skipped_records: &mut usize,
     max_games: usize,
-) -> Result<bool, PortError> {
+) -> Result<(), PortError> {
+    if releases.len() >= max_games {
+        return Ok(());
+    }
     match entry {
         GameEntry::Reading(game) => {
             let platform = platform.ok_or_else(|| missing_platform(source))?;
             releases.push(game.finish(source, platform, version));
-            Ok(releases.len() >= max_games)
         }
-        GameEntry::Skipped => {
-            *skipped_records += 1;
-            Ok(false)
-        }
+        GameEntry::Skipped => *skipped_records += 1,
     }
+    Ok(())
 }
 
 /// Records the identifiers of a ROM or track of the entry being read; one it cannot read makes

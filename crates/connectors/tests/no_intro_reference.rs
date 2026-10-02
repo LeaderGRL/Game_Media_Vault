@@ -394,3 +394,22 @@ fn self_closing_game_entries_are_read_or_skipped_like_the_others() {
     assert_eq!(titles, ["Dumpless"]);
     assert_eq!(read.skipped_records, 1);
 }
+
+#[test]
+fn a_bounded_read_still_refuses_a_datafile_broken_after_the_bound() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("broken-later.dat");
+    std::fs::write(
+        &path,
+        r#"<datafile><header><name>Nintendo - Game Boy</name></header>
+  <game name="Tetris (World)"><rom name="Tetris (World).gb" crc="46df91ad"/></game>
+  <game name="Dr. Mario (World)"><rom name="Dr. Mario (World).gb" crc="12345678"/></game>"#,
+    )
+    .unwrap();
+
+    let error = NoIntroReferenceCatalog::new()
+        .read_releases(&path, 1)
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}

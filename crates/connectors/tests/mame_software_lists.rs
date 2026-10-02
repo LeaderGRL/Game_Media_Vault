@@ -277,3 +277,22 @@ fn blank_metadata_is_left_out_instead_of_failing_the_import() {
             .all(|assertion| !assertion.value.trim().is_empty())
     );
 }
+
+#[test]
+fn a_bounded_read_still_refuses_a_list_broken_after_the_bound() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("list.xml");
+    std::fs::write(
+        &path,
+        r#"<softwarelist name="nes" description="NES">
+  <software name="a"><description>Game A (World)</description></software>
+  <software name="b"><description>Game B (World)</description></software>"#,
+    )
+    .unwrap();
+
+    let error = MameSoftwareListCatalog::new()
+        .read_releases(&path, 1)
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}
