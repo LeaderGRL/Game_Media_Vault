@@ -216,8 +216,13 @@ pub trait RunRepositoryPort {
         work: &[AcquisitionWorkItem],
     ) -> Result<bool, PortError>;
 
-    /// Returns the oldest queued work item while the run is running.
-    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
+    /// Returns the oldest queued work item of a Source outside `skipped_sources` while the run is
+    /// running.
+    fn next_queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 }

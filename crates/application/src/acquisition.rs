@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, ImportedAsset,
@@ -31,6 +33,9 @@ struct Acquisition<'a> {
     releases: Vec<LibraryEntry>,
     quality: Option<QualityRequirements>,
     retention: RetentionPolicy,
+    /// Whether the last failure came from the Source of the processed work, such as a failed
+    /// download, rather than from the vault.
+    source_failed: Cell<bool>,
 }
 
 enum Step {
@@ -105,15 +110,23 @@ pub fn acquire_run_with_connectors(
         releases: catalog.list_library()?,
         quality: run.request.quality().cloned(),
         retention: run.request.retention(),
+        source_failed: Cell::new(false),
     };
     let mut imported_assets = Vec::new();
+    // Sources whose work failed; their remaining work waits for a later execution.
+    let mut failed_sources: Vec<String> = Vec::new();
     loop {
-        while let Some(work) = runs.next_queued_work(run_id)? {
-            if let Some(imported) = acquisition.process(&work)? {
-                imported_assets.push(imported);
+        while let Some(work) = runs.next_queued_work(run_id, &failed_sources)? {
+            match acquisition.process(&work) {
+                Ok(imported) => imported_assets.extend(imported),
+                Err(error) if acquisition.source_failed.get() => {
+                    failed_sources.push(work.candidate.source_id.as_str().to_owned());
+                    source_failure.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
             }
         }
-        // A Source left undiscovered keeps the run running for a later execution.
+        // A Source left undiscovered or failing keeps the run running for a later execution.
         if let Some(error) = source_failure.take() {
             return Err(error);
         }
@@ -224,9 +237,12 @@ impl Acquisition<'_> {
             .iter()
             .copied()
             .find(|connector| connector.source_id() == source_id)
-            .ok_or_else(|| ApplicationError::UnsupportedConnectorPlan {
-                source_id: source_id.to_owned(),
-                reason: "no connector is registered for this source".to_owned(),
+            .ok_or_else(|| {
+                self.source_failed.set(true);
+                ApplicationError::UnsupportedConnectorPlan {
+                    source_id: source_id.to_owned(),
+                    reason: "no connector is registered for this source".to_owned(),
+                }
             })
     }
 
@@ -234,6 +250,7 @@ impl Acquisition<'_> {
         &self,
         work: &AcquisitionWorkItem,
     ) -> Result<Option<ImportedAsset>, ApplicationError> {
+        self.source_failed.set(false);
         // Work whose Source has no connector anymore stays queued until one is registered.
         self.connector_for(work)?;
         let mut contended_review_item_id = None;
@@ -374,7 +391,10 @@ impl Acquisition<'_> {
     }
 
     fn store_original(&self, work: &AcquisitionWorkItem) -> Result<StoredObject, ApplicationError> {
-        let mut stream = self.connector_for(work)?.download(&work.candidate)?;
+        let mut stream = self
+            .connector_for(work)?
+            .download(&work.candidate)
+            .inspect_err(|_| self.source_failed.set(true))?;
         Ok(self.object_store.store_original(stream.as_mut())?)
     }
 

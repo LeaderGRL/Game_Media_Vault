@@ -216,3 +216,23 @@ fn a_pause_during_a_discovery_keeps_it_but_discovers_no_further() {
     assert_eq!(paused.status, AcquisitionRunStatus::Paused);
     assert_eq!(paused.queued_work, 1);
 }
+
+#[test]
+fn a_source_whose_downloads_fail_leaves_the_others_progressing() {
+    let smb = candidate("Super Mario Bros.");
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let mut boxes = FakeConnector::new(vec![smb.clone()]);
+    boxes.failing_downloads.insert(smb.source_url.clone());
+    let snaps = snap_connector(vec![snap.clone()]);
+    let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
+
+    // The failing Box Front is the oldest queued work.
+    let error = execute(&vault, &[&boxes, &snaps], run.id).unwrap_err();
+
+    assert!(matches!(error, ApplicationError::Port(_)), "{error}");
+    assert_eq!(snaps.downloads.borrow().as_slice(), [snap.source_url]);
+    let running = vault.run(run.id);
+    assert_eq!(running.status, AcquisitionRunStatus::Running);
+    assert_eq!((running.queued_work, running.completed_work), (1, 1));
+}

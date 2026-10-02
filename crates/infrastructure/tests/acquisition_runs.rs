@@ -84,14 +84,14 @@ fn completed_work_is_not_returned_after_restart() {
             &[work("discover:first"), work("discover:second")],
         )
         .unwrap();
-    let first = catalog.next_queued_work(run.id).unwrap().unwrap();
+    let first = catalog.next_queued_work(run.id, &[]).unwrap().unwrap();
     assert_eq!(first.key, "discover:first");
     catalog.complete_work(run.id, &first.key).unwrap();
     drop(catalog);
 
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
     let loaded = load_acquisition_run(&reopened, run.id).unwrap();
-    let next = reopened.next_queued_work(run.id).unwrap().unwrap();
+    let next = reopened.next_queued_work(run.id, &[]).unwrap().unwrap();
 
     assert_eq!(loaded.queued_work, 1);
     assert_eq!(loaded.completed_work, 1);
@@ -108,12 +108,12 @@ fn pause_and_resume_preserve_queued_work_across_restart() {
 
     let paused = pause_acquisition_run(&catalog, run.id).unwrap();
     assert_eq!(paused.status, AcquisitionRunStatus::Paused);
-    assert!(catalog.next_queued_work(run.id).unwrap().is_none());
+    assert!(catalog.next_queued_work(run.id, &[]).unwrap().is_none());
     drop(catalog);
 
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
     let resumed = resume_acquisition_run(&reopened, run.id).unwrap();
-    let next = reopened.next_queued_work(run.id).unwrap().unwrap();
+    let next = reopened.next_queued_work(run.id, &[]).unwrap().unwrap();
 
     assert_eq!(resumed.status, AcquisitionRunStatus::Running);
     assert_eq!(resumed.queued_work, 1);
@@ -134,10 +134,15 @@ fn repository_does_not_return_work_for_a_non_running_run() {
     queue(&catalog, cancelled_run.id, "download:cancelled");
     cancel_acquisition_run(&catalog, cancelled_run.id).unwrap();
 
-    assert!(catalog.next_queued_work(paused_run.id).unwrap().is_none());
     assert!(
         catalog
-            .next_queued_work(cancelled_run.id)
+            .next_queued_work(paused_run.id, &[])
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        catalog
+            .next_queued_work(cancelled_run.id, &[])
             .unwrap()
             .is_none()
     );
@@ -174,7 +179,7 @@ fn cancellation_preserves_assets_accepted_before_the_run_was_cancelled() {
     let library = reopened.list_library().unwrap();
 
     assert_eq!(cancelled.status, AcquisitionRunStatus::Cancelled);
-    assert!(reopened.next_queued_work(run.id).unwrap().is_none());
+    assert!(reopened.next_queued_work(run.id, &[]).unwrap().is_none());
     assert_eq!(library.len(), 1);
     assert_eq!(library[0].assets.len(), 1);
     assert_eq!(library[0].assets[0].asset_id, accepted.asset_id);
@@ -201,7 +206,7 @@ fn duplicate_work_keys_are_queued_only_once() {
         .unwrap();
 
     let loaded = load_acquisition_run(&catalog, run.id).unwrap();
-    let next = catalog.next_queued_work(run.id).unwrap().unwrap();
+    let next = catalog.next_queued_work(run.id, &[]).unwrap().unwrap();
 
     assert_eq!(loaded.queued_work, 1);
     assert_eq!(next.key, "download:cover");
@@ -431,7 +436,7 @@ fn recorded_discovery_persists_work_candidates_and_the_discovered_source() {
     assert!(reopened.has_discovered(run.id, SOURCE_ID).unwrap());
     assert!(!reopened.has_discovered(run.id, "another-source").unwrap());
     assert_eq!(
-        reopened.next_queued_work(run.id).unwrap(),
+        reopened.next_queued_work(run.id, &[]).unwrap(),
         Some(work("first"))
     );
     assert_eq!(
@@ -459,7 +464,7 @@ fn a_later_discovery_of_an_already_discovered_source_is_ignored() {
         1
     );
     assert_eq!(
-        catalog.next_queued_work(run.id).unwrap(),
+        catalog.next_queued_work(run.id, &[]).unwrap(),
         Some(work("first"))
     );
 }
@@ -525,4 +530,30 @@ fn work_below_quality_is_completed_and_counted_apart() {
     let reopened = SqliteCatalog::open_existing(&path).unwrap();
     let loaded = load_acquisition_run(&reopened, run.id).unwrap();
     assert_eq!((loaded.completed_work, loaded.below_quality_work), (2, 1));
+}
+
+#[test]
+fn queued_work_of_skipped_sources_waits_for_a_later_execution() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    let mut other = work("other-work");
+    other.candidate.source_id = SourceId::from("other-source");
+    catalog
+        .record_discovery(run.id, SOURCE_ID, &[work("first-work")])
+        .unwrap();
+    catalog
+        .record_discovery(run.id, "other-source", &[other])
+        .unwrap();
+
+    let skipping = catalog
+        .next_queued_work(run.id, &[SOURCE_ID.to_owned()])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(skipping.key, "other-work");
+    assert_eq!(
+        catalog.next_queued_work(run.id, &[]).unwrap().unwrap().key,
+        "first-work"
+    );
 }

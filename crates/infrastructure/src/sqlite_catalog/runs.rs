@@ -160,7 +160,14 @@ impl RunRepositoryPort for SqliteCatalog {
         Ok(true)
     }
 
-    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+    fn next_queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
+        let skipped_sources_json = serde_json::to_string(skipped_sources).map_err(|error| {
+            PortError::new(format!("failed to serialize skipped sources: {error}"))
+        })?;
         let row = self
             .connect()?
             .query_row(
@@ -168,9 +175,11 @@ impl RunRepositoryPort for SqliteCatalog {
                  FROM acquisition_run_work AS work
                  INNER JOIN acquisition_runs AS run ON run.id = work.run_id
                  WHERE work.run_id = ?1 AND work.state = 'queued' AND run.status = 'running'
+                   AND json_extract(work.candidate_json, '$.source_id')
+                       NOT IN (SELECT value FROM json_each(?2))
                  ORDER BY work.id
                  LIMIT 1",
-                params![run_id],
+                params![run_id, skipped_sources_json],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()

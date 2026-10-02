@@ -409,7 +409,11 @@ impl RunRepositoryPort for FakeVault {
         Ok(true)
     }
 
-    fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
+    fn next_queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+    ) -> Result<Option<AcquisitionWorkItem>, PortError> {
         let runs = self.runs.borrow();
         let run = &runs[&run_id];
         if run.status != AcquisitionRunStatus::Running {
@@ -418,7 +422,12 @@ impl RunRepositoryPort for FakeVault {
         Ok(run
             .work
             .iter()
-            .find(|work| work.state == WorkState::Queued)
+            .find(|work| {
+                work.state == WorkState::Queued
+                    && !skipped_sources
+                        .iter()
+                        .any(|source| source == work.item.candidate.source_id.as_str())
+            })
             .map(|work| work.item.clone()))
     }
 
