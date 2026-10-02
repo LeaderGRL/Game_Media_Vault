@@ -12,8 +12,9 @@ use game_media_vault_application::{
     VaultReport, acquire_run_with_connector, build_acquisition_request, cancel_acquisition_run,
     derive_assets, draft_from_document, export_acquisition_request, import_local_box_front,
     import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
-    load_acquisition_run, pause_acquisition_run, repair_vault, resolve_review_item,
-    resume_acquisition_run, search_library, start_acquisition_run_for_connector, verify_vault,
+    load_acquisition_run, pause_acquisition_run, plan_acquisition, repair_vault,
+    resolve_review_item, resume_acquisition_run, search_library,
+    start_acquisition_run_for_connector, verify_vault,
 };
 use game_media_vault_connectors::{
     LibretroThumbnailsConnector, NoIntroReferenceCatalog, RedumpReferenceCatalog,
@@ -77,6 +78,9 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Acquire(Box<AcquireArgs>),
+    /// Explains which Sources an `acquire` command line would contact and what each acquires,
+    /// without starting a run.
+    Plan(Box<AcquireArgs>),
     Run {
         #[command(subcommand)]
         command: RunCommand,
@@ -407,6 +411,11 @@ where
                 start_acquisition_run_for_connector(&catalog, acquire.into_input(), connector)
                     .map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&run)?)
+        }
+        Command::Plan(acquire) => {
+            let request = build_acquisition_request(acquire.into_input())?;
+            let plan = plan_acquisition(&request, &[connector]).map_err(map_start_run_error)?;
+            Ok(serde_json::to_string_pretty(&plan)?)
         }
         Command::Run { command } => match command {
             RunCommand::Start { request_file } => {
