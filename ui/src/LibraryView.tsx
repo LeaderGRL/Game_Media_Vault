@@ -81,6 +81,11 @@ export function LibraryView({ entries, objectUrl }: LibraryViewProps) {
                     <div>
                       <span className="detail-label">Size</span>
                       <strong>{formatBytes(asset.byte_len)}</strong>
+                      {asset.width !== null && asset.height !== null ? (
+                        <span className="pixel-size">
+                          {asset.width} × {asset.height} px
+                        </span>
+                      ) : null}
                     </div>
                   </div>
 
@@ -125,15 +130,18 @@ interface AssetOriginalProps {
   objectUrl: (objectHash: string) => string;
 }
 
-/** Thumbnail of an image original, or a placeholder when the vault cannot serve it. */
+/**
+ * Thumbnail of an image original, or a placeholder when the vault cannot serve it or the view
+ * cannot decode its format.
+ */
 function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
   const [unavailable, setUnavailable] = useState(false);
 
-  if (!filenameMediaType(asset.original_filename).startsWith("image/")) {
+  if (!isImageOriginal(asset)) {
     return null;
   }
   if (unavailable) {
-    return <p className="asset-original unavailable">Original unavailable</p>;
+    return <p className="asset-original unavailable">Preview unavailable</p>;
   }
   return (
     <img
@@ -159,4 +167,17 @@ function formatBytes(byteLength: number) {
     return String(byteLength) + " B";
   }
   return (byteLength / 1024).toFixed(1) + " KiB";
+}
+
+/**
+ * Whether an original is an image. Assets imported before media inspection (vaults upgraded
+ * from schema version 2) still have unknown media, so their file name decides until the vault
+ * is verified again.
+ */
+function isImageOriginal(asset: LibraryAsset) {
+  const mediaType =
+    asset.media_type === "application/octet-stream"
+      ? filenameMediaType(asset.original_filename)
+      : asset.media_type;
+  return mediaType.startsWith("image/");
 }

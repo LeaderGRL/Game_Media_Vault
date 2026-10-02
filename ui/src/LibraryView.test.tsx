@@ -19,6 +19,9 @@ const entry: LibraryEntry = {
       asset_type: "box_front",
       object_hash: "abc123",
       byte_len: 4096,
+      media_type: "image/png",
+      width: 1200,
+      height: 1600,
       original_filename: "mgs-front.png",
       provenance: [
         {
@@ -42,22 +45,60 @@ describe("LibraryView", () => {
     expect(original).toHaveAttribute("loading", "lazy");
   });
 
-  it("replaces an original the vault cannot serve with a placeholder", () => {
+  it("replaces an original the view cannot show with a placeholder", () => {
     render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
 
+    // Either the vault cannot serve the original or the view cannot decode its format.
     fireEvent.error(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" }));
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
-    expect(screen.getByText("Original unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
   });
 
-  it("does not render non-image originals as images", () => {
+  it("shows the pixel size of image originals", () => {
+    render(<LibraryView entries={[entry]} objectUrl={objectUrl} />);
+
+    expect(screen.getByText("1200 × 1600 px")).toBeInTheDocument();
+  });
+
+  it("falls back to the file name for originals whose media is not inspected yet", () => {
     render(
       <LibraryView
         entries={[
           {
             ...entry,
-            assets: [{ ...entry.assets[0], original_filename: "manual.pdf" }],
+            assets: [
+              {
+                ...entry.assets[0],
+                media_type: "application/octet-stream",
+                width: null,
+                height: null,
+              },
+            ],
+          },
+        ]}
+        objectUrl={objectUrl}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toBeInTheDocument();
+  });
+
+  it("renders originals as images by their media type, not their file name", () => {
+    render(
+      <LibraryView
+        entries={[
+          {
+            ...entry,
+            assets: [
+              {
+                ...entry.assets[0],
+                original_filename: "cover.png",
+                media_type: "application/pdf",
+                width: null,
+                height: null,
+              },
+            ],
           },
         ]}
         objectUrl={objectUrl}
@@ -65,7 +106,7 @@ describe("LibraryView", () => {
     );
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
-    expect(screen.getByText("manual.pdf")).toBeInTheDocument();
+    expect(screen.getByText("cover.png")).toBeInTheDocument();
   });
 
   it("shows canonical values with their confidence, sources and conflicts", () => {

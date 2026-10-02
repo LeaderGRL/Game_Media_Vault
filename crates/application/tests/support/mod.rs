@@ -14,7 +14,7 @@ use game_media_vault_application::{
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
-    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchingPolicy,
+    ConnectorCapabilities, GameSelection, ImportedAsset, LibraryEntry, MatchingPolicy, MediaInfo,
     NewReviewItem, PersistAsset, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
     SourceId, SourceSelection, StoredObject,
 };
@@ -641,6 +641,7 @@ impl ObjectStorePort for FakeStore {
         let stored = StoredObject {
             hash: format!("hash-of-{}-bytes", bytes.len()),
             byte_len: bytes.len() as u64,
+            media: MediaInfo::unknown(),
         };
         self.stored.borrow_mut().push(bytes);
         Ok(stored)

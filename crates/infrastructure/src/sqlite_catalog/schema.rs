@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 2;
+const VAULT_SCHEMA_VERSION: i32 = 3;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -17,7 +17,23 @@ const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
 type Migration = fn(&Transaction<'_>) -> Result<(), PortError>;
 
 /// Entry `i` upgrades a catalog from `OLDEST_SUPPORTED_SCHEMA_VERSION + i` to the next version.
-const MIGRATIONS: &[Migration] = &[];
+const MIGRATIONS: &[Migration] = &[add_asset_media];
+
+/// Version 3 records what each original is. Assets imported before keep unknown media until
+/// vault verification inspects their objects again. The columns match the `assets` layout of
+/// `SCHEMA`.
+fn add_asset_media(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(
+            "ALTER TABLE assets
+                 ADD COLUMN media_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+             ALTER TABLE assets
+                 ADD COLUMN width INTEGER CHECK(width IS NULL OR width > 0);
+             ALTER TABLE assets
+                 ADD COLUMN height INTEGER CHECK(height IS NULL OR height > 0);",
+        )
+        .map_err(sql_error)
+}
 
 const _: () = assert!(
     MIGRATIONS.len() as i32 == VAULT_SCHEMA_VERSION - OLDEST_SUPPORTED_SCHEMA_VERSION,
@@ -59,6 +75,9 @@ const SCHEMA: &str = "
         object_hash TEXT NOT NULL,
         byte_len INTEGER NOT NULL CHECK(byte_len >= 0),
         original_filename TEXT NOT NULL,
+        media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+        width INTEGER CHECK(width IS NULL OR width > 0),
+        height INTEGER CHECK(height IS NULL OR height > 0),
         UNIQUE(release_edition_id, asset_type, object_hash)
     );
     CREATE TABLE asset_provenance (
@@ -150,10 +169,7 @@ pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortE
     }
     let version = read_pragma(connection, "user_version")?;
     if version > VAULT_SCHEMA_VERSION {
-        return Err(PortError(format!(
-            "catalog {} uses schema version {version}, which is newer than the supported version {VAULT_SCHEMA_VERSION}; upgrade Game Media Vault",
-            path.display()
-        )));
+        return Err(newer_schema(path, version));
     }
     if version < OLDEST_SUPPORTED_SCHEMA_VERSION {
         return Err(PortError(format!(
@@ -161,16 +177,34 @@ pub(super) fn open(connection: &mut Connection, path: &Path) -> Result<(), PortE
             path.display()
         )));
     }
-    for target in version + 1..=VAULT_SCHEMA_VERSION {
-        let migrate = MIGRATIONS[(target - OLDEST_SUPPORTED_SCHEMA_VERSION - 1) as usize];
+    // A current catalog needs no write lock, which another process may be holding.
+    if version == VAULT_SCHEMA_VERSION {
+        return Ok(());
+    }
+    loop {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
+        // Another opener may have upgraded the catalog while this one waited for the lock.
+        let version = read_pragma(&transaction, "user_version")?;
+        if version > VAULT_SCHEMA_VERSION {
+            return Err(newer_schema(path, version));
+        }
+        if version == VAULT_SCHEMA_VERSION {
+            return Ok(());
+        }
+        let migrate = MIGRATIONS[(version - OLDEST_SUPPORTED_SCHEMA_VERSION) as usize];
         migrate(&transaction)?;
-        stamp(&transaction, target)?;
+        stamp(&transaction, version + 1)?;
         transaction.commit().map_err(sql_error)?;
     }
-    Ok(())
+}
+
+fn newer_schema(path: &Path, version: i32) -> PortError {
+    PortError(format!(
+        "catalog {} uses schema version {version}, which is newer than the supported version {VAULT_SCHEMA_VERSION}; upgrade Game Media Vault",
+        path.display()
+    ))
 }
 
 fn stamp(transaction: &Transaction<'_>, version: i32) -> Result<(), PortError> {
@@ -185,4 +219,99 @@ fn read_pragma(connection: &Connection, name: &str) -> Result<i32, PortError> {
     connection
         .query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))
         .map_err(sql_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Condvar, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
+
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    /// Serializes the racing tests, which share the busy-handler signal.
+    static RACE: Mutex<()> = Mutex::new(());
+    static WAITING_FOR_WRITE_LOCK: AtomicBool = AtomicBool::new(false);
+    static WAITING_SIGNAL: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
+
+    fn signal_waiting(_: i32) -> bool {
+        WAITING_FOR_WRITE_LOCK.store(true, Ordering::SeqCst);
+        WAITING_SIGNAL.1.notify_all();
+        thread::sleep(Duration::from_millis(1));
+        true
+    }
+
+    /// Opens a catalog at the oldest supported version while a first opener holds the write
+    /// lock, then lets the first opener stamp `version_after_first_opener` and release it.
+    fn open_racing_a_first_opener(version_after_first_opener: i32) -> Result<(), PortError> {
+        let _race = RACE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        WAITING_FOR_WRITE_LOCK.store(false, Ordering::SeqCst);
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("catalog.sqlite3");
+        let mut first_opener = Connection::open(&path).unwrap();
+        create(&mut first_opener).unwrap();
+        first_opener
+            .execute_batch(&format!(
+                "PRAGMA user_version = {OLDEST_SUPPORTED_SCHEMA_VERSION}; BEGIN IMMEDIATE;"
+            ))
+            .unwrap();
+        let second_path = path.clone();
+        let second_opener = thread::spawn(move || {
+            let mut connection = Connection::open(&second_path).unwrap();
+            connection.busy_handler(Some(signal_waiting)).unwrap();
+            open(&mut connection, &second_path)
+        });
+        let guard = WAITING_SIGNAL.0.lock().unwrap();
+        let (_guard, timeout) = WAITING_SIGNAL
+            .1
+            .wait_timeout_while(guard, Duration::from_secs(5), |_| {
+                !WAITING_FOR_WRITE_LOCK.load(Ordering::SeqCst)
+            })
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "the second opener should wait for the lock"
+        );
+
+        first_opener
+            .execute_batch(&format!(
+                "PRAGMA user_version = {version_after_first_opener}; COMMIT;"
+            ))
+            .unwrap();
+        second_opener.join().unwrap()
+    }
+
+    #[test]
+    fn a_catalog_upgraded_by_a_concurrent_opener_is_not_upgraded_again() {
+        assert!(open_racing_a_first_opener(VAULT_SCHEMA_VERSION).is_ok());
+    }
+
+    #[test]
+    fn a_catalog_upgraded_past_this_version_meanwhile_is_refused() {
+        let error = open_racing_a_first_opener(VAULT_SCHEMA_VERSION + 1).unwrap_err();
+
+        assert!(error.0.contains("newer"), "{error}");
+    }
+
+    #[test]
+    fn a_current_catalog_opens_while_another_process_writes() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("catalog.sqlite3");
+        let mut writer = Connection::open(&path).unwrap();
+        create(&mut writer).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        // Without a busy timeout, any write lock request would fail at once.
+        let mut reader = Connection::open(&path).unwrap();
+
+        assert!(open(&mut reader, &path).is_ok());
+    }
 }

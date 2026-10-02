@@ -32,6 +32,10 @@ export interface LibraryAsset {
   asset_type: AssetType;
   object_hash: string;
   byte_len: number;
+  /** Media type read from the original bytes. */
+  media_type: string;
+  width: number | null;
+  height: number | null;
   original_filename: string;
   provenance: AssetProvenance[];
 }
@@ -104,6 +108,7 @@ export interface ReviewItem {
   status: ReviewStatus;
 }
 
+/** Image media types the vault inspector records, by the file extensions that carry them. */
 const PREVIEW_MEDIA_TYPES: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -112,6 +117,24 @@ const PREVIEW_MEDIA_TYPES: Record<string, string> = {
   gif: "image/gif",
   bmp: "image/bmp",
   avif: "image/avif",
+  ico: "image/x-icon",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  jxl: "image/jxl",
+  heic: "image/heic",
+  heif: "image/heif",
+  pbm: "image/x-portable-anymap",
+  pgm: "image/x-portable-anymap",
+  ppm: "image/x-portable-anymap",
+  pnm: "image/x-portable-anymap",
+  qoi: "image/qoi",
+  tga: "image/x-tga",
+  ff: "image/x-farbfeld",
+  iff: "image/x-ilbm",
+  ilbm: "image/x-ilbm",
+  lbm: "image/x-ilbm",
+  exr: "image/x-exr",
+  hdr: "image/vnd.radiance",
 };
 
 const PREVIEW_SIGNATURES: [number[], string][] = [

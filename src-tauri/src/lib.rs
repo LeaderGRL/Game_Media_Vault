@@ -20,7 +20,7 @@ use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, LibraryRelease, MatchingPolicy, ReviewDecision, ReviewItem,
 };
-use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
+use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog, inspect_media};
 use serde::Serialize;
 use tauri::{Manager, State, http, ipc::Response};
 
@@ -399,7 +399,7 @@ pub fn object_response(session: &VaultSession, path: &str) -> http::Response<Vec
     match std::fs::read(ContentAddressedStore::new(vault_root).object_path(hash)) {
         Ok(bytes) => http::Response::builder()
             .status(http::StatusCode::OK)
-            .header(http::header::CONTENT_TYPE, sniff_media_type(&bytes))
+            .header(http::header::CONTENT_TYPE, inspect_media(&bytes).media_type)
             // Objects are immutable: the same hash always serves the same bytes.
             .header(
                 http::header::CACHE_CONTROL,
@@ -422,27 +422,6 @@ fn plain_response(status: http::StatusCode, message: &str) -> http::Response<Vec
     let mut response = http::Response::new(message.as_bytes().to_vec());
     *response.status_mut() = status;
     response
-}
-
-/// Media type of common image formats from their signature; originals carry no extension.
-fn sniff_media_type(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "image/png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        "image/webp"
-    } else if bytes.starts_with(b"BM") {
-        "image/bmp"
-    } else if bytes.len() >= 12 && &bytes[4..12] == b"ftypavif" {
-        "image/avif"
-    } else if bytes.starts_with(b"%PDF-") {
-        "application/pdf"
-    } else {
-        "application/octet-stream"
-    }
 }
 
 pub fn run() {
