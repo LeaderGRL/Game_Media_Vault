@@ -44,6 +44,8 @@ The user can select:
 
 Every filter is independent. A request containing only `Packaging > Front` must not intentionally download unrelated asset types.
 
+The desktop Acquire view fills requests from presets. Built-ins set the Asset Types and retention of a purpose — 3D Box Builder (box front, back and spine), Archival (the Packaging, Physical Media and Documentation families), Frontend Emulator (box front, screenshot, title screen and logo) and Manuals Only (manuals) — and leave the other fields, and everything they set, editable; the request they produce is validated like any other. Custom presets save the whole request under a name, can be updated by saving again, renamed and deleted, and survive restarts in the webview's local storage; they cannot take a built-in's name.
+
 ### 4.2 Monitor an Acquisition Run
 
 The run view shows:

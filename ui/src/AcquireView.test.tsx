@@ -1,9 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AcquireView } from "./AcquireView";
 
 describe("AcquireView", () => {
+  beforeEach(() => window.localStorage.clear());
+
   it("submits the request built from the selected sources, platforms, games and asset types", () => {
     const onStart = vi.fn();
     render(<AcquireView starting={false} onStart={onStart} />);
@@ -153,5 +155,55 @@ describe("AcquireView", () => {
     expect(checkPlan).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Box Front: Libretro Thumbnails")).not.toBeInTheDocument();
     expect(screen.queryByText("a stale refusal")).not.toBeInTheDocument();
+  });
+
+  it("applies a built-in preset and keeps the fields it does not set editable", () => {
+    const onStart = vi.fn();
+    render(<AcquireView starting={false} onStart={onStart} />);
+    fireEvent.change(screen.getByLabelText("Platforms (one per line)"), {
+      target: { value: "Nintendo - Game Boy" },
+    });
+
+    fireEvent.change(screen.getByLabelText("Preset"), { target: { value: "Manuals Only" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply preset" }));
+    fireEvent.click(screen.getByLabelText("Screenshot"));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(screen.getByLabelText("Manual")).toBeChecked();
+    expect(onStart.mock.calls[0][0]).toMatchObject({
+      platforms: ["Nintendo - Game Boy"],
+      asset_types: ["manual", "screenshot"],
+    });
+  });
+
+  it("saves, renames and deletes custom presets that survive a restart", () => {
+    const { unmount } = render(<AcquireView starting={false} onStart={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Regions (comma-separated, empty for any)"), {
+      target: { value: "Japan" },
+    });
+    fireEvent.change(screen.getByLabelText("Preset name"), { target: { value: "JP" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save preset" }));
+    unmount();
+
+    render(<AcquireView starting={false} onStart={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Preset"), { target: { value: "JP" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply preset" }));
+    expect(screen.getByLabelText("Regions (comma-separated, empty for any)")).toHaveValue("Japan");
+
+    fireEvent.change(screen.getByLabelText("Preset name"), { target: { value: "Japan only" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename preset" }));
+    expect(screen.getByRole("option", { name: "Japan only" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete preset" }));
+    expect(screen.queryByRole("option", { name: "Japan only" })).not.toBeInTheDocument();
+  });
+
+  it("keeps built-in presets from being replaced", () => {
+    render(<AcquireView starting={false} onStart={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Preset name"), { target: { value: "Archival" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save preset" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent('"Archival" is a built-in preset.');
+    expect(screen.queryByRole("group", { name: "Saved" })).not.toBeInTheDocument();
   });
 });
