@@ -335,7 +335,7 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("lets a vault loaded during a rendering render its own thumbnails", async () => {
+  it("keeps a rendering attached to its vault while another vault renders its own", async () => {
     invokeMock.mockImplementation((command: string) =>
       command === "derive_thumbnails"
         ? new Promise(() => {})
@@ -347,6 +347,11 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
     expect(await screen.findByRole("button", { name: "Rendering thumbnails…" })).toBeDisabled();
 
+    // Reloading the same vault keeps its rendering; another vault can render its own.
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rendering thumbnails…" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
     fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
 
     expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeEnabled();

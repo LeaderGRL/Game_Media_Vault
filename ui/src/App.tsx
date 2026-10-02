@@ -72,8 +72,9 @@ export function App() {
   const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
   const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
   const [startingRun, setStartingRun] = useState(false);
-  // The pending thumbnail rendering, if any: only it may report or end the rendering state.
-  const thumbnailRequestRef = useRef<object | null>(null);
+  // Vaults whose thumbnails are rendering: the backend keeps rendering a vault while another is
+  // loaded, so loading it again shows its rendering instead of offering to start another.
+  const renderingThumbnailVaults = useRef(new Set<string>());
   const [renderingThumbnails, setRenderingThumbnails] = useState(false);
   const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -230,9 +231,7 @@ export function App() {
     supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
-    // A rendering still running for the previous vault no longer reports here.
-    thumbnailRequestRef.current = null;
-    setRenderingThumbnails(false);
+    setRenderingThumbnails(renderingThumbnailVaults.current.has(requestedVaultRoot));
     setReviewItems([]);
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
@@ -436,19 +435,21 @@ export function App() {
   }
 
   /**
-   * Renders the thumbnails the Library lacks, one rendering at a time, then shows them: a filter
+   * Renders the thumbnails the Library lacks, one rendering per vault, then shows them: a filter
    * search submitted meanwhile is searched again so its results include them.
    */
   async function renderThumbnails() {
     if (
       loadedVaultRoot === null ||
       openedVaultRoot.current !== loadedVaultRoot ||
-      thumbnailRequestRef.current !== null
+      renderingThumbnailVaults.current.has(loadedVaultRoot)
     ) {
       return;
     }
-    const request = {};
-    thumbnailRequestRef.current = request;
+    const renderingVaultRoot = loadedVaultRoot;
+    renderingThumbnailVaults.current.add(renderingVaultRoot);
+    // Another vault loaded meanwhile neither shows nor reports this rendering.
+    const reportsHere = () => openedVaultRoot.current === renderingVaultRoot;
     setRenderingThumbnails(true);
     setThumbnailStatus(null);
     setError(null);
@@ -456,8 +457,7 @@ export function App() {
       const summary = await invoke<DerivationSummary>("derive_thumbnails", {
         max_edge: LIBRARY_THUMBNAIL_EDGE,
       });
-      // A vault loaded meanwhile abandoned this rendering.
-      if (thumbnailRequestRef.current !== request) {
+      if (!reportsHere()) {
         return;
       }
       setThumbnailStatus(describeThumbnailRendering(summary));
@@ -468,16 +468,16 @@ export function App() {
       }
       const generation = supersedeLibraryRequests();
       const library = await searchLibrary();
-      if (thumbnailRequestRef.current === request && generation === vaultDataGeneration.current) {
+      if (reportsHere() && generation === vaultDataGeneration.current) {
         showLibraryPage(library);
       }
     } catch (reason) {
-      if (thumbnailRequestRef.current === request) {
+      if (reportsHere()) {
         setError(errorMessage(reason));
       }
     } finally {
-      if (thumbnailRequestRef.current === request) {
-        thumbnailRequestRef.current = null;
+      renderingThumbnailVaults.current.delete(renderingVaultRoot);
+      if (activeVaultRoot.current === renderingVaultRoot) {
         setRenderingThumbnails(false);
       }
     }
