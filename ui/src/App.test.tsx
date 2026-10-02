@@ -24,7 +24,8 @@ function searchLibrary(query: Record<string, unknown>) {
 }
 
 // Opening the vault session is mocked separately so each test can script the data commands
-// in the order the App issues them.
+// in the order the App issues them. Like the backend, it answers with the vault's identity,
+// which tests take to be the path as typed unless they script another one.
 vi.mock("@tauri-apps/api/core", () => ({
   // Mirrors how Tauri addresses custom protocols on Windows.
   convertFileSrc: (path: string, protocol: string) => "http://" + protocol + ".localhost/" + path,
@@ -37,6 +38,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
+
+/** Opens a vault whose identity is the path as typed. */
+function sameIdentity(args: { vault_root: string }) {
+  return Promise.resolve(args.vault_root);
+}
 
 const entry: LibraryEntry = {
   game_id: 1,
@@ -132,7 +138,7 @@ describe("App", () => {
       ),
     );
     openVaultMock.mockReset();
-    openVaultMock.mockResolvedValue(undefined);
+    openVaultMock.mockImplementation(sameIdentity);
   });
 
   it("searches the Library with the filters entered", async () => {
@@ -427,6 +433,34 @@ describe("App", () => {
     );
   });
 
+  it("shares a thumbnail rendering with every spelling of its vault's path", async () => {
+    let finishRendering: ((summary: unknown) => void) | undefined;
+    openVaultMock.mockResolvedValue("C:/vaults/main");
+    invokeMock.mockImplementation((command: string) =>
+      command === "derive_thumbnails"
+        ? new Promise((resolve) => {
+            finishRendering = resolve;
+          })
+        : Promise.resolve(command === "list_library" ? [entry] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    await waitFor(() => expect(finishRendering).toBeDefined());
+
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "C:/VAULTS/main" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(openVaultMock).toHaveBeenCalledTimes(2));
+
+    // The same vault cannot start a second rendering, and reports the one it runs.
+    expect(await screen.findByRole("button", { name: "Rendering thumbnails…" })).toBeDisabled();
+    await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
+    expect(await screen.findByText("Rendered 1 thumbnail.")).toBeInTheDocument();
+  });
+
   it("keeps the thumbnails a rendering showed while the same vault reloaded", async () => {
     let rendered = false;
     let reviewListings = 0;
@@ -533,9 +567,9 @@ describe("App", () => {
       fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
       await waitFor(() => expect(settleRendering).toBeDefined());
       openVaultMock.mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            finishReopen = resolve;
+        (args: { vault_root: string }) =>
+          new Promise<string>((resolve) => {
+            finishReopen = () => resolve(args.vault_root);
           }),
       );
       fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
@@ -1402,7 +1436,7 @@ describe("App acquisition", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     openVaultMock.mockReset();
-    openVaultMock.mockResolvedValue(undefined);
+    openVaultMock.mockImplementation(sameIdentity);
   });
 
   it("creates a vault when asked instead of only opening an existing one", async () => {
@@ -1687,6 +1721,36 @@ describe("App acquisition", () => {
     expect(screen.queryByRole("button", { name: "Execute" })).not.toBeInTheDocument();
   });
 
+  it("shares a run executing in a vault with every spelling of its path", async () => {
+    // Both spellings name one directory, which the backend identifies once.
+    openVaultMock.mockResolvedValue("C:/vaults/main");
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await screen.findByRole("button", { name: "Executing…" });
+
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: "./.game-media-vault" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    await waitFor(() => expect(openVaultMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Execute" })).not.toBeInTheDocument();
+    // The field keeps the spelling the user typed.
+    expect(screen.getByLabelText("Vault path")).toHaveValue("./.game-media-vault");
+  });
+
   it("polls an executing run only once its vault is open again", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
@@ -1713,9 +1777,9 @@ describe("App acquisition", () => {
 
       let finishOpen: (() => void) | undefined;
       openVaultMock.mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            finishOpen = resolve;
+        (args: { vault_root: string }) =>
+          new Promise<string>((resolve) => {
+            finishOpen = () => resolve(args.vault_root);
           }),
       );
       fireEvent.change(screen.getByLabelText("Vault path"), {
@@ -1745,7 +1809,7 @@ describe("App acquisition", () => {
     let otherVaultOpened = false;
     openVaultMock.mockImplementation((args: { vault_root: string }) => {
       otherVaultOpened = args.vault_root === "other-vault";
-      return Promise.resolve();
+      return Promise.resolve(args.vault_root);
     });
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
@@ -1941,9 +2005,9 @@ describe("App acquisition", () => {
   it("lists the runs when Runs is opened while the vault loads", async () => {
     let finishOpen: (() => void) | undefined;
     openVaultMock.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishOpen = resolve;
+      (args: { vault_root: string }) =>
+        new Promise<string>((resolve) => {
+          finishOpen = () => resolve(args.vault_root);
         }),
     );
     invokeMock.mockImplementation((command: string) =>
@@ -2149,7 +2213,7 @@ describe("App Library requests", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     openVaultMock.mockReset();
-    openVaultMock.mockResolvedValue(undefined);
+    openVaultMock.mockImplementation(sameIdentity);
     libraryQueries.length = 0;
   });
 
