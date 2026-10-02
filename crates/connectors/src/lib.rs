@@ -1,25 +1,22 @@
-use std::{
-    fs::File,
-    io::{BufReader, Read},
-    path::Path,
-    sync::OnceLock,
-};
+use std::{io::Read, path::Path, sync::OnceLock};
 
 use game_media_vault_application::{ConnectorPort, PortError, ReferenceCatalogSourcePort};
 use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection,
-    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, SourceId,
+    ReferenceReleaseRecord, SourceId,
 };
-use quick_xml::{Reader, escape::resolve_xml_entity, events::Event};
 
+mod datafile;
 mod naming;
 
-use naming::{parse_release_name, platform_name};
+use datafile::{DatafileSource, read_datafile};
+use naming::parse_release_name;
 use reqwest::blocking::Client;
 use url::Url;
 
 pub const LIBRETRO_THUMBNAILS_SOURCE_ID: &str = "libretro-thumbnails";
 pub const NO_INTRO_SOURCE_ID: &str = "no-intro";
+pub const REDUMP_SOURCE_ID: &str = "redump";
 /// The thumbnail folders of every Libretro repository and the Asset Type each holds.
 const THUMBNAIL_FOLDERS: [(AssetType, &str); 3] = [
     (AssetType::BoxFront, "Named_Boxarts"),
@@ -377,6 +374,16 @@ fn repository_name(url: &str) -> Result<String, PortError> {
     Ok(repository.to_owned())
 }
 
+const NO_INTRO: DatafileSource = DatafileSource {
+    id: NO_INTRO_SOURCE_ID,
+    name: "No-Intro",
+};
+const REDUMP: DatafileSource = DatafileSource {
+    id: REDUMP_SOURCE_ID,
+    name: "Redump",
+};
+
+/// No-Intro datafiles, which catalog cartridge and other ROM-based releases.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoIntroReferenceCatalog;
 
@@ -392,250 +399,26 @@ impl ReferenceCatalogSourcePort for NoIntroReferenceCatalog {
         source_path: &Path,
         max_games: usize,
     ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
-        if max_games == 0 {
-            return Ok(Vec::new());
-        }
-        let file = File::open(source_path).map_err(|error| {
-            PortError::new(format!(
-                "failed to open No-Intro datafile {}: {error}",
-                source_path.display()
-            ))
-        })?;
-        let source_location = source_path.to_string_lossy().into_owned();
-        parse_no_intro_datafile(BufReader::new(file), &source_location, max_games)
+        read_datafile(&NO_INTRO, source_path, max_games)
     }
 }
 
-fn parse_no_intro_datafile<R: std::io::BufRead>(
-    reader: R,
-    source_location: &str,
-    max_games: usize,
-) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
-    let mut xml = Reader::from_reader(reader);
-    let mut buffer = Vec::new();
-    let mut platform = None;
-    let mut header_name = String::new();
-    let mut in_header = false;
-    let mut reading_header_name = false;
-    let mut current_game = None;
-    let mut releases = Vec::with_capacity(max_games.min(256));
+/// Redump datafiles, which catalog disc releases by their tracks.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RedumpReferenceCatalog;
 
-    loop {
-        match xml.read_event_into(&mut buffer).map_err(xml_error)? {
-            Event::Start(element) => match element.name().as_ref() {
-                "header" => in_header = true,
-                "name" if in_header => {
-                    reading_header_name = true;
-                    header_name.clear();
-                }
-                "game" => {
-                    let raw_name = attribute_value(&element, "name")?.ok_or_else(|| {
-                        PortError::invalid_source_data(
-                            "No-Intro game entry is missing its name".to_owned(),
-                        )
-                    })?;
-                    current_game = Some(NoIntroGame::new(raw_name, source_location));
-                }
-                "rom" => {
-                    if let Some(game) = current_game.as_mut() {
-                        game.read_identifiers(&element)?;
-                    }
-                }
-                _ => {}
-            },
-            Event::Empty(element) if element.name().as_ref() == "rom" => {
-                if let Some(game) = current_game.as_mut() {
-                    game.read_identifiers(&element)?;
-                }
-            }
-            Event::Text(text) if reading_header_name => {
-                header_name.push_str(text.xml10_content().as_ref());
-            }
-            Event::GeneralRef(reference) if reading_header_name => {
-                if let Some(character) = reference.resolve_char_ref().map_err(|error| {
-                    PortError::invalid_source_data(format!(
-                        "invalid No-Intro XML character reference: {error}"
-                    ))
-                })? {
-                    header_name.push(character);
-                } else if let Some(value) = resolve_xml_entity(reference.as_ref()) {
-                    header_name.push_str(value);
-                } else {
-                    return Err(PortError::invalid_source_data(format!(
-                        "unsupported No-Intro XML entity reference: &{};",
-                        reference.as_ref()
-                    )));
-                }
-            }
-            Event::End(element) => match element.name().as_ref() {
-                "name" if reading_header_name => {
-                    reading_header_name = false;
-                    platform = Some(platform_name(&header_name));
-                }
-                "header" => in_header = false,
-                "game" => {
-                    let game = current_game.take().ok_or_else(|| {
-                        PortError::invalid_source_data(
-                            "No-Intro game closing tag has no matching entry".to_owned(),
-                        )
-                    })?;
-                    let platform = platform.as_deref().ok_or_else(|| {
-                        PortError::invalid_source_data(
-                            "No-Intro datafile header is missing a platform name".to_owned(),
-                        )
-                    })?;
-                    releases.push(game.finish(platform));
-                    if releases.len() >= max_games {
-                        break;
-                    }
-                }
-                _ => {}
-            },
-            Event::Eof => break,
-            _ => {}
-        }
-        buffer.clear();
-    }
-
-    if platform.is_none() {
-        return Err(PortError::invalid_source_data(
-            "No-Intro datafile header is missing a platform name".to_owned(),
-        ));
-    }
-    Ok(releases)
-}
-
-struct NoIntroGame {
-    raw_name: String,
-    source_location: String,
-    identifiers: Vec<(String, String)>,
-}
-
-impl NoIntroGame {
-    fn new(raw_name: String, source_location: &str) -> Self {
-        Self {
-            raw_name,
-            source_location: source_location.to_owned(),
-            identifiers: Vec::new(),
-        }
-    }
-
-    fn read_identifiers(
-        &mut self,
-        element: &quick_xml::events::BytesStart<'_>,
-    ) -> Result<(), PortError> {
-        for name in ["name", "crc", "md5", "sha1", "sha256"] {
-            if let Some(value) = attribute_value(element, name)? {
-                let qualifier = if name == "name" {
-                    "rom_name".to_owned()
-                } else {
-                    name.to_owned()
-                };
-                self.identifiers.push((qualifier, value));
-            }
-        }
-        Ok(())
-    }
-
-    fn finish(self, platform: &str) -> ReferenceReleaseRecord {
-        let title = parse_release_name(&self.raw_name);
-        let mut assertions = Vec::with_capacity(4 + self.identifiers.len());
-        assertions.push(assertion(
-            &self.source_location,
-            ReleaseAssertionField::Title,
-            None,
-            &title.game_title,
-        ));
-        assertions.push(assertion(
-            &self.source_location,
-            ReleaseAssertionField::Identifier,
-            Some("source_record"),
-            &source_record_identifier(platform, &self.raw_name),
-        ));
-        if title.region != "Unknown" {
-            assertions.push(assertion(
-                &self.source_location,
-                ReleaseAssertionField::Region,
-                None,
-                &title.region,
-            ));
-        }
-        if let Some(revision) = title.revision.as_deref() {
-            assertions.push(assertion(
-                &self.source_location,
-                ReleaseAssertionField::Revision,
-                None,
-                revision,
-            ));
-        }
-        assertions.extend(self.identifiers.into_iter().map(|(qualifier, value)| {
-            assertion(
-                &self.source_location,
-                ReleaseAssertionField::Identifier,
-                Some(&qualifier),
-                &value,
-            )
-        }));
-
-        ReferenceReleaseRecord {
-            game_title: title.game_title,
-            platform: platform.to_owned(),
-            region: title.region,
-            revision: title.revision,
-            edition_name: title.edition_name,
-            assertions,
-        }
+impl RedumpReferenceCatalog {
+    pub fn new() -> Self {
+        Self
     }
 }
 
-fn assertion(
-    source_location: &str,
-    field: ReleaseAssertionField,
-    qualifier: Option<&str>,
-    value: &str,
-) -> ReleaseAssertion {
-    ReleaseAssertion {
-        source_id: SourceId::from(NO_INTRO_SOURCE_ID),
-        source_location: source_location.to_owned(),
-        field,
-        qualifier: qualifier.map(str::to_owned),
-        value: value.to_owned(),
-    }
-}
-
-fn attribute_value(
-    element: &quick_xml::events::BytesStart<'_>,
-    name: &str,
-) -> Result<Option<String>, PortError> {
-    for attribute in element.attributes() {
-        let attribute = attribute.map_err(|error| {
-            PortError::invalid_source_data(format!("invalid No-Intro XML attribute: {error}"))
-        })?;
-        if attribute.key.as_ref() == name {
-            let value = attribute
-                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                .map_err(|error| {
-                    PortError::invalid_source_data(format!(
-                        "invalid No-Intro XML attribute value: {error}"
-                    ))
-                })?;
-            return Ok(Some(value.into_owned()));
-        }
-    }
-    Ok(None)
-}
-
-fn source_record_identifier(platform: &str, raw_name: &str) -> String {
-    format!("{}:{platform}{raw_name}", platform.len())
-}
-
-/// A No-Intro datafile that cannot be read is an environmental failure; one that does not
-/// parse is invalid source data.
-fn xml_error(error: quick_xml::Error) -> PortError {
-    match error {
-        quick_xml::Error::Io(error) => {
-            PortError::new(format!("failed to read No-Intro datafile: {error}"))
-        }
-        error => PortError::invalid_source_data(format!("invalid No-Intro XML: {error}")),
+impl ReferenceCatalogSourcePort for RedumpReferenceCatalog {
+    fn read_releases(
+        &self,
+        source_path: &Path,
+        max_games: usize,
+    ) -> Result<Vec<ReferenceReleaseRecord>, PortError> {
+        read_datafile(&REDUMP, source_path, max_games)
     }
 }

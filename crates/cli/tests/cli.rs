@@ -1215,3 +1215,40 @@ fn derive_thumbnails_renders_each_original_once() {
     .unwrap();
     assert_eq!(again["derived"], 0);
 }
+
+#[test]
+fn import_redump_records_disc_releases_in_the_library() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../connectors/tests/fixtures")
+        .join("redump_sample.dat");
+
+    let summary: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &vault,
+            &[
+                "import-redump",
+                "--file",
+                fixture.to_str().unwrap(),
+                "--max-games",
+                "10",
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(summary["imported_releases"], 2);
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    assert_eq!(library[0]["game_title"], "Final Fantasy VII");
+    assert_eq!(library[0]["edition_name"], "Disc 1");
+    assert!(
+        library[0]["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|assertion| assertion["source_id"] == "redump")
+    );
+}
