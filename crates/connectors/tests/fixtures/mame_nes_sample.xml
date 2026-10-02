@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<!DOCTYPE softwarelist SYSTEM "softwarelist.dtd">
+<!-- A synthetic slice of a MAME software list: names, serials and checksums are made up. -->
+<softwarelist name="nes" description="Nintendo Entertainment System cartridges">
+	<software name="smb">
+		<description>Super Mario Bros. (World)</description>
+		<year>1985</year>
+		<publisher>Nintendo</publisher>
+		<info name="serial" value="NES-SM-USA"/>
+		<info name="barcode" value="0 45496 63010 5"/>
+		<info name="release" value="19851018"/>
+		<info name="alt_title" value="Super Mario Brothers"/>
+		<part name="cart" interface="nes_cart">
+			<feature name="slot" value="nrom"/>
+			<dataarea name="prg" size="32768">
+				<rom name="smb.prg" size="32768" crc="5cf548d3" sha1="1111111111111111111111111111111111111111" offset="00000"/>
+			</dataarea>
+			<dataarea name="chr" size="8192">
+				<rom name="smb.chr" size="8192" crc="867b51ad" sha1="2222222222222222222222222222222222222222" offset="00000"/>
+			</dataarea>
+		</part>
+	</software>
+
+	<software name="zeldaj" cloneof="zelda">
+		<description>Zelda no Densetsu - The Hyrule Fantasy (Jpn, Rev. A)</description>
+		<year>1986</year>
+		<publisher>Nintendo</publisher>
+		<info name="serial" value="FMC-ZEL"/>
+		<part name="cart" interface="nes_cart">
+			<dataarea name="prg" size="131072">
+				<rom name="zelda.prg" size="131072" crc="3333aaaa" sha1="3333333333333333333333333333333333333333" offset="00000"/>
+			</dataarea>
+		</part>
+	</software>
+
+	<software name="metroide">
+		<description>Metroid (Euro)</description>
+		<year>1988</year>
+		<publisher>Nintendo &amp; Intelligent Systems</publisher>
+		<part name="cart" interface="nes_cart">
+			<dataarea name="prg" size="131072">
+				<rom name="metroid.prg" size="131072" crc="4444bbbb" sha1="4444444444444444444444444444444444444444" offset="00000"/>
+			</dataarea>
+		</part>
+	</software>
+
+	<software>
+		<description>An entry without a short name</description>
+		<year>1990</year>
+	</software>
+
+	<software name="nameless">
+		<year>1991</year>
+	</software>
+</softwarelist>

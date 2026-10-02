@@ -39,7 +39,7 @@ pub(crate) fn parse_release_name(raw: &str) -> ReleaseName {
     }
 }
 
-fn split_trailing_tags(raw: &str) -> (String, Vec<String>) {
+pub(crate) fn split_trailing_tags(raw: &str) -> (String, Vec<String>) {
     let mut base = raw.trim_end();
     let mut tags = Vec::new();
     while base.ends_with(')') {

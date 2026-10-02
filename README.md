@@ -31,7 +31,7 @@ planned next.
 | --- | --- |
 | `crates/domain` | Domain model: requests, releases, assets, matching, coverage |
 | `crates/application` | Use cases and the ports they depend on |
-| `crates/connectors` | Sources: Libretro Thumbnails, No-Intro reference datafiles |
+| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, and the No-Intro, Redump and MAME software list reference catalogs |
 | `crates/infrastructure` | SQLite catalog, content-addressed object store, image transforms |
 | `crates/cli` | The `game-media-vault` command-line interface |
 | `src-tauri` | The Tauri desktop shell |
