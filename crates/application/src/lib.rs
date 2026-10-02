@@ -6,6 +6,7 @@ mod error;
 mod identity;
 mod imports;
 mod library;
+mod plan;
 mod ports;
 mod review;
 mod runs;
@@ -28,6 +29,9 @@ pub use imports::{
 pub use library::{
     DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,
     search_library,
+};
+pub use plan::{
+    AcquisitionPlan, ExcludedSource, PlannedSource, SelectorCoverage, plan_acquisition,
 };
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort, ParkedReview, PortError,

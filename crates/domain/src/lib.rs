@@ -296,6 +296,14 @@ impl AcquisitionRequest {
         &self.limits
     }
 
+    pub fn sources(&self) -> &SourceSelection {
+        &self.sources
+    }
+
+    pub fn asset_types(&self) -> &[AssetTypeSelector] {
+        &self.asset_types
+    }
+
     pub fn selects_only_source(&self, source_id: &str) -> bool {
         matches!(
             &self.sources,
