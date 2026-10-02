@@ -110,7 +110,7 @@ pub(crate) fn capable_sources<'a>(
 }
 
 /// The connectors of `source_ids`, in that order; each Source needs one.
-pub(crate) fn registered_connectors<'a>(
+fn registered_connectors<'a>(
     source_ids: &[String],
     connectors: &[&'a dyn ConnectorPort],
 ) -> Result<Vec<&'a dyn ConnectorPort>, ApplicationError> {
@@ -129,11 +129,10 @@ pub(crate) fn registered_connectors<'a>(
         .collect()
 }
 
-/// Keeps the `selected` connectors whose capabilities serve `request`, as `capable_sources`.
-pub(crate) fn capable_among<'a>(
+/// Refuses requirements of `request` the engine cannot apply, whichever Sources serve it.
+pub(crate) fn ensure_request_supported(
     request: &AcquisitionRequest,
-    selected: Vec<&'a dyn ConnectorPort>,
-) -> Result<CapableSources<'a>, ApplicationError> {
+) -> Result<(), ApplicationError> {
     if let Some(reason) = request
         .quality()
         .and_then(QualityRequirements::unsupported_requirement)
@@ -145,6 +144,15 @@ pub(crate) fn capable_among<'a>(
             "acquisition limits are not supported yet",
         ));
     }
+    Ok(())
+}
+
+/// Keeps the `selected` connectors whose capabilities serve `request`, as `capable_sources`.
+fn capable_among<'a>(
+    request: &AcquisitionRequest,
+    selected: Vec<&'a dyn ConnectorPort>,
+) -> Result<CapableSources<'a>, ApplicationError> {
+    ensure_request_supported(request)?;
 
     let mut sources = Vec::new();
     let mut excluded = Vec::new();
@@ -164,7 +172,7 @@ pub(crate) fn capable_among<'a>(
 
 /// The requested Asset Types `connector` can acquire, or why its Source is left out without
 /// being consulted.
-fn capable_asset_types(
+pub(crate) fn capable_asset_types(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
 ) -> Result<Vec<AssetType>, String> {

@@ -14,7 +14,7 @@ use crate::{
     ApplicationError, CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort,
     ParkedReview, ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request,
     candidate_identity, load_acquisition_run,
-    plan::{capable_among, registered_connectors},
+    plan::{capable_asset_types, ensure_request_supported},
     plan_acquisition,
 };
 
@@ -47,11 +47,12 @@ enum Step {
 ///
 /// Only the Sources the run's plan kept when it started are contacted. Each is discovered once
 /// per run: its candidates are persisted as queued work, so resuming never rediscovers it, and a
-/// pause stops further discoveries. Sources discover independently: one that now refuses the
-/// plan, cannot be reached or fails to discover leaves the others' work to run, keeps the run
-/// running, and its error is returned once that work is done. Each
-/// queued candidate is matched against the library through its own Source's connector and is
-/// either imported, left unattached, or parked on its Review Item until a human decides.
+/// pause stops further discoveries. Sources progress independently: one without a registered
+/// connector, that now refuses the plan, cannot be reached, fails to discover or fails to
+/// download leaves the others' work to run, keeps the run running, and its error is returned
+/// once that work is done. Each queued candidate is matched against the library through its own
+/// Source's connector and is either imported, left unattached, or parked on its Review Item
+/// until a human decides. The run completes only once every planned Source was discovered.
 pub fn acquire_run_with_connectors(
     runs: &dyn RunRepositoryPort,
     reviews: &dyn ReviewRepositoryPort,
@@ -63,36 +64,8 @@ pub fn acquire_run_with_connectors(
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
-    let mut source_failure = None;
     match run.status {
-        AcquisitionRunStatus::Running => {
-            // Only the Sources the plan kept when the run started are ever contacted.
-            let planned = registered_connectors(&run.planned_sources, connectors)?;
-            let capable = capable_among(&run.request, planned)?;
-            for (connector, asset_types) in capable.sources {
-                if runs.has_discovered(run_id, connector.source_id())? {
-                    continue;
-                }
-                match discover_source(&run.request, connector, &asset_types) {
-                    Ok(work) => {
-                        // A cancellation or completion that won the race while discovering
-                        // stops quietly.
-                        if !runs.record_discovery(run_id, connector.source_id(), &work)? {
-                            return Ok(Vec::new());
-                        }
-                        // A pause keeps the snapshot just recorded but discovers no further.
-                        if load_acquisition_run(runs, run_id)?.status
-                            != AcquisitionRunStatus::Running
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        source_failure.get_or_insert(error);
-                    }
-                }
-            }
-        }
+        AcquisitionRunStatus::Running => ensure_request_supported(&run.request)?,
         // Nothing is left to discover, but an acceptance may reopen the run right after this
         // read; the drain below executes whatever work it requeued.
         AcquisitionRunStatus::Completed => {}
@@ -113,9 +86,35 @@ pub fn acquire_run_with_connectors(
         source_failed: Cell::new(false),
     };
     let mut imported_assets = Vec::new();
+    let mut source_failure = None;
     // Sources whose work failed; their remaining work waits for a later execution.
     let mut failed_sources: Vec<String> = Vec::new();
     loop {
+        for source_id in &run.planned_sources {
+            if runs.has_discovered(run_id, source_id)? {
+                continue;
+            }
+            // A pause, even one landing during a failed discovery, keeps the snapshots already
+            // recorded but discovers no further.
+            if load_acquisition_run(runs, run_id)?.status != AcquisitionRunStatus::Running {
+                break;
+            }
+            let discovered = planned_connector(&run.request, source_id, connectors).and_then(
+                |(connector, asset_types)| discover_source(&run.request, connector, &asset_types),
+            );
+            match discovered {
+                // A cancellation or completion that won the race while discovering stops
+                // quietly.
+                Ok(work) => {
+                    if !runs.record_discovery(run_id, source_id, &work)? {
+                        return Ok(imported_assets);
+                    }
+                }
+                Err(error) => {
+                    source_failure.get_or_insert(error);
+                }
+            }
+        }
         while let Some(work) = runs.next_queued_work(run_id, &failed_sources)? {
             match acquisition.process(&work) {
                 Ok(imported) => imported_assets.extend(imported),
@@ -130,20 +129,52 @@ pub fn acquire_run_with_connectors(
         if let Some(error) = source_failure.take() {
             return Err(error);
         }
-        if runs.compare_and_set_run_status(
-            run_id,
-            AcquisitionRunStatus::Running,
-            AcquisitionRunStatus::Completed,
-        )? {
+        // A pause may have stopped the discoveries before a resume that this execution then
+        // sees; the Sources it left are discovered on the next pass.
+        let all_discovered = run
+            .planned_sources
+            .iter()
+            .map(|source_id| runs.has_discovered(run_id, source_id))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .all(|discovered| discovered);
+        if all_discovered
+            && runs.compare_and_set_run_status(
+                run_id,
+                AcquisitionRunStatus::Running,
+                AcquisitionRunStatus::Completed,
+            )?
+        {
             break;
         }
         // A pause or cancellation that won the race keeps its status; otherwise a decision
-        // requeued work after the queue looked empty, and it is executed too.
+        // requeued work after the queue looked empty, or a resume left Sources to discover,
+        // and they are executed too.
         if load_acquisition_run(runs, run_id)?.status != AcquisitionRunStatus::Running {
             break;
         }
     }
     Ok(imported_assets)
+}
+
+/// The connector of a planned Source and the requested types it acquires, unless the Source has
+/// no registered connector anymore or its capabilities no longer serve the request.
+fn planned_connector<'a>(
+    request: &AcquisitionRequest,
+    source_id: &str,
+    connectors: &[&'a dyn ConnectorPort],
+) -> Result<(&'a dyn ConnectorPort, Vec<AssetType>), ApplicationError> {
+    let unsupported = |reason: String| ApplicationError::UnsupportedConnectorPlan {
+        source_id: source_id.to_owned(),
+        reason,
+    };
+    let connector = connectors
+        .iter()
+        .copied()
+        .find(|connector| connector.source_id() == source_id)
+        .ok_or_else(|| unsupported("no connector is registered for this source".to_owned()))?;
+    let asset_types = capable_asset_types(request, connector).map_err(unsupported)?;
+    Ok((connector, asset_types))
 }
 
 /// Starts an Acquisition Run only if the registered `connectors` can plan it, so runs that

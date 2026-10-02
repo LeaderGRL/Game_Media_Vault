@@ -169,6 +169,8 @@ pub struct FakeVault {
     pub decision_after_next_run_read: RefCell<Option<ReviewDecision>>,
     /// Simulates a pause or cancellation landing while the next discovery runs.
     pub status_before_next_discovery: RefCell<Option<AcquisitionRunStatus>>,
+    /// Simulates a status change, such as a resume, landing right after the next run read.
+    pub status_after_next_run_read: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
@@ -335,6 +337,9 @@ impl RunRepositoryPort for FakeVault {
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
             let review_item_id = self.review_items.borrow()[0].id;
             self.decide_review_item(review_item_id, decision)?;
+        }
+        if let Some(status) = self.status_after_next_run_read.borrow_mut().take() {
+            self.runs.borrow_mut().get_mut(&run_id).unwrap().status = status;
         }
         Ok(run)
     }

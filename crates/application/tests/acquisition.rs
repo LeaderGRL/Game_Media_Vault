@@ -654,19 +654,6 @@ fn human_acceptance_committed_before_parking_wins() {
 }
 
 #[test]
-fn a_family_is_refused_while_the_connector_supports_only_some_of_its_types() {
-    // Packaging also selects box backs, spines, inserts…, which this connector cannot acquire.
-    let error = plan_error(request_with(|draft| {
-        draft.asset_types = vec![AssetTypeSelector::Packaging];
-    }));
-
-    assert!(matches!(
-        error,
-        ApplicationError::UncoveredAssetTypes { .. }
-    ));
-}
-
-#[test]
 fn pause_or_cancel_during_the_last_download_preserves_the_requested_run_status() {
     for status in [
         AcquisitionRunStatus::Paused,
@@ -734,17 +721,6 @@ fn plan_error(request: AcquisitionRequest) -> ApplicationError {
     let error = execute(&vault, &connector, run_id).unwrap_err();
     assert_eq!(*connector.discover_calls.borrow(), 0);
     error
-}
-
-#[test]
-fn rejects_execution_of_a_selected_source_without_a_connector() {
-    let error = plan_error(request_with(|draft| {
-        draft.sources = SourceSelection::Explicit(vec![SOURCE_ID.to_owned(), "other".to_owned()]);
-    }));
-    assert!(matches!(
-        error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
-    ));
 }
 
 #[test]
@@ -1063,17 +1039,6 @@ fn rejects_acquisition_limits_until_the_scheduler_slice_can_enforce_them() {
         };
     }));
     assert!(matches!(error, ApplicationError::UnsupportedRequest(_)));
-}
-
-#[test]
-fn rejects_asset_types_not_declared_by_the_connector() {
-    let error = plan_error(request_with(|draft| {
-        draft.asset_types = vec![AssetTypeSelector::BoxFront, AssetTypeSelector::Manual];
-    }));
-    assert!(matches!(
-        error,
-        ApplicationError::UncoveredAssetTypes { .. }
-    ));
 }
 
 /// Acquires two candidates, each matching one release (a single release when they share

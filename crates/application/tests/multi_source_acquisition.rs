@@ -1,12 +1,15 @@
 mod support;
 
+use std::io::Read;
+
 use game_media_vault_application::{
-    ApplicationError, ConnectorPort, RunRepositoryPort, acquire_run_with_connectors,
-    start_acquisition_run_with_connectors,
+    ApplicationError, ConnectorPort, PortError, RunRepositoryPort, acquire_run_with_connectors,
+    pause_acquisition_run, start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
-    AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ImportedAsset, SourceId, SourceSelection,
+    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
+    AssetCandidate, AssetType, AssetTypeSelector, ConnectorCapabilities, ImportedAsset, SourceId,
+    SourceSelection,
 };
 use support::*;
 
@@ -235,4 +238,127 @@ fn a_source_whose_downloads_fail_leaves_the_others_progressing() {
     let running = vault.run(run.id);
     assert_eq!(running.status, AcquisitionRunStatus::Running);
     assert_eq!((running.queued_work, running.completed_work), (1, 1));
+}
+
+/// A connector that runs `during_discovery` while it discovers, as a human acting meanwhile.
+struct ActingConnector<'a> {
+    inner: FakeConnector,
+    during_discovery: &'a dyn Fn(),
+}
+
+impl ConnectorPort for ActingConnector<'_> {
+    fn source_id(&self) -> &'static str {
+        self.inner.source_id()
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        self.inner.unsupported_request_reason(request)
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        (self.during_discovery)();
+        self.inner.discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.inner.download(candidate)
+    }
+}
+
+fn execute_with(
+    vault: &FakeVault,
+    connectors: &[&dyn ConnectorPort],
+    run_id: i64,
+) -> Result<Vec<ImportedAsset>, ApplicationError> {
+    acquire_run_with_connectors(
+        vault,
+        vault,
+        vault,
+        &FakeStore::default(),
+        connectors,
+        run_id,
+        matching_policy(),
+    )
+}
+
+#[test]
+fn a_planned_source_without_a_connector_leaves_the_others_progressing() {
+    let smb = candidate("Super Mario Bros.");
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let boxes = FakeConnector::new(vec![smb]);
+    let snaps = snap_connector(vec![snap.clone()]);
+    let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
+
+    // The Box Front Source is no longer registered by the first execution.
+    let error = execute(&vault, &[&snaps], run.id).unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::UnsupportedConnectorPlan { .. }),
+        "{error}"
+    );
+    assert_eq!(snaps.downloads.borrow().as_slice(), [snap.source_url]);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn a_pause_during_a_failed_discovery_discovers_no_further() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let boxes = FakeConnector::new(vec![smb]);
+    let snaps = snap_connector(vec![screenshot("Super Mario Bros.")]);
+    let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
+    let pause = || {
+        pause_acquisition_run(&vault, run.id).unwrap();
+    };
+    let failing = ActingConnector {
+        inner: FakeConnector {
+            discovery_fails: true,
+            ..FakeConnector::new(Vec::new())
+        },
+        during_discovery: &pause,
+    };
+
+    let error = execute_with(&vault, &[&failing, &snaps], run.id).unwrap_err();
+
+    assert!(matches!(error, ApplicationError::Port(_)), "{error}");
+    assert_eq!(*snaps.discover_calls.borrow(), 0);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Paused);
+}
+
+#[test]
+fn a_run_resumed_right_after_a_pause_discovers_its_other_sources_before_completing() {
+    let smb = candidate("Super Mario Bros.");
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let snaps = snap_connector(vec![snap.clone()]);
+    let run = start(
+        &vault,
+        auto_draft(),
+        &[&FakeConnector::new(Vec::new()), &snaps],
+    )
+    .unwrap();
+    // A pause lands while the first Source is discovered, and a resume right after the
+    // execution reads the paused run.
+    let pause_then_resume = || {
+        pause_acquisition_run(&vault, run.id).unwrap();
+        *vault.status_after_next_run_read.borrow_mut() = Some(AcquisitionRunStatus::Running);
+    };
+    let boxes = ActingConnector {
+        inner: FakeConnector::new(vec![smb]),
+        during_discovery: &pause_then_resume,
+    };
+
+    let imported = execute_with(&vault, &[&boxes, &snaps], run.id).unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(snaps.downloads.borrow().as_slice(), [snap.source_url]);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
 }
