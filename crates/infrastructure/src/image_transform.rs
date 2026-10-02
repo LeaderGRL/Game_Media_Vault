@@ -2,7 +2,7 @@ use std::io::{Cursor, Read};
 
 use game_media_vault_application::{MediaTransformPort, PortError};
 use game_media_vault_domain::DerivationRecipe;
-use image::{GenericImageView, ImageFormat, imageops::FilterType};
+use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
 
 /// Media types of the originals this transformer decodes.
 const DECODABLE_MEDIA_TYPES: &[&str] = &[
@@ -64,34 +64,47 @@ impl MediaTransformPort for ImageTransformer {
                 "a packaging model is built from several originals".to_owned(),
             ));
         };
-        let mut bytes = Vec::new();
-        original
-            .take(self.max_original_bytes.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|error| PortError::new(format!("failed to read the original: {error}")))?;
-        if bytes.len() as u64 > self.max_original_bytes {
-            return Err(PortError::new(format!(
-                "the original is larger than {} bytes",
-                self.max_original_bytes
-            )));
-        }
-        let image = match ImageFormat::from_mime_type(media_type) {
-            // Formats without a signature to guess from, such as TGA, need the recorded one.
-            Some(format) => image::load_from_memory_with_format(&bytes, format),
-            None => image::load_from_memory(&bytes),
-        }
-        .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))?;
-        let (width, height) = image.dimensions();
-        let output = if width.max(height) > *max_edge {
-            // Fits both edges within the bound while keeping the aspect ratio.
-            image.resize(*max_edge, *max_edge, FilterType::Lanczos3)
-        } else {
-            image
-        };
+        let image = decode_original(original, media_type, self.max_original_bytes)?;
         let mut encoded = Vec::new();
-        output
+        fit_within(image, *max_edge)
             .write_to(&mut Cursor::new(&mut encoded), ImageFormat::Png)
             .map_err(|error| PortError::new(format!("failed to encode the output: {error}")))?;
         Ok(encoded)
+    }
+}
+
+/// Decodes an original of `media_type`, refusing one larger than `max_original_bytes` rather
+/// than reading it into memory.
+pub(crate) fn decode_original(
+    original: &mut dyn Read,
+    media_type: &str,
+    max_original_bytes: u64,
+) -> Result<DynamicImage, PortError> {
+    let mut bytes = Vec::new();
+    original
+        .take(max_original_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| PortError::new(format!("failed to read the original: {error}")))?;
+    if bytes.len() as u64 > max_original_bytes {
+        return Err(PortError::new(format!(
+            "the original is larger than {max_original_bytes} bytes"
+        )));
+    }
+    match ImageFormat::from_mime_type(media_type) {
+        // Formats without a signature to guess from, such as TGA, need the recorded one.
+        Some(format) => image::load_from_memory_with_format(&bytes, format),
+        None => image::load_from_memory(&bytes),
+    }
+    .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))
+}
+
+/// Scales `image` down to fit both edges within `max_edge`, keeping its aspect ratio; a
+/// smaller image keeps its size.
+pub(crate) fn fit_within(image: DynamicImage, max_edge: u32) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    if width.max(height) > max_edge {
+        image.resize(max_edge, max_edge, FilterType::Lanczos3)
+    } else {
+        image
     }
 }
