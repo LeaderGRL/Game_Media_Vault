@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{AssetType, AssetTypeSelector, LibraryAsset};
+use crate::{AssetTypeSelector, LibraryAsset};
 
 /// How a Release Edition is packaged, which decides what its Coverage Profiles require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,7 +189,7 @@ pub fn release_coverage(platform: &str, assets: &[LibraryAsset]) -> Option<Relea
     let packaging_family = packaging_family(platform)?;
     let present: Vec<AssetTypeSelector> = assets
         .iter()
-        .map(|asset| covered_type(asset.asset_type))
+        .map(|asset| asset.asset_type.selector())
         .collect();
     let mut required: Vec<AssetTypeSelector> = Vec::new();
     let mut profiles = Vec::new();
@@ -224,12 +224,5 @@ fn completed_status(profile: CoverageProfile) -> CoverageStatus {
         CoverageProfile::Packaging => CoverageStatus::PackagingComplete,
         CoverageProfile::Physical => CoverageStatus::PhysicalComplete,
         CoverageProfile::Archival => CoverageStatus::ArchivalComplete,
-    }
-}
-
-/// The Asset Type a stored Asset counts as in Coverage Profiles.
-fn covered_type(asset_type: AssetType) -> AssetTypeSelector {
-    match asset_type {
-        AssetType::BoxFront => AssetTypeSelector::BoxFront,
     }
 }

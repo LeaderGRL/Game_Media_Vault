@@ -1358,3 +1358,32 @@ fn a_cancellation_during_discovery_stops_the_execution_quietly() {
     assert_eq!(run.status, AcquisitionRunStatus::Cancelled);
     assert_eq!(run.queued_work, 0);
 }
+
+#[test]
+fn a_run_acquires_only_the_asset_types_it_selects() {
+    let smb = candidate("Super Mario Bros.");
+    let screenshot = AssetCandidate {
+        asset_type: AssetType::Screenshot,
+        source_asset_label: Some("Named_Snaps".to_owned()),
+        source_url: "https://example.invalid/Named_Snaps/Super Mario Bros..png".to_owned(),
+        ..smb.clone()
+    };
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = vault
+        .create_run(request_with(|draft| {
+            draft.asset_types = vec![AssetTypeSelector::Screenshot];
+        }))
+        .unwrap()
+        .id;
+    let connector = FakeConnector {
+        asset_types: vec![AssetType::BoxFront, AssetType::Screenshot],
+        ..FakeConnector::new(vec![smb, screenshot.clone()])
+    };
+
+    let imported = execute(&vault, &connector, run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.records.borrow()[0].asset_type, AssetType::Screenshot);
+    // The sibling Box Front is never downloaded.
+    assert_eq!(*connector.downloads.borrow(), vec![screenshot.source_url]);
+}

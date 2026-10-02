@@ -1,4 +1,4 @@
-export type AssetType = "box_front";
+export type AssetType = "box_front" | "screenshot" | "title_screen";
 
 export interface AssetProvenance {
   source_id: string;
