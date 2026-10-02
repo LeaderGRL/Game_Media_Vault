@@ -678,6 +678,28 @@ describe("App", () => {
     });
   });
 
+  it("shows the releases a failed import persisted before failing", async () => {
+    let attempted = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "import_reference_catalog") {
+        // Earlier batches committed before a later one failed.
+        attempted = true;
+        return Promise.reject({ kind: "external", message: "disk full" });
+      }
+      return Promise.resolve(command === "list_library" && attempted ? [entry] : []);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+      target: { value: "nes.dat" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
+
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    expect(screen.getByText("disk full")).toBeInTheDocument();
+  });
+
   it("reports a reference catalog it could not import and keeps the Library", async () => {
     invokeMock.mockImplementation((command: string) =>
       command === "import_reference_catalog"

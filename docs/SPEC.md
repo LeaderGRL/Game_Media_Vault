@@ -543,7 +543,7 @@ Review Items show the competing Release Editions or metadata values, thumbnails/
 
 ### Library
 
-Once a vault is open, the Library view imports a reference catalog file (a No-Intro or Redump datafile, or a MAME software list with the MAME release it came with) through the same use case as the CLI, read up to a bound and on a blocking worker; it reports the releases imported and the malformed records skipped, then shows the imported releases. A file that cannot be read or does not parse is reported and changes nothing.
+Once a vault is open, the Library view imports a reference catalog file (a No-Intro or Redump datafile, or a MAME software list with the MAME release it came with) through the same use case as the CLI, read up to a bound and on a blocking worker; it reports the releases imported and the malformed records skipped, then shows the imported releases. A file that cannot be read or does not parse is reported; the Library is then shown again, since a failure may come after earlier batches of releases were recorded.
 
 ### Sources
 

@@ -487,24 +487,41 @@ export function App() {
     setImportingReference(true);
     setReferenceImportStatus(null);
     setError(null);
+    const reportsHere = () => activeVaultRoot.current === importingVaultRoot;
+    let failure: { reason: unknown } | null = null;
     try {
       const summary = await invoke<ReferenceImportSummary>("import_reference_catalog", {
         input,
       });
-      if (activeVaultRoot.current !== importingVaultRoot) {
-        return;
+      if (reportsHere()) {
+        setReferenceImportStatus(describeReferenceImport(summary));
       }
-      setReferenceImportStatus(describeReferenceImport(summary));
-      await showChangedLibrary(importingVaultRoot);
     } catch (reason) {
-      if (activeVaultRoot.current === importingVaultRoot) {
-        setError(errorMessage(reason));
-      }
+      failure = { reason };
     } finally {
       importingReferenceVaults.current.delete(importingVaultRoot);
-      if (activeVaultRoot.current === importingVaultRoot) {
+      if (reportsHere()) {
         setImportingReference(false);
       }
+    }
+    if (!reportsHere()) {
+      return;
+    }
+    if (failure !== null) {
+      setError(errorMessage(failure.reason));
+    }
+    // A failed import may have persisted earlier batches before failing.
+    try {
+      await showChangedLibrary(importingVaultRoot);
+    } catch (reason) {
+      if (reportsHere()) {
+        setError(errorMessage((failure ?? { reason }).reason));
+      }
+      return;
+    }
+    // A search shown meanwhile cleared the import failure.
+    if (failure !== null && reportsHere()) {
+      setError(errorMessage(failure.reason));
     }
   }
 
