@@ -612,6 +612,10 @@ The application should be able to verify the vault by checking:
 
 Source credentials and API tokens are configuration, never catalog metadata. Secrets must use OS-appropriate protected storage when available and must not be written into exported Acquisition Requests, logs, or source provenance records.
 
+## 24a. Releases
+
+Pushing a `v*` tag, or dispatching the Release workflow with an existing tag, publishes a GitHub Release built from that tagged commit only. The tagged source is verified first (frontend tests and build, Rust formatting, lints and tests); then the desktop app (with its frontend embedded) and the CLI are built for Windows x86-64, Linux x86-64 and macOS on Apple silicon, each packaged as `game-media-vault-<tag>-<target>` (a zip on Windows, a tar.gz elsewhere) holding `game-media-vault-desktop` and `game-media-vault`. The release, with these archives and the source archives, is created only once every target has built: a failed verification or build publishes nothing.
+
 ## 25. Implementation Sequence
 
 ### Milestone 1 — Vertical Slice
