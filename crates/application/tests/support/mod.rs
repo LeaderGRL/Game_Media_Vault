@@ -522,6 +522,35 @@ impl RunRepositoryPort for FakeVault {
         Ok(next)
     }
 
+    fn queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+        per_source: usize,
+    ) -> Result<Vec<AcquisitionWorkItem>, PortError> {
+        let runs = self.runs.borrow();
+        let run = &runs[&run_id];
+        if run.status != AcquisitionRunStatus::Running {
+            return Ok(Vec::new());
+        }
+        let mut taken: BTreeMap<&str, usize> = BTreeMap::new();
+        Ok(run
+            .work
+            .iter()
+            .filter(|work| work.state == WorkState::Queued)
+            .filter(|work| {
+                let source = work.item.candidate.source_id.as_str();
+                if skipped_sources.iter().any(|skipped| skipped == source) {
+                    return false;
+                }
+                let count = taken.entry(source).or_default();
+                *count += 1;
+                *count <= per_source
+            })
+            .map(|work| work.item.clone())
+            .collect())
+    }
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
         self.open_scheduled_review();
         let mut runs = self.runs.borrow_mut();

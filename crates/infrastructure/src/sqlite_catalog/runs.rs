@@ -209,6 +209,55 @@ impl RunRepositoryPort for SqliteCatalog {
         .transpose()
     }
 
+    fn queued_work(
+        &self,
+        run_id: i64,
+        skipped_sources: &[String],
+        per_source: usize,
+    ) -> Result<Vec<AcquisitionWorkItem>, PortError> {
+        let skipped_sources_json = serde_json::to_string(skipped_sources).map_err(|error| {
+            PortError::new(format!("failed to serialize skipped sources: {error}"))
+        })?;
+        let per_source = i64::try_from(per_source).unwrap_or(i64::MAX);
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT work_key, candidate_json
+                 FROM (
+                     SELECT work.id, work.work_key, work.candidate_json,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY json_extract(work.candidate_json, '$.source_id')
+                                ORDER BY work.id
+                            ) AS position
+                     FROM acquisition_run_work AS work
+                     INNER JOIN acquisition_runs AS run ON run.id = work.run_id
+                     WHERE work.run_id = ?1 AND work.state = 'queued' AND run.status = 'running'
+                       AND json_extract(work.candidate_json, '$.source_id')
+                           NOT IN (SELECT value FROM json_each(?2))
+                 )
+                 WHERE position <= ?3
+                 ORDER BY id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map(params![run_id, skipped_sources_json, per_source], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .map(|(key, candidate_json)| {
+                let candidate = serde_json::from_str(&candidate_json).map_err(|error| {
+                    PortError::new(format!(
+                        "catalog contains an invalid work candidate: {error}"
+                    ))
+                })?;
+                Ok(AcquisitionWorkItem { key, candidate })
+            })
+            .collect()
+    }
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
         complete_queued_work(&self.connect()?, run_id, work_key, None)
     }

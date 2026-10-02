@@ -184,7 +184,10 @@ fn downloads_of_different_sources_overlap() {
     let imported = execute(
         &vault,
         &[&first, &second],
-        DownloadLimits { max_concurrent: 2 },
+        DownloadLimits {
+            max_concurrent: 2,
+            max_per_source: 2,
+        },
     );
 
     assert_eq!(imported, Ok(2));
@@ -214,7 +217,10 @@ fn the_limit_bounds_the_downloads_under_way() {
         let imported = execute(
             &vault,
             &connectors.iter().collect::<Vec<_>>(),
-            DownloadLimits { max_concurrent },
+            DownloadLimits {
+                max_concurrent,
+                max_per_source: 2,
+            },
         );
 
         assert_eq!(imported, Ok(3), "limit {max_concurrent}");
@@ -244,7 +250,10 @@ fn a_candidate_awaiting_review_is_never_downloaded_ahead() {
     let imported = execute(
         &vault,
         &[&first, &second],
-        DownloadLimits { max_concurrent: 2 },
+        DownloadLimits {
+            max_concurrent: 2,
+            max_per_source: 2,
+        },
     );
 
     assert_eq!(imported, Ok(1));
@@ -280,7 +289,10 @@ fn a_pause_starts_no_further_download() {
     execute(
         &vault,
         &connectors.iter().collect::<Vec<_>>(),
-        DownloadLimits { max_concurrent: 1 },
+        DownloadLimits {
+            max_concurrent: 1,
+            max_per_source: 2,
+        },
     )
     .unwrap();
 
@@ -296,7 +308,14 @@ fn a_pause_landing_before_a_download_thread_starts_leaves_its_work_queued() {
     *vault.pause_during_next_status_read.borrow_mut() = Some(Duration::from_millis(200));
     let only = slow("a", vec![mario], None, None);
 
-    let imported = execute(&vault, &[&only], DownloadLimits { max_concurrent: 1 });
+    let imported = execute(
+        &vault,
+        &[&only],
+        DownloadLimits {
+            max_concurrent: 1,
+            max_per_source: 2,
+        },
+    );
 
     assert_eq!(imported, Ok(0));
     assert!(only.inner.downloads.borrow().is_empty());
@@ -313,7 +332,7 @@ fn a_download_failing_once_the_run_is_paused_still_fails_its_source() {
     // The execution reads the queue to process the download only once a human paused the run
     // while it was under way.
     let (paused, go_on) = mpsc::channel();
-    *vault.queue_read_gate.borrow_mut() = Some((3, go_on));
+    *vault.queue_read_gate.borrow_mut() = Some((1, go_on));
     let pause = || {
         let run_id = *vault.runs.borrow().keys().next().unwrap();
         pause_acquisition_run(&vault, run_id).unwrap();
@@ -325,7 +344,14 @@ fn a_download_failing_once_the_run_is_paused_still_fails_its_source() {
         .insert(mario.source_url.clone());
     only.during_download = Some(&pause);
 
-    let result = execute(&vault, &[&only], DownloadLimits { max_concurrent: 1 });
+    let result = execute(
+        &vault,
+        &[&only],
+        DownloadLimits {
+            max_concurrent: 1,
+            max_per_source: 1,
+        },
+    );
 
     assert!(result.is_err(), "{result:?}");
     assert_eq!(vault.source_failures.borrow().len(), 1);
@@ -333,4 +359,61 @@ fn a_download_failing_once_the_run_is_paused_still_fails_its_source() {
     let run = vault.run(run_id);
     assert_eq!(run.status, AcquisitionRunStatus::Paused);
     assert_eq!(run.queued_work, 1);
+}
+
+#[test]
+fn downloads_of_one_source_overlap_up_to_its_limit() {
+    let (mario, tetris) = (
+        box_front("a", "Super Mario Bros."),
+        box_front("a", "Tetris"),
+    );
+    let vault = FakeVault::with_library(vec![release_for(&mario, 1), release_for(&tetris, 2)]);
+    let rendezvous = Rendezvous::new(2);
+    let only = slow("a", vec![mario, tetris], Some(&rendezvous), None);
+
+    let imported = execute(
+        &vault,
+        &[&only],
+        DownloadLimits {
+            max_concurrent: 4,
+            max_per_source: 2,
+        },
+    );
+
+    assert_eq!(imported, Ok(2));
+}
+
+#[test]
+fn the_per_source_limit_bounds_the_downloads_of_one_source() {
+    for max_per_source in [1, 2] {
+        let candidates: Vec<AssetCandidate> = ["Mario", "Tetris", "Zelda"]
+            .iter()
+            .map(|title| box_front("a", title))
+            .collect();
+        let vault = FakeVault::with_library(
+            candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| release_for(candidate, index as i64 + 1))
+                .collect(),
+        );
+        let in_flight = InFlight::default();
+        let only = slow("a", candidates, None, Some(&in_flight));
+
+        let imported = execute(
+            &vault,
+            &[&only],
+            DownloadLimits {
+                max_concurrent: 4,
+                max_per_source,
+            },
+        );
+
+        assert_eq!(imported, Ok(3), "limit {max_per_source}");
+        assert_eq!(
+            in_flight.most.load(Ordering::SeqCst),
+            max_per_source,
+            "limit {max_per_source}"
+        );
+    }
 }

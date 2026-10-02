@@ -38,11 +38,16 @@ const REVIEW_RACE_ATTEMPTS: usize = 3;
 pub struct DownloadLimits {
     /// Downloads under way at once across every Source; zero counts as one.
     pub max_concurrent: usize,
+    /// Downloads under way at once from any one Source; zero counts as one.
+    pub max_per_source: usize,
 }
 
 impl Default for DownloadLimits {
     fn default() -> Self {
-        Self { max_concurrent: 4 }
+        Self {
+            max_concurrent: 4,
+            max_per_source: 2,
+        }
     }
 }
 
@@ -66,6 +71,9 @@ struct Acquisition<'a> {
     lookahead: RefCell<HashMap<String, Vec<String>>>,
     /// The downloads the execution may run at once, shared by every download it starts.
     slots: Arc<Slots>,
+    /// The downloads each Source may serve at once, by Source.
+    source_slots: RefCell<HashMap<String, Arc<Slots>>>,
+    limits: DownloadLimits,
     /// Set once the execution stops, so that downloads not started yet never start.
     stopped: Arc<AtomicBool>,
 }
@@ -188,8 +196,9 @@ enum Step {
 /// Source's connector and is either imported, left unattached, or parked on its Review Item
 /// until a human decides. The run completes only once every planned Source was discovered.
 ///
-/// Within a round, the media of the work it will import download ahead, up to
-/// `limits.max_concurrent` at once, while the work is processed in turn as before.
+/// The media of the work the coming rounds will import download ahead, up to
+/// `limits.max_concurrent` at once and `limits.max_per_source` from any one Source, while the
+/// work is processed in turn as before.
 // Each port plays its own role; grouping them would only hide what an execution depends on.
 #[allow(clippy::too_many_arguments)]
 pub fn acquire_run_with_connectors(
@@ -227,16 +236,17 @@ pub fn acquire_run_with_connectors(
         prefetched: RefCell::new(HashMap::new()),
         lookahead: RefCell::new(HashMap::new()),
         slots: Arc::new(Slots::new(limits.max_concurrent)),
+        source_slots: RefCell::new(HashMap::new()),
+        limits,
         stopped: Arc::new(AtomicBool::new(false)),
     };
-    thread::scope(|scope| execute(&acquisition, &run, scope, limits))
+    thread::scope(|scope| execute(&acquisition, &run, scope))
 }
 
 fn execute<'a, 'scope>(
     acquisition: &Acquisition<'a>,
     run: &AcquisitionRun,
     scope: &'scope thread::Scope<'scope, '_>,
-    limits: DownloadLimits,
 ) -> Result<Vec<ImportedAsset>, ApplicationError>
 where
     'a: 'scope,
@@ -286,7 +296,7 @@ where
         loop {
             // A round downloads ahead what it will import, and processes it in order.
             if served_this_round.is_empty() {
-                acquisition.prefetch_round(scope, &failed_sources, limits)?;
+                acquisition.prefetch_round(scope, &failed_sources)?;
             }
             let skipped: Vec<String> = failed_sources
                 .iter()
@@ -710,6 +720,9 @@ impl Acquisition<'_> {
             _ if !self.still_running()? => return Ok(None),
             _ => {
                 let connector = self.connector_for(work)?;
+                // A Source's slot first, then a global one, as every download takes them.
+                let source_slots = self.source_slots(work.candidate.source_id.as_str());
+                let _source_slot = source_slots.take();
                 let _slot = self.slots.take();
                 fetch(connector, self.object_store, &work.candidate)
             }
@@ -811,49 +824,79 @@ impl Acquisition<'_> {
     }
 }
 
+/// A download started ahead of processing.
+struct Job<'a> {
+    connector: &'a dyn ConnectorPort,
+    candidate: AssetCandidate,
+    /// The download slots of the candidate's Source.
+    source_slots: Arc<Slots>,
+    result: mpsc::Sender<Fetched>,
+}
+
 impl<'a> Acquisition<'a> {
-    /// Starts downloading, on up to `limits.max_concurrent` threads, the media of the work the
-    /// next round will import: the oldest queued work of every Source outside `failed_sources`.
-    /// Work processing would not import, such as work bound for review, is never downloaded
-    /// ahead. Results are awaited when their work is processed, or once it left the queue
-    /// unprocessed.
+    /// The download slots of `source_id`, shared by every download of that Source.
+    fn source_slots(&self, source_id: &str) -> Arc<Slots> {
+        Arc::clone(
+            self.source_slots
+                .borrow_mut()
+                .entry(source_id.to_owned())
+                .or_insert_with(|| Arc::new(Slots::new(self.limits.max_per_source))),
+        )
+    }
+
+    /// Starts downloading, on up to `max_concurrent` threads, the media of the work the coming
+    /// rounds will import: the oldest `max_per_source` queued work items of every Source
+    /// outside `failed_sources`. Work processing would not import, such as work bound for
+    /// review, is never downloaded ahead. Results are awaited when their work is processed, or
+    /// once it left the queue unprocessed.
     fn prefetch_round<'scope>(
         &self,
         scope: &'scope thread::Scope<'scope, '_>,
         failed_sources: &[String],
-        limits: DownloadLimits,
     ) -> Result<(), ApplicationError>
     where
         'a: 'scope,
     {
-        let mut skipped = failed_sources.to_vec();
         let mut jobs = VecDeque::new();
-        let mut prefetched = self.prefetched.borrow_mut();
+        let queued = self.runs.queued_work(
+            self.run_id,
+            failed_sources,
+            self.limits.max_per_source.max(1),
+        )?;
         let mut lookahead = self.lookahead.borrow_mut();
         lookahead.clear();
-        while let Some(work) = self.runs.next_queued_work(self.run_id, &skipped)? {
-            skipped.push(work.candidate.source_id.as_str().to_owned());
+        for work in queued {
+            let source_id = work.candidate.source_id.as_str();
             lookahead
-                .entry(work.candidate.source_id.as_str().to_owned())
+                .entry(source_id.to_owned())
                 .or_default()
                 .push(work.key.clone());
             let connector = self
                 .connectors
                 .iter()
                 .copied()
-                .find(|connector| connector.source_id() == work.candidate.source_id.as_str());
+                .find(|connector| connector.source_id() == source_id);
             let Some(connector) = connector else {
                 continue;
             };
-            if prefetched.contains_key(&work.key) || !self.will_import(&work)? {
+            if self.prefetched.borrow().contains_key(&work.key) || !self.will_import(&work)? {
                 continue;
             }
-            let (sender, result) = mpsc::channel();
-            let source_id = work.candidate.source_id.as_str().to_owned();
-            prefetched.insert(work.key, Ahead { source_id, result });
-            jobs.push_back((connector, work.candidate, sender));
+            let (result, awaited) = mpsc::channel();
+            let source_slots = self.source_slots(source_id);
+            let ahead = Ahead {
+                source_id: source_id.to_owned(),
+                result: awaited,
+            };
+            self.prefetched.borrow_mut().insert(work.key, ahead);
+            jobs.push_back(Job {
+                connector,
+                candidate: work.candidate,
+                source_slots,
+                result,
+            });
         }
-        let workers = limits.max_concurrent.max(1).min(jobs.len());
+        let workers = self.limits.max_concurrent.max(1).min(jobs.len());
         let jobs = Arc::new(Mutex::new(jobs));
         for _ in 0..workers {
             let (jobs, slots, stopped) = (
@@ -863,8 +906,13 @@ impl<'a> Acquisition<'a> {
             );
             let (object_store, runs, run_id) = (self.object_store, self.runs, self.run_id);
             scope.spawn(move || {
-                loop {
-                    let slot = slots.take();
+                while !stopped.load(Ordering::SeqCst) {
+                    let Some(job) = lock(&jobs).pop_front() else {
+                        break;
+                    };
+                    // A Source's slot first, then a global one, as every download takes them.
+                    let _source_slot = job.source_slots.take();
+                    let _slot = slots.take();
                     // A pause or a cancellation starts no further download, even while the
                     // execution still awaits one already under way.
                     let running = matches!(
@@ -877,12 +925,10 @@ impl<'a> Acquisition<'a> {
                     if stopped.load(Ordering::SeqCst) {
                         break;
                     }
-                    let Some((connector, candidate, sender)) = lock(&jobs).pop_front() else {
-                        break;
-                    };
                     // The execution may have stopped awaiting this result.
-                    let _ = sender.send(fetch(connector, object_store, &candidate));
-                    drop(slot);
+                    let _ = job
+                        .result
+                        .send(fetch(job.connector, object_store, &job.candidate));
                 }
             });
         }

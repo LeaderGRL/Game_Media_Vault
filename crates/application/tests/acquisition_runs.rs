@@ -93,6 +93,15 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(())
     }
 
+    fn queued_work(
+        &self,
+        _run_id: i64,
+        _skipped_sources: &[String],
+        _per_source: usize,
+    ) -> Result<Vec<AcquisitionWorkItem>, PortError> {
+        Ok(Vec::new())
+    }
+
     fn record_source_failure(
         &self,
         _run_id: i64,
@@ -275,6 +284,15 @@ impl RunRepositoryPort for RacingRunRepository {
         _reason: &str,
     ) -> Result<(), PortError> {
         Ok(())
+    }
+
+    fn queued_work(
+        &self,
+        _run_id: i64,
+        _skipped_sources: &[String],
+        _per_source: usize,
+    ) -> Result<Vec<AcquisitionWorkItem>, PortError> {
+        Ok(Vec::new())
     }
 
     fn record_source_failure(
