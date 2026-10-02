@@ -10,7 +10,7 @@ mod quality;
 pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
 pub use coverage::{
     CoverageProfile, CoverageStatus, PackagingFamily, ProfileCoverage, ReleaseCoverage,
-    packaging_family, release_coverage,
+    packaging_family, packaging_platforms, release_coverage,
 };
 pub use derived::{
     DerivationRecipe, DerivedAsset, PackagingModelBasis, PackagingModelScans, PackagingTemplate,
