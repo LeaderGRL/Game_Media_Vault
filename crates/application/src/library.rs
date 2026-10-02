@@ -55,14 +55,15 @@ pub struct LibraryPage {
     /// The cursor of the next page, when one follows.
     pub next_after: Option<i64>,
     /// The newest Release Edition the search considered. Release Editions are never deleted
-    /// and new ones get larger ids, so passing it back keeps later pages to the same results.
+    /// and new ones get larger ids, so passing it back keeps later pages to the same editions.
     pub as_of: i64,
 }
 
 /// Searches the Library. Releases are ordered by title, platform, region and edition, then by
 /// Release Edition; a page resumes after its cursor's place in that order and, given the `as_of`
-/// of the first page, keeps to the releases that page searched, so releases added between two
-/// pages never repeat, shift later pages or change the total.
+// of the first page, searches the same Release Editions in the same order, so releases added
+/// between two pages never repeat or shift later pages. Filters see the current state of each
+/// release, which can change between pages.
 pub fn search_library(
     catalog: &dyn CatalogPort,
     reviews: &dyn ReviewRepositoryPort,
