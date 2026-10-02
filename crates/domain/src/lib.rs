@@ -300,11 +300,12 @@ impl AcquisitionRequest {
         })
     }
 
+    /// Whether `supported` covers every Asset Type the request selects. A family is covered only
+    /// when all of its types are, and families still select types the catalog cannot represent
+    /// yet, so none is covered.
     pub fn requested_asset_types_supported_by(&self, supported: &[AssetType]) -> bool {
         self.asset_types.iter().all(|selector| match selector {
-            AssetTypeSelector::Packaging | AssetTypeSelector::BoxFront => {
-                supported.contains(&AssetType::BoxFront)
-            }
+            AssetTypeSelector::BoxFront => supported.contains(&AssetType::BoxFront),
             _ => false,
         })
     }

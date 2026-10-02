@@ -8,7 +8,7 @@ mod ports;
 mod review;
 mod runs;
 
-pub use acquisition::acquire_run_with_connector;
+pub use acquisition::{acquire_run_with_connector, start_acquisition_run_for_connector};
 pub use error::{ApplicationError, ErrorKind};
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,

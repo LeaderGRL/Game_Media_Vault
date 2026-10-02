@@ -135,13 +135,14 @@ pub trait RunRepositoryPort {
 
     /// Queues the work discovered from one Source and marks its discovery complete, atomically.
     /// Work whose key is already recorded for the run is ignored, and so is any later discovery
-    /// of an already discovered source: a run keeps a single snapshot per source.
+    /// of an already discovered source: a run keeps a single snapshot per source. Returns
+    /// `false`, recording nothing, when the run was cancelled or completed meanwhile.
     fn record_discovery(
         &self,
         run_id: i64,
         source_id: &str,
         work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError>;
+    ) -> Result<bool, PortError>;
 
     /// Returns the oldest queued work item while the run is running.
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError>;
@@ -158,6 +159,16 @@ pub trait ConnectorPort {
     fn source_id(&self) -> &'static str;
 
     fn capabilities(&self) -> ConnectorCapabilities;
+
+    /// Why this connector cannot execute `request` beyond its declared capabilities (for
+    /// example a source that needs an explicit game selection or does not cover a platform),
+    /// or `None` when it can. Checked before a run is persisted; it may consult the source.
+    fn unsupported_request_reason(
+        &self,
+        _request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        Ok(None)
+    }
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 

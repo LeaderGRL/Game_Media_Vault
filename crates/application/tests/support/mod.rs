@@ -163,6 +163,8 @@ pub struct FakeVault {
     /// Simulates a human decision on the first Review Item committed right after the next run
     /// read.
     pub decision_after_next_run_read: RefCell<Option<ReviewDecision>>,
+    /// Simulates a pause or cancellation landing while the next discovery runs.
+    pub status_before_next_discovery: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates a pause or cancellation landing right after the next completed work item.
     pub status_after_next_completion: RefCell<Option<AcquisitionRunStatus>>,
     /// Simulates another run opening a Review Item for the candidate right before the next
@@ -335,17 +337,20 @@ impl RunRepositoryPort for FakeVault {
         run_id: i64,
         source_id: &str,
         work: &[AcquisitionWorkItem],
-    ) -> Result<(), PortError> {
+    ) -> Result<bool, PortError> {
         let mut runs = self.runs.borrow_mut();
         let run = runs.get_mut(&run_id).unwrap();
+        if let Some(status) = self.status_before_next_discovery.borrow_mut().take() {
+            run.status = status;
+        }
         if matches!(
             run.status,
             AcquisitionRunStatus::Cancelled | AcquisitionRunStatus::Completed
         ) {
-            return Err(PortError("run does not accept new work".to_owned()));
+            return Ok(false);
         }
         if !run.discovered.insert(source_id.to_owned()) {
-            return Ok(());
+            return Ok(true);
         }
         for item in work {
             if !run
@@ -359,7 +364,7 @@ impl RunRepositoryPort for FakeVault {
                 });
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn next_queued_work(&self, run_id: i64) -> Result<Option<AcquisitionWorkItem>, PortError> {
@@ -648,6 +653,10 @@ pub struct FakeConnector {
     pub failing_downloads: BTreeSet<String>,
     pub discover_calls: RefCell<u32>,
     pub downloads: RefCell<Vec<String>>,
+    /// Why the connector refuses every request, if it does.
+    pub unsupported_reason: Option<String>,
+    /// Whether checking a plan fails, as when the source cannot be reached.
+    pub plan_check_fails: bool,
 }
 
 impl FakeConnector {
@@ -658,6 +667,8 @@ impl FakeConnector {
             failing_downloads: BTreeSet::new(),
             discover_calls: RefCell::new(0),
             downloads: RefCell::new(Vec::new()),
+            unsupported_reason: None,
+            plan_check_fails: false,
         }
     }
 }
@@ -672,6 +683,16 @@ impl ConnectorPort for FakeConnector {
             asset_types: vec![AssetType::BoxFront],
             direct_media_download: true,
         }
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        _request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        if self.plan_check_fails {
+            return Err(PortError("fixture source unreachable".to_owned()));
+        }
+        Ok(self.unsupported_reason.clone())
     }
 
     fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {

@@ -1,8 +1,9 @@
 mod support;
 
 use game_media_vault_application::{
-    ApplicationError, ReviewRepositoryPort, RunRepositoryPort, acquire_run_with_connector,
-    candidate_identity, resolve_review_item,
+    ApplicationError, ErrorKind, ReviewRepositoryPort, RunRepositoryPort,
+    acquire_run_with_connector, candidate_identity, resolve_review_item,
+    start_acquisition_run_for_connector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
@@ -635,19 +636,16 @@ fn human_acceptance_committed_before_parking_wins() {
 }
 
 #[test]
-fn packaging_selector_acquires_the_supported_box_front() {
-    let smb = candidate("Super Mario Bros.");
-    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
-    let run_id = vault
-        .create_run(request_with(|draft| {
-            draft.asset_types = vec![AssetTypeSelector::Packaging];
-        }))
-        .unwrap()
-        .id;
+fn a_family_is_refused_while_the_connector_supports_only_some_of_its_types() {
+    // Packaging also selects box backs, spines, inserts…, which this connector cannot acquire.
+    let error = plan_error(request_with(|draft| {
+        draft.asset_types = vec![AssetTypeSelector::Packaging];
+    }));
 
-    let imported = execute(&vault, &FakeConnector::new(vec![smb]), run_id).unwrap();
-
-    assert_eq!(imported.len(), 1);
+    assert!(matches!(
+        error,
+        ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
 }
 
 #[test]
@@ -962,4 +960,102 @@ fn an_acceptance_reopening_a_run_read_as_completed_is_executed() {
 
     assert_eq!(imported.len(), 1);
     assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn a_run_is_started_for_a_connector_only_when_it_can_execute_it() {
+    let vault = FakeVault::default();
+    let connector = FakeConnector::new(Vec::new());
+
+    let error = start_acquisition_run_for_connector(
+        &vault,
+        AcquisitionRequestDraft {
+            sources: SourceSelection::Auto,
+            ..request_draft()
+        },
+        &connector,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ApplicationError::UnsupportedConnectorPlan { .. }
+    ));
+    assert!(vault.runs.borrow().is_empty());
+    let started = start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap();
+    assert_eq!(vault.run(started.id).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn connector_specific_limits_are_checked_before_a_run_starts() {
+    let vault = FakeVault::default();
+    let connector = FakeConnector {
+        unsupported_reason: Some("this source needs an explicit game selection".to_owned()),
+        ..FakeConnector::new(Vec::new())
+    };
+
+    let error =
+        start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap_err();
+
+    assert_eq!(
+        error,
+        ApplicationError::UnsupportedConnectorPlan {
+            source_id: SOURCE_ID.to_owned(),
+            reason: "this source needs an explicit game selection".to_owned(),
+        }
+    );
+    assert!(vault.runs.borrow().is_empty());
+}
+
+#[test]
+fn a_discovered_run_resumes_without_consulting_the_source_for_its_plan() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = vault.start_run();
+    let failing = FakeConnector {
+        failing_downloads: [smb.source_url.clone()].into(),
+        ..FakeConnector::new(vec![smb.clone()])
+    };
+    execute(&vault, &failing, run_id).unwrap_err();
+    assert_eq!(vault.run(run_id).queued_work, 1);
+
+    // The Source cannot be reached for a plan check, but the persisted queue still executes.
+    let unreachable = FakeConnector {
+        plan_check_fails: true,
+        ..FakeConnector::new(vec![smb])
+    };
+    let imported = execute(&vault, &unreachable, run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(*unreachable.discover_calls.borrow(), 0);
+}
+
+#[test]
+fn a_plan_the_connector_cannot_check_starts_no_run() {
+    let vault = FakeVault::default();
+    let connector = FakeConnector {
+        plan_check_fails: true,
+        ..FakeConnector::new(Vec::new())
+    };
+
+    let error =
+        start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::External);
+    assert!(vault.runs.borrow().is_empty());
+}
+
+#[test]
+fn a_cancellation_during_discovery_stops_the_execution_quietly() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    *vault.status_before_next_discovery.borrow_mut() = Some(AcquisitionRunStatus::Cancelled);
+    let run_id = vault.start_run();
+
+    let imported = execute(&vault, &FakeConnector::new(vec![smb]), run_id).unwrap();
+
+    assert!(imported.is_empty());
+    let run = vault.run(run_id);
+    assert_eq!(run.status, AcquisitionRunStatus::Cancelled);
+    assert_eq!(run.queued_work, 0);
 }

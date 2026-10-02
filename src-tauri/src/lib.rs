@@ -14,8 +14,7 @@ use game_media_vault_application::{
     load_review_preview as load_review_preview_use_case,
     pause_acquisition_run as pause_acquisition_run_use_case,
     resolve_review_item as resolve_review_item_use_case,
-    resume_acquisition_run as resume_acquisition_run_use_case,
-    start_acquisition_run as start_acquisition_run_use_case,
+    resume_acquisition_run as resume_acquisition_run_use_case, start_acquisition_run_for_connector,
 };
 use game_media_vault_connectors::LibretroThumbnailsConnector;
 use game_media_vault_domain::{
@@ -202,12 +201,29 @@ async fn load_review_preview(
     Ok(Response::new(bytes))
 }
 
+/// Starts a run only if `connector`, the one the desktop executes it with, can execute it.
 pub fn start_acquisition_run_in_vault(
     vault_root: &Path,
     request: AcquisitionRequestInput,
+    connector: &dyn ConnectorPort,
 ) -> Result<AcquisitionRun, CommandError> {
     let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))?;
-    Ok(start_acquisition_run_use_case(&catalog, request)?)
+    Ok(start_acquisition_run_for_connector(
+        &catalog, request, connector,
+    )?)
+}
+
+/// Starts a run on a blocking worker, since checking the plan may reach the Source.
+pub async fn start_acquisition_run_in_vault_async(
+    vault_root: PathBuf,
+    request: AcquisitionRequestInput,
+    connector: Box<dyn ConnectorPort + Send>,
+) -> Result<AcquisitionRun, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        start_acquisition_run_in_vault(&vault_root, request, connector.as_ref())
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("acquisition start", error))?
 }
 
 pub fn execute_acquisition_run_in_vault_with_connector(
@@ -297,11 +313,16 @@ pub fn cancel_acquisition_run_in_vault(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn start_acquisition_run(
+async fn start_acquisition_run(
     session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionRun, CommandError> {
-    start_acquisition_run_in_vault(&session.root()?, request)
+    start_acquisition_run_in_vault_async(
+        session.root()?,
+        request,
+        Box::new(LibretroThumbnailsConnector::new()),
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]

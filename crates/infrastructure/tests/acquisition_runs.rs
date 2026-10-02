@@ -473,11 +473,11 @@ fn terminal_runs_reject_discovered_work() {
     complete_acquisition_run(&catalog, completed_run.id).unwrap();
 
     for run_id in [cancelled_run.id, completed_run.id] {
-        let error = catalog
+        let recorded = catalog
             .record_discovery(run_id, SOURCE_ID, &[work("late")])
-            .unwrap_err();
+            .unwrap();
 
-        assert!(error.to_string().contains("cannot accept work"), "{error}");
+        assert!(!recorded);
         assert!(!catalog.has_discovered(run_id, SOURCE_ID).unwrap());
         assert_eq!(
             load_acquisition_run(&catalog, run_id).unwrap().queued_work,

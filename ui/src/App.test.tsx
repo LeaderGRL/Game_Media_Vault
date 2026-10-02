@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReviewItem } from "./types";
@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
-import { App } from "./App";
+import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
 
 const entry: LibraryEntry = {
   game_id: 1,
@@ -79,9 +79,11 @@ const reviewItem: ReviewItem = {
 describe("App", () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    // Unscripted library refreshes see an empty library.
+    // Unscripted library and run refreshes see empty lists.
     invokeMock.mockImplementation((command: string) =>
-      Promise.resolve(command === "list_library" ? [] : undefined),
+      Promise.resolve(
+        command === "list_library" || command === "list_acquisition_runs" ? [] : undefined,
+      ),
     );
     openVaultMock.mockReset();
     openVaultMock.mockResolvedValue(undefined);
@@ -207,7 +209,7 @@ describe("App", () => {
       },
     };
     invokeMock.mockImplementation((command: string) => {
-      if (command === "list_library") {
+      if (command === "list_library" || command === "list_acquisition_runs") {
         return Promise.resolve([]);
       }
       if (command === "list_review_items") {
@@ -502,7 +504,7 @@ describe("App", () => {
         }
         return Promise.resolve([acceptedFirst, acceptedSecond]);
       }
-      if (command === "list_library") {
+      if (command === "list_library" || command === "list_acquisition_runs") {
         return Promise.resolve([]);
       }
       throw new Error(`unexpected command: ${command}`);
@@ -583,7 +585,7 @@ describe("App", () => {
         }
         return Promise.reject(new Error("newer refresh failed"));
       }
-      if (command === "list_library") {
+      if (command === "list_library" || command === "list_acquisition_runs") {
         return Promise.resolve([]);
       }
       throw new Error(`unexpected command: ${command}`);
@@ -721,5 +723,749 @@ describe("App", () => {
       expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled();
     });
     expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
+  });
+});
+
+describe("App acquisition", () => {
+  const startedRun = {
+    id: 1,
+    request: {
+      sources: { mode: "explicit", values: ["libretro-thumbnails"] },
+      platforms: ["Nintendo - Game Boy"],
+      games: { mode: "explicit", values: ["Tetris (World) (Rev 1)"] },
+      regions: [],
+      languages: [],
+      asset_types: ["box_front"],
+      quality: null,
+      retention: "keep_everything",
+      limits: {},
+    },
+    status: "running",
+    queued_work: 0,
+    awaiting_review_work: 0,
+    completed_work: 0,
+  };
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openVaultMock.mockReset();
+    openVaultMock.mockResolvedValue(undefined);
+  });
+
+  it("creates a vault when asked instead of only opening an existing one", async () => {
+    invokeMock.mockResolvedValue([]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create vault" }));
+
+    await waitFor(() =>
+      expect(openVaultMock).toHaveBeenCalledWith({
+        vault_root: ".game-media-vault",
+        create: true,
+      }),
+    );
+  });
+
+  it("starts a run from the Acquire view and shows it in the Runs view", async () => {
+    let runs: unknown[] = [];
+    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "start_acquisition_run") {
+        runs = [startedRun];
+        return Promise.resolve(startedRun);
+      }
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve(runs);
+      }
+      if (command === "list_library" || command === "list_review_items") {
+        return Promise.resolve([]);
+      }
+      return Promise.reject(new Error(`unexpected command: ${command} ${JSON.stringify(args)}`));
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByLabelText("Libretro Thumbnails"));
+    fireEvent.change(screen.getByLabelText("Platforms (one per line)"), {
+      target: { value: "Nintendo - Game Boy" },
+    });
+    fireEvent.change(screen.getByLabelText("Games (one per line, empty for all)"), {
+      target: { value: "Tetris (World) (Rev 1)" },
+    });
+    fireEvent.click(screen.getByLabelText("Box Front"));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("start_acquisition_run", {
+      request: startedRun.request,
+    });
+  });
+
+  it("shows the shared validator message when the backend rejects a request", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "start_acquisition_run") {
+        return Promise.reject({
+          kind: "invalid_request",
+          message: "acquisition request must include at least one source",
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(
+      await screen.findByText("acquisition request must include at least one source"),
+    ).toBeInTheDocument();
+  });
+
+  it("executes a run and refreshes the runs, library and reviews", async () => {
+    let executed = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([
+          executed ? { ...startedRun, status: "completed", completed_work: 1 } : startedRun,
+        ]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve({ ...startedRun, status: "completed", completed_work: 1 });
+      }
+      if (command === "list_library") {
+        return Promise.resolve(executed ? [entry] : []);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("execute_acquisition_run", {
+      run_id: 1,
+      matching_policy: { high_confidence_threshold: 80, medium_confidence_threshold: 50 },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("keeps pause available while a run executes", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+
+    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+  });
+
+  it("refreshes the progress an execution persisted before failing", async () => {
+    let executed = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([executed ? { ...startedRun, completed_work: 1 } : startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.reject({ kind: "external", message: "download failed" });
+      }
+      if (command === "list_library") {
+        return Promise.resolve(executed ? [entry] : []);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+
+    expect(await screen.findByText("download failed")).toBeInTheDocument();
+    expect(await screen.findByText("0 queued · 0 awaiting review · 1 completed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Library (1)" })).toBeInTheDocument();
+  });
+
+  it("keeps the execution failure when the refresh after it fails too", async () => {
+    let executed = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.reject({ kind: "external", message: "download failed" });
+      }
+      if (command === "list_library" && executed) {
+        return Promise.reject({ kind: "external", message: "catalog busy" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+
+    expect(
+      await screen.findByText("download failed (the vault could not be refreshed: catalog busy)"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not let an execution refresh overwrite a newer review decision", async () => {
+    let finishExecutionRefresh: ((items: ReviewItem[]) => void) | undefined;
+    let executed = false;
+    const rejected: ReviewItem = { ...reviewItem, decision: { decision: "reject" }, status: "rejected" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        executed = true;
+        return Promise.resolve(startedRun);
+      }
+      if (command === "list_review_items") {
+        if (!executed) {
+          return Promise.resolve([reviewItem]);
+        }
+        if (finishExecutionRefresh === undefined) {
+          // The execution refresh read the item before the decision below.
+          return new Promise<ReviewItem[]>((resolve) => {
+            finishExecutionRefresh = resolve;
+          });
+        }
+        return Promise.resolve([rejected]);
+      }
+      if (command === "resolve_review_item") {
+        return Promise.resolve(rejected);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishExecutionRefresh).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+    expect(await screen.findByText("Rejected")).toBeInTheDocument();
+    await act(async () => {
+      finishExecutionRefresh?.([reviewItem]);
+    });
+
+    expect(screen.getByText("Rejected")).toBeInTheDocument();
+  });
+
+  it("keeps another vault's execution running when an older one finishes", async () => {
+    const executions: Array<() => void> = [];
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise<void>((resolve) => executions.push(() => resolve()));
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(executions).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(executions).toHaveLength(2));
+    await act(async () => executions[0]());
+
+    expect(screen.getByRole("button", { name: "Executing…" })).toBeDisabled();
+  });
+
+  it("keeps a run executing when its vault is loaded again", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await screen.findByRole("button", { name: "Executing…" });
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await screen.findByRole("button", { name: "Execute" });
+    fireEvent.change(screen.getByLabelText("Vault path"), {
+      target: { value: ".game-media-vault" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    // The backend still executes the run, so it must not be started a second time.
+    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Execute" })).not.toBeInTheDocument();
+  });
+
+  it("polls an executing run only once its vault is open again", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "list_acquisition_runs") {
+          return Promise.resolve([startedRun]);
+        }
+        if (command === "get_acquisition_run") {
+          return Promise.resolve(startedRun);
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      });
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+      await screen.findByRole("button", { name: "Executing…" });
+      fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      await screen.findByRole("button", { name: "Execute" });
+
+      let finishOpen: (() => void) | undefined;
+      openVaultMock.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishOpen = resolve;
+          }),
+      );
+      fireEvent.change(screen.getByLabelText("Vault path"), {
+        target: { value: ".game-media-vault" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      invokeMock.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
+      });
+
+      // The backend still has the other vault open.
+      expect(invokeMock).not.toHaveBeenCalledWith("get_acquisition_run", expect.anything());
+      await act(async () => finishOpen?.());
+      await act(async () => {
+        vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
+      });
+      expect(invokeMock).toHaveBeenCalledWith("get_acquisition_run", { run_id: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let an execution finishing in another vault discard this vault's runs", async () => {
+    let finishExecution: (() => void) | undefined;
+    let finishOtherListing: ((runs: unknown[]) => void) | undefined;
+    let otherVaultOpened = false;
+    openVaultMock.mockImplementation((args: { vault_root: string }) => {
+      otherVaultOpened = args.vault_root === "other-vault";
+      return Promise.resolve();
+    });
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        if (otherVaultOpened && finishOtherListing === undefined) {
+          return new Promise((resolve) => {
+            finishOtherListing = resolve;
+          });
+        }
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise<void>((resolve) => {
+          finishExecution = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishExecution).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(finishOtherListing).toBeDefined());
+
+    await act(async () => finishExecution?.());
+    await act(async () => finishOtherListing?.([{ ...startedRun, id: 5 }]));
+
+    expect(await screen.findByRole("article", { name: "Run #5" })).toBeInTheDocument();
+  });
+
+  it("does not let progress polls discard a full run list refresh", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const secondRun = { ...startedRun, id: 2 };
+      let finishListing: ((runs: unknown[]) => void) | undefined;
+      let paused = false;
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "list_acquisition_runs") {
+          if (paused) {
+            return new Promise((resolve) => {
+              finishListing = resolve;
+            });
+          }
+          return Promise.resolve([startedRun, secondRun]);
+        }
+        if (command === "pause_acquisition_run") {
+          paused = true;
+          return Promise.resolve({ ...secondRun, status: "paused" });
+        }
+        if (command === "get_acquisition_run") {
+          return Promise.resolve({ ...startedRun, completed_work: 2 });
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      });
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      await screen.findByRole("article", { name: "Run #2" });
+      fireEvent.click(screen.getAllByRole("button", { name: "Execute" })[0]);
+      fireEvent.click(screen.getAllByRole("button", { name: "Pause" })[1]);
+      await act(async () => {});
+      expect(finishListing).toBeDefined();
+
+      // A poll of the executing run starts and settles while the full refresh is pending.
+      await act(async () => {
+        vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
+      });
+      await act(async () =>
+        finishListing?.([
+          { ...startedRun, completed_work: 2 },
+          { ...secondRun, status: "paused" },
+        ]),
+      );
+
+      expect(screen.getByText("Paused")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a run action that succeeded even when the run list cannot be refreshed", async () => {
+    let paused = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return paused
+          ? Promise.reject({ kind: "external", message: "catalog busy" })
+          : Promise.resolve([startedRun]);
+      }
+      if (command === "pause_acquisition_run") {
+        paused = true;
+        return Promise.resolve({ ...startedRun, status: "paused" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+
+    expect(await screen.findByText("Paused")).toBeInTheDocument();
+    expect(
+      screen.getByText("Run #1 is paused, but the run list could not be refreshed: catalog busy"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps another vault's run action pending when an older one finishes", async () => {
+    const pauses: Array<() => void> = [];
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "pause_acquisition_run") {
+        return new Promise<void>((resolve) => pauses.push(() => resolve()));
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(pauses).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(pauses).toHaveLength(2));
+    await act(async () => pauses[0]());
+
+    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+  });
+
+  it("refreshes run counts while a run executes", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let completed = 0;
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "list_acquisition_runs") {
+          return Promise.resolve([startedRun]);
+        }
+        if (command === "get_acquisition_run") {
+          return Promise.resolve({ ...startedRun, completed_work: completed });
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      });
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+      fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+
+      completed = 3;
+      await act(async () => {
+        vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
+      });
+
+      expect(
+        await screen.findByText("0 queued · 0 awaiting review · 3 completed"),
+      ).toBeInTheDocument();
+      expect(invokeMock).toHaveBeenCalledWith("get_acquisition_run", { run_id: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes runs after a review decision", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve([reviewItem]);
+      }
+      if (command === "resolve_review_item") {
+        return Promise.resolve({ ...reviewItem, decision: { decision: "reject" }, status: "rejected" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    invokeMock.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("list_acquisition_runs"));
+  });
+
+  it("lists the runs when Runs is opened while the vault loads", async () => {
+    let finishOpen: (() => void) | undefined;
+    openVaultMock.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishOpen = resolve;
+        }),
+    );
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    await act(async () => finishOpen?.());
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+  });
+
+  it("keeps the newest run list when refreshes finish out of order", async () => {
+    const listings: Array<(runs: unknown[]) => void> = [];
+    const secondRun = { ...startedRun, id: 2 };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        if (listings.length === 0) {
+          listings.push(() => {});
+          return Promise.resolve([startedRun, secondRun]);
+        }
+        return new Promise((resolve) => listings.push(resolve));
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    await screen.findByRole("article", { name: "Run #2" });
+    const [pauseFirst, pauseSecond] = screen.getAllByRole("button", { name: "Pause" });
+
+    fireEvent.click(pauseFirst);
+    await waitFor(() => expect(listings).toHaveLength(2));
+    fireEvent.click(pauseSecond);
+    await waitFor(() => expect(listings).toHaveLength(3));
+    await act(async () =>
+      listings[2]([
+        { ...startedRun, status: "paused" },
+        { ...secondRun, status: "paused" },
+      ]),
+    );
+    await act(async () => listings[1]([{ ...startedRun, status: "paused" }, secondRun]));
+
+    expect(screen.getAllByText("Paused")).toHaveLength(2);
+  });
+
+  it("keeps the newest library when acquisition refreshes finish out of order", async () => {
+    const libraries: Array<(entries: unknown[]) => void> = [];
+    const secondRun = { ...startedRun, id: 2 };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun, secondRun]);
+      }
+      if (command === "list_library" && libraries.length < 3) {
+        if (libraries.length === 0) {
+          libraries.push(() => {});
+          return Promise.resolve([]);
+        }
+        return new Promise((resolve) => libraries.push(resolve));
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await screen.findByRole("article", { name: "Run #2" });
+    const [executeFirst, executeSecond] = screen.getAllByRole("button", { name: "Execute" });
+
+    fireEvent.click(executeFirst);
+    await waitFor(() => expect(libraries).toHaveLength(2));
+    fireEvent.click(executeSecond);
+    await waitFor(() => expect(libraries).toHaveLength(3));
+    await act(async () => libraries[2]([entry]));
+    await act(async () => libraries[1]([]));
+
+    expect(screen.getByRole("button", { name: "Library (1)" })).toBeInTheDocument();
+  });
+
+  it("shows a started run even when the run list cannot be refreshed", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "start_acquisition_run") {
+        return Promise.resolve(startedRun);
+      }
+      if (command === "list_acquisition_runs") {
+        return Promise.reject({ kind: "external", message: "catalog busy" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Run #1 started, but the run list could not be refreshed: catalog busy"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not report a start failure in another vault", async () => {
+    let failStart: ((reason: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "start_acquisition_run") {
+        return new Promise((_resolve, reject) => {
+          failStart = reject;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+    await waitFor(() => expect(failStart).toBeDefined());
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    await act(async () => failStart?.({ kind: "external", message: "catalog busy" }));
+
+    expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
+  });
+
+  it("does not report a run list failure in another vault", async () => {
+    let failListing: ((reason: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs" && failListing === undefined) {
+        return new Promise((_resolve, reject) => {
+          failListing = reject;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    await waitFor(() => expect(failListing).toBeDefined());
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "other-vault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load vault" })).toBeEnabled());
+    await act(async () => failListing?.({ kind: "external", message: "catalog busy" }));
+
+    expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
+  });
+
+  it("lists the runs of a vault loaded from the Runs view", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+  });
+
+  it("asks for a vault before starting an acquisition", async () => {
+    invokeMock.mockResolvedValue([]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(
+      await screen.findByText("Load a vault before starting an acquisition."),
+    ).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("start_acquisition_run", expect.anything());
   });
 });

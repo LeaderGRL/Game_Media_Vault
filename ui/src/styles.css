@@ -402,3 +402,149 @@ input:focus {
     gap: 3px;
   }
 }
+
+textarea,
+select {
+  border: 1px solid #343b49;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #f4f7fb;
+  background: #171b22;
+  font: inherit;
+  outline: none;
+}
+
+textarea:focus,
+select:focus {
+  border-color: #6f8cff;
+}
+
+.acquire-form {
+  display: grid;
+  gap: 18px;
+  border: 1px solid #292f3a;
+  border-radius: 12px;
+  padding: 22px;
+  background: #151920;
+}
+
+.acquire-form fieldset {
+  margin: 0;
+  border: 1px solid #252b35;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.acquire-form legend {
+  color: #8e98aa;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.acquire-targets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.acquire-targets label {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  color: #c3cad6;
+  font-size: 14px;
+}
+
+.asset-types {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.asset-family {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #c3cad6;
+  font-size: 14px;
+}
+
+.choice input {
+  flex: none;
+}
+
+.choice.family {
+  color: #f4f7fb;
+  font-weight: 700;
+}
+
+.acquire-form > button {
+  justify-self: end;
+}
+
+.run-list {
+  display: grid;
+  gap: 14px;
+}
+
+.run-card {
+  border: 1px solid #292f3a;
+  border-radius: 12px;
+  padding: 18px 22px;
+  background: #151920;
+}
+
+.run-heading,
+.run-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.run-heading {
+  justify-content: space-between;
+}
+
+.run-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.run-status {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #242a35;
+}
+
+.run-status-running {
+  color: #9fd3ff;
+}
+
+.run-status-completed {
+  color: #8ee0a8;
+}
+
+.run-status-cancelled {
+  color: #f1a1a1;
+}
+
+.run-counts {
+  color: #c3cad6;
+  font-size: 14px;
+}
+
+.run-actions {
+  justify-content: flex-end;
+  border-top: 1px solid #252b35;
+  padding-top: 14px;
+}

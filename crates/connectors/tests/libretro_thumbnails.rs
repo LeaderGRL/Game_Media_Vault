@@ -46,6 +46,17 @@ impl HttpTransport for FixtureTransport {
     }
 }
 
+/// Lets a test keep the transport to inspect the requests a connector made.
+impl HttpTransport for &FixtureTransport {
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
+        (**self).get_bytes(url)
+    }
+
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        (**self).get_stream(url)
+    }
+}
+
 fn request(asset_types: Vec<AssetTypeSelector>) -> AcquisitionRequest {
     AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
         sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
@@ -278,6 +289,12 @@ fn request_draft() -> AcquisitionRequestDraft {
     }
 }
 
+fn request_with(change: fn(&mut AcquisitionRequestDraft)) -> AcquisitionRequest {
+    let mut draft = request_draft();
+    change(&mut draft);
+    AcquisitionRequest::try_from_draft(draft).unwrap()
+}
+
 #[test]
 fn candidates_carry_the_release_fields_encoded_in_the_no_intro_thumbnail_name() {
     let candidate = discover_one("Tetris (World) (Rev 1)");
@@ -299,4 +316,54 @@ fn untagged_thumbnail_names_keep_an_unknown_region_and_standard_edition() {
     assert_eq!(candidate.game_title, "Homebrew Collection");
     assert_eq!(candidate.region, "Unknown");
     assert_eq!(candidate.edition_name, "Standard");
+}
+
+#[test]
+fn explains_the_requests_it_cannot_execute_before_any_discovery() {
+    let transport = FixtureTransport::default();
+    let connector = LibretroThumbnailsConnector::with_transport(&transport);
+    let base = request(vec![AssetTypeSelector::BoxFront]);
+
+    assert_eq!(connector.unsupported_request_reason(&base).unwrap(), None);
+    transport.requests.borrow_mut().clear();
+    for (request, topic) in [
+        (
+            request_with(|draft| draft.games = GameSelection::All),
+            "game selection",
+        ),
+        (
+            request_with(|draft| draft.regions = vec!["World".to_owned()]),
+            "region",
+        ),
+        (
+            request_with(|draft| draft.languages = vec!["fr".to_owned()]),
+            "language",
+        ),
+    ] {
+        let reason = connector
+            .unsupported_request_reason(&request)
+            .unwrap()
+            .unwrap();
+        assert!(reason.contains(topic), "{reason}");
+    }
+    // Selections Libretro can never satisfy are refused without reaching the source.
+    assert!(transport.requests.borrow().is_empty());
+}
+
+#[test]
+fn refuses_platforms_without_a_libretro_repository_before_a_run_starts() {
+    let connector = LibretroThumbnailsConnector::with_transport(FixtureTransport::default());
+    let request = request_with(|draft| {
+        draft.platforms = vec![
+            "Nintendo - Nintendo Entertainment System".to_owned(),
+            "Nintendo - Famicom Disk Sytem".to_owned(),
+        ];
+    });
+
+    let reason = connector
+        .unsupported_request_reason(&request)
+        .unwrap()
+        .unwrap();
+
+    assert!(reason.contains("Nintendo - Famicom Disk Sytem"), "{reason}");
 }
