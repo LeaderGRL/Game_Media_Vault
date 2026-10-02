@@ -1,0 +1,146 @@
+mod support;
+
+use game_media_vault_application::{
+    ApplicationError, ConnectorPort, RunRepositoryPort, acquire_run_with_connectors,
+    start_acquisition_run_with_connectors,
+};
+use game_media_vault_domain::{
+    AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus, AssetCandidate, AssetType,
+    AssetTypeSelector, ImportedAsset, SourceId, SourceSelection,
+};
+use support::*;
+
+const SNAPS: &str = "snap-source";
+
+fn screenshot(title: &str) -> AssetCandidate {
+    AssetCandidate {
+        asset_type: AssetType::Screenshot,
+        source_id: SourceId::from(SNAPS),
+        source_asset_label: Some("Named_Snaps".to_owned()),
+        source_url: format!("https://snaps.invalid/{title}.png"),
+        ..candidate(title)
+    }
+}
+
+fn snap_connector(candidates: Vec<AssetCandidate>) -> FakeConnector {
+    FakeConnector {
+        source_id: SNAPS,
+        asset_types: vec![AssetType::Screenshot],
+        ..FakeConnector::new(candidates)
+    }
+}
+
+/// Box Fronts and Screenshots from whichever Sources provide them.
+fn auto_draft() -> AcquisitionRequestDraft {
+    AcquisitionRequestDraft {
+        sources: SourceSelection::Auto,
+        asset_types: vec![AssetTypeSelector::BoxFront, AssetTypeSelector::Screenshot],
+        ..request_draft()
+    }
+}
+
+fn registry<'a>(connectors: &[&'a FakeConnector]) -> Vec<&'a dyn ConnectorPort> {
+    connectors
+        .iter()
+        .map(|connector| *connector as &dyn ConnectorPort)
+        .collect()
+}
+
+fn start(
+    vault: &FakeVault,
+    draft: AcquisitionRequestDraft,
+    connectors: &[&FakeConnector],
+) -> Result<AcquisitionRun, ApplicationError> {
+    start_acquisition_run_with_connectors(vault, draft, &registry(connectors))
+}
+
+fn execute(
+    vault: &FakeVault,
+    connectors: &[&FakeConnector],
+    run_id: i64,
+) -> Result<Vec<ImportedAsset>, ApplicationError> {
+    acquire_run_with_connectors(
+        vault,
+        vault,
+        vault,
+        &FakeStore::default(),
+        &registry(connectors),
+        run_id,
+        matching_policy(),
+    )
+}
+
+#[test]
+fn an_auto_run_acquires_each_requested_type_from_the_source_that_provides_it() {
+    let smb = candidate("Super Mario Bros.");
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let boxes = FakeConnector::new(vec![smb.clone()]);
+    let snaps = snap_connector(vec![snap.clone()]);
+    let run = start(&vault, auto_draft(), &[&boxes, &snaps]).unwrap();
+
+    let imported = execute(&vault, &[&boxes, &snaps], run.id).unwrap();
+
+    assert_eq!(imported.len(), 2);
+    assert_eq!(boxes.downloads.borrow().as_slice(), [smb.source_url]);
+    assert_eq!(snaps.downloads.borrow().as_slice(), [snap.source_url]);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn an_explicit_run_executes_only_its_selected_sources() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let boxes = FakeConnector::new(vec![smb]);
+    let snaps = snap_connector(vec![screenshot("Super Mario Bros.")]);
+    let run = start(&vault, request_draft(), &[&boxes, &snaps]).unwrap();
+
+    execute(&vault, &[&boxes, &snaps], run.id).unwrap();
+
+    assert_eq!(*snaps.discover_calls.borrow(), 0);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn a_source_whose_discovery_fails_leaves_the_others_progressing() {
+    let smb = candidate("Super Mario Bros.");
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let failing = FakeConnector {
+        discovery_fails: true,
+        ..FakeConnector::new(Vec::new())
+    };
+    let snaps = snap_connector(vec![snap.clone()]);
+    let run = start(&vault, auto_draft(), &[&failing, &snaps]).unwrap();
+
+    let error = execute(&vault, &[&failing, &snaps], run.id).unwrap_err();
+
+    assert!(matches!(error, ApplicationError::Port(_)), "{error}");
+    assert_eq!(snaps.downloads.borrow().as_slice(), [snap.source_url]);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Running);
+
+    // The next execution discovers only the Source that failed.
+    let boxes = FakeConnector::new(vec![smb.clone()]);
+    let resumed_snaps = snap_connector(Vec::new());
+    let imported = execute(&vault, &[&boxes, &resumed_snaps], run.id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(*resumed_snaps.discover_calls.borrow(), 0);
+    assert_eq!(boxes.downloads.borrow().as_slice(), [smb.source_url]);
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn a_run_no_selected_source_can_serve_is_never_persisted() {
+    let vault = FakeVault::default();
+    let boxes = FakeConnector::new(Vec::new());
+
+    // No registered Source acquires Screenshots.
+    let error = start(&vault, auto_draft(), &[&boxes]).unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::UncoveredAssetTypes { .. }),
+        "{error}"
+    );
+    assert!(vault.list_runs().unwrap().is_empty());
+}

@@ -821,6 +821,7 @@ impl ObjectStorePort for FakeStore {
 }
 
 pub struct FakeConnector {
+    pub source_id: &'static str,
     pub candidates: Vec<AssetCandidate>,
     pub discovery_fails: bool,
     pub failing_downloads: BTreeSet<String>,
@@ -837,6 +838,7 @@ pub struct FakeConnector {
 impl FakeConnector {
     pub fn new(candidates: Vec<AssetCandidate>) -> Self {
         Self {
+            source_id: SOURCE_ID,
             candidates,
             discovery_fails: false,
             failing_downloads: BTreeSet::new(),
@@ -851,7 +853,7 @@ impl FakeConnector {
 
 impl ConnectorPort for FakeConnector {
     fn source_id(&self) -> &'static str {
-        SOURCE_ID
+        self.source_id
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {

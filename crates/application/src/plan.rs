@@ -49,48 +49,10 @@ pub fn plan_acquisition(
     request: &AcquisitionRequest,
     connectors: &[&dyn ConnectorPort],
 ) -> Result<AcquisitionPlan, ApplicationError> {
-    if let Some(reason) = request
-        .quality()
-        .and_then(QualityRequirements::unsupported_requirement)
-    {
-        return Err(ApplicationError::UnsupportedRequest(reason));
-    }
-    if request.limits() != &AcquisitionLimits::default() {
-        return Err(ApplicationError::UnsupportedRequest(
-            "acquisition limits are not supported yet",
-        ));
-    }
-    let selected = match request.sources() {
-        SourceSelection::Auto => connectors.to_vec(),
-        SourceSelection::Explicit(source_ids) => source_ids
-            .iter()
-            .map(|source_id| {
-                connectors
-                    .iter()
-                    .copied()
-                    .find(|connector| connector.source_id() == source_id)
-                    .ok_or_else(|| ApplicationError::UnsupportedConnectorPlan {
-                        source_id: source_id.clone(),
-                        reason: "no connector is registered for this source".to_owned(),
-                    })
-            })
-            .collect::<Result<_, _>>()?,
-    };
-
-    let mut capable = Vec::new();
-    let mut excluded = Vec::new();
-    for connector in selected {
-        match capable_asset_types(request, connector) {
-            Ok(asset_types) => capable.push((connector, asset_types)),
-            Err(reason) => excluded.push(excluded_source(connector, reason)),
-        }
-    }
-    let capable_types: Vec<AssetType> = capable
-        .iter()
-        .flat_map(|(_, asset_types)| asset_types.iter().copied())
-        .collect();
-    ensure_covered(request, &capable_types, &excluded)?;
-
+    let CapableSources {
+        sources: capable,
+        mut excluded,
+    } = capable_sources(request, connectors)?;
     let mut sources = Vec::new();
     for (connector, asset_types) in capable {
         match connector.unsupported_request_reason(request)? {
@@ -124,6 +86,64 @@ pub fn plan_acquisition(
         excluded,
         coverage,
     })
+}
+
+/// The selected Sources whose capabilities serve `request`, each with the requested Asset Types
+/// it acquires, before any of them is consulted.
+pub(crate) struct CapableSources<'a> {
+    pub(crate) sources: Vec<(&'a dyn ConnectorPort, Vec<AssetType>)>,
+    pub(crate) excluded: Vec<ExcludedSource>,
+}
+
+/// Selects the Sources of `request` among `connectors` by their capabilities alone. Refuses
+/// requirements the engine cannot apply, selected Sources without a connector, and requested
+/// selectors no capable Source acquires.
+pub(crate) fn capable_sources<'a>(
+    request: &AcquisitionRequest,
+    connectors: &[&'a dyn ConnectorPort],
+) -> Result<CapableSources<'a>, ApplicationError> {
+    if let Some(reason) = request
+        .quality()
+        .and_then(QualityRequirements::unsupported_requirement)
+    {
+        return Err(ApplicationError::UnsupportedRequest(reason));
+    }
+    if request.limits() != &AcquisitionLimits::default() {
+        return Err(ApplicationError::UnsupportedRequest(
+            "acquisition limits are not supported yet",
+        ));
+    }
+    let selected: Vec<&dyn ConnectorPort> = match request.sources() {
+        SourceSelection::Auto => connectors.to_vec(),
+        SourceSelection::Explicit(source_ids) => source_ids
+            .iter()
+            .map(|source_id| {
+                connectors
+                    .iter()
+                    .copied()
+                    .find(|connector| connector.source_id() == source_id)
+                    .ok_or_else(|| ApplicationError::UnsupportedConnectorPlan {
+                        source_id: source_id.clone(),
+                        reason: "no connector is registered for this source".to_owned(),
+                    })
+            })
+            .collect::<Result<_, _>>()?,
+    };
+
+    let mut sources = Vec::new();
+    let mut excluded = Vec::new();
+    for connector in selected {
+        match capable_asset_types(request, connector) {
+            Ok(asset_types) => sources.push((connector, asset_types)),
+            Err(reason) => excluded.push(excluded_source(connector, reason)),
+        }
+    }
+    let capable_types: Vec<AssetType> = sources
+        .iter()
+        .flat_map(|(_, asset_types)| asset_types.iter().copied())
+        .collect();
+    ensure_covered(request, &capable_types, &excluded)?;
+    Ok(CapableSources { sources, excluded })
 }
 
 /// The requested Asset Types `connector` can acquire, or why its Source is left out without

@@ -13,7 +13,7 @@ mod review;
 mod runs;
 mod verify;
 
-pub use acquisition::{acquire_run_with_connector, start_acquisition_run_for_connector};
+pub use acquisition::{acquire_run_with_connectors, start_acquisition_run_with_connectors};
 pub use derived::{
     DerivationFailure, DerivationSummary, DerivativeRepositoryPort, DerivedStorePort,
     MediaTransformPort, OriginalObject, derive_assets,

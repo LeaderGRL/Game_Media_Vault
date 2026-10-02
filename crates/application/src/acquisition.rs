@@ -1,17 +1,17 @@
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
-    AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch,
-    ConnectorCapabilities, ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy,
-    NewReviewItem, PersistAsset, QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem,
-    ReviewStatus, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
-    match_asset_candidate_to_release, review_matches_for_asset_candidate,
+    AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
+    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, ImportedAsset,
+    LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
+    QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, StoredObject,
+    ValidatedMatchingPolicy, confirmed_asset_candidate_match, match_asset_candidate_to_release,
+    review_matches_for_asset_candidate,
 };
 use url::Url;
 
 use crate::{
     ApplicationError, CandidateAssetOutcome, CatalogPort, ConnectorPort, ObjectStorePort,
     ParkedReview, ReviewRepositoryPort, RunRepositoryPort, build_acquisition_request,
-    candidate_identity, load_acquisition_run,
+    candidate_identity, load_acquisition_run, plan::capable_sources, plan_acquisition,
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -23,7 +23,7 @@ struct Acquisition<'a> {
     catalog: &'a dyn CatalogPort,
     reviews: &'a dyn ReviewRepositoryPort,
     object_store: &'a dyn ObjectStorePort,
-    connector: &'a dyn ConnectorPort,
+    connectors: &'a [&'a dyn ConnectorPort],
     run_id: i64,
     matching_policy: ValidatedMatchingPolicy,
     releases: Vec<LibraryEntry>,
@@ -36,31 +36,44 @@ enum Step {
     Retry,
 }
 
-/// Executes a running Acquisition Run with one Connector.
+/// Executes a running Acquisition Run with the registered `connectors`, one per Source.
 ///
-/// The Source is discovered once per run: its candidates are persisted as queued work, so
-/// resuming never rediscovers. Each queued candidate is matched against the library and is
+/// Each selected Source whose capabilities serve the request is discovered once per run: its
+/// candidates are persisted as queued work, so resuming never rediscovers it. Sources discover
+/// independently: one that refuses the plan or fails to discover leaves the others' work to
+/// run, keeps the run running, and its error is returned once the queued work is done. Each
+/// queued candidate is matched against the library through its own Source's connector and is
 /// either imported, left unattached, or parked on its Review Item until a human decides.
-pub fn acquire_run_with_connector(
+pub fn acquire_run_with_connectors(
     runs: &dyn RunRepositoryPort,
     reviews: &dyn ReviewRepositoryPort,
     catalog: &dyn CatalogPort,
     object_store: &dyn ObjectStorePort,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
     run_id: i64,
     matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
     let run = load_acquisition_run(runs, run_id)?;
+    let mut source_failure = None;
     match run.status {
         AcquisitionRunStatus::Running => {
-            let capabilities = validate_connector_plan(&run.request, connector)?;
-            if !runs.has_discovered(run_id, connector.source_id())? {
-                check_source_plan(&run.request, connector)?;
-                let work = discover_work(&run.request, connector, &capabilities)?;
-                // A cancellation or completion that won the race while discovering stops quietly.
-                if !runs.record_discovery(run_id, connector.source_id(), &work)? {
-                    return Ok(Vec::new());
+            let capable = capable_sources(&run.request, connectors)?;
+            for (connector, asset_types) in capable.sources {
+                if runs.has_discovered(run_id, connector.source_id())? {
+                    continue;
+                }
+                match discover_source(&run.request, connector, &asset_types) {
+                    Ok(work) => {
+                        // A cancellation or completion that won the race while discovering
+                        // stops quietly.
+                        if !runs.record_discovery(run_id, connector.source_id(), &work)? {
+                            return Ok(Vec::new());
+                        }
+                    }
+                    Err(error) => {
+                        source_failure.get_or_insert(error);
+                    }
                 }
             }
         }
@@ -75,7 +88,7 @@ pub fn acquire_run_with_connector(
         catalog,
         reviews,
         object_store,
-        connector,
+        connectors,
         run_id,
         matching_policy,
         releases: catalog.list_library()?,
@@ -88,6 +101,10 @@ pub fn acquire_run_with_connector(
             if let Some(imported) = acquisition.process(&work)? {
                 imported_assets.push(imported);
             }
+        }
+        // A Source left undiscovered keeps the run running for a later execution.
+        if let Some(error) = source_failure.take() {
+            return Err(error);
         }
         if runs.compare_and_set_run_status(
             run_id,
@@ -105,82 +122,38 @@ pub fn acquire_run_with_connector(
     Ok(imported_assets)
 }
 
-/// Starts an Acquisition Run only if `connector` can execute it, so runs that would fail on
-/// every execution are never persisted.
-pub fn start_acquisition_run_for_connector(
+/// Starts an Acquisition Run only if the registered `connectors` can plan it, so runs that
+/// would fail on every execution are never persisted.
+pub fn start_acquisition_run_with_connectors(
     runs: &dyn RunRepositoryPort,
     input: AcquisitionRequestDraft,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
 ) -> Result<AcquisitionRun, ApplicationError> {
     let request = build_acquisition_request(input)?;
-    validate_connector_plan(&request, connector)?;
-    check_source_plan(&request, connector)?;
+    plan_acquisition(&request, connectors)?;
     Ok(runs.create_run(request)?)
 }
 
-fn validate_connector_plan(
+/// Discovers the work of one Source once its connector accepts the plan, which may consult the
+/// Source. Only Sources not yet discovered need it: a persisted snapshot executes without them.
+fn discover_source(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
-) -> Result<ConnectorCapabilities, ApplicationError> {
-    let source_id = connector.source_id();
-    if !request.selects_source(source_id) {
-        return Err(ApplicationError::ConnectorNotSelected {
-            source_id: source_id.to_owned(),
-        });
-    }
-    let capabilities = connector.capabilities();
-    if !capabilities.direct_media_download {
-        return Err(ApplicationError::ConnectorCannotDownload {
-            source_id: source_id.to_owned(),
-        });
-    }
-    let unsupported = |reason: &str| ApplicationError::UnsupportedConnectorPlan {
-        source_id: source_id.to_owned(),
-        reason: reason.to_owned(),
-    };
-    if !request.selects_only_source(source_id) {
-        return Err(unsupported(
-            "this execution path requires one explicitly selected source",
-        ));
-    }
-    if !request.requested_asset_types_supported_by(&capabilities.asset_types) {
-        return Err(unsupported(
-            "one or more requested asset types are not supported by this connector",
-        ));
-    }
-    if let Some(reason) = request
-        .quality()
-        .and_then(QualityRequirements::unsupported_requirement)
-    {
-        return Err(unsupported(reason));
-    }
-    if request.limits() != &AcquisitionLimits::default() {
-        return Err(unsupported(
-            "acquisition limits are not supported by this execution path",
-        ));
-    }
-    Ok(capabilities)
-}
-
-/// Asks the connector whether its Source can satisfy the plan, which may consult the Source.
-/// Only plans not yet discovered need it: a persisted snapshot executes without the Source.
-fn check_source_plan(
-    request: &AcquisitionRequest,
-    connector: &dyn ConnectorPort,
-) -> Result<(), ApplicationError> {
-    match connector.unsupported_request_reason(request)? {
-        Some(reason) => Err(ApplicationError::UnsupportedConnectorPlan {
+    asset_types: &[AssetType],
+) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
+    if let Some(reason) = connector.unsupported_request_reason(request)? {
+        return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
             reason,
-        }),
-        None => Ok(()),
+        });
     }
+    discover_work(request, connector, asset_types)
 }
 
 fn discover_work(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
-    capabilities: &ConnectorCapabilities,
+    asset_types: &[AssetType],
 ) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
     let source_id = connector.source_id();
     let mut work = Vec::new();
@@ -191,9 +164,8 @@ fn discover_work(
                 candidate_source_id: candidate.source_id.as_str().to_owned(),
             });
         }
-        if !request.requests_asset_type(candidate.asset_type)
-            || !capabilities.asset_types.contains(&candidate.asset_type)
-        {
+        // Only the requested types this Source acquires were planned from it.
+        if !asset_types.contains(&candidate.asset_type) {
             continue;
         }
         ensure_catalog_safe_locator(source_id, &candidate)?;
@@ -227,16 +199,28 @@ fn ensure_catalog_safe_locator(
 }
 
 impl Acquisition<'_> {
+    /// The connector of the Source that discovered `work`.
+    fn connector_for(
+        &self,
+        work: &AcquisitionWorkItem,
+    ) -> Result<&dyn ConnectorPort, ApplicationError> {
+        let source_id = work.candidate.source_id.as_str();
+        self.connectors
+            .iter()
+            .copied()
+            .find(|connector| connector.source_id() == source_id)
+            .ok_or_else(|| ApplicationError::UnsupportedConnectorPlan {
+                source_id: source_id.to_owned(),
+                reason: "no connector is registered for this source".to_owned(),
+            })
+    }
+
     fn process(
         &self,
         work: &AcquisitionWorkItem,
     ) -> Result<Option<ImportedAsset>, ApplicationError> {
-        if work.candidate.source_id.as_str() != self.connector.source_id() {
-            return Err(ApplicationError::ConnectorCandidateSourceMismatch {
-                connector_source_id: self.connector.source_id().to_owned(),
-                candidate_source_id: work.candidate.source_id.as_str().to_owned(),
-            });
-        }
+        // Work whose Source has no connector anymore stays queued until one is registered.
+        self.connector_for(work)?;
         let mut contended_review_item_id = None;
         for _ in 0..REVIEW_RACE_ATTEMPTS {
             let review_item = self.reviews.find_review_item(&work.key)?;
@@ -375,7 +359,7 @@ impl Acquisition<'_> {
     }
 
     fn store_original(&self, work: &AcquisitionWorkItem) -> Result<StoredObject, ApplicationError> {
-        let mut stream = self.connector.download(&work.candidate)?;
+        let mut stream = self.connector_for(work)?.download(&work.candidate)?;
         Ok(self.object_store.store_original(stream.as_mut())?)
     }
 

@@ -2,8 +2,8 @@ mod support;
 
 use game_media_vault_application::{
     ApplicationError, ErrorKind, ReviewRepositoryPort, RunRepositoryPort,
-    acquire_run_with_connector, candidate_identity, resolve_review_item,
-    start_acquisition_run_for_connector,
+    acquire_run_with_connectors, candidate_identity, resolve_review_item,
+    start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
@@ -20,12 +20,12 @@ fn execute_with(
     run_id: i64,
     matching_policy: MatchingPolicy,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
-    acquire_run_with_connector(
+    acquire_run_with_connectors(
         vault,
         vault,
         vault,
         &FakeStore::default(),
-        connector,
+        &[connector],
         run_id,
         matching_policy,
     )
@@ -45,12 +45,12 @@ fn execute_storing(
     run_id: i64,
     store: &FakeStore,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
-    acquire_run_with_connector(
+    acquire_run_with_connectors(
         vault,
         vault,
         vault,
         store,
-        connector,
+        &[connector],
         run_id,
         matching_policy(),
     )
@@ -662,7 +662,7 @@ fn a_family_is_refused_while_the_connector_supports_only_some_of_its_types() {
 
     assert!(matches!(
         error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
+        ApplicationError::UncoveredAssetTypes { .. }
     ));
 }
 
@@ -732,16 +732,10 @@ fn plan_error(request: AcquisitionRequest) -> ApplicationError {
 }
 
 #[test]
-fn rejects_multi_source_execution_until_a_multi_source_plan_exists() {
+fn rejects_execution_of_a_selected_source_without_a_connector() {
     let error = plan_error(request_with(|draft| {
         draft.sources = SourceSelection::Explicit(vec![SOURCE_ID.to_owned(), "other".to_owned()]);
     }));
-    assert!(matches!(
-        error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
-    ));
-
-    let error = plan_error(request_with(|draft| draft.sources = SourceSelection::Auto));
     assert!(matches!(
         error,
         ApplicationError::UnsupportedConnectorPlan { .. }
@@ -765,10 +759,7 @@ fn rejects_quality_requirements_the_engine_cannot_measure_yet() {
         },
     ] {
         let error = plan_error(request_with(|draft| draft.quality = Some(quality)));
-        assert!(matches!(
-            error,
-            ApplicationError::UnsupportedConnectorPlan { .. }
-        ));
+        assert!(matches!(error, ApplicationError::UnsupportedRequest(_)));
     }
 }
 
@@ -1060,10 +1051,7 @@ fn rejects_acquisition_limits_until_the_scheduler_slice_can_enforce_them() {
             ..AcquisitionLimits::default()
         };
     }));
-    assert!(matches!(
-        error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
-    ));
+    assert!(matches!(error, ApplicationError::UnsupportedRequest(_)));
 }
 
 #[test]
@@ -1073,7 +1061,7 @@ fn rejects_asset_types_not_declared_by_the_connector() {
     }));
     assert!(matches!(
         error,
-        ApplicationError::UnsupportedConnectorPlan { .. }
+        ApplicationError::UncoveredAssetTypes { .. }
     ));
 }
 
@@ -1263,17 +1251,17 @@ fn an_acceptance_reopening_a_run_read_as_completed_is_executed() {
 }
 
 #[test]
-fn a_run_is_started_for_a_connector_only_when_it_can_execute_it() {
+fn a_run_is_started_only_when_its_selected_sources_can_execute_it() {
     let vault = FakeVault::default();
     let connector = FakeConnector::new(Vec::new());
 
-    let error = start_acquisition_run_for_connector(
+    let error = start_acquisition_run_with_connectors(
         &vault,
         AcquisitionRequestDraft {
-            sources: SourceSelection::Auto,
+            sources: SourceSelection::Explicit(vec!["other".to_owned()]),
             ..request_draft()
         },
-        &connector,
+        &[&connector],
     )
     .unwrap_err();
 
@@ -1282,7 +1270,8 @@ fn a_run_is_started_for_a_connector_only_when_it_can_execute_it() {
         ApplicationError::UnsupportedConnectorPlan { .. }
     ));
     assert!(vault.runs.borrow().is_empty());
-    let started = start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap();
+    let started =
+        start_acquisition_run_with_connectors(&vault, request_draft(), &[&connector]).unwrap();
     assert_eq!(vault.run(started.id).status, AcquisitionRunStatus::Running);
 }
 
@@ -1295,14 +1284,15 @@ fn connector_specific_limits_are_checked_before_a_run_starts() {
     };
 
     let error =
-        start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap_err();
+        start_acquisition_run_with_connectors(&vault, request_draft(), &[&connector]).unwrap_err();
 
-    assert_eq!(
-        error,
-        ApplicationError::UnsupportedConnectorPlan {
-            source_id: SOURCE_ID.to_owned(),
-            reason: "this source needs an explicit game selection".to_owned(),
-        }
+    // The only selected Source refuses, so no Source acquires the requested Box Fronts.
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(
+        error
+            .to_string()
+            .contains("libretro-thumbnails: this source needs an explicit game selection"),
+        "{error}"
     );
     assert!(vault.runs.borrow().is_empty());
 }
@@ -1339,7 +1329,7 @@ fn a_plan_the_connector_cannot_check_starts_no_run() {
     };
 
     let error =
-        start_acquisition_run_for_connector(&vault, request_draft(), &connector).unwrap_err();
+        start_acquisition_run_with_connectors(&vault, request_draft(), &[&connector]).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::External);
     assert!(vault.runs.borrow().is_empty());

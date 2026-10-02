@@ -410,7 +410,8 @@ fn the_desktop_starts_only_runs_its_connector_can_execute() {
     let error = game_media_vault_tauri::start_acquisition_run_in_vault(
         &vault,
         AcquisitionRequestInput {
-            sources: SourceSelection::Auto,
+            // No connector is registered for this Source.
+            sources: SourceSelection::Explicit(vec!["screenscraper".to_owned()]),
             ..request_input()
         },
         &FixtureConnector,
