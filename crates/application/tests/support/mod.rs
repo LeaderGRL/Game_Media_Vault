@@ -184,6 +184,9 @@ pub struct FakeVault {
     /// Simulates a pause landing while a download thread reads the run status: the next read
     /// waits this long, then finds the run paused.
     pub pause_during_next_status_read: Shared<Option<std::time::Duration>>,
+    /// Simulates a human rejecting the first Review Item right before the Nth next read of a
+    /// Review Item, counting from one.
+    pub rejection_before_review_read: Shared<Option<usize>>,
 }
 
 impl FakeVault {
@@ -543,6 +546,24 @@ impl ReviewRepositoryPort for FakeVault {
     }
 
     fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError> {
+        let reject_now = {
+            let mut countdown = self.rejection_before_review_read.borrow_mut();
+            match *countdown {
+                Some(1) => {
+                    *countdown = None;
+                    true
+                }
+                Some(reads) => {
+                    *countdown = Some(reads - 1);
+                    false
+                }
+                None => false,
+            }
+        };
+        if reject_now {
+            let review_item_id = self.review_items.borrow()[0].id;
+            self.decide_review_item(review_item_id, ReviewDecision::Reject)?;
+        }
         Ok(self
             .review_items
             .borrow()

@@ -492,6 +492,12 @@ impl Acquisition<'_> {
                 return self.import(work, &release, candidate_match);
             }
             Route::Rejected => {
+                // A download started ahead before the rejection still reports a failing Source.
+                let ahead = self.prefetched.borrow_mut().remove(&work.key);
+                if let Some(Ok(Fetched::SourceFailed(error))) = ahead.map(|result| result.recv()) {
+                    self.source_failed.set(true);
+                    return Err(error);
+                }
                 self.runs.complete_work(self.run_id, &work.key)?;
                 return Ok(Step::Done(None));
             }
@@ -639,9 +645,10 @@ impl Acquisition<'_> {
         let ahead = self.prefetched.borrow_mut().remove(&work.key);
         let fetched = match ahead.map(|result| result.recv()) {
             Some(Ok(fetched)) => fetched,
-            // Its download thread stopped before starting it, as a stopped run does.
-            Some(Err(_)) if !self.still_running()? => return Ok(None),
-            Some(Err(_)) | None => {
+            // A download not made ahead, or whose thread stopped before starting it, starts
+            // only while the run still runs.
+            _ if !self.still_running()? => return Ok(None),
+            _ => {
                 let connector = self.connector_for(work)?;
                 let _slot = self.slots.take();
                 fetch(connector, self.object_store, &work.candidate)

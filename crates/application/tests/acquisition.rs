@@ -9,8 +9,8 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetType, AssetTypeSelector, ImportedAsset, LibraryAsset, LibraryEntry,
     MatchConfidence, MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PreferenceReason,
-    QualityRequirements, QualityShortfall, RetentionPolicy, ReviewDecision, ReviewStatus, SourceId,
-    SourceSelection,
+    QualityRequirements, QualityShortfall, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -1358,4 +1358,53 @@ fn a_run_acquires_only_the_asset_types_it_selects() {
     assert_eq!(vault.records.borrow()[0].asset_type, AssetType::Screenshot);
     // The sibling Box Front is never downloaded.
     assert_eq!(*connector.downloads.borrow(), vec![screenshot.source_url]);
+}
+
+#[test]
+fn a_pause_landing_before_a_download_the_execution_makes_itself_downloads_nothing() {
+    let (ambiguous, library) = ambiguous_candidate_and_releases();
+    let vault = FakeVault::with_library(library);
+    park_in_new_run(&vault, &ambiguous, matching_policy());
+    // A human accepts it while the next run parks it, so that run downloads it itself, after
+    // nothing downloaded it ahead; a pause lands just before.
+    *vault.human_decision_before_next_write.borrow_mut() = Some(ReviewDecision::Accept {
+        release_edition_id: 401,
+    });
+    *vault.pause_during_next_status_read.borrow_mut() = Some(std::time::Duration::from_millis(1));
+    let later_run = vault.start_run();
+    let connector = FakeConnector::new(vec![ambiguous]);
+
+    let imported = execute(&vault, &connector, later_run).unwrap();
+
+    assert!(imported.is_empty());
+    assert!(connector.downloads.borrow().is_empty());
+    let run = vault.run(later_run);
+    assert_eq!(run.status, AcquisitionRunStatus::Paused);
+    assert_eq!(run.queued_work, 1);
+}
+
+#[test]
+fn a_failed_download_ahead_of_a_rejected_candidate_still_fails_its_source() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    // A Review Item another run opened for it, which a human rejects once this execution has
+    // downloaded it ahead but before it processes it.
+    vault.review_items.borrow_mut().push(ReviewItem {
+        id: 1,
+        candidate_identity: candidate_identity(SOURCE_ID, &smb),
+        candidate: smb.clone(),
+        competing_matches: Vec::new(),
+        decision: None,
+        status: ReviewStatus::Pending,
+    });
+    *vault.rejection_before_review_read.borrow_mut() = Some(2);
+    let run_id = vault.start_run();
+    let mut connector = FakeConnector::new(vec![smb.clone()]);
+    connector.failing_downloads.insert(smb.source_url.clone());
+
+    let error = execute(&vault, &connector, run_id).unwrap_err();
+
+    assert!(matches!(error, ApplicationError::Port(_)), "{error}");
+    assert_eq!(vault.source_failures.borrow().len(), 1);
+    assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Running);
 }
