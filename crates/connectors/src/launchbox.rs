@@ -6,6 +6,8 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, BufReader, Seek},
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use game_media_vault_application::{ConnectorPort, PortError};
@@ -192,6 +194,23 @@ impl DatasetCache {
         }
     }
 
+    /// The identifier this cache gave its copy when storing it, which tells apart two copies of
+    /// the same version; none without a copy.
+    fn copy_id(&self) -> Option<String> {
+        if !self.archive().is_file() {
+            return None;
+        }
+        let recorded = fs::read(self.validators_file())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let id = recorded
+            .as_ref()
+            .and_then(|recorded| recorded.get("copy"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unidentified");
+        Some(id.to_owned())
+    }
+
     /// Waits until no other discovery of the machine refreshes the copy, and keeps the others
     /// waiting until the returned lock drops; none when the cache directory is unusable.
     fn lock(&self) -> Option<File> {
@@ -206,11 +225,14 @@ impl DatasetCache {
         Some(lock)
     }
 
-    /// Forgets the cached copy `validators` describe, so the next discovery downloads the dataset
-    /// whole. A copy another discovery stored since stays.
-    fn forget(&self, validators: &Validators) {
+    /// Forgets the cached copy `id` names, so the next discovery downloads the dataset whole. A
+    /// copy another discovery stored since, even of the same version, stays.
+    fn forget(&self, id: Option<&str>) {
+        let Some(id) = id else {
+            return;
+        };
         let _refreshing = self.lock();
-        if self.validators() != *validators {
+        if self.copy_id().as_deref() != Some(id) {
             return;
         }
         // Validators first: a copy left without them is never read again.
@@ -224,9 +246,10 @@ impl DatasetCache {
         (reads_as_archive(&copy) && copy.rewind().is_ok()).then_some(copy)
     }
 
-    /// Makes a copy of `dataset` the cached one, described by `validators`. A copy another
+    /// Makes a copy of `dataset` the cached one, described by `validators`, and returns the
+    /// identifier it gives that copy. A copy another
     /// process holds open may stay as it is.
-    fn store(&self, mut dataset: &File, validators: &Validators) -> io::Result<()> {
+    fn store(&self, mut dataset: &File, validators: &Validators) -> io::Result<String> {
         fs::create_dir_all(&self.dir)?;
         let mut staged = NamedTempFile::new_in(&self.dir)?;
         dataset.rewind()?;
@@ -239,11 +262,14 @@ impl DatasetCache {
         staged
             .persist(self.archive())
             .map_err(|error| error.error)?;
+        let id = new_copy_id();
         let recorded = serde_json::json!({
             "etag": validators.etag,
             "last_modified": validators.last_modified,
+            "copy": id,
         });
-        fs::write(self.validators_file(), recorded.to_string())
+        fs::write(self.validators_file(), recorded.to_string())?;
+        Ok(id)
     }
 }
 
@@ -307,13 +333,13 @@ where
         };
         // A copy whose metadata does not read is never read again, and a cached one is
         // downloaded whole once more.
-        cache.forget(&copy.validators);
+        cache.forget(copy.id.as_deref());
         if !copy.cached {
             return first;
         }
         let (dataset, copy) = self.download_dataset()?;
         candidates_in(dataset, request, &wanted, &image_types)
-            .inspect_err(|_| cache.forget(&copy.validators))
+            .inspect_err(|_| cache.forget(copy.id.as_deref()))
     }
 
     fn download(
@@ -338,7 +364,7 @@ where
                 spool(self.transport.get_stream(LAUNCHBOX_METADATA_URL)?)?,
                 Copy {
                     cached: false,
-                    validators: Validators::default(),
+                    id: None,
                 },
             ),
         };
@@ -360,20 +386,14 @@ where
         // Discoveries of the machine refresh the copy one at a time, each reading the validators
         // the previous one left, so a republished dataset downloads once.
         let _refreshing = cache.lock();
-        let known = cache.validators();
+        let (known, id) = (cache.validators(), cache.copy_id());
         let fetched = match self
             .transport
             .get_if_changed(LAUNCHBOX_METADATA_URL, &known)?
         {
             Fetched::Unchanged => {
                 if let Some(copy) = cache.copy() {
-                    return Ok((
-                        copy,
-                        Copy {
-                            cached: true,
-                            validators: known,
-                        },
-                    ));
+                    return Ok((copy, Copy { cached: true, id }));
                 }
                 // The copy vanished, or no longer reads as an archive, since its validators
                 // were read: it is downloaded whole again.
@@ -388,18 +408,12 @@ where
             ));
         };
         let mut dataset = spool(body)?;
-        if reads_as_archive(&dataset) {
-            // This discovery reads its own copy whether the cache keeps one or not.
-            let _ = cache.store(&dataset, &validators);
-        }
+        // This discovery reads its own copy whether the cache keeps one or not.
+        let id = reads_as_archive(&dataset)
+            .then(|| cache.store(&dataset, &validators).ok())
+            .flatten();
         dataset.rewind().map_err(buffer_failed)?;
-        Ok((
-            dataset,
-            Copy {
-                cached: false,
-                validators,
-            },
-        ))
+        Ok((dataset, Copy { cached: false, id }))
     }
 }
 
@@ -475,8 +489,18 @@ fn candidates_in(
 struct Copy {
     /// Whether it is the cached copy, rather than one just downloaded.
     cached: bool,
-    /// The validators LaunchBox sent with it.
-    validators: Validators,
+    /// The identifier the cache gave it, when the cache keeps it.
+    id: Option<String>,
+}
+
+/// An identifier no other copy stored on this machine shares.
+fn new_copy_id() -> String {
+    static STORED: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let count = STORED.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{count}", std::process::id())
 }
 
 /// Whether `dataset` opens as a ZIP archive.
@@ -764,29 +788,30 @@ mod tests {
 
     use super::*;
 
-    fn stored(cache: &DatasetCache, bytes: &[u8], etag: &str) -> Validators {
+    /// Stores `bytes` as the copy of the dataset version `etag`, returning its identifier.
+    fn stored(cache: &DatasetCache, bytes: &[u8], etag: &str) -> String {
         let mut copy = tempfile::tempfile().unwrap();
         copy.write_all(bytes).unwrap();
         let validators = Validators {
             etag: Some(etag.to_owned()),
             last_modified: None,
         };
-        cache.store(&copy, &validators).unwrap();
-        validators
+        cache.store(&copy, &validators).unwrap()
     }
 
     #[test]
     fn forgetting_a_failed_copy_keeps_the_one_another_discovery_stored_since() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DatasetCache::at(dir.path());
-        let failed = stored(&cache, b"first copy", "\"v1\"");
-        let refreshed = stored(&cache, b"second copy", "\"v2\"");
+        let failed = stored(&cache, b"damaged copy", "\"v1\"");
+        // Another discovery repairs the copy of the very same version meanwhile.
+        let repaired = stored(&cache, b"repaired copy", "\"v1\"");
 
-        cache.forget(&failed);
-        assert_eq!(cache.validators(), refreshed);
+        cache.forget(Some(&failed));
+        assert_eq!(cache.copy_id(), Some(repaired.clone()));
 
-        cache.forget(&refreshed);
+        cache.forget(Some(&repaired));
+        assert_eq!(cache.copy_id(), None);
         assert_eq!(cache.validators(), Validators::default());
-        assert!(!cache.archive().exists());
     }
 }
