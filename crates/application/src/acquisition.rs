@@ -2,11 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     io::Read,
-    sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc},
     thread,
 };
 
@@ -69,13 +65,9 @@ struct Acquisition<'a> {
     prefetched: RefCell<HashMap<String, Ahead>>,
     /// The keys of each Source's queued work as the last round read them ahead, in queue order.
     lookahead: RefCell<HashMap<String, Vec<String>>>,
-    /// The downloads the execution may run at once, shared by every download it starts.
-    slots: Arc<Slots>,
-    /// The downloads each Source may serve at once, by Source.
-    source_slots: RefCell<HashMap<String, Arc<Slots>>>,
+    /// Starts every download the execution makes, ahead or for the work it processes.
+    dispatcher: Arc<Dispatcher<'a>>,
     limits: DownloadLimits,
-    /// Set once the execution stops, so that downloads not started yet never start.
-    stopped: Arc<AtomicBool>,
 }
 
 /// A download started ahead of processing its work.
@@ -120,40 +112,136 @@ fn fetch(
     }
 }
 
-/// Download slots: no more downloads than slots run at once.
-struct Slots {
-    free: Mutex<usize>,
-    released: Condvar,
+/// Starts the downloads of an execution in the order its rounds read their work ahead, as room
+/// frees up: no more than `max_concurrent` at once, nor more than `max_per_source` from any one
+/// Source. A download waiting for room in its Source lets later downloads of other Sources start,
+/// never later ones of its own Source, and a download the execution makes itself, for the work
+/// it processes, goes before every queued one.
+struct Dispatcher<'a> {
+    state: Mutex<Dispatch<'a>>,
+    changed: Condvar,
+    limits: DownloadLimits,
 }
 
-impl Slots {
-    fn new(count: usize) -> Self {
+#[derive(Default)]
+struct Dispatch<'a> {
+    /// The downloads to start, in queue order.
+    jobs: VecDeque<Job<'a>>,
+    /// The downloads under way, by Source.
+    under_way: HashMap<&'static str, usize>,
+    /// Downloads the execution waits to make itself.
+    made_by_execution: usize,
+    workers: usize,
+    stopped: bool,
+}
+
+impl Dispatch<'_> {
+    fn has_room(&self, source_id: &str, limits: DownloadLimits) -> bool {
+        self.under_way.values().sum::<usize>() < limits.max_concurrent.max(1)
+            && self.under_way.get(source_id).copied().unwrap_or(0) < limits.max_per_source.max(1)
+    }
+}
+
+impl<'a> Dispatcher<'a> {
+    fn new(limits: DownloadLimits) -> Self {
         Self {
-            free: Mutex::new(count.max(1)),
-            released: Condvar::new(),
+            state: Mutex::new(Dispatch::default()),
+            changed: Condvar::new(),
+            limits,
         }
     }
 
-    /// Waits for a free slot and takes it until the guard drops.
-    fn take(&self) -> SlotGuard<'_> {
-        let mut free = lock(&self.free);
-        while *free == 0 {
-            free = self
-                .released
-                .wait(free)
-                .unwrap_or_else(PoisonError::into_inner);
+    fn wait<'d>(&self, state: MutexGuard<'d, Dispatch<'a>>) -> MutexGuard<'d, Dispatch<'a>> {
+        self.changed
+            .wait(state)
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queues `jobs` behind the downloads still waiting, and returns how many more workers
+    /// should start them.
+    fn queue(&self, jobs: impl IntoIterator<Item = Job<'a>>) -> usize {
+        let mut state = lock(&self.state);
+        state.jobs.extend(jobs);
+        let more = self
+            .limits
+            .max_concurrent
+            .max(1)
+            .saturating_sub(state.workers)
+            .min(state.jobs.len());
+        state.workers += more;
+        self.changed.notify_all();
+        more
+    }
+
+    /// The next download to start once there is room for it, with that room; none once the
+    /// execution stopped.
+    fn next_job(&self) -> Option<(Job<'a>, Room<'_, 'a>)> {
+        let mut state = lock(&self.state);
+        loop {
+            if state.stopped {
+                return None;
+            }
+            let next = (state.made_by_execution == 0)
+                .then(|| {
+                    state
+                        .jobs
+                        .iter()
+                        .position(|job| state.has_room(job.source_id, self.limits))
+                })
+                .flatten();
+            if let Some(job) = next.and_then(|position| state.jobs.remove(position)) {
+                *state.under_way.entry(job.source_id).or_default() += 1;
+                let source_id = job.source_id;
+                return Some((
+                    job,
+                    Room {
+                        dispatcher: self,
+                        source_id,
+                    },
+                ));
+            }
+            state = self.wait(state);
         }
-        *free -= 1;
-        SlotGuard(self)
+    }
+
+    /// Waits for room to download from `source_id` for the execution itself.
+    fn room_for(&self, source_id: &'static str) -> Room<'_, 'a> {
+        let mut state = lock(&self.state);
+        state.made_by_execution += 1;
+        while !state.has_room(source_id, self.limits) {
+            state = self.wait(state);
+        }
+        state.made_by_execution -= 1;
+        *state.under_way.entry(source_id).or_default() += 1;
+        self.changed.notify_all();
+        Room {
+            dispatcher: self,
+            source_id,
+        }
+    }
+
+    /// Starts no further download, and drops the waiting ones, whose results are never sent.
+    fn stop(&self) {
+        let mut state = lock(&self.state);
+        state.stopped = true;
+        state.jobs.clear();
+        self.changed.notify_all();
     }
 }
 
-struct SlotGuard<'a>(&'a Slots);
+/// Room for one download from a Source, freed when it drops.
+struct Room<'d, 'a> {
+    dispatcher: &'d Dispatcher<'a>,
+    source_id: &'static str,
+}
 
-impl Drop for SlotGuard<'_> {
+impl Drop for Room<'_, '_> {
     fn drop(&mut self) {
-        *lock(&self.0.free) += 1;
-        self.0.released.notify_one();
+        let mut state = lock(&self.dispatcher.state);
+        if let Some(under_way) = state.under_way.get_mut(self.source_id) {
+            *under_way -= 1;
+        }
+        self.dispatcher.changed.notify_all();
     }
 }
 
@@ -163,11 +251,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Marks the execution stopped however it ends.
-struct StopOnExit<'a>(&'a AtomicBool);
+struct StopOnExit<'d, 'a>(&'d Dispatcher<'a>);
 
-impl Drop for StopOnExit<'_> {
+impl Drop for StopOnExit<'_, '_> {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.stop();
     }
 }
 
@@ -235,10 +323,8 @@ pub fn acquire_run_with_connectors(
         source_failed: Cell::new(false),
         prefetched: RefCell::new(HashMap::new()),
         lookahead: RefCell::new(HashMap::new()),
-        slots: Arc::new(Slots::new(limits.max_concurrent)),
-        source_slots: RefCell::new(HashMap::new()),
+        dispatcher: Arc::new(Dispatcher::new(limits)),
         limits,
-        stopped: Arc::new(AtomicBool::new(false)),
     };
     thread::scope(|scope| execute(&acquisition, &run, scope))
 }
@@ -252,7 +338,7 @@ where
     'a: 'scope,
 {
     // Downloads not started yet never start once the execution stops, however it stops.
-    let _stop = StopOnExit(&acquisition.stopped);
+    let _stop = StopOnExit(&acquisition.dispatcher);
     let (runs, connectors, run_id) = (acquisition.runs, acquisition.connectors, run.id);
     let mut imported_assets = Vec::new();
     let mut source_failure = None;
@@ -720,10 +806,7 @@ impl Acquisition<'_> {
             _ if !self.still_running()? => return Ok(None),
             _ => {
                 let connector = self.connector_for(work)?;
-                // A Source's slot first, then a global one, as every download takes them.
-                let source_slots = self.source_slots(work.candidate.source_id.as_str());
-                let _source_slot = source_slots.take();
-                let _slot = self.slots.take();
+                let _room = self.dispatcher.room_for(connector.source_id());
                 fetch(connector, self.object_store, &work.candidate)
             }
         };
@@ -827,28 +910,23 @@ impl Acquisition<'_> {
 /// A download started ahead of processing.
 struct Job<'a> {
     connector: &'a dyn ConnectorPort,
+    source_id: &'static str,
     candidate: AssetCandidate,
-    /// The download slots of the candidate's Source.
-    source_slots: Arc<Slots>,
     result: mpsc::Sender<Fetched>,
 }
 
-impl<'a> Acquisition<'a> {
-    /// The download slots of `source_id`, shared by every download of that Source.
-    fn source_slots(&self, source_id: &str) -> Arc<Slots> {
-        Arc::clone(
-            self.source_slots
-                .borrow_mut()
-                .entry(source_id.to_owned())
-                .or_insert_with(|| Arc::new(Slots::new(self.limits.max_per_source))),
-        )
-    }
+/// How far a round reads each Source's queued work ahead, in multiples of its per-Source limit,
+/// so that work bound for review rarely takes the place of work it will import.
+const READ_AHEAD: usize = 4;
 
+impl<'a> Acquisition<'a> {
     /// Starts downloading, on up to `max_concurrent` threads, the media of the work the coming
     /// rounds will import: the oldest `max_per_source` queued work items of every Source
-    /// outside `failed_sources`. Work processing would not import, such as work bound for
-    /// review, is never downloaded ahead. Results are awaited when their work is processed, or
-    /// once it left the queue unprocessed.
+    /// outside `failed_sources` that processing would import, among the oldest `READ_AHEAD`
+    /// times as many. Work processing would not import, such as work bound for review, is
+    /// never downloaded ahead. Every Source's next download is queued before any Source's
+    /// further one. Results are awaited when their work is processed, or once it left the
+    /// queue unprocessed.
     fn prefetch_round<'scope>(
         &self,
         scope: &'scope thread::Scope<'scope, '_>,
@@ -857,62 +935,67 @@ impl<'a> Acquisition<'a> {
     where
         'a: 'scope,
     {
-        let mut jobs = VecDeque::new();
-        let queued = self.runs.queued_work(
-            self.run_id,
-            failed_sources,
-            self.limits.max_per_source.max(1),
-        )?;
+        let per_source = self.limits.max_per_source.max(1);
+        let queued = self
+            .runs
+            .queued_work(self.run_id, failed_sources, per_source * READ_AHEAD)?;
         let mut lookahead = self.lookahead.borrow_mut();
         lookahead.clear();
+        // Each new download, with how many downloads of its Source come before it.
+        let mut ranked: Vec<(usize, Job<'a>)> = Vec::new();
+        let mut importable: HashMap<&'static str, usize> = HashMap::new();
         for work in queued {
-            let source_id = work.candidate.source_id.as_str();
             lookahead
-                .entry(source_id.to_owned())
+                .entry(work.candidate.source_id.as_str().to_owned())
                 .or_default()
                 .push(work.key.clone());
             let connector = self
                 .connectors
                 .iter()
                 .copied()
-                .find(|connector| connector.source_id() == source_id);
+                .find(|connector| connector.source_id() == work.candidate.source_id.as_str());
             let Some(connector) = connector else {
                 continue;
             };
-            if self.prefetched.borrow().contains_key(&work.key) || !self.will_import(&work)? {
+            let source_id = connector.source_id();
+            let rank = importable.get(source_id).copied().unwrap_or(0);
+            if rank == per_source {
                 continue;
             }
+            if self.prefetched.borrow().contains_key(&work.key) {
+                importable.insert(source_id, rank + 1);
+                continue;
+            }
+            if !self.will_import(&work)? {
+                continue;
+            }
+            importable.insert(source_id, rank + 1);
             let (result, awaited) = mpsc::channel();
-            let source_slots = self.source_slots(source_id);
             let ahead = Ahead {
                 source_id: source_id.to_owned(),
                 result: awaited,
             };
             self.prefetched.borrow_mut().insert(work.key, ahead);
-            jobs.push_back(Job {
-                connector,
-                candidate: work.candidate,
-                source_slots,
-                result,
-            });
+            ranked.push((
+                rank,
+                Job {
+                    connector,
+                    source_id,
+                    candidate: work.candidate,
+                    result,
+                },
+            ));
         }
-        let workers = self.limits.max_concurrent.max(1).min(jobs.len());
-        let jobs = Arc::new(Mutex::new(jobs));
-        for _ in 0..workers {
-            let (jobs, slots, stopped) = (
-                Arc::clone(&jobs),
-                Arc::clone(&self.slots),
-                Arc::clone(&self.stopped),
-            );
+        // The sort is stable, so each rank keeps the queue order.
+        ranked.sort_by_key(|(rank, _)| *rank);
+        let more_workers = self
+            .dispatcher
+            .queue(ranked.into_iter().map(|(_, job)| job));
+        for _ in 0..more_workers {
+            let dispatcher = Arc::clone(&self.dispatcher);
             let (object_store, runs, run_id) = (self.object_store, self.runs, self.run_id);
             scope.spawn(move || {
-                while !stopped.load(Ordering::SeqCst) {
-                    let Some(job) = lock(&jobs).pop_front() else {
-                        break;
-                    };
-                    // A Source's slot first, then a global one, as every download takes them.
-                    let _source_slot = job.source_slots.take();
-                    let _slot = slots.take();
+                while let Some((job, _room)) = dispatcher.next_job() {
                     // A pause or a cancellation starts no further download, even while the
                     // execution still awaits one already under way.
                     let running = matches!(
@@ -920,9 +1003,7 @@ impl<'a> Acquisition<'a> {
                         Ok(Some(AcquisitionRunStatus::Running))
                     );
                     if !running {
-                        stopped.store(true, Ordering::SeqCst);
-                    }
-                    if stopped.load(Ordering::SeqCst) {
+                        dispatcher.stop();
                         break;
                     }
                     // The execution may have stopped awaiting this result.

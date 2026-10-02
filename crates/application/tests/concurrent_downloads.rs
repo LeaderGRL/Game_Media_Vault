@@ -17,7 +17,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, AssetType,
-    AssetTypeSelector, ConnectorCapabilities, SourceId, SourceSelection,
+    AssetTypeSelector, ConnectorCapabilities, LibraryEntry, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -482,4 +482,92 @@ fn every_sources_next_download_starts_before_any_source_looks_further_ahead() {
 
     assert_eq!(imported, Ok(3));
     assert_eq!(*started.borrow(), ["First", "Other", "Second"]);
+}
+
+#[test]
+fn a_sources_downloads_start_in_queue_order_whichever_round_read_them() {
+    let candidates: Vec<AssetCandidate> = ["First", "Second", "Third"]
+        .iter()
+        .map(|title| box_front("a", title))
+        .chain([box_front("b", "Other")])
+        .collect();
+    let vault = FakeVault::with_library(
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| release_for(candidate, index as i64 + 1))
+            .collect(),
+    );
+    let started = Shared::new(Vec::new());
+    let mut a = slow("a", candidates[..3].to_vec(), None, None);
+    let mut b = slow("b", candidates[3..].to_vec(), None, None);
+    a.started = Some(&started);
+    b.started = Some(&started);
+
+    // The second round reads Third ahead while Second, read by the first, may still wait.
+    let imported = execute(
+        &vault,
+        &[&a, &b],
+        DownloadLimits {
+            max_concurrent: 1,
+            max_per_source: 2,
+        },
+    );
+
+    assert_eq!(imported, Ok(4));
+    assert_eq!(*started.borrow(), ["First", "Other", "Second", "Third"]);
+}
+
+/// A candidate of `source_id` bound for review: it matches two editions of `title` alike.
+fn review_bound(
+    source_id: &'static str,
+    title: &str,
+    first_release: i64,
+) -> (AssetCandidate, Vec<LibraryEntry>) {
+    let candidate = AssetCandidate {
+        edition_name: "Collector".to_owned(),
+        ..box_front(source_id, title)
+    };
+    let editions = ["Standard", "Deluxe"]
+        .into_iter()
+        .zip(first_release..)
+        .map(|(edition_name, release_edition_id)| LibraryEntry {
+            edition_name: edition_name.to_owned(),
+            ..release_for(&candidate, release_edition_id)
+        })
+        .collect();
+    (candidate, editions)
+}
+
+#[test]
+fn work_bound_for_review_takes_no_place_in_a_sources_lookahead() {
+    let (first_review, mut library) = review_bound("a", "Review Game", 401);
+    let (second_review, more) = review_bound("a", "Other Review Game", 403);
+    library.extend(more);
+    let (mario, tetris) = (
+        box_front("a", "Super Mario Bros."),
+        box_front("a", "Tetris"),
+    );
+    library.extend([release_for(&mario, 1), release_for(&tetris, 2)]);
+    let vault = FakeVault::with_library(library);
+    // Each importable download waits for the other, past the work bound for review.
+    let rendezvous = Rendezvous::new(2);
+    let only = slow(
+        "a",
+        vec![first_review, mario, second_review, tetris],
+        Some(&rendezvous),
+        None,
+    );
+
+    let imported = execute(
+        &vault,
+        &[&only],
+        DownloadLimits {
+            max_concurrent: 4,
+            max_per_source: 2,
+        },
+    );
+
+    assert_eq!(imported, Ok(2));
+    assert_eq!(vault.review_items.borrow().len(), 2);
 }
