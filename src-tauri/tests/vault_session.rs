@@ -105,3 +105,21 @@ fn windows_paths_that_differ_only_in_case_open_the_same_vault() {
 
     assert_eq!(upper, lower);
 }
+
+#[cfg(unix)]
+#[test]
+fn vaults_whose_paths_are_not_unicode_keep_distinct_identities() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let temp = tempdir().unwrap();
+    let first = temp.path().join(OsStr::from_bytes(b"vault-\xff"));
+    let second = temp.path().join(OsStr::from_bytes(b"vault-\xfe"));
+    let session = VaultSession::default();
+
+    let first = session.open(&first, true).unwrap();
+    let second = session.open(&second, true).unwrap();
+
+    // A lossy encoding would give both the same replacement character.
+    assert_ne!(first, second);
+    assert!(first.starts_with('"'), "{first}");
+}
