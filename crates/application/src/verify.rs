@@ -35,12 +35,13 @@ pub trait VaultCatalogPort {
     fn unfinished_work(&self) -> Result<Vec<UnfinishedWork>, PortError>;
 }
 
-/// Why no execution will ever process a work item.
+/// Why a work item's state contradicts its run or its Review Item, so that no execution will
+/// process it. Work a cancellation abandoned is expected, never stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StaleWorkReason {
-    /// Its run was cancelled; a decision on its Review Item no longer requeues it either.
-    CancelledRun,
+    /// It is queued in a completed run, which completes only once its queue is empty.
+    CompletedRun,
     /// It waits on a Review Item a decision already closed, which should have requeued or
     /// completed it.
     ClosedReview,
@@ -55,12 +56,12 @@ pub struct StaleWork {
 
 impl UnfinishedWork {
     fn stale_reason(&self) -> Option<StaleWorkReason> {
-        if self.run_status == AcquisitionRunStatus::Cancelled {
-            return Some(StaleWorkReason::CancelledRun);
-        }
-        match self.parked_on {
-            None | Some(ReviewStatus::Pending | ReviewStatus::Deferred) => None,
-            Some(_) => Some(StaleWorkReason::ClosedReview),
+        match (self.run_status, self.parked_on) {
+            // A decision does not requeue the work of a cancelled run, which keeps it as left.
+            (AcquisitionRunStatus::Cancelled, _) => None,
+            (AcquisitionRunStatus::Completed, None) => Some(StaleWorkReason::CompletedRun),
+            (_, None | Some(ReviewStatus::Pending | ReviewStatus::Deferred)) => None,
+            (_, Some(_)) => Some(StaleWorkReason::ClosedReview),
         }
     }
 }
@@ -112,7 +113,7 @@ pub struct UnreadableObject {
 }
 
 /// Every disagreement between the catalog and the object store, in catalog and then store
-/// order, and the work its runs left that no execution will process. Verifying changes nothing.
+/// order, and the work of its runs that no execution will process. Verifying changes nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct VaultReport {
     /// Originals retained Assets reference that the store lacks.
@@ -166,8 +167,8 @@ impl ObjectFindings<'_> {
 
 /// Compares what the catalog references with what the object store holds, rehashing every
 /// referenced object. The store is listed before the catalog is read, so an object another
-/// task stores and records meanwhile is seen as referenced rather than unreferenced. Queued and
-/// parked work is reported stale when its run was cancelled or its Review Item already closed.
+/// task stores and records meanwhile is seen as referenced rather than unreferenced. Work whose
+/// state contradicts its run or Review Item is reported stale.
 pub fn verify_vault(
     catalog: &dyn VaultCatalogPort,
     store: &dyn VaultStorePort,

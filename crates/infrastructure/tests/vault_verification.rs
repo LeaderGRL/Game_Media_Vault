@@ -391,7 +391,7 @@ fn work(key: &str) -> AcquisitionWorkItem {
 }
 
 #[test]
-fn work_no_execution_will_process_is_reported_stale() {
+fn work_whose_state_contradicts_its_run_or_review_item_is_reported_stale() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");
     let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
@@ -411,16 +411,28 @@ fn work_no_execution_will_process_is_reported_stale() {
             },
         )
         .unwrap();
-    // A decision that closed the Review Item without requeueing its work.
-    rusqlite::Connection::open(vault.join("catalog.sqlite3"))
-        .unwrap()
-        .execute("UPDATE review_items SET status = 'accepted'", [])
-        .unwrap();
+    // The work a cancellation abandoned is expected.
     let cancelled = start_acquisition_run(&catalog, run_request()).unwrap();
     catalog
         .record_discovery(cancelled.id, RUN_SOURCE, &[work("abandoned")])
         .unwrap();
     cancel_acquisition_run(&catalog, cancelled.id).unwrap();
+    let completed = start_acquisition_run(&catalog, run_request()).unwrap();
+    catalog
+        .record_discovery(completed.id, RUN_SOURCE, &[work("forgotten")])
+        .unwrap();
+    // A decision that closed the Review Item without requeueing its work, and a run marked
+    // completed with work still queued, as interrupted writes could leave them.
+    let connection = rusqlite::Connection::open(vault.join("catalog.sqlite3")).unwrap();
+    connection
+        .execute("UPDATE review_items SET status = 'accepted'", [])
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE acquisition_runs SET status = 'completed' WHERE id = ?1",
+            [completed.id],
+        )
+        .unwrap();
 
     let report = verify_vault(&catalog, &store).unwrap();
 
@@ -433,9 +445,9 @@ fn work_no_execution_will_process_is_reported_stale() {
                 reason: StaleWorkReason::ClosedReview,
             },
             StaleWork {
-                run_id: cancelled.id,
-                work_key: "abandoned".to_owned(),
-                reason: StaleWorkReason::CancelledRun,
+                run_id: completed.id,
+                work_key: "forgotten".to_owned(),
+                reason: StaleWorkReason::CompletedRun,
             },
         ]
     );

@@ -322,8 +322,8 @@ fn unfinished(
 }
 
 #[test]
-fn work_no_execution_will_process_is_reported_stale() {
-    use AcquisitionRunStatus::{Cancelled, Paused, Running};
+fn work_whose_state_contradicts_its_run_or_review_item_is_reported_stale() {
+    use AcquisitionRunStatus::{Cancelled, Completed, Paused, Running};
     let vault = FakeVault {
         unfinished: vec![
             unfinished(1, Running, "queued-in-running-run", None),
@@ -335,6 +335,7 @@ fn work_no_execution_will_process_is_reported_stale() {
                 "parked-on-deferred",
                 Some(ReviewStatus::Deferred),
             ),
+            // A cancellation deliberately abandons the work its run had left.
             unfinished(3, Cancelled, "queued-in-cancelled-run", None),
             unfinished(
                 3,
@@ -342,6 +343,14 @@ fn work_no_execution_will_process_is_reported_stale() {
                 "parked-in-cancelled-run",
                 Some(ReviewStatus::Accepted),
             ),
+            // A run completes while work still awaits review, never with work queued.
+            unfinished(
+                4,
+                Completed,
+                "parked-in-completed-run",
+                Some(ReviewStatus::Pending),
+            ),
+            unfinished(4, Completed, "queued-in-completed-run", None),
             unfinished(
                 1,
                 Running,
@@ -368,8 +377,7 @@ fn work_no_execution_will_process_is_reported_stale() {
     assert_eq!(
         report.stale_work,
         [
-            stale(3, "queued-in-cancelled-run", StaleWorkReason::CancelledRun),
-            stale(3, "parked-in-cancelled-run", StaleWorkReason::CancelledRun),
+            stale(4, "queued-in-completed-run", StaleWorkReason::CompletedRun),
             stale(1, "parked-on-accepted", StaleWorkReason::ClosedReview),
             stale(2, "parked-on-rejected", StaleWorkReason::ClosedReview),
         ]
