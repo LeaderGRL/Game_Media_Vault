@@ -89,6 +89,8 @@ export function App() {
   const [sources, setSources] = useState<SourceDescription[] | null>(null);
   // Why the Sources could not be read the last time the Sources view was shown.
   const [sourcesError, setSourcesError] = useState<string | null>(null);
+  // The latest read of the Sources: an older one settling later applies nothing.
+  const sourcesRequest = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
   const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
@@ -557,12 +559,19 @@ export function App() {
     if (sources !== null) {
       return;
     }
+    sourcesRequest.current += 1;
+    const request = sourcesRequest.current;
     setSourcesError(null);
     try {
-      setSources(await invoke<SourceDescription[]>("list_sources"));
+      const listed = await invoke<SourceDescription[]>("list_sources");
+      if (request === sourcesRequest.current) {
+        setSources(listed);
+      }
     } catch (reason) {
       // Showing the view again reads them again.
-      setSourcesError(errorMessage(reason));
+      if (request === sourcesRequest.current) {
+        setSourcesError(errorMessage(reason));
+      }
     }
   }
 
