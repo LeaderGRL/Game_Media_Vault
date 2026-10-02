@@ -1518,3 +1518,91 @@ fn repair_applies_only_the_actions_it_is_given() {
     );
     assert_eq!(summary["healthy"], true);
 }
+
+/// Discovers the fixture candidate but cannot download it, as a Source whose host is down.
+struct UnreachableDownloadConnector;
+
+impl ConnectorPort for UnreachableDownloadConnector {
+    fn source_id(&self) -> &'static str {
+        FixtureConnector.source_id()
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        FixtureConnector.capabilities()
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        FixtureConnector.discover(request)
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Err(PortError::new("fixture host unreachable".to_owned()))
+    }
+}
+
+#[test]
+fn a_failed_execution_reports_the_run_it_left_and_a_later_one_resumes_it() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    // The release the fixture candidate matches, so its execution downloads it.
+    let cover = temp.path().join("smb-front.png");
+    fs::write(&cover, b"imported cover").unwrap();
+    run_in_vault(
+        &vault,
+        &[
+            "import-box-front",
+            "--game",
+            "Super Mario Bros. (World)",
+            "--platform",
+            "Nintendo - Nintendo Entertainment System",
+            "--region",
+            "World",
+            "--edition",
+            "Unspecified",
+            "--file",
+            cover.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let started: serde_json::Value = serde_json::from_str(
+        &run_in_vault(
+            &vault,
+            &[
+                "acquire",
+                "--source",
+                "libretro-thumbnails",
+                "--platform",
+                "Nintendo - Nintendo Entertainment System",
+                "--game",
+                "Super Mario Bros. (World)",
+                "--asset-type",
+                "box-front",
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let run_id = started["id"].as_i64().unwrap().to_string();
+
+    let error = game_media_vault_cli::run_with_connectors(
+        cli_args(&vault, &["run", "execute", &run_id]),
+        &[&UnreachableDownloadConnector],
+    )
+    .unwrap_err();
+
+    // Scripts read where the run stands on stdout and why it stopped on stderr.
+    assert!(
+        error.to_string().contains("fixture host unreachable"),
+        "{error}"
+    );
+    assert_eq!(error.exit_code(), 1);
+    let left: serde_json::Value = serde_json::from_str(error.output().unwrap()).unwrap();
+    assert_eq!(left["status"], "running");
+    assert_eq!(left["queued_work"], 1);
+
+    // A later execution, as after a restart, resumes the persisted work.
+    let resumed: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["run", "execute", &run_id]).unwrap()).unwrap();
+    assert_eq!(resumed["status"], "completed");
+    assert_eq!(resumed["completed_work"], 1);
+}
