@@ -284,7 +284,6 @@ pub fn start_acquisition_run_in_vault(
     )?)
 }
 
-/// Starts a run on a blocking worker, since checking the plan may reach the Source.
 /// Explains which Sources `request` would contact and what each acquires; no vault is needed.
 pub fn plan_acquisition_with_connector(
     request: AcquisitionRequestInput,
@@ -306,6 +305,7 @@ pub async fn plan_acquisition_async(
     .map_err(|error| CommandError::worker_failed("acquisition planning", error))?
 }
 
+/// Starts a run on a blocking worker, since checking the plan may reach the Source.
 pub async fn start_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     request: AcquisitionRequestInput,
