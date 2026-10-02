@@ -2607,6 +2607,37 @@ describe("App Library requests", () => {
     expect(invokeMock).toHaveBeenCalledWith("list_sources");
   });
 
+  it("disables a Source on this machine from the Sources view", async () => {
+    const launchbox = {
+      source_id: "launchbox-games-db",
+      asset_types: ["box_front"],
+      direct_media_download: true,
+      enabled: true,
+    };
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_sources"
+          ? [launchbox]
+          : command === "set_source_enabled"
+            ? [{ ...launchbox, enabled: false }]
+            : [],
+      ),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Enabled on this machine" }));
+
+    expect(
+      await screen.findByText("Takes no part in acquisitions on this machine"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked();
+    expect(invokeMock).toHaveBeenCalledWith("set_source_enabled", {
+      source_id: "launchbox-games-db",
+      enabled: false,
+    });
+  });
+
   it("reports Sources it could not read and reads them again when shown again", async () => {
     let failing = true;
     invokeMock.mockImplementation((command: string) => {

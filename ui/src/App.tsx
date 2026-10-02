@@ -649,6 +649,15 @@ export function App() {
     }
   }
 
+  /** Enables or disables a Source on this machine, for every vault, and shows the outcome. */
+  async function setSourceEnabled(sourceId: string, enabled: boolean) {
+    const described = await invoke<SourceDescription[]>("set_source_enabled", {
+      source_id: sourceId,
+      enabled,
+    });
+    setSources(described);
+  }
+
   /** Reads the failures the loaded vault recorded, which executions add to meanwhile. */
   async function readSourceFailures() {
     sourceFailuresRequest.current += 1;
@@ -968,7 +977,12 @@ export function App() {
         />
       ) : null}
       {activeView === "sources" ? (
-        <SourcesView sources={sources} error={sourcesError} failures={sourceFailures} />
+        <SourcesView
+          sources={sources}
+          error={sourcesError}
+          failures={sourceFailures}
+          onSetEnabled={setSourceEnabled}
+        />
       ) : null}
       {activeView === "runs" ? (
         <RunsView
