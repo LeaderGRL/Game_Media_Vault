@@ -651,3 +651,16 @@ fn source_failures_are_kept_in_recording_order_across_reopen() {
             .all(|failure| failure.recorded_at > 1_600_000_000)
     );
 }
+
+#[test]
+fn work_is_queued_until_it_is_completed() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    queue(&catalog, run.id, "first");
+
+    assert!(catalog.is_work_queued(run.id, "first").unwrap());
+    assert!(!catalog.is_work_queued(run.id, "missing").unwrap());
+    catalog.complete_work(run.id, "first").unwrap();
+    assert!(!catalog.is_work_queued(run.id, "first").unwrap());
+}

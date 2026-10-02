@@ -494,6 +494,13 @@ impl RunRepositoryPort for FakeVault {
             .map(|work| work.item.clone()))
     }
 
+    fn is_work_queued(&self, run_id: i64, work_key: &str) -> Result<bool, PortError> {
+        Ok(self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .any(|work| work.item.key == work_key && work.state == WorkState::Queued))
+    }
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
         self.open_scheduled_review();
         let mut runs = self.runs.borrow_mut();

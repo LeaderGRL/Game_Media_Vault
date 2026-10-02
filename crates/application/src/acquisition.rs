@@ -292,9 +292,9 @@ where
                 .collect();
             let work = runs.next_queued_work(run_id, &skipped)?;
             // Work downloaded ahead but settled elsewhere meanwhile, as by another execution of
-            // the run, still tells whether its Source failed; the Source's served work then
-            // waits for a later execution too.
-            let unclaimed = acquisition.unclaimed_failures(work.as_ref());
+            // the run, still tells whether its Source failed before that Source's next work is
+            // processed; that work then waits for a later execution too.
+            let unclaimed = acquisition.unclaimed_failures(work.as_ref())?;
             let source_failed = !unclaimed.is_empty();
             for failure in unclaimed {
                 defer_failed_source(
@@ -364,7 +364,8 @@ where
 }
 
 /// Records that `source_id` failed to download and defers its remaining work to a later
-/// execution, keeping the first failure for the execution to return.
+/// execution, keeping the first failure for the execution to return. A Source already
+/// failing keeps its first failure.
 fn defer_failed_source(
     runs: &dyn RunRepositoryPort,
     run_id: i64,
@@ -372,6 +373,9 @@ fn defer_failed_source(
     failed_sources: &mut Vec<String>,
     source_failure: &mut Option<ApplicationError>,
 ) -> Result<(), ApplicationError> {
+    if failed_sources.contains(&source_id) {
+        return Ok(());
+    }
     runs.record_source_failure(
         run_id,
         &source_id,
@@ -714,26 +718,33 @@ impl Acquisition<'_> {
         }
     }
 
-    /// Awaits the downloads started ahead that processing `served` will not claim: every one
-    /// when nothing is served, otherwise the other ones of its Source. Their work was settled
-    /// elsewhere meanwhile, as by another execution of the run, or waits for a later round,
-    /// which downloads it again; returns the first failure of each of their Sources. Only those
-    /// failures matter: the stored originals stay unreferenced until vault verification
+    /// Awaits the downloads started ahead whose work left the queue unprocessed, as work another
+    /// execution of the run settled meanwhile: those of the Source of the `served` work, or of
+    /// every Source when none is served. Returns the first failure of each of their Sources.
+    /// Only failures matter: their stored originals stay unreferenced until vault verification
     /// collects them.
     fn unclaimed_failures(
         &self,
         served: Option<&AcquisitionWorkItem>,
-    ) -> Vec<(String, ApplicationError)> {
-        let unclaimed: Vec<Ahead> = self
-            .prefetched
-            .borrow_mut()
-            .extract_if(|key, ahead| {
-                served.is_none_or(|work| {
-                    *key != work.key && ahead.source_id == work.candidate.source_id.as_str()
+    ) -> Result<Vec<(String, ApplicationError)>, ApplicationError> {
+        let mut unclaimed = Vec::new();
+        {
+            let mut prefetched = self.prefetched.borrow_mut();
+            let keys: Vec<String> = prefetched
+                .iter()
+                .filter(|(key, ahead)| {
+                    served.is_none_or(|work| {
+                        **key != work.key && ahead.source_id == work.candidate.source_id.as_str()
+                    })
                 })
-            })
-            .map(|(_, ahead)| ahead)
-            .collect();
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in keys {
+                if !self.runs.is_work_queued(self.run_id, &key)? {
+                    unclaimed.extend(prefetched.remove(&key));
+                }
+            }
+        }
         let mut failures: Vec<(String, ApplicationError)> = Vec::new();
         for ahead in unclaimed {
             if let Ok(Fetched::SourceFailed(error)) = ahead.result.recv()
@@ -744,7 +755,7 @@ impl Acquisition<'_> {
                 failures.push((ahead.source_id, error));
             }
         }
-        failures
+        Ok(failures)
     }
 
     fn still_running(&self) -> Result<bool, ApplicationError> {
@@ -783,8 +794,8 @@ impl<'a> Acquisition<'a> {
     /// Starts downloading, on up to `limits.max_concurrent` threads, the media of the work the
     /// next round will import: the oldest queued work of every Source outside `failed_sources`.
     /// Work processing would not import, such as work bound for review, is never downloaded
-    /// ahead. Results are awaited when their work is processed, or once the round shows no
-    /// processing will claim them.
+    /// ahead. Results are awaited when their work is processed, or once it left the queue
+    /// unprocessed.
     fn prefetch_round<'scope>(
         &self,
         scope: &'scope thread::Scope<'scope, '_>,

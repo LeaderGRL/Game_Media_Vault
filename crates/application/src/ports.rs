@@ -249,6 +249,10 @@ pub trait RunRepositoryPort: Send + Sync {
         skipped_sources: &[String],
     ) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
+    /// Whether `work_key` still waits in the run's queue: neither completed nor parked on its
+    /// Review Item.
+    fn is_work_queued(&self, run_id: i64, work_key: &str) -> Result<bool, PortError>;
+
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 
     /// Completes `work_key` as unavailable: its Source no longer serves the candidate media, so
