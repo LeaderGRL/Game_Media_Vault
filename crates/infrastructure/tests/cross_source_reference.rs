@@ -322,3 +322,35 @@ fn canonical_values_of_a_linked_release_weigh_both_sources() {
     assert_eq!(title.contributing.len() + title.conflicting.len(), 2);
     assert_eq!(title.conflicting.len(), 1);
 }
+
+#[test]
+fn an_ambiguous_checksum_is_not_overridden_by_weaker_evidence() {
+    let (_temp, catalog) = catalog();
+    for region in ["World", "Europe"] {
+        import(
+            &catalog,
+            &Release {
+                source: "no-intro",
+                title: "Dr. Mario",
+                platform: GAME_BOY,
+                region,
+                sha1: Some("dddd"),
+            },
+        );
+    }
+
+    // The title, platform, region and edition match exactly one of the two editions.
+    let mame = import(
+        &catalog,
+        &Release {
+            source: "mame-software-lists",
+            title: "Dr. Mario",
+            platform: GAME_BOY,
+            region: "World",
+            sha1: Some("dddd"),
+        },
+    );
+
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
+    assert!(links_of(&catalog, mame.release_edition_id, "mame-software-lists").is_empty());
+}

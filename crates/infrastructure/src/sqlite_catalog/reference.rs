@@ -130,13 +130,27 @@ fn persist_reference_release_in_transaction(
             || {
                 transaction
                     .query_row(
+                        // Never one already holding this edition: the record was not linked to
+                        // it, so joining that Game would merge them without evidence.
                         "SELECT r.game_id
                          FROM release_editions r
                          JOIN games g ON g.id = r.game_id
                          WHERE g.normalized_title = ?1 AND r.normalized_platform = ?2
+                           AND NOT EXISTS (
+                               SELECT 1 FROM release_editions e
+                               WHERE e.game_id = r.game_id
+                                 AND e.normalized_platform = ?2
+                                 AND e.normalized_region = ?3
+                                 AND e.normalized_edition_name = ?4
+                           )
                          ORDER BY r.id
                          LIMIT 1",
-                        params![normalized_title, normalized_platform],
+                        params![
+                            normalized_title,
+                            normalized_platform,
+                            normalized_region,
+                            normalized_edition
+                        ],
                         |row| row.get(0),
                     )
                     .optional()
@@ -213,8 +227,8 @@ struct NormalizedEdition<'a> {
 
 /// The release edition another source asserts that `record` describes too, with the evidence
 /// that links them: a dump checksum it shares with exactly one edition of its platform, else
-/// the same title, platform, region and edition. Evidence pointing at several editions links
-/// none of them.
+/// the same title, platform, region and edition. A checksum pointing at several editions links
+/// none of them, whatever weaker evidence says.
 fn linked_release_edition(
     transaction: &Transaction<'_>,
     source_id: &str,
@@ -248,8 +262,14 @@ fn linked_release_edition(
                AND a.source_id != ?4",
             params![qualifier, checksums_json, edition.platform, source_id],
         )?;
-        if let [(game_id, release_edition_id)] = editions.as_slice() {
-            return Ok(Some((*game_id, *release_edition_id, qualifier)));
+        match editions.as_slice() {
+            [] => {}
+            [(game_id, release_edition_id)] => {
+                return Ok(Some((*game_id, *release_edition_id, qualifier)));
+            }
+            // A dump several editions share does not tell which this record describes, and
+            // weaker evidence must not decide against it.
+            _ => return Ok(None),
         }
     }
     let editions = editions_where(
