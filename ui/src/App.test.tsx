@@ -1922,4 +1922,41 @@ describe("App Library requests", () => {
     expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
     expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
   });
+
+  it("shows the applied filters again when a refresh supersedes a pending search", async () => {
+    let finishExecution: ((run: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) => {
+          finishExecution = resolve;
+        });
+      }
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          // The search never settles; the refresh after the execution supersedes it.
+          return new Promise(() => {});
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() => expect(finishExecution).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "mario" }));
+
+    await act(async () => finishExecution?.(runToExecute));
+
+    // The refresh searched with the applied filters, which the filter bar shows again.
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: null }));
+    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue(""));
+  });
 });

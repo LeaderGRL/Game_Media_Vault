@@ -61,6 +61,7 @@ export function App() {
   const pageRequestRef = useRef<object | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   // A filter search is pending; paging would continue the previous filters meanwhile.
+  const searchPendingRef = useRef(false);
   const [searchingLibrary, setSearchingLibrary] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
   const [activeView, setActiveView] = useState<View>("library");
@@ -118,8 +119,11 @@ export function App() {
       return;
     }
     const searchingVaultRoot = loadedVaultRoot;
-    // Supersedes refreshes and pages requested with the previous filters.
+    // Supersedes refreshes and pages requested with the previous filters, and a pending search
+    // whose filters the bar keeps showing until this one settles.
+    searchPendingRef.current = false;
     const generation = supersedeLibraryRequests();
+    searchPendingRef.current = true;
     setSearchingLibrary(true);
     setError(null);
     try {
@@ -144,6 +148,7 @@ export function App() {
       }
     } finally {
       if (generation === vaultDataGeneration.current) {
+        searchPendingRef.current = false;
         setSearchingLibrary(false);
       }
     }
@@ -151,11 +156,16 @@ export function App() {
 
   /**
    * Starts a request that replaces the shown Library page: searches, refreshes and pages begun
-   * earlier no longer apply.
+   * earlier no longer apply. A superseded filter search never applies its filters, so the
+   * filter bar shows the applied ones again.
    */
   function supersedeLibraryRequests() {
     vaultDataGeneration.current += 1;
-    setSearchingLibrary(false);
+    if (searchPendingRef.current) {
+      searchPendingRef.current = false;
+      setSearchingLibrary(false);
+      setLibraryFiltersRevision((revision) => revision + 1);
+    }
     abandonPageRequest();
     return vaultDataGeneration.current;
   }
