@@ -42,13 +42,8 @@ pub enum ApplicationError {
         connector_source_id: String,
         candidate_source_id: String,
     },
-    #[error(
-        "previews of {candidate_source_id} candidates are not available through the {connector_source_id} connector"
-    )]
-    PreviewConnectorUnavailable {
-        connector_source_id: String,
-        candidate_source_id: String,
-    },
+    #[error("previews of {candidate_source_id} candidates need a connector for that source")]
+    PreviewConnectorUnavailable { candidate_source_id: String },
     #[error(
         "connector {source_id} returned a candidate whose locator is not an absolute URL free of userinfo, query and fragment"
     )]

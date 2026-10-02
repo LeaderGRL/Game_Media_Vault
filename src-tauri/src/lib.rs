@@ -21,7 +21,7 @@ use game_media_vault_application::{
     search_library as search_library_use_case, start_acquisition_run_with_connectors,
     verify_vault as verify_vault_use_case,
 };
-use game_media_vault_connectors::LibretroThumbnailsConnector;
+use game_media_vault_connectors::registered_connectors;
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, DerivationRecipe, LibraryRelease, MatchingPolicy,
     ReviewDecision, ReviewItem,
@@ -187,22 +187,30 @@ pub fn resolve_review_item_in_vault(
     )?)
 }
 
-pub fn load_review_preview_in_vault_with_connector(
-    vault_root: &Path,
-    review_item_id: i64,
-    connector: &dyn ConnectorPort,
-) -> Result<Vec<u8>, CommandError> {
-    let catalog = open_existing_catalog(vault_root)?;
-    Ok(load_review_preview_use_case(&catalog, connector, review_item_id)?.bytes)
+/// The connectors of a registry, one per Source, as the use cases take them.
+fn registry_refs(registry: &[Box<dyn ConnectorPort + Send>]) -> Vec<&dyn ConnectorPort> {
+    registry
+        .iter()
+        .map(|connector| connector.as_ref() as &dyn ConnectorPort)
+        .collect()
 }
 
-pub async fn load_review_preview_in_vault_with_connector_async(
+pub fn load_review_preview_in_vault(
+    vault_root: &Path,
+    review_item_id: i64,
+    connectors: &[&dyn ConnectorPort],
+) -> Result<Vec<u8>, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    Ok(load_review_preview_use_case(&catalog, connectors, review_item_id)?.bytes)
+}
+
+pub async fn load_review_preview_in_vault_async(
     vault_root: PathBuf,
     review_item_id: i64,
-    connector: Box<dyn ConnectorPort + Send>,
+    registry: Vec<Box<dyn ConnectorPort + Send>>,
 ) -> Result<Vec<u8>, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        load_review_preview_in_vault_with_connector(&vault_root, review_item_id, connector.as_ref())
+        load_review_preview_in_vault(&vault_root, review_item_id, &registry_refs(&registry))
     })
     .await
     .map_err(|error| CommandError::worker_failed("review preview", error))?
@@ -263,45 +271,45 @@ async fn load_review_preview(
     review_item_id: i64,
 ) -> Result<Response, CommandError> {
     // Raw bytes reach the webview as an ArrayBuffer instead of a JSON number array.
-    let bytes = load_review_preview_in_vault_with_connector_async(
+    let bytes = load_review_preview_in_vault_async(
         session.root()?,
         review_item_id,
-        Box::new(LibretroThumbnailsConnector::new()),
+        registered_connectors(),
     )
     .await?;
     Ok(Response::new(bytes))
 }
 
-/// Starts a run only if `connector`, the one the desktop executes it with, can execute it.
+/// Starts a run only if the registered `connectors`, which the desktop executes it with, can
+/// plan it.
 pub fn start_acquisition_run_in_vault(
     vault_root: &Path,
     request: AcquisitionRequestInput,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
 ) -> Result<AcquisitionRun, CommandError> {
     let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))?;
     Ok(start_acquisition_run_with_connectors(
-        &catalog,
-        request,
-        &[connector],
+        &catalog, request, connectors,
     )?)
 }
 
-/// Explains which Sources `request` would contact and what each acquires; no vault is needed.
-pub fn plan_acquisition_with_connector(
+/// Explains which of the registered `connectors` `request` would contact and what each
+/// acquires; no vault is needed.
+pub fn plan_acquisition_with_connectors(
     request: AcquisitionRequestInput,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
 ) -> Result<AcquisitionPlan, CommandError> {
     let request = validate_acquisition_request(request)?;
-    Ok(plan_acquisition_use_case(&request, &[connector])?)
+    Ok(plan_acquisition_use_case(&request, connectors)?)
 }
 
 /// Plans on a blocking worker, since connectors may consult their Source.
 pub async fn plan_acquisition_async(
     request: AcquisitionRequestInput,
-    connector: Box<dyn ConnectorPort + Send>,
+    registry: Vec<Box<dyn ConnectorPort + Send>>,
 ) -> Result<AcquisitionPlan, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        plan_acquisition_with_connector(request, connector.as_ref())
+        plan_acquisition_with_connectors(request, &registry_refs(&registry))
     })
     .await
     .map_err(|error| CommandError::worker_failed("acquisition planning", error))?
@@ -311,19 +319,19 @@ pub async fn plan_acquisition_async(
 pub async fn start_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     request: AcquisitionRequestInput,
-    connector: Box<dyn ConnectorPort + Send>,
+    registry: Vec<Box<dyn ConnectorPort + Send>>,
 ) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        start_acquisition_run_in_vault(&vault_root, request, connector.as_ref())
+        start_acquisition_run_in_vault(&vault_root, request, &registry_refs(&registry))
     })
     .await
     .map_err(|error| CommandError::worker_failed("acquisition start", error))?
 }
 
-pub fn execute_acquisition_run_in_vault_with_connector(
+pub fn execute_acquisition_run_in_vault(
     vault_root: &Path,
     run_id: i64,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CommandError> {
     let catalog = open_existing_catalog(vault_root)?;
@@ -333,24 +341,24 @@ pub fn execute_acquisition_run_in_vault_with_connector(
         &catalog,
         &catalog,
         &object_store,
-        &[connector],
+        connectors,
         run_id,
         matching_policy,
     )?;
     Ok(load_acquisition_run_use_case(&catalog, run_id)?)
 }
 
-pub async fn execute_acquisition_run_in_vault_with_connector_async(
+pub async fn execute_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     run_id: i64,
-    connector: Box<dyn ConnectorPort + Send>,
+    registry: Vec<Box<dyn ConnectorPort + Send>>,
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        execute_acquisition_run_in_vault_with_connector(
+        execute_acquisition_run_in_vault(
             &vault_root,
             run_id,
-            connector.as_ref(),
+            &registry_refs(&registry),
             matching_policy,
         )
     })
@@ -410,7 +418,7 @@ pub fn cancel_acquisition_run_in_vault(
 async fn plan_acquisition(
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionPlan, CommandError> {
-    plan_acquisition_async(request, Box::new(LibretroThumbnailsConnector::new())).await
+    plan_acquisition_async(request, registered_connectors()).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -418,12 +426,7 @@ async fn start_acquisition_run(
     session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionRun, CommandError> {
-    start_acquisition_run_in_vault_async(
-        session.root()?,
-        request,
-        Box::new(LibretroThumbnailsConnector::new()),
-    )
-    .await
+    start_acquisition_run_in_vault_async(session.root()?, request, registered_connectors()).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -432,10 +435,10 @@ async fn execute_acquisition_run(
     run_id: i64,
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CommandError> {
-    execute_acquisition_run_in_vault_with_connector_async(
+    execute_acquisition_run_in_vault_async(
         session.root()?,
         run_id,
-        Box::new(LibretroThumbnailsConnector::new()),
+        registered_connectors(),
         matching_policy,
     )
     .await

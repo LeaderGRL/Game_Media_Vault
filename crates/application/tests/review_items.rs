@@ -252,7 +252,7 @@ fn review_preview_downloads_the_persisted_candidate_through_the_connector() {
     let vault = vault_with(review_item());
     let connector = FakeConnector::new(Vec::new());
 
-    let preview = load_review_preview(&vault, &connector, 17).unwrap();
+    let preview = load_review_preview(&vault, &[&connector], 17).unwrap();
 
     assert_eq!(preview.original_filename, "Target Game.png");
     assert_eq!(preview.bytes, b"bytes of Target Game.png");
@@ -273,7 +273,7 @@ fn review_preview_requires_the_connector_of_the_candidate_source() {
     });
     let connector = FakeConnector::new(Vec::new());
 
-    let error = load_review_preview(&vault, &connector, 17).unwrap_err();
+    let error = load_review_preview(&vault, &[&connector], 17).unwrap_err();
 
     assert!(matches!(
         error,
@@ -315,7 +315,7 @@ impl game_media_vault_application::ConnectorPort for OversizedPreviewConnector {
 fn oversized_review_previews_are_refused() {
     let vault = vault_with(review_item());
 
-    let error = load_review_preview(&vault, &OversizedPreviewConnector, 17).unwrap_err();
+    let error = load_review_preview(&vault, &[&OversizedPreviewConnector], 17).unwrap_err();
 
     assert_eq!(
         error,
@@ -324,4 +324,20 @@ fn oversized_review_previews_are_refused() {
             max_bytes: game_media_vault_application::MAX_REVIEW_PREVIEW_BYTES,
         }
     );
+}
+
+#[test]
+fn review_preview_downloads_through_the_connector_of_the_candidate_source() {
+    let vault = vault_with(review_item());
+    let other = FakeConnector {
+        source_id: "other-source",
+        ..FakeConnector::new(Vec::new())
+    };
+    let connector = FakeConnector::new(Vec::new());
+
+    let preview = load_review_preview(&vault, &[&other, &connector], 17).unwrap();
+
+    assert_eq!(preview.bytes, b"bytes of Target Game.png");
+    assert!(other.downloads.borrow().is_empty());
+    assert_eq!(connector.downloads.borrow().len(), 1);
 }

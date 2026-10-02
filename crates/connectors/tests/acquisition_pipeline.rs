@@ -6,8 +6,11 @@ use std::{
 use game_media_vault_application::{
     CatalogPort, ConnectorPort, PortError, ReferenceCatalogRepositoryPort, ReviewRepositoryPort,
     RunRepositoryPort, acquire_run_with_connectors, resolve_review_item,
+    start_acquisition_run_with_connectors,
 };
-use game_media_vault_connectors::{HttpTransport, LibretroThumbnailsConnector};
+use game_media_vault_connectors::{
+    HttpTransport, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector, LibretroThumbnailsConnector,
+};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
     AssetCandidate, AssetType, AssetTypeSelector, ConnectorCapabilities, GameSelection,
@@ -261,5 +264,123 @@ fn accepted_review_is_applied_after_reopening_without_rediscovery() {
     assert_eq!(
         provenance.match_decision.as_ref().unwrap().confidence,
         MatchConfidence::Confirmed
+    );
+}
+
+const LAUNCHBOX_BOX_FRONT_BYTES: &[u8] = b"launchbox end-to-end box front fixture";
+
+/// Serves a LaunchBox dataset holding one worldwide Box Front of Super Mario Bros.
+struct LaunchBoxFixtureTransport;
+
+impl HttpTransport for LaunchBoxFixtureTransport {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        if url != LAUNCHBOX_METADATA_URL {
+            return Ok(Box::new(Cursor::new(LAUNCHBOX_BOX_FRONT_BYTES.to_vec())));
+        }
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file("Metadata.xml", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(
+            &mut archive,
+            br#"<LaunchBox>
+  <Game>
+    <Name>Super Mario Bros.</Name>
+    <DatabaseID>140</DatabaseID>
+    <Platform>Nintendo Entertainment System</Platform>
+  </Game>
+  <GameImage>
+    <DatabaseID>140</DatabaseID>
+    <FileName>smb-front-world.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>World</Region>
+  </GameImage>
+</LaunchBox>"#,
+        )
+        .unwrap();
+        Ok(Box::new(Cursor::new(
+            archive.finish().unwrap().into_inner(),
+        )))
+    }
+}
+
+#[test]
+fn one_auto_run_acquires_from_both_sources_with_distinct_provenance() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros.".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            revision: None,
+            edition_name: "Standard".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
+    let object_store = ContentAddressedStore::new(temp.path().join("objects"));
+    let libretro = LibretroThumbnailsConnector::with_transport(FixtureTransport {
+        requested_urls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let launchbox = LaunchBoxGamesDbConnector::with_transport(LaunchBoxFixtureTransport);
+    let connectors: [&dyn ConnectorPort; 2] = [&libretro, &launchbox];
+    let draft = AcquisitionRequestDraft {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    };
+
+    let run = start_acquisition_run_with_connectors(&catalog, draft, &connectors).unwrap();
+    let imported = acquire_run_with_connectors(
+        &catalog,
+        &catalog,
+        &catalog,
+        &object_store,
+        &connectors,
+        run.id,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        run.planned_sources,
+        ["libretro-thumbnails", "launchbox-games-db"]
+    );
+    assert_eq!(imported.len(), 2);
+    let library = catalog.list_library().unwrap();
+    let sources: Vec<SourceId> = library[0]
+        .assets
+        .iter()
+        .map(|asset| asset.provenance[0].source_id.clone())
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            SourceId::from("libretro-thumbnails"),
+            SourceId::from("launchbox-games-db")
+        ]
+    );
+    assert_eq!(
+        library[0].assets[1].provenance[0].source_location,
+        "https://images.launchbox-app.com/smb-front-world.jpg"
+    );
+    assert_eq!(
+        catalog.get_run(run.id).unwrap().unwrap().status,
+        AcquisitionRunStatus::Completed
     );
 }

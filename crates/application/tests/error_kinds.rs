@@ -41,7 +41,6 @@ fn application_errors_expose_a_stable_kind_for_frontends() {
         ),
         (
             ApplicationError::PreviewConnectorUnavailable {
-                connector_source_id: "libretro-thumbnails".to_owned(),
                 candidate_source_id: "fixture".to_owned(),
             },
             ErrorKind::Unsupported,

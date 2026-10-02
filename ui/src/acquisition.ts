@@ -50,7 +50,10 @@ export interface AcquisitionRun {
 }
 
 /** Sources the desktop app can currently execute. */
-export const KNOWN_SOURCES = [{ value: "libretro-thumbnails", label: "Libretro Thumbnails" }];
+export const KNOWN_SOURCES = [
+  { value: "libretro-thumbnails", label: "Libretro Thumbnails" },
+  { value: "launchbox-games-db", label: "LaunchBox Games Database" },
+];
 
 export interface AssetTypeOption {
   value: string;

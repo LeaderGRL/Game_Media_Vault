@@ -17,7 +17,7 @@ use game_media_vault_application::{
     start_acquisition_run_with_connectors, verify_vault,
 };
 use game_media_vault_connectors::{
-    LibretroThumbnailsConnector, NoIntroReferenceCatalog, RedumpReferenceCatalog,
+    NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, DerivationRecipe,
@@ -375,7 +375,12 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    run_with_connector(args, &LibretroThumbnailsConnector::new())
+    let registry = registered_connectors();
+    let connectors: Vec<&dyn ConnectorPort> = registry
+        .iter()
+        .map(|connector| connector.as_ref() as &dyn ConnectorPort)
+        .collect();
+    run_with_connectors(args, &connectors)
 }
 
 /// Builds and validates the Acquisition Request of an `acquire` command line without starting
@@ -394,9 +399,12 @@ where
     }
 }
 
-/// Runs a command line with `connector`, the connector that checks the plan of a started run
-/// and executes runs.
-pub fn run_with_connector<I, T>(args: I, connector: &dyn ConnectorPort) -> Result<String, CliError>
+/// Runs a command line with the registered `connectors`, one per Source, which plan started
+/// runs and execute them.
+pub fn run_with_connectors<I, T>(
+    args: I,
+    connectors: &[&dyn ConnectorPort],
+) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -406,22 +414,22 @@ where
     match cli.command {
         Command::Acquire(acquire) => {
             let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-            // A plan the connector cannot execute would fail every execution, so no run starts.
+            // A plan no connector can execute would fail every execution, so no run starts.
             let run =
-                start_acquisition_run_with_connectors(&catalog, acquire.into_input(), &[connector])
+                start_acquisition_run_with_connectors(&catalog, acquire.into_input(), connectors)
                     .map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&run)?)
         }
         Command::Plan(acquire) => {
             let request = build_acquisition_request(acquire.into_input())?;
-            let plan = plan_acquisition(&request, &[connector]).map_err(map_start_run_error)?;
+            let plan = plan_acquisition(&request, connectors).map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&plan)?)
         }
         Command::Run { command } => match command {
             RunCommand::Start { request_file } => {
                 let draft = draft_from_document(read_request_document(&request_file)?)?;
                 let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-                let run = start_acquisition_run_with_connectors(&catalog, draft, &[connector])
+                let run = start_acquisition_run_with_connectors(&catalog, draft, connectors)
                     .map_err(map_start_run_error)?;
                 Ok(serde_json::to_string_pretty(&run)?)
             }
@@ -430,10 +438,10 @@ where
                 match_high_threshold,
                 match_medium_threshold,
             } => Ok(serde_json::to_string_pretty(
-                &execute_acquisition_run_in_vault_with_connector(
+                &execute_acquisition_run_in_vault_with_connectors(
                     &cli.vault,
                     id,
-                    connector,
+                    connectors,
                     MatchingPolicy {
                         high_confidence_threshold: match_high_threshold,
                         medium_confidence_threshold: match_medium_threshold,
@@ -570,10 +578,10 @@ where
     }
 }
 
-pub fn execute_acquisition_run_in_vault_with_connector(
+pub fn execute_acquisition_run_in_vault_with_connectors(
     vault_root: &Path,
     run_id: i64,
-    connector: &dyn ConnectorPort,
+    connectors: &[&dyn ConnectorPort],
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CliError> {
     let catalog = SqliteCatalog::open_existing(vault_root.join("catalog.sqlite3"))?;
@@ -583,7 +591,7 @@ pub fn execute_acquisition_run_in_vault_with_connector(
         &catalog,
         &catalog,
         &object_store,
-        &[connector],
+        connectors,
         run_id,
         matching_policy,
     )?;
