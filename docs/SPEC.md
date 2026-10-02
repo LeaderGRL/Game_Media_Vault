@@ -294,7 +294,7 @@ The coverage of a Release Edition is derived whenever the library is read. Its P
 | Arcade board (MAME, FBNeo) | marquee | PCB | flyer, control panel, bezel |
 | Digital only | box front | — (no Physical profile) | logo, icon |
 
-The Coverage Status is the last profile, in that order, whose requirements and those of every previous profile are all retained; otherwise it is `Partial`. Every profile exposes the Asset Types it still misses.
+The Coverage Status is the last profile, in that order, whose requirements and those of every previous profile are all retained; otherwise it is `Partial`. A retained Cartridge Front meets a cartridge requirement, since it shows the cartridge itself; a Cartridge Back alone does not. Every profile exposes the Asset Types it still misses.
 
 Reference catalogs can also be used to measure catalog coverage, for example known Release Editions versus discovered Release Editions for a platform/territory.
 

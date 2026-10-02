@@ -8,9 +8,13 @@ use game_media_vault_domain::{
 use support::FakeVault;
 
 fn box_front(asset_id: i64) -> LibraryAsset {
+    asset(asset_id, AssetType::BoxFront)
+}
+
+fn asset(asset_id: i64, asset_type: AssetType) -> LibraryAsset {
     LibraryAsset {
         asset_id,
-        asset_type: AssetType::BoxFront,
+        asset_type,
         object_hash: format!("object-{asset_id}"),
         byte_len: 1_000,
         media: MediaInfo::unknown(),
@@ -116,4 +120,28 @@ fn coverage_rises_to_the_last_profile_whose_requirements_are_met() {
 #[test]
 fn coverage_of_an_unrecognized_platform_is_not_evaluated() {
     assert_eq!(coverage_of("Homebrew Console", vec![box_front(3)]), None);
+}
+
+#[test]
+fn a_retained_cartridge_front_meets_the_cartridge_requirement() {
+    let coverage = coverage_of(
+        "Nintendo - Super Nintendo Entertainment System",
+        vec![box_front(3), asset(4, AssetType::CartridgeFront)],
+    )
+    .unwrap();
+
+    let physical = &coverage.profiles[1];
+    assert_eq!(physical.profile, CoverageProfile::Physical);
+    assert_eq!(physical.missing, vec![BoxBack, Spine, Manual]);
+}
+
+#[test]
+fn a_cartridge_back_alone_does_not_meet_the_cartridge_requirement() {
+    let coverage = coverage_of(
+        "Nintendo - Nintendo DS",
+        vec![asset(4, AssetType::CartridgeBack)],
+    )
+    .unwrap();
+
+    assert!(coverage.profiles[1].missing.contains(&Cartridge));
 }
