@@ -115,7 +115,23 @@ pub fn acquire_run_with_connectors(
                 }
             }
         }
-        while let Some(work) = runs.next_queued_work(run_id, &failed_sources)? {
+        // Sources take turns: each round processes the oldest queued work of every Source that
+        // has some, so a Source with a long queue or slow downloads never holds back the others.
+        let mut served_this_round: Vec<String> = Vec::new();
+        loop {
+            let skipped: Vec<String> = failed_sources
+                .iter()
+                .chain(&served_this_round)
+                .cloned()
+                .collect();
+            let Some(work) = runs.next_queued_work(run_id, &skipped)? else {
+                if served_this_round.is_empty() {
+                    break;
+                }
+                served_this_round.clear();
+                continue;
+            };
+            served_this_round.push(work.candidate.source_id.as_str().to_owned());
             match acquisition.process(&work) {
                 Ok(imported) => imported_assets.extend(imported),
                 Err(error) if acquisition.source_failed.get() => {

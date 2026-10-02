@@ -1,6 +1,6 @@
 mod support;
 
-use std::io::Read;
+use std::{cell::RefCell, io::Read};
 
 use game_media_vault_application::{
     ApplicationError, ConnectorPort, PortError, RunRepositoryPort, acquire_run_with_connectors,
@@ -414,4 +414,77 @@ fn media_a_source_no_longer_serves_is_completed_as_unavailable_and_the_source_go
         (2, 1)
     );
     assert_eq!(vault.unavailable_reasons(run.id), ["fixture media is gone"]);
+}
+
+#[test]
+fn sources_take_turns_so_a_long_queue_does_not_hold_back_the_others() {
+    let titles = ["Super Mario Bros.", "Tetris", "Zelda"];
+    let boxes: Vec<AssetCandidate> = titles.iter().map(|title| candidate(title)).collect();
+    let snap = screenshot("Super Mario Bros.");
+    let vault = FakeVault::with_library(
+        boxes
+            .iter()
+            .enumerate()
+            .map(|(index, box_front)| release_for(box_front, 70 + index as i64))
+            .collect(),
+    );
+    let box_source = FakeConnector::new(boxes.clone());
+    let snaps = snap_connector(vec![snap.clone()]);
+    let run = start(&vault, auto_draft(), &[&box_source, &snaps]).unwrap();
+    // Every download, whichever Source served it, in the order the execution asked for it.
+    let downloads = RefCell::new(Vec::new());
+    let logged_boxes = LoggingConnector {
+        inner: box_source,
+        log: &downloads,
+    };
+    let logged_snaps = LoggingConnector {
+        inner: snaps,
+        log: &downloads,
+    };
+
+    // The Box Fronts were discovered, and so queued, before the Screenshot.
+    execute_with(&vault, &[&logged_boxes, &logged_snaps], run.id).unwrap();
+
+    assert_eq!(
+        *downloads.borrow(),
+        [
+            boxes[0].source_url.clone(),
+            snap.source_url.clone(),
+            boxes[1].source_url.clone(),
+            boxes[2].source_url.clone(),
+        ]
+    );
+    assert_eq!(vault.run(run.id).status, AcquisitionRunStatus::Completed);
+}
+
+/// A connector that also records each download in a log shared with other connectors.
+struct LoggingConnector<'a> {
+    inner: FakeConnector,
+    log: &'a RefCell<Vec<String>>,
+}
+
+impl ConnectorPort for LoggingConnector<'_> {
+    fn source_id(&self) -> &'static str {
+        self.inner.source_id()
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        self.inner.unsupported_request_reason(request)
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        self.inner.discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.log.borrow_mut().push(candidate.source_url.clone());
+        self.inner.download(candidate)
+    }
 }
