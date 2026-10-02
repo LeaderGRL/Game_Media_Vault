@@ -204,6 +204,31 @@ pub enum AcquisitionRunStatus {
     Completed,
 }
 
+/// Where an execution found a Source failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFailureStage {
+    /// Checking its part of the plan again or discovering its candidates.
+    Discovery,
+    /// Downloading the media of a candidate.
+    Download,
+}
+
+/// A failure of a Source that an execution recorded. Failures are history: a later success
+/// leaves them as they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceFailure {
+    /// Recording order across every Source.
+    pub sequence: i64,
+    pub source_id: String,
+    pub run_id: i64,
+    pub stage: SourceFailureStage,
+    /// What the Source's connector reported.
+    pub message: String,
+    /// When it was recorded, in seconds since the Unix epoch.
+    pub recorded_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcquisitionRun {
     pub id: i64,

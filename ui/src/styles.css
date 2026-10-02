@@ -715,6 +715,14 @@ select:focus {
   margin: 0;
 }
 
+.source-failures {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: #8e98aa;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
 .reference-import {
   display: flex;
   flex-wrap: wrap;

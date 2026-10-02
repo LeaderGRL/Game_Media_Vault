@@ -16,8 +16,8 @@ use game_media_vault_domain::{
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryAsset, LibraryEntry,
     MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PersistAsset, QualityShortfall,
-    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceId, SourceSelection,
-    StoredObject, outranked_by,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage,
+    SourceId, SourceSelection, StoredObject, outranked_by,
 };
 
 pub const SOURCE_ID: &str = "libretro-thumbnails";
@@ -179,6 +179,8 @@ pub struct FakeVault {
     pub review_opened_before_next_write: RefCell<Option<NewReviewItem>>,
     /// Release Edition each acquisition candidate is currently linked to.
     pub candidate_links: RefCell<BTreeMap<String, i64>>,
+    /// Source failures executions recorded, in recording order.
+    pub source_failures: RefCell<Vec<SourceFailure>>,
 }
 
 impl FakeVault {
@@ -485,6 +487,30 @@ impl RunRepositoryPort for FakeVault {
         work.state = WorkState::Done;
         work.unavailable = Some(reason.to_owned());
         Ok(())
+    }
+
+    fn record_source_failure(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        stage: SourceFailureStage,
+        message: &str,
+    ) -> Result<(), PortError> {
+        let mut failures = self.source_failures.borrow_mut();
+        let sequence = failures.len() as i64 + 1;
+        failures.push(SourceFailure {
+            sequence,
+            source_id: source_id.to_owned(),
+            run_id,
+            stage,
+            message: message.to_owned(),
+            recorded_at: 0,
+        });
+        Ok(())
+    }
+
+    fn source_failures(&self) -> Result<Vec<SourceFailure>, PortError> {
+        Ok(self.source_failures.borrow().clone())
     }
 }
 

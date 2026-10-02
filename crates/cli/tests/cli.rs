@@ -16,7 +16,7 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionWorkItem, AssetCandidate, AssetType, ConnectorCapabilities,
     MatchEvidence, MatchSignal, MatchingPolicy, MatchingPolicyValidationError, NewReviewItem,
     PersistAsset, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
-    ReviewMatchCandidate, SourceId,
+    ReviewMatchCandidate, SourceFailureStage, SourceId,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use tempfile::tempdir;
@@ -1731,4 +1731,52 @@ fn derive_packaging_models_builds_the_model_of_a_complete_box_once() {
         (again["generated"].as_u64(), again["up_to_date"].as_u64()),
         (Some(0), Some(1))
     );
+}
+
+#[test]
+fn source_failures_summarizes_the_latest_failures_of_each_source() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let run = catalog
+        .create_run(
+            AcquisitionRequest::try_from_draft(game_media_vault_domain::AcquisitionRequestDraft {
+                sources: game_media_vault_domain::SourceSelection::Explicit(vec![
+                    "libretro-thumbnails".to_owned(),
+                ]),
+                platforms: vec!["Nintendo - Game Boy".to_owned()],
+                games: game_media_vault_domain::GameSelection::Explicit(vec!["Tetris".to_owned()]),
+                regions: Vec::new(),
+                languages: Vec::new(),
+                asset_types: vec![game_media_vault_domain::AssetTypeSelector::BoxFront],
+                quality: None,
+                retention: game_media_vault_domain::RetentionPolicy::KeepEverything,
+                limits: game_media_vault_domain::AcquisitionLimits::default(),
+            })
+            .unwrap(),
+            vec!["libretro-thumbnails".to_owned()],
+        )
+        .unwrap();
+    for message in ["timed out", "HTTP 503"] {
+        catalog
+            .record_source_failure(
+                run.id,
+                "libretro-thumbnails",
+                SourceFailureStage::Download,
+                message,
+            )
+            .unwrap();
+    }
+
+    let summaries: serde_json::Value = serde_json::from_str(
+        &run_in_vault(&vault, &["source", "failures", "--latest", "1"]).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(summaries[0]["source_id"], "libretro-thumbnails");
+    assert_eq!(summaries[0]["failures"], 2);
+    let latest = summaries[0]["latest"].as_array().unwrap();
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0]["message"], "HTTP 503");
+    assert_eq!(latest[0]["stage"], "download");
 }

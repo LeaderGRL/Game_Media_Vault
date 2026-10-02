@@ -62,6 +62,25 @@ export interface SourceDescription {
   direct_media_download: boolean;
 }
 
+/** A failure of a Source an execution recorded. */
+export interface SourceFailure {
+  /** Recording order across every Source. */
+  sequence: number;
+  source_id: string;
+  run_id: number;
+  stage: "discovery" | "download";
+  message: string;
+  /** Seconds since the Unix epoch. */
+  recorded_at: number;
+}
+
+/** The failures executions recorded for one Source, the latest first. */
+export interface SourceFailureSummary {
+  source_id: string;
+  failures: number;
+  latest: SourceFailure[];
+}
+
 export interface AssetTypeOption {
   value: string;
   label: string;
