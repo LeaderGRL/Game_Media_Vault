@@ -349,3 +349,48 @@ fn malformed_game_entries_are_skipped_and_counted_without_losing_the_others() {
     assert_eq!(titles, ["Tetris", "Dr. Mario"]);
     assert_eq!(read.skipped_records, 2);
 }
+
+#[test]
+fn a_datafile_cut_short_between_entries_is_invalid_source_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("truncated.dat");
+    // A complete entry, but the datafile never closes.
+    std::fs::write(
+        &path,
+        r#"<datafile><header><name>Nintendo - Game Boy</name></header>
+  <game name="Tetris (World)"><rom name="Tetris (World).gb" crc="46df91ad"/></game>"#,
+    )
+    .unwrap();
+
+    let error = NoIntroReferenceCatalog::new()
+        .read_releases(&path, 10)
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{error}");
+}
+
+#[test]
+fn self_closing_game_entries_are_read_or_skipped_like_the_others() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("self-closing.dat");
+    std::fs::write(
+        &path,
+        r#"<datafile><header><name>Nintendo - Game Boy</name></header>
+  <game name="Dumpless (World)"/>
+  <game/>
+</datafile>"#,
+    )
+    .unwrap();
+
+    let read = NoIntroReferenceCatalog::new()
+        .read_releases(&path, 10)
+        .unwrap();
+
+    let titles: Vec<&str> = read
+        .releases
+        .iter()
+        .map(|release| release.game_title.as_str())
+        .collect();
+    assert_eq!(titles, ["Dumpless"]);
+    assert_eq!(read.skipped_records, 1);
+}

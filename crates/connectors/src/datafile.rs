@@ -71,12 +71,19 @@ fn parse_datafile<R: std::io::BufRead>(
     let mut current_game = None;
     let mut releases = Vec::with_capacity(max_games.min(256));
     let mut skipped_records = 0;
+    // Elements opened and not closed yet: a datafile must close them all.
+    let mut depth = 0_usize;
 
     loop {
-        match xml
+        let event = xml
             .read_event_into(&mut buffer)
-            .map_err(|error| xml_error(source, error))?
-        {
+            .map_err(|error| xml_error(source, error))?;
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        match event {
             Event::Start(element) => match element.name().as_ref() {
                 "header" => in_header = true,
                 "name" if in_header => {
@@ -87,21 +94,29 @@ fn parse_datafile<R: std::io::BufRead>(
                     header_field = Some(HeaderField::Version);
                     header_text.clear();
                 }
-                "game" => {
-                    // An entry without a readable name identifies no release; the others still do.
-                    current_game = Some(match attribute_value(source, &element, "name") {
-                        Ok(Some(raw_name)) => {
-                            GameEntry::Reading(DatafileGame::new(raw_name, source_location))
-                        }
-                        Ok(None) | Err(_) => GameEntry::Skipped,
-                    });
-                }
+                "game" => current_game = Some(start_game(source, &element, source_location)),
                 "rom" => read_rom(source, &mut current_game, &element),
                 _ => {}
             },
-            Event::Empty(element) if element.name().as_ref() == "rom" => {
-                read_rom(source, &mut current_game, &element);
-            }
+            Event::Empty(element) => match element.name().as_ref() {
+                "rom" => read_rom(source, &mut current_game, &element),
+                // A self-closing entry is complete: it names a release without dumps, or none.
+                "game" => {
+                    let entry = start_game(source, &element, source_location);
+                    if end_game(
+                        source,
+                        entry,
+                        platform.as_deref(),
+                        version.as_deref(),
+                        &mut releases,
+                        &mut skipped_records,
+                        max_games,
+                    )? {
+                        break;
+                    }
+                }
+                _ => {}
+            },
             Event::Text(text) if header_field.is_some() => {
                 header_text.push_str(text.xml10_content().as_ref());
             }
@@ -119,30 +134,31 @@ fn parse_datafile<R: std::io::BufRead>(
                     version = (!text.is_empty()).then(|| text.to_owned());
                 }
                 "header" => in_header = false,
-                "game" => match current_game.take() {
-                    Some(GameEntry::Reading(game)) => {
-                        let platform = platform
-                            .as_deref()
-                            .ok_or_else(|| missing_platform(source))?;
-                        releases.push(game.finish(source, platform, version.as_deref()));
-                        if releases.len() >= max_games {
-                            break;
-                        }
-                    }
-                    Some(GameEntry::Skipped) => skipped_records += 1,
-                    None => {
-                        return Err(PortError::invalid_source_data(format!(
+                "game" => {
+                    let entry = current_game.take().ok_or_else(|| {
+                        PortError::invalid_source_data(format!(
                             "{} game closing tag has no matching entry",
                             source.name
-                        )));
+                        ))
+                    })?;
+                    if end_game(
+                        source,
+                        entry,
+                        platform.as_deref(),
+                        version.as_deref(),
+                        &mut releases,
+                        &mut skipped_records,
+                        max_games,
+                    )? {
+                        break;
                     }
-                },
+                }
                 _ => {}
             },
-            // A datafile cut short inside an entry is broken as a whole.
-            Event::Eof if current_game.is_some() => {
+            // A datafile cut short, inside an entry or between two, is broken as a whole.
+            Event::Eof if depth > 0 => {
                 return Err(PortError::invalid_source_data(format!(
-                    "{} datafile ends inside a game entry",
+                    "{} datafile ends before its elements close",
                     source.name
                 )));
             }
@@ -159,6 +175,45 @@ fn parse_datafile<R: std::io::BufRead>(
         releases,
         skipped_records,
     })
+}
+
+/// The entry a `game` element starts: one without a readable name identifies no release, while
+/// the others still do.
+fn start_game(
+    source: &DatafileSource,
+    element: &quick_xml::events::BytesStart<'_>,
+    source_location: &str,
+) -> GameEntry {
+    match attribute_value(source, element, "name") {
+        Ok(Some(raw_name)) if !raw_name.trim().is_empty() => {
+            GameEntry::Reading(DatafileGame::new(raw_name, source_location))
+        }
+        _ => GameEntry::Skipped,
+    }
+}
+
+/// Ends `entry`: a readable one becomes a release, another is counted as skipped. Returns whether
+/// `max_games` releases are read.
+fn end_game(
+    source: &DatafileSource,
+    entry: GameEntry,
+    platform: Option<&str>,
+    version: Option<&str>,
+    releases: &mut Vec<ReferenceReleaseRecord>,
+    skipped_records: &mut usize,
+    max_games: usize,
+) -> Result<bool, PortError> {
+    match entry {
+        GameEntry::Reading(game) => {
+            let platform = platform.ok_or_else(|| missing_platform(source))?;
+            releases.push(game.finish(source, platform, version));
+            Ok(releases.len() >= max_games)
+        }
+        GameEntry::Skipped => {
+            *skipped_records += 1;
+            Ok(false)
+        }
+    }
 }
 
 /// Records the identifiers of a ROM or track of the entry being read; one it cannot read makes
