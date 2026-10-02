@@ -236,7 +236,7 @@ impl RunRepositoryPort for SqliteCatalog {
                            NOT IN (SELECT value FROM json_each(?2))
                  )
                  WHERE position <= ?3
-                 ORDER BY id",
+                 ORDER BY position, id",
             )
             .map_err(sql_error)?;
         let rows = statement

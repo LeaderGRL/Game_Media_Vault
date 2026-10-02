@@ -67,6 +67,8 @@ struct SlowConnector<'a> {
     in_flight: Option<&'a InFlight>,
     /// Runs while each download is under way, as a human acting meanwhile.
     during_download: Option<&'a (dyn Fn() + Sync)>,
+    /// Records the title of each download as it starts.
+    started: Option<&'a Shared<Vec<String>>>,
 }
 
 impl ConnectorPort for SlowConnector<'_> {
@@ -90,6 +92,9 @@ impl ConnectorPort for SlowConnector<'_> {
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        if let Some(started) = self.started {
+            started.borrow_mut().push(candidate.game_title.clone());
+        }
         if let Some(during_download) = self.during_download {
             during_download();
         }
@@ -132,6 +137,7 @@ fn slow<'a>(
         rendezvous,
         in_flight,
         during_download: None,
+        started: None,
     }
 }
 
@@ -416,4 +422,36 @@ fn the_per_source_limit_bounds_the_downloads_of_one_source() {
             "limit {max_per_source}"
         );
     }
+}
+
+#[test]
+fn every_sources_next_download_starts_before_any_source_looks_further_ahead() {
+    let (first, second, other) = (
+        box_front("a", "First"),
+        box_front("a", "Second"),
+        box_front("b", "Other"),
+    );
+    let vault = FakeVault::with_library(vec![
+        release_for(&first, 1),
+        release_for(&second, 2),
+        release_for(&other, 3),
+    ]);
+    let started = Shared::new(Vec::new());
+    let mut a = slow("a", vec![first, second], None, None);
+    let mut b = slow("b", vec![other], None, None);
+    a.started = Some(&started);
+    b.started = Some(&started);
+
+    // One download at a time: the Source queued first must not take it twice in a row.
+    let imported = execute(
+        &vault,
+        &[&a, &b],
+        DownloadLimits {
+            max_concurrent: 1,
+            max_per_source: 2,
+        },
+    );
+
+    assert_eq!(imported, Ok(3));
+    assert_eq!(*started.borrow(), ["First", "Other", "Second"]);
 }

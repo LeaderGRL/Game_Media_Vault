@@ -249,8 +249,9 @@ pub trait RunRepositoryPort: Send + Sync {
         skipped_sources: &[String],
     ) -> Result<Option<AcquisitionWorkItem>, PortError>;
 
-    /// The oldest `per_source` queued work items of each Source outside `skipped_sources`, in
-    /// queue order, while the run is running. Reading them changes nothing.
+    /// The oldest `per_source` queued work items of each Source outside `skipped_sources`, while
+    /// the run is running: every Source's oldest item first, in queue order, then every Source's
+    /// second, and so on. Reading them changes nothing.
     fn queued_work(
         &self,
         run_id: i64,

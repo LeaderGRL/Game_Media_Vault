@@ -533,22 +533,25 @@ impl RunRepositoryPort for FakeVault {
         if run.status != AcquisitionRunStatus::Running {
             return Ok(Vec::new());
         }
+        // Each item with its position among its Source's queued items.
         let mut taken: BTreeMap<&str, usize> = BTreeMap::new();
-        Ok(run
+        let mut positioned: Vec<(usize, usize, AcquisitionWorkItem)> = run
             .work
             .iter()
             .filter(|work| work.state == WorkState::Queued)
-            .filter(|work| {
+            .enumerate()
+            .filter_map(|(order, work)| {
                 let source = work.item.candidate.source_id.as_str();
                 if skipped_sources.iter().any(|skipped| skipped == source) {
-                    return false;
+                    return None;
                 }
-                let count = taken.entry(source).or_default();
-                *count += 1;
-                *count <= per_source
+                let position = taken.entry(source).or_default();
+                *position += 1;
+                (*position <= per_source).then(|| (*position, order, work.item.clone()))
             })
-            .map(|work| work.item.clone())
-            .collect())
+            .collect();
+        positioned.sort_by_key(|(position, order, _)| (*position, *order));
+        Ok(positioned.into_iter().map(|(_, _, item)| item).collect())
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {

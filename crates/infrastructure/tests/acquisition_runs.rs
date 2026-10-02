@@ -677,7 +677,8 @@ fn queued_work_lists_the_oldest_items_of_each_source_while_the_run_runs() {
             .collect()
     };
 
-    assert_eq!(keys(&[], 2), ["a1", "a2", "b1", "b2"]);
+    // Every Source's oldest item comes before any second one.
+    assert_eq!(keys(&[], 2), ["a1", "b1", "a2", "b2"]);
     assert_eq!(keys(&[SOURCE_ID.to_owned()], 2), ["b1", "b2"]);
     catalog.complete_work(run.id, "a1").unwrap();
     assert_eq!(keys(&[], 1), ["a2", "b1"]);
