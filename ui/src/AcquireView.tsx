@@ -1,31 +1,67 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 
 import {
   ASSET_TYPE_FAMILIES,
   AcquisitionForm,
+  AcquisitionPlan,
   AcquisitionRequestDraft,
   KNOWN_SOURCES,
   RetentionPolicy,
+  assetTypeLabel,
   buildAcquisitionRequest,
   emptyAcquisitionForm,
   pixelSizeProblem,
+  sourceLabel,
 } from "./acquisition";
+import { errorMessage } from "./types";
 
 interface AcquireViewProps {
   starting: boolean;
   onStart: (request: AcquisitionRequestDraft) => void;
+  /** Explains which Sources the request would contact; the button shows only with it. */
+  onCheckPlan?: (request: AcquisitionRequestDraft) => Promise<AcquisitionPlan>;
 }
 
 /**
  * Compact Acquisition Request builder; the backend validates the submitted draft, except pixel
  * sizes the request could not carry, which are refused here.
  */
-export function AcquireView({ starting, onStart }: AcquireViewProps) {
+export function AcquireView({ starting, onStart, onCheckPlan }: AcquireViewProps) {
   const [form, setForm] = useState<AcquisitionForm>(emptyAcquisitionForm);
   const [formProblem, setFormProblem] = useState<string | null>(null);
+  const [plan, setPlan] = useState<AcquisitionPlan | null>(null);
+  const [planProblem, setPlanProblem] = useState<string | null>(null);
+  // The latest plan check; an earlier one or one made before the request changed is dropped.
+  const planCheckRef = useRef<object | null>(null);
 
   function update(change: Partial<AcquisitionForm>) {
     setForm((current) => ({ ...current, ...change }));
+    // A plan explains the request it was checked for only.
+    planCheckRef.current = null;
+    setPlan(null);
+    setPlanProblem(null);
+  }
+
+  async function checkPlan() {
+    const problem = pixelSizeProblem(form);
+    setFormProblem(problem);
+    if (problem !== null || onCheckPlan === undefined) {
+      return;
+    }
+    const check = {};
+    planCheckRef.current = check;
+    setPlan(null);
+    setPlanProblem(null);
+    try {
+      const checked = await onCheckPlan(buildAcquisitionRequest(form));
+      if (planCheckRef.current === check) {
+        setPlan(checked);
+      }
+    } catch (reason) {
+      if (planCheckRef.current === check) {
+        setPlanProblem(errorMessage(reason));
+      }
+    }
   }
 
   function toggle(values: string[], value: string): string[] {
@@ -154,9 +190,40 @@ export function AcquireView({ starting, onStart }: AcquireViewProps) {
           {formProblem}
         </p>
       ) : null}
+      {planProblem ? (
+        <p className="error-message" role="alert">
+          {planProblem}
+        </p>
+      ) : null}
+      {plan ? <PlanSummary plan={plan} /> : null}
+      {onCheckPlan ? (
+        <button type="button" onClick={() => void checkPlan()}>
+          Check plan
+        </button>
+      ) : null}
       <button type="submit" disabled={starting}>
         {starting ? "Starting…" : "Start acquisition"}
       </button>
     </form>
+  );
+}
+
+/** Which Sources acquire each requested Asset Type, and why the others are left out. */
+function PlanSummary({ plan }: { plan: AcquisitionPlan }) {
+  return (
+    <section className="acquisition-plan" aria-label="Acquisition plan">
+      <ul>
+        {plan.coverage.map((covered) => (
+          <li key={covered.selector}>
+            {assetTypeLabel(covered.selector)}: {covered.sources.map(sourceLabel).join(", ")}
+          </li>
+        ))}
+        {plan.excluded.map((excluded) => (
+          <li key={excluded.source_id}>
+            {sourceLabel(excluded.source_id)} left out: {excluded.reason}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

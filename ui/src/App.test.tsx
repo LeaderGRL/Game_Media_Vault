@@ -246,6 +246,31 @@ describe("App", () => {
     expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
   });
 
+  it("checks an acquisition plan through the desktop shell", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "plan_acquisition"
+          ? {
+              sources: [{ source_id: "libretro-thumbnails", asset_types: ["box_front"] }],
+              excluded: [],
+              coverage: [{ selector: "box_front", sources: ["libretro-thumbnails"] }],
+            }
+          : [],
+      ),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByLabelText("Box Front"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
+
+    expect(await screen.findByText("Box Front: Libretro Thumbnails")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "plan_acquisition",
+      expect.objectContaining({ request: expect.objectContaining({ asset_types: ["box_front"] }) }),
+    );
+  });
+
   it("offers no Library search before a vault is loaded", () => {
     render(<App />);
 

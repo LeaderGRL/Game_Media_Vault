@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 
-import { ASSET_TYPE_FAMILIES } from "./acquisition";
+import { ASSET_TYPE_FAMILIES, assetTypeLabel } from "./acquisition";
 import {
   filenameMediaType,
   type CoverageProfile,
@@ -238,13 +238,13 @@ function LibraryResults({ entries, objectUrl, filtered }: LibraryResultsProps) {
                 <div className="asset-record" key={asset.asset_id}>
                   <AssetOriginal
                     asset={asset}
-                    description={formatAssetType(asset.asset_type) + " of " + entry.game_title}
+                    description={assetTypeLabel(asset.asset_type) + " of " + entry.game_title}
                     objectUrl={objectUrl}
                   />
                   <div className="asset-details">
                     <div>
                       <span className="detail-label">Asset</span>
-                      <strong>{formatAssetType(asset.asset_type)}</strong>
+                      <strong>{assetTypeLabel(asset.asset_type)}</strong>
                     </div>
                     <div>
                       <span className="detail-label">File</span>
@@ -349,11 +349,6 @@ const COVERAGE_PROFILE_LABELS: Record<CoverageProfile, string> = {
   archival: "Archival",
 };
 
-/** Asset Type names, as the Acquire view labels them. */
-const ASSET_TYPE_LABELS = new Map(
-  ASSET_TYPE_FAMILIES.flatMap((family) => family.types).map((type) => [type.value, type.label]),
-);
-
 /** The Coverage Status of a release and what each of its profiles still misses. */
 function ReleaseCoverageNote({ coverage }: { coverage: ReleaseCoverage | null }) {
   if (coverage === null) {
@@ -370,7 +365,7 @@ function ReleaseCoverageNote({ coverage }: { coverage: ReleaseCoverage | null })
         .map((profile) => (
           <span className="coverage-missing" key={profile.profile}>
             {COVERAGE_PROFILE_LABELS[profile.profile]} misses{" "}
-            {profile.missing.map((assetType) => ASSET_TYPE_LABELS.get(assetType) ?? assetType).join(", ")}
+            {profile.missing.map(assetTypeLabel).join(", ")}
           </span>
         ))}
     </div>
@@ -417,10 +412,6 @@ function preferenceReason(reason: PreferenceReason) {
     case "acquired_first":
       return "Equal to the preferred original, which was acquired first";
   }
-}
-
-function formatAssetType(assetType: string) {
-  return ASSET_TYPE_LABELS.get(assetType) ?? assetType;
 }
 
 /** Asset Types in taxonomy order, as the Acquire view lists them. */

@@ -646,3 +646,8 @@ select:focus {
   display: block;
   margin: 16px auto 0;
 }
+
+.acquisition-plan ul {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}

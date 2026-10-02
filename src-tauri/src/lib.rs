@@ -4,8 +4,8 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary, ErrorKind,
-    LibraryPage, LibraryQuery, PortError, VaultReport,
+    AcquisitionPlan, AcquisitionRequestInput, ApplicationError, ConnectorPort, DerivationSummary,
+    ErrorKind, LibraryPage, LibraryQuery, PortError, VaultReport,
     acquire_run_with_connector as acquire_run_with_connector_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
@@ -15,6 +15,7 @@ use game_media_vault_application::{
     load_acquisition_run as load_acquisition_run_use_case,
     load_review_preview as load_review_preview_use_case,
     pause_acquisition_run as pause_acquisition_run_use_case,
+    plan_acquisition as plan_acquisition_use_case,
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
     search_library as search_library_use_case, start_acquisition_run_for_connector,
@@ -284,6 +285,27 @@ pub fn start_acquisition_run_in_vault(
 }
 
 /// Starts a run on a blocking worker, since checking the plan may reach the Source.
+/// Explains which Sources `request` would contact and what each acquires; no vault is needed.
+pub fn plan_acquisition_with_connector(
+    request: AcquisitionRequestInput,
+    connector: &dyn ConnectorPort,
+) -> Result<AcquisitionPlan, CommandError> {
+    let request = validate_acquisition_request(request)?;
+    Ok(plan_acquisition_use_case(&request, &[connector])?)
+}
+
+/// Plans on a blocking worker, since connectors may consult their Source.
+pub async fn plan_acquisition_async(
+    request: AcquisitionRequestInput,
+    connector: Box<dyn ConnectorPort + Send>,
+) -> Result<AcquisitionPlan, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        plan_acquisition_with_connector(request, connector.as_ref())
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("acquisition planning", error))?
+}
+
 pub async fn start_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     request: AcquisitionRequestInput,
@@ -380,6 +402,13 @@ pub fn cancel_acquisition_run_in_vault(
         &open_existing_catalog(vault_root)?,
         run_id,
     )?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn plan_acquisition(
+    request: AcquisitionRequestInput,
+) -> Result<AcquisitionPlan, CommandError> {
+    plan_acquisition_async(request, Box::new(LibretroThumbnailsConnector::new())).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -526,6 +555,7 @@ pub fn run() {
             resolve_review_item,
             load_review_preview,
             build_acquisition_request,
+            plan_acquisition,
             start_acquisition_run,
             execute_acquisition_run,
             get_acquisition_run,

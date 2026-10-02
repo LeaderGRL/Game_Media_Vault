@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { AcquireView } from "./AcquireView";
@@ -77,5 +77,54 @@ describe("AcquireView", () => {
     render(<AcquireView starting onStart={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Starting…" })).toBeDisabled();
+  });
+
+  it("explains which Source acquires each requested type before starting", async () => {
+    const checkPlan = vi.fn().mockResolvedValue({
+      sources: [{ source_id: "libretro-thumbnails", asset_types: ["box_front"] }],
+      excluded: [{ source_id: "screenscraper", reason: "acquires none of the requested asset types" }],
+      coverage: [{ selector: "box_front", sources: ["libretro-thumbnails"] }],
+    });
+    render(<AcquireView starting={false} onStart={vi.fn()} onCheckPlan={checkPlan} />);
+    fireEvent.click(screen.getByLabelText("Auto (any compatible source)"));
+    fireEvent.click(screen.getByLabelText("Box Front"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
+
+    expect(await screen.findByText("Box Front: Libretro Thumbnails")).toBeInTheDocument();
+    expect(
+      screen.getByText("screenscraper left out: acquires none of the requested asset types"),
+    ).toBeInTheDocument();
+    expect(checkPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ sources: { mode: "auto" }, asset_types: ["box_front"] }),
+    );
+  });
+
+  it("shows why a plan is refused", async () => {
+    const checkPlan = vi
+      .fn()
+      .mockRejectedValue({ kind: "unsupported", message: "no selected source acquires Manual" });
+    render(<AcquireView starting={false} onStart={vi.fn()} onCheckPlan={checkPlan} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
+
+    expect(await screen.findByText("no selected source acquires Manual")).toBeInTheDocument();
+  });
+
+  it("forgets a checked plan once the request changes", async () => {
+    const checkPlan = vi.fn().mockResolvedValue({
+      sources: [{ source_id: "libretro-thumbnails", asset_types: ["box_front"] }],
+      excluded: [],
+      coverage: [{ selector: "box_front", sources: ["libretro-thumbnails"] }],
+    });
+    render(<AcquireView starting={false} onStart={vi.fn()} onCheckPlan={checkPlan} />);
+    fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
+    expect(await screen.findByText("Box Front: Libretro Thumbnails")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Screenshot"));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Box Front: Libretro Thumbnails")).not.toBeInTheDocument(),
+    );
   });
 });

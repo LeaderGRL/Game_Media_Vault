@@ -2,7 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
-import type { AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
+import type { AcquisitionPlan, AcquisitionRequestDraft, AcquisitionRun } from "./acquisition";
 import { LibraryView } from "./LibraryView";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
@@ -689,7 +689,11 @@ export function App() {
         />
       ) : null}
       {activeView === "acquire" ? (
-        <AcquireView starting={startingRun} onStart={(request) => void startRun(request)} />
+        <AcquireView
+          starting={startingRun}
+          onStart={(request) => void startRun(request)}
+          onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
+        />
       ) : null}
       {activeView === "runs" ? (
         <RunsView

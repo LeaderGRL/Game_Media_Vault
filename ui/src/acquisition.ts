@@ -24,6 +24,14 @@ export interface AcquisitionRequestDraft {
   limits: Record<string, never>;
 }
 
+/** Which Sources a request would contact and what each acquires (Rust `AcquisitionPlan`). */
+export interface AcquisitionPlan {
+  sources: { source_id: string; asset_types: string[] }[];
+  excluded: { source_id: string; reason: string }[];
+  /** For each requested selector, the planned Sources that acquire it. */
+  coverage: { selector: string; sources: string[] }[];
+}
+
 export type AcquisitionRunStatus = "running" | "paused" | "cancelled" | "completed";
 
 export interface AcquisitionRun {
@@ -235,4 +243,21 @@ function qualityRequirements(form: AcquisitionForm): QualityRequirementsDraft | 
     quality.min_height = Number(minHeight);
   }
   return Object.keys(quality).length > 0 ? quality : null;
+}
+
+const ASSET_TYPE_LABELS = new Map(
+  ASSET_TYPE_FAMILIES.flatMap((family) => [family, ...family.types]).map((option) => [
+    option.value,
+    option.label,
+  ]),
+);
+
+/** The name of an Asset Type or family, as the Acquire view labels it. */
+export function assetTypeLabel(value: string): string {
+  return ASSET_TYPE_LABELS.get(value) ?? value;
+}
+
+/** The name of a known Source, or its id. */
+export function sourceLabel(sourceId: string): string {
+  return KNOWN_SOURCES.find((source) => source.value === sourceId)?.label ?? sourceId;
 }
