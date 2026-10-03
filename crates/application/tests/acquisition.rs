@@ -1461,3 +1461,23 @@ fn a_failed_download_ahead_of_work_requeued_meanwhile_fails_its_source_before_la
     assert!(vault.records.borrow().is_empty());
     assert_eq!(vault.run(run_id).queued_work, 2);
 }
+
+#[test]
+fn a_run_executes_in_one_execution_at_a_time() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![release_for(&smb, 73)]);
+    let run_id = vault.start_run();
+    let connector = FakeConnector::new(vec![smb]);
+    // Another execution of the run holds it.
+    assert!(vault.claim_execution(run_id).unwrap());
+
+    let error = execute(&vault, &connector, run_id).unwrap_err();
+
+    assert_eq!(error, ApplicationError::RunAlreadyExecuting(run_id));
+    assert_eq!(error.kind(), ErrorKind::Conflict);
+    assert_eq!(*connector.discover_calls.borrow(), 0);
+    // Once that execution ends, the run executes again, and releases it in turn.
+    vault.release_execution(run_id).unwrap();
+    assert_eq!(execute(&vault, &connector, run_id).unwrap().len(), 1);
+    assert!(vault.claim_execution(run_id).unwrap());
+}

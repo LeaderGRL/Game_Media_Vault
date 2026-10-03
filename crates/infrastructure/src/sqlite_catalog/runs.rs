@@ -1,3 +1,9 @@
+use std::{
+    fs::{self, File, TryLockError},
+    path::Path,
+    sync::PoisonError,
+};
+
 use game_media_vault_application::{PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
@@ -60,6 +66,48 @@ impl RunRepositoryPort for SqliteCatalog {
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
         load_run(&self.connect()?, run_id)
+    }
+
+    /// Locks a file of the vault's `locks` directory for the run, which every process opening
+    /// the vault sees and the OS releases when the process ends.
+    fn claim_execution(&self, run_id: i64) -> Result<bool, PortError> {
+        let mut executions = self
+            .executions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if executions.contains_key(&run_id) {
+            return Ok(false);
+        }
+        let locks = self.path.parent().unwrap_or(Path::new(".")).join("locks");
+        let failed = |error: std::io::Error| {
+            PortError::new(format!(
+                "failed to claim acquisition run #{run_id} for this execution: {error}"
+            ))
+        };
+        fs::create_dir_all(&locks).map_err(failed)?;
+        let lock = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(locks.join(format!("run-{run_id}.lock")))
+            .map_err(failed)?;
+        match lock.try_lock() {
+            Ok(()) => {
+                executions.insert(run_id, lock);
+                Ok(true)
+            }
+            Err(TryLockError::WouldBlock) => Ok(false),
+            Err(TryLockError::Error(error)) => Err(failed(error)),
+        }
+    }
+
+    fn release_execution(&self, run_id: i64) -> Result<(), PortError> {
+        // Closing the file releases its lock.
+        self.executions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&run_id);
+        Ok(())
     }
 
     fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {

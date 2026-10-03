@@ -714,3 +714,22 @@ fn the_next_queued_work_is_the_oldest_of_the_sources_not_skipped() {
         None
     );
 }
+
+#[test]
+fn a_run_is_claimed_by_one_execution_at_a_time_across_processes() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let first = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&first, request()).unwrap();
+    let other_run = start_acquisition_run(&first, request()).unwrap();
+    // Another process opens the same vault.
+    let second = SqliteCatalog::open_existing(&path).unwrap();
+
+    assert!(first.claim_execution(run.id).unwrap());
+    assert!(!second.claim_execution(run.id).unwrap());
+    assert!(!first.claim_execution(run.id).unwrap());
+    assert!(second.claim_execution(other_run.id).unwrap());
+
+    first.release_execution(run.id).unwrap();
+    assert!(second.claim_execution(run.id).unwrap());
+}

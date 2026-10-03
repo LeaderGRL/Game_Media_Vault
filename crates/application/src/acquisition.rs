@@ -251,6 +251,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Releases the claim an execution holds on its run, however it ends.
+struct ExecutionClaim<'a> {
+    runs: &'a dyn RunRepositoryPort,
+    run_id: i64,
+}
+
+impl Drop for ExecutionClaim<'_> {
+    fn drop(&mut self) {
+        // A claim that cannot be released ends with the process holding it.
+        let _ = self.runs.release_execution(self.run_id);
+    }
+}
+
 /// Marks the execution stopped however it ends.
 struct StopOnExit<'d, 'a>(&'d Dispatcher<'a>);
 
@@ -301,6 +314,12 @@ pub fn acquire_run_with_connectors(
     limits: DownloadLimits,
 ) -> Result<Vec<ImportedAsset>, ApplicationError> {
     let matching_policy = matching_policy.validate()?;
+    // One execution at a time: another would only drain the same queue, and the download limits
+    // bound each execution.
+    if !runs.claim_execution(run_id)? {
+        return Err(ApplicationError::RunAlreadyExecuting(run_id));
+    }
+    let _claim = ExecutionClaim { runs, run_id };
     let run = load_acquisition_run(runs, run_id)?;
     match run.status {
         AcquisitionRunStatus::Running => ensure_request_supported(&run.request)?,

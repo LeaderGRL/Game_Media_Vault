@@ -187,6 +187,8 @@ pub struct FakeVault {
     pub pause_during_next_status_read: Shared<Option<std::time::Duration>>,
     /// Simulates a pause the next read of the run status sees, resumed right after it.
     pub paused_at_next_status_read: Shared<bool>,
+    /// The runs an execution holds.
+    pub executing: Shared<BTreeSet<i64>>,
     /// Simulates a human rejecting the first Review Item right before the Nth next read of a
     /// Review Item, counting from one.
     pub rejection_before_review_read: Shared<Option<usize>>,
@@ -394,6 +396,15 @@ impl RunRepositoryPort for FakeVault {
             self.runs.borrow_mut().get_mut(&run_id).unwrap().status = status;
         }
         Ok(run)
+    }
+
+    fn claim_execution(&self, run_id: i64) -> Result<bool, PortError> {
+        Ok(self.executing.borrow_mut().insert(run_id))
+    }
+
+    fn release_execution(&self, run_id: i64) -> Result<(), PortError> {
+        self.executing.borrow_mut().remove(&run_id);
+        Ok(())
     }
 
     fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
