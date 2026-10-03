@@ -277,6 +277,12 @@ fn persist_reference_release_in_transaction(
     let normalized_region = normalize(&record.region);
     let normalized_edition = normalize(&record.edition_name);
     let dumps = dump_set(&record.assertions);
+    let edition = NormalizedEdition {
+        title: &normalized_title,
+        platform: &normalized_platform,
+        region: &normalized_region,
+        edition: &normalized_edition,
+    };
 
     if let Some((game_id, release_edition_id)) = transaction
         .query_row(
@@ -322,6 +328,14 @@ fn persist_reference_release_in_transaction(
             release_edition_id,
             dumps.as_deref(),
         )?;
+        revalidate_review_item(
+            transaction,
+            &source_id,
+            &source_record,
+            release_edition_id,
+            &edition,
+            dumps.as_deref(),
+        )?;
         return Ok(ImportedReleaseEdition {
             game_id,
             release_edition_id,
@@ -330,12 +344,6 @@ fn persist_reference_release_in_transaction(
 
     // Another source may already describe this release: its assertions then join that edition,
     // with the evidence of the link.
-    let edition = NormalizedEdition {
-        title: &normalized_title,
-        platform: &normalized_platform,
-        region: &normalized_region,
-        edition: &normalized_edition,
-    };
     let evidence = linked_release_edition(transaction, &source_id, &edition, dumps.as_deref())?;
     if let Evidence::Links(game_id, release_edition_id, evidence) = evidence {
         let link = link_assertion(identity, evidence.to_owned());
@@ -637,6 +645,75 @@ fn record_dump_set(
     }
     .map_err(sql_error)?;
     Ok(())
+}
+
+/// Brings the Reference Review Item of a record already in the catalog, which keeps
+/// `release_edition_id`, up to date with the editions its evidence points at now. A pending item
+/// names them, or goes when none is left. A decided item is asked again only once an edition
+/// the human did not see appears.
+fn revalidate_review_item(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    source_record: &str,
+    release_edition_id: i64,
+    edition: &NormalizedEdition<'_>,
+    dumps: Option<&str>,
+) -> Result<(), PortError> {
+    let Some((seen_edition, status, seen_candidates)) = transaction
+        .query_row(
+            "SELECT release_edition_id, status, candidates_json FROM reference_review_items
+             WHERE source_id = ?1 AND source_record = ?2",
+            params![source_id, source_record],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sql_error)?
+    else {
+        return Ok(());
+    };
+    // The record's own edition holds its record, so the evidence never offers it.
+    let (candidates, evidence) =
+        match linked_release_edition(transaction, source_id, edition, dumps)? {
+            Evidence::Links(_, candidate, evidence) => (vec![candidate], evidence),
+            Evidence::Uncertain(candidates, evidence) => (candidates, evidence),
+            Evidence::Unlinked => (Vec::new(), ""),
+        };
+    if status != "pending" {
+        let seen: Vec<i64> = serde_json::from_str(&seen_candidates).map_err(|error| {
+            PortError::new(format!(
+                "catalog contains invalid review candidates: {error}"
+            ))
+        })?;
+        let unseen = candidates
+            .iter()
+            .any(|candidate| *candidate != seen_edition && !seen.contains(candidate));
+        if !unseen {
+            return Ok(());
+        }
+    }
+    if candidates.is_empty() {
+        transaction
+            .execute(
+                "DELETE FROM reference_review_items WHERE source_id = ?1 AND source_record = ?2",
+                params![source_id, source_record],
+            )
+            .map_err(sql_error)?;
+        return Ok(());
+    }
+    raise_review_item(
+        transaction,
+        source_id,
+        source_record,
+        release_edition_id,
+        &candidates,
+        evidence,
+    )
 }
 
 /// Asks a human which of the `candidates` the record keeping `release_edition_id` describes,

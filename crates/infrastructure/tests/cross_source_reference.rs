@@ -735,6 +735,58 @@ fn keeping_a_reviewed_record_apart_leaves_every_edition_as_it_is() {
 }
 
 #[test]
+fn a_reimport_whose_dumps_point_nowhere_anymore_retires_its_pending_item() {
+    let (_temp, catalog) = catalog();
+    let (_, _, other, _) = reviewed_dumps(&catalog);
+
+    // The catalog corrects the record's dumps, which no other release shares.
+    let again = import(&catalog, &release("mame-software-lists", "Game C", "bbbb"));
+
+    assert_eq!(again.release_edition_id, other);
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
+#[test]
+fn a_reimport_refreshes_the_candidates_of_its_pending_item() {
+    let (_temp, catalog) = catalog();
+    let (_, _, other, item) = reviewed_dumps(&catalog);
+    let game_d = import(&catalog, &release("no-intro", "Game D", "bbbb"));
+    let game_e = import(&catalog, &release("no-intro", "Game E", "bbbb"));
+
+    // The catalog corrects the record's dumps to those of two other releases.
+    import(&catalog, &release("mame-software-lists", "Game C", "bbbb"));
+
+    let items = catalog.list_reference_review_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, item);
+    assert_eq!(items[0].release_edition_id, other);
+    assert_eq!(
+        items[0].candidates,
+        [game_d.release_edition_id, game_e.release_edition_id]
+    );
+}
+
+#[test]
+fn a_reimport_asks_again_about_a_record_kept_apart_once_a_new_candidate_appears() {
+    let (_temp, catalog) = catalog();
+    let (game_a, game_b, other, item) = reviewed_dumps(&catalog);
+    catalog.keep_reference_review_item_apart(item).unwrap();
+    // A third catalog lists the very same dumps, and keeps its own edition while it awaits
+    // review too.
+    let game_d = import(&catalog, &release("tosec", "Game D", "aaaa"));
+
+    import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+
+    let items = catalog.list_reference_review_items().unwrap();
+    let asked_again = items.iter().find(|pending| pending.id == item).unwrap();
+    assert_eq!(asked_again.release_edition_id, other);
+    assert_eq!(
+        asked_again.candidates,
+        [game_a, game_b, game_d.release_edition_id]
+    );
+}
+
+#[test]
 fn a_reviewed_record_links_only_to_one_of_its_candidates() {
     let (_temp, catalog) = catalog();
     let (game_a, _, other, item) = reviewed_dumps(&catalog);
