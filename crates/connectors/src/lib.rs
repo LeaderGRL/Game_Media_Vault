@@ -125,9 +125,33 @@ pub trait HttpTransport: Send + Sync {
         parameter: &str,
         api_key: &ApiKey,
     ) -> Result<Vec<u8>, PortError> {
-        let _ = (parameter, api_key);
+        self.get_with_query_keys(url, &[(parameter, api_key)])
+    }
+
+    /// Fetches `url` from an API that takes several credentials, each as the query parameter
+    /// `keys` pairs it with, and returns the body, as `get_with_query_key` does for one.
+    fn get_with_query_keys(
+        &self,
+        url: &str,
+        keys: &[(&str, &ApiKey)],
+    ) -> Result<Vec<u8>, PortError> {
+        let _ = keys;
         Err(PortError::new(format!(
-            "this transport cannot send the API key {url} needs"
+            "this transport cannot send the credentials {url} needs"
+        )))
+    }
+
+    /// Streams media from `url`, which a Source serves only to requests carrying `keys` as query
+    /// parameters. Like the keyed API requests, it follows no redirect, and neither its errors
+    /// nor those of its body ever show the keys. A body cut short is not resumed.
+    fn get_stream_with_query_keys(
+        &self,
+        url: &str,
+        keys: &[(&str, &ApiKey)],
+    ) -> Result<Box<dyn Read + Send>, PortError> {
+        let _ = keys;
+        Err(PortError::new(format!(
+            "this transport cannot send the credentials {url} needs"
         )))
     }
 
@@ -260,6 +284,37 @@ fn api_answer(response: Response, url: &str) -> Result<Vec<u8>, PortError> {
     Ok(body)
 }
 
+/// `url` with each of `keys` appended as the query parameter it is paired with.
+fn keyed_url(url: &str, keys: &[(&str, &ApiKey)]) -> Result<Url, PortError> {
+    let mut keyed =
+        Url::parse(url).map_err(|error| PortError::new(format!("{url} is not a URL: {error}")))?;
+    {
+        let mut pairs = keyed.query_pairs_mut();
+        for (parameter, key) in keys {
+            pairs.append_pair(parameter, key.expose());
+        }
+    }
+    Ok(keyed)
+}
+
+/// The body of a response to a request whose URL carries keys. Its read errors would name that
+/// URL, so they name the one shown instead.
+struct KeylessBody {
+    response: Response,
+    shown: String,
+}
+
+impl Read for KeylessBody {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.response.read(buffer).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("the download of {} broke off", self.shown),
+            )
+        })
+    }
+}
+
 /// What one request asks for: the URL sent, through which client, and the URL its errors name,
 /// which differs when the one sent carries a key.
 struct Target<'a> {
@@ -282,17 +337,12 @@ impl HttpTransport for ReqwestHttpTransport {
         api_answer(response, url)
     }
 
-    fn get_with_query_key(
+    fn get_with_query_keys(
         &self,
         url: &str,
-        parameter: &str,
-        api_key: &ApiKey,
+        keys: &[(&str, &ApiKey)],
     ) -> Result<Vec<u8>, PortError> {
-        let mut keyed = Url::parse(url)
-            .map_err(|error| PortError::new(format!("{url} is not a URL: {error}")))?;
-        keyed
-            .query_pairs_mut()
-            .append_pair(parameter, api_key.expose());
+        let keyed = keyed_url(url, keys)?;
         let target = Target {
             client: &self.keyed_client,
             url: keyed.as_str(),
@@ -300,6 +350,24 @@ impl HttpTransport for ReqwestHttpTransport {
         };
         let (response, _) = self.send_to(&target, &Validators::default(), None)?;
         api_answer(response, url)
+    }
+
+    fn get_stream_with_query_keys(
+        &self,
+        url: &str,
+        keys: &[(&str, &ApiKey)],
+    ) -> Result<Box<dyn Read + Send>, PortError> {
+        let keyed = keyed_url(url, keys)?;
+        let target = Target {
+            client: &self.keyed_client,
+            url: keyed.as_str(),
+            shown: url,
+        };
+        let (response, _) = self.send_to(&target, &Validators::default(), None)?;
+        Ok(Box::new(KeylessBody {
+            response,
+            shown: url.to_owned(),
+        }))
     }
 
     /// Retries transient failures (connection failures, HTTP 429 and 5xx) as the retry policy

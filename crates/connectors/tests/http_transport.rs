@@ -640,3 +640,73 @@ fn a_transport_for_public_sites_asks_once_and_follows_no_redirect() {
     assert!(error.message().contains("302"), "{}", error.message());
     assert_eq!(requests.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn a_request_keyed_by_several_parameters_carries_each_of_its_keys() {
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+    ]);
+    let id = ApiKey::new("zq-test-id").unwrap();
+    let password = ApiKey::new("zq-test-password").unwrap();
+
+    let body = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_with_query_keys(
+            &format!("{url}?softname=vault"),
+            &[("devid", &id), ("devpassword", &password)],
+        )
+        .unwrap();
+
+    assert_eq!(body, b"{}");
+    let request = requests.lock().unwrap()[0].clone();
+    assert!(
+        request.starts_with(
+            "GET /media.png?softname=vault&devid=zq-test-id&devpassword=zq-test-password "
+        ),
+        "{request}"
+    );
+}
+
+#[test]
+fn a_keyed_download_streams_its_media_and_never_shows_its_keys() {
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nmedia".to_vec(),
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0\r\n\r\n"
+            .to_vec(),
+    ]);
+    let transport = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES);
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let mut media = String::new();
+    transport
+        .get_stream_with_query_keys(&url, &[("devid", &key)])
+        .unwrap()
+        .read_to_string(&mut media)
+        .unwrap();
+    assert_eq!(media, "media");
+    assert!(
+        requests.lock().unwrap()[0].starts_with("GET /media.png?devid=zq-test-key "),
+        "{:?}",
+        requests.lock().unwrap()
+    );
+
+    let gone = transport
+        .get_stream_with_query_keys(&url, &[("devid", &key)])
+        .err()
+        .unwrap();
+    assert!(gone.is_unavailable(), "{}", gone.message());
+    assert!(
+        !gone.message().contains("zq-test-key"),
+        "{}",
+        gone.message()
+    );
+
+    // A redirect would carry the keys wherever it points.
+    let moved = transport
+        .get_stream_with_query_keys(&url, &[("devid", &key)])
+        .err()
+        .unwrap();
+    assert!(moved.message().contains("302"), "{}", moved.message());
+    assert!(!moved.message().contains("zq-test-key"));
+    assert_eq!(requests.lock().unwrap().len(), 3);
+}
