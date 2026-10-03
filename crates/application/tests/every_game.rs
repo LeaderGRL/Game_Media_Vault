@@ -520,3 +520,33 @@ fn a_game_limit_no_game_list_can_apply_is_left_for_planning_to_refuse() {
         "{error:?}"
     );
 }
+
+#[test]
+fn a_game_limit_counts_the_games_of_a_platform_under_each_of_its_spellings() {
+    // An older import spelled the platform otherwise; it is the same platform.
+    let mut asterix = listed(2, "Asterix", "Europe", "Asterix (Europe)");
+    asterix.platform = "nintendo - nintendo entertainment system".to_owned();
+    let releases = Releases::holding(vec![
+        listed(1, "Zelda", "USA", "Zelda (USA)"),
+        asterix,
+        listed(3, "Tetris", "USA", "Tetris (USA)"),
+    ]);
+    let mut two = every_game_of(&[NES]);
+    two.limits.max_games = Some(2);
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), two).unwrap();
+
+    assert_eq!(
+        expanded.games,
+        GameSelection::PlatformBound(vec![
+            PlatformBoundGameSelector {
+                game: "Asterix (Europe)".to_owned(),
+                platform: "nintendo - nintendo entertainment system".to_owned(),
+            },
+            PlatformBoundGameSelector {
+                game: "Tetris (USA)".to_owned(),
+                platform: NES.to_owned(),
+            },
+        ])
+    );
+}

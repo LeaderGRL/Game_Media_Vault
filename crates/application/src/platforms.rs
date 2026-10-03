@@ -178,7 +178,8 @@ pub fn plan_acquisition_request(
 }
 
 /// `games`, kept to the first `max_games`, or `games_percent` percent rounded up, of each
-/// platform by name, in the order the platforms came.
+/// platform by name, in the order the platforms came; a platform counts its games under each of
+/// its spellings, as the expansion finds them.
 fn kept_games(
     games: Vec<PlatformBoundGameSelector>,
     max_games: Option<u32>,
@@ -189,15 +190,16 @@ fn kept_games(
     }
     let mut platforms: Vec<String> = Vec::new();
     for game in &games {
-        if !platforms.contains(&game.platform) {
-            platforms.push(game.platform.clone());
+        let key = platform_key(&game.platform);
+        if !platforms.contains(&key) {
+            platforms.push(key);
         }
     }
     let mut kept = Vec::new();
     for platform in platforms {
         let mut of_platform: Vec<PlatformBoundGameSelector> = games
             .iter()
-            .filter(|game| game.platform == platform)
+            .filter(|game| platform_key(&game.platform) == platform)
             .cloned()
             .collect();
         of_platform.sort_by_key(|game| game.game.to_lowercase());
@@ -310,14 +312,16 @@ fn name_key_of(name: &str) -> String {
 /// Whether two spellings name one platform regardless of case, punctuation and spacing, as
 /// game lists are found: `NEC - PC Engine - TurboGrafx-16` is `NEC - PC Engine - TurboGrafx 16`.
 fn same_platform(listed: &str, requested: &str) -> bool {
-    let key = |platform: &str| -> String {
-        platform
-            .chars()
-            .filter(|character| character.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
-    key(listed) == key(requested)
+    platform_key(listed) == platform_key(requested)
+}
+
+/// What names a platform regardless of case and punctuation.
+fn platform_key(platform: &str) -> String {
+    platform
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// The name Sources know a release by: the name of its datafile entry, which carries its region
