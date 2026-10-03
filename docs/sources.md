@@ -52,6 +52,26 @@ from standard input (ADR 0005).
   large, so the first discovery on a machine, and the first after LaunchBox republishes it,
   download it whole.
 
+### SteamGridDB (`steamgriddb`)
+
+- **Provides:** community logos (Logo), icons (Icon) and heroes, its wide background artwork
+  (Wallpaper / Artwork), best voted first. The collection and style each comes from, such as
+  `logos: official`, is kept as its source label. Grids, its library capsules, have no Asset
+  Type yet and are not acquired.
+- **Reached at:** the API at `www.steamgriddb.com/api/v2`, which finds each requested game by
+  name and lists its media, and `cdn2.steamgriddb.com` for the images, downloaded without the key.
+- **Configuration:** an API key from the user's own SteamGridDB account, kept in this machine's
+  credential store (ADR 0005). To get one:
+  1. Sign in at `https://www.steamgriddb.com` (it signs in through a Steam account).
+  2. Open the API page of the preferences, `https://www.steamgriddb.com/profile/preferences/api`,
+     and generate a key.
+  3. Run `game-media-vault source key set steamgriddb`, paste the key and press Enter. The key is
+     read from standard input, so the shell never keeps it in its history.
+- **Limits:** without a stored key it is left out of every plan, with the reason. It needs an
+  explicit game selection, since it lists no platform's games, and refuses region and language
+  filters. A game is acquired only when SteamGridDB names it exactly as the request does,
+  regardless of case and punctuation; its media apply to every platform the request names.
+
 ## Reference catalogs
 
 These read files the user downloads and passes to an `import-*` command; they contact no

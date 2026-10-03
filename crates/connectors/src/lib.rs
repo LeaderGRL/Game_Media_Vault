@@ -1,13 +1,14 @@
 use std::{
     io::Read,
     path::Path,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     thread,
     time::{Duration, SystemTime},
 };
 
 use game_media_vault_application::{
-    ApiKey, ConnectorPort, PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort,
+    ApiKey, ConnectorPort, CredentialStorePort, PortError, ReferenceCatalogRead,
+    ReferenceCatalogSourcePort,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
@@ -19,10 +20,12 @@ mod mame;
 mod naming;
 mod resume;
 mod retry;
+mod steamgriddb;
 mod xml;
 
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use retry::RetryPolicy;
+pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
 
 pub use launchbox::{
     DatasetCache, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
@@ -49,11 +52,15 @@ const THUMBNAIL_FOLDERS: [(AssetType, &str); 3] = [
 const LIBRETRO_GITMODULES_URL: &str =
     "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
-/// The connector of every implemented Source, in the order `Auto` considers them.
-pub fn registered_connectors() -> Vec<Box<dyn ConnectorPort>> {
+/// The connector of every implemented Source, in the order `Auto` considers them. Those that
+/// need an API key read it from this machine's `credentials`.
+pub fn registered_connectors(
+    credentials: Arc<dyn CredentialStorePort>,
+) -> Vec<Box<dyn ConnectorPort>> {
     vec![
         Box::new(LibretroThumbnailsConnector::new()),
         Box::new(LaunchBoxGamesDbConnector::new()),
+        Box::new(SteamGridDbConnector::new(credentials)),
     ]
 }
 

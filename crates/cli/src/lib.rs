@@ -2,6 +2,7 @@ use std::{
     ffi::OsString,
     io::{self, BufRead},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use clap::{Args, Parser, Subcommand};
@@ -476,7 +477,8 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let registry = registered_connectors();
+    let credentials = Arc::new(KeyringCredentialStore::machine());
+    let registry = registered_connectors(credentials.clone());
     let connectors: Vec<&dyn ConnectorPort> = registry
         .iter()
         .map(|connector| connector.as_ref() as &dyn ConnectorPort)
@@ -484,7 +486,7 @@ where
     let settings = machine_settings();
     let machine = Machine {
         settings: settings.as_ref(),
-        credentials: &KeyringCredentialStore::machine(),
+        credentials: credentials.as_ref(),
     };
     run_on_machine(args, &connectors, machine, &mut io::stdin().lock())
 }

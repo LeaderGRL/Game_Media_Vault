@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use game_media_vault_application::{
@@ -252,10 +252,16 @@ fn registry_refs(registry: &[Box<dyn ConnectorPort>]) -> Vec<&dyn ConnectorPort>
         .collect()
 }
 
+/// The connector of every implemented Source, reading the API keys they need from this
+/// machine's credential store.
+fn machine_registry_of_sources() -> Vec<Box<dyn ConnectorPort>> {
+    registered_connectors(Arc::new(KeyringCredentialStore::machine()))
+}
+
 /// The registered connectors, one per Source, as the settings of this machine leave them.
 fn machine_connectors() -> Result<Vec<Box<dyn ConnectorPort>>, CommandError> {
     Ok(machine_registry(
-        registered_connectors(),
+        machine_registry_of_sources(),
         &machine_settings().disabled_sources()?,
     ))
 }
@@ -266,7 +272,7 @@ pub fn list_sources_on_machine(
     machine: Machine<'_>,
 ) -> Result<Vec<SourceDescription>, CommandError> {
     Ok(describe_sources(
-        &registry_refs(&registered_connectors()),
+        &registry_refs(&machine_registry_of_sources()),
         machine,
     )?)
 }
@@ -279,7 +285,7 @@ pub fn set_source_enabled_on_machine(
 ) -> Result<Vec<SourceDescription>, CommandError> {
     Ok(set_source_enabled_use_case(
         machine,
-        &registry_refs(&registered_connectors()),
+        &registry_refs(&machine_registry_of_sources()),
         source_id,
         enabled,
     )?)
@@ -293,7 +299,7 @@ pub fn set_source_api_key_on_machine(
 ) -> Result<Vec<SourceDescription>, CommandError> {
     Ok(set_source_api_key_use_case(
         machine,
-        &registry_refs(&registered_connectors()),
+        &registry_refs(&machine_registry_of_sources()),
         source_id,
         &ApiKey::new(key)?,
     )?)
@@ -306,7 +312,7 @@ pub fn clear_source_api_key_on_machine(
 ) -> Result<Vec<SourceDescription>, CommandError> {
     Ok(clear_source_api_key_use_case(
         machine,
-        &registry_refs(&registered_connectors()),
+        &registry_refs(&machine_registry_of_sources()),
         source_id,
     )?)
 }
