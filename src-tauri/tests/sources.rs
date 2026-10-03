@@ -27,12 +27,14 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
             "launchbox-games-db",
             "steamgriddb",
             "thegamesdb",
+            "screenscraper",
             "psx-datacenter"
         ]
     );
     assert!(sources.iter().all(|source| source.direct_media_download));
     assert!(sources.iter().all(|source| source.enabled));
-    // Only SteamGridDB and TheGamesDB need a key, which this machine does not store.
+    // Only SteamGridDB, TheGamesDB and ScreenScraper need credentials, which this machine does
+    // not store.
     let credentials: Vec<CredentialState> =
         sources.iter().map(|source| source.credential).collect();
     assert_eq!(
@@ -40,6 +42,7 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
         [
             CredentialState::NotNeeded,
             CredentialState::NotNeeded,
+            CredentialState::Missing,
             CredentialState::Missing,
             CredentialState::Missing,
             CredentialState::NotNeeded,
