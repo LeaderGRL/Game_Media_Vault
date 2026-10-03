@@ -273,6 +273,29 @@ pub struct AcquisitionRun {
     pub outranked_work: u64,
     /// Completed work whose media its Source no longer serves.
     pub unavailable_work: u64,
+    /// How far the discovery of each planned Source went, in plan order.
+    pub discoveries: Vec<SourceDiscovery>,
+}
+
+/// How far the discovery of one planned Source of a run went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceDiscovery {
+    pub source_id: String,
+    /// Whether the Source's discovery is complete, its work all queued.
+    pub complete: bool,
+    /// How many of the requested games its batches recorded while it is not complete; a Source
+    /// discovered at once records none before it completes.
+    pub discovered_games: u64,
+}
+
+impl SourceDiscovery {
+    pub fn new(source_id: impl Into<String>, complete: bool, discovered_games: u64) -> Self {
+        Self {
+            source_id: source_id.into(),
+            complete,
+            discovered_games,
+        }
+    }
 }
 
 /// One discovered Asset Candidate to process within an Acquisition Run. The key is the

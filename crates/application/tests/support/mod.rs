@@ -17,8 +17,8 @@ use game_media_vault_domain::{
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryAsset, LibraryEntry,
     MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PersistAsset, QualityShortfall,
-    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage,
-    SourceId, SourceSelection, StoredObject, outranked_by,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceDiscovery, SourceFailure,
+    SourceFailureStage, SourceId, SourceSelection, StoredObject, outranked_by,
 };
 
 pub const SOURCE_ID: &str = "libretro-thumbnails";
@@ -389,6 +389,19 @@ impl RunRepositoryPort for FakeVault {
                     .iter()
                     .filter(|work| work.unavailable.is_some())
                     .count() as u64,
+                discoveries: run
+                    .planned_sources
+                    .iter()
+                    .map(|source_id| {
+                        let complete = run.discovered.contains(source_id);
+                        let games = if complete {
+                            0
+                        } else {
+                            run.discovered_games.get(source_id).copied().unwrap_or(0) as u64
+                        };
+                        SourceDiscovery::new(source_id.clone(), complete, games)
+                    })
+                    .collect(),
             }
         });
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
