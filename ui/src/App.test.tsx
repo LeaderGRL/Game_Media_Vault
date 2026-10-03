@@ -3017,7 +3017,7 @@ describe("App Library requests", () => {
     expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
   });
 
-  it("shows the applied filters again when a refresh supersedes a pending search", async () => {
+  it("keeps a pending search when an execution ends, offering the media it brought", async () => {
     let finishExecution: ((run: unknown) => void) | undefined;
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
@@ -3030,7 +3030,7 @@ describe("App Library requests", () => {
       }
       if (command === "list_library") {
         if (libraryQueries.at(-1)?.text === "mario") {
-          // The search never settles; the refresh after the execution supersedes it.
+          // The search is still pending when the execution ends.
           return new Promise(() => {});
         }
         return Promise.resolve([entry]);
@@ -3046,12 +3046,72 @@ describe("App Library requests", () => {
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
     fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "mario" }));
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
 
     await act(async () => finishExecution?.(runToExecute));
 
-    // The refresh searched with the applied filters, which the filter bar shows again.
-    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: null }));
-    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue(""));
+    // The search goes on with its filters; a banner offers the media the execution brought.
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+    expect(libraryQueries.at(-1)).toMatchObject({ text: "mario" });
+    expect(screen.getByLabelText("Search titles")).toHaveValue("mario");
+  });
+
+  it("keeps the pages someone loaded when an execution ends", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    let finishExecution: ((run: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) => {
+          finishExecution = resolve;
+        });
+      }
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(finishExecution).toBeDefined());
+    // Opening the Library while the run executes refreshes it first.
+    const searched = libraryQueries.length;
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    await waitFor(() => expect(libraryQueries.length).toBeGreaterThan(searched));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+
+    await act(async () => finishExecution?.(runToExecute));
+
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+    expect(screen.getByText("Vagrant Story")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
   });
 
   it("shows the registered Sources", async () => {

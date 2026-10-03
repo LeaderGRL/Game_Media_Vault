@@ -399,6 +399,8 @@ export function App() {
         searchLibrary(),
         invoke<ReviewItem[]>("list_review_items"),
         refreshReferenceReviews(vaultKey),
+        // What the vault held when it opened, so media arriving later tell apart.
+        refreshLatestMedia(vaultKey).catch(() => false),
       ]);
       if (
         activeVaultRoot.current !== vaultKey ||
@@ -658,11 +660,7 @@ export function App() {
       if (!arrived || activeVaultRoot.current !== expectedVaultRoot) {
         return;
       }
-      if (
-        libraryPaged.current ||
-        pendingSearchRef.current !== null ||
-        pageRequestRef.current !== null
-      ) {
+      if (browsingLibrary()) {
         setNewMedia(true);
         return;
       }
@@ -671,6 +669,31 @@ export function App() {
       // The next poll, or the refresh once the execution ends, shows them.
     } finally {
       followingMedia.current = false;
+    }
+  }
+
+  /** Whether the Library shows more than a first page, or a search or page is pending. */
+  function browsingLibrary() {
+    return (
+      libraryPaged.current || pendingSearchRef.current !== null || pageRequestRef.current !== null
+    );
+  }
+
+  /** Reads the Review Items of `expectedVaultRoot` again, unless a newer read or a decision did. */
+  async function refreshReviewItems(expectedVaultRoot: string | null) {
+    if (openedVaultRoot.current !== expectedVaultRoot) {
+      return;
+    }
+    reviewRefreshRequestGeneration.current += 1;
+    const generation = reviewRefreshRequestGeneration.current;
+    const decisions = reviewMutationGeneration.current;
+    const reviews = await invoke<ReviewItem[]>("list_review_items");
+    if (
+      activeVaultRoot.current === expectedVaultRoot &&
+      generation === reviewRefreshRequestGeneration.current &&
+      decisions === reviewMutationGeneration.current
+    ) {
+      setReviewItems(reviews);
     }
   }
 
@@ -1152,6 +1175,19 @@ export function App() {
    */
   async function showExecuted(actingVaultRoot: string | null, executionError: string | null) {
     try {
+      if (browsingLibrary()) {
+        // Results someone pages through or searches never change under them: a banner offers
+        // the media the execution brought instead.
+        const [arrived] = await Promise.all([
+          refreshLatestMedia(actingVaultRoot),
+          refreshReviewItems(actingVaultRoot),
+          refreshRuns(actingVaultRoot),
+        ]);
+        if (arrived && activeVaultRoot.current === actingVaultRoot) {
+          setNewMedia(true);
+        }
+        return;
+      }
       // An execution shorter than a progress poll shows its media here first.
       await Promise.all([
         refreshVaultData(actingVaultRoot),
