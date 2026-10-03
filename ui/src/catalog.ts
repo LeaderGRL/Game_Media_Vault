@@ -193,7 +193,7 @@ export const OTHER_REGIONS: Option[] = [
 export const REGIONS: Option[] = [...COMMON_REGIONS, ...OTHER_REGIONS];
 
 /** The languages No-Intro and Redump name releases with, by the code they write. */
-export const LANGUAGES: Option[] = [
+export const COMMON_LANGUAGES: Option[] = [
   { value: "En", label: "English" },
   { value: "Fr", label: "French" },
   { value: "De", label: "German" },
@@ -211,6 +211,43 @@ export const LANGUAGES: Option[] = [
   { value: "Zh", label: "Chinese" },
   { value: "Ko", label: "Korean" },
 ];
+
+/** The other languages No-Intro and Redump name releases with, by name. */
+export const OTHER_LANGUAGES: Option[] = [
+  { value: "Af", label: "Afrikaans" },
+  { value: "Sq", label: "Albanian" },
+  { value: "Ar", label: "Arabic" },
+  { value: "Eu", label: "Basque" },
+  { value: "Bg", label: "Bulgarian" },
+  { value: "Ca", label: "Catalan" },
+  { value: "Hr", label: "Croatian" },
+  { value: "Cs", label: "Czech" },
+  { value: "Et", label: "Estonian" },
+  { value: "El", label: "Greek" },
+  { value: "He", label: "Hebrew" },
+  { value: "Hi", label: "Hindi" },
+  { value: "Hu", label: "Hungarian" },
+  { value: "Is", label: "Icelandic" },
+  { value: "Id", label: "Indonesian" },
+  { value: "Ga", label: "Irish" },
+  { value: "Lv", label: "Latvian" },
+  { value: "Lt", label: "Lithuanian" },
+  { value: "Ms", label: "Malay" },
+  { value: "Fa", label: "Persian" },
+  { value: "Ro", label: "Romanian" },
+  { value: "Gd", label: "Scottish Gaelic" },
+  { value: "Sr", label: "Serbian" },
+  { value: "Sk", label: "Slovak" },
+  { value: "Sl", label: "Slovenian" },
+  { value: "Th", label: "Thai" },
+  { value: "Tr", label: "Turkish" },
+  { value: "Uk", label: "Ukrainian" },
+  { value: "Vi", label: "Vietnamese" },
+  { value: "Cy", label: "Welsh" },
+];
+
+/** Every language No-Intro and Redump name releases with, the common ones first. */
+export const LANGUAGES: Option[] = [...COMMON_LANGUAGES, ...OTHER_LANGUAGES];
 
 /** The name of a language code, or the code itself when it is not offered. */
 export function languageName(code: string): string {

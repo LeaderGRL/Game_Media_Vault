@@ -185,4 +185,20 @@ describe("DownloadView", () => {
       asset_types: ["box_front"],
     });
   });
+
+  it("keeps a download to worldwide releases alone, or to a less common language", () => {
+    const onStart = vi.fn();
+    render(<DownloadView sources={SOURCES} onStart={onStart} />);
+    fireEvent.click(screen.getByLabelText("Super Nintendo Entertainment System"));
+
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Regions" })).getByRole("button", { name: "World" }),
+    );
+    const languages = screen.getByRole("group", { name: "Languages" });
+    fireEvent.click(within(languages).getByRole("button", { name: "More languages" }));
+    fireEvent.click(within(languages).getByRole("button", { name: "Turkish" }));
+    start();
+
+    expect(onStart.mock.calls[0][0][0]).toMatchObject({ regions: ["World"], languages: ["Tr"] });
+  });
 });

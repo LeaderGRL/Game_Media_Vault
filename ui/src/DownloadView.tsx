@@ -10,9 +10,11 @@ import {
   sourceLabel,
 } from "./acquisition";
 import {
+  COMMON_LANGUAGES,
   COMMON_REGIONS,
   CONSOLES,
   LANGUAGES,
+  OTHER_LANGUAGES,
   OTHER_REGIONS,
   consoleName,
   consolesByMaker,
@@ -275,12 +277,12 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         <div className="step-heading">
           <span className="step-number">3</span>
           <h2 id="step-regions">Regions and languages</h2>
-          <span className="hint">Worldwide releases always count</span>
+          <span className="hint">Worldwide releases count with any region; World alone keeps to them</span>
         </div>
         <ChipGroup
           label="Regions"
           anyLabel="Any region"
-          options={COMMON_REGIONS.filter((region) => region.value !== "World")}
+          options={COMMON_REGIONS}
           more={OTHER_REGIONS}
           moreLabel="More regions"
           selected={regions}
@@ -289,7 +291,9 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         <ChipGroup
           label="Languages"
           anyLabel="Any language"
-          options={LANGUAGES}
+          options={COMMON_LANGUAGES}
+          more={OTHER_LANGUAGES}
+          moreLabel="More languages"
           selected={languages}
           onChange={setLanguages}
         />

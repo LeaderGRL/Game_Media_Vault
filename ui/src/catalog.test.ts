@@ -35,6 +35,18 @@ describe("catalog", () => {
 
   it("offers the regions and languages No-Intro names, languages by name", () => {
     expect(REGIONS.map((region) => region.value)).toContain("Europe");
+    // Every language No-Intro names a release with, by name.
+    expect(LANGUAGES).toHaveLength(46);
+    for (const [code, name] of [
+      ["Cs", "Czech"],
+      ["El", "Greek"],
+      ["He", "Hebrew"],
+      ["Hu", "Hungarian"],
+      ["Sk", "Slovak"],
+      ["Tr", "Turkish"],
+    ]) {
+      expect(languageName(code)).toBe(name);
+    }
     // Every region No-Intro names a release with, so none is out of reach of a picker.
     for (const region of ["Poland", "Denmark", "Hong Kong", "Taiwan", "United Kingdom"]) {
       expect(REGIONS.map((option) => option.value)).toContain(region);
