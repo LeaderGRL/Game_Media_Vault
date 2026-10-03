@@ -9,6 +9,7 @@ export type AssetType =
   | "disc"
   | "pcb"
   | "manual"
+  | "map"
   | "screenshot"
   | "title_screen"
   | "gameplay_video"

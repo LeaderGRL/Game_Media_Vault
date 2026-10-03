@@ -3,7 +3,7 @@ use std::sync::Arc;
 use game_media_vault_connectors::{
     LAUNCHBOX_GAMES_DB_SOURCE_ID, LIBRETRO_THUMBNAILS_SOURCE_ID, PSX_DATACENTER_SOURCE_ID,
     RAWG_SOURCE_ID, SCREENSCRAPER_SOURCE_ID, STEAMGRIDDB_SOURCE_ID, THEGAMESDB_SOURCE_ID,
-    registered_connectors,
+    VGMAPS_SOURCE_ID, registered_connectors,
 };
 use game_media_vault_infrastructure::NoCredentials;
 
@@ -24,6 +24,7 @@ fn every_implemented_source_is_registered_once() {
             SCREENSCRAPER_SOURCE_ID,
             RAWG_SOURCE_ID,
             PSX_DATACENTER_SOURCE_ID,
+            VGMAPS_SOURCE_ID,
         ]
     );
 }

@@ -32,6 +32,8 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   - **PSX DataCenter**: high-resolution PlayStation cover scans and screenshots, read from its
     public website as a well-behaved client that honors robots.txt and leaves time between
     requests.
+  - **VGMaps**: maps of games' levels and worlds, read from its public atlas pages the same
+    way.
 
   API keys stay in the operating system's credential store, never in a vault
   ([ADR 0005](docs/adr/0005-keep-source-api-keys-in-the-os-credential-store.md)). The Sources

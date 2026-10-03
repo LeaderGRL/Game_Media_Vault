@@ -220,6 +220,28 @@ only the one named; an API key is stored under the Source's id, any other creden
   list adds: several rows sharing a title are releases its title alone cannot tell apart. A
   list without any game, as during an outage, fails the discovery as invalid source data.
 
+### VGMaps (`vgmaps`)
+
+- **Provides:** maps of games' levels and worlds (Map), ripped or drawn by the site's
+  community, each kept with the area and name its atlas gives it as the source label, such as
+  `World 1 · 1-1`. Maps record no region and apply to the requested platform.
+- **Reached at:** the public website `www.vgmaps.com`: the atlas page of each requested
+  platform, such as `Atlas/NES/index.htm`, read once for every game requested on it, then the
+  map images that game's table links, all on that site only. It is read as PSX DataCenter is:
+  only as its robots.txt allows `game-media-vault`, at least a second, or the site's longer
+  `Crawl-delay`, between two requests, each request sent once and following no redirect. Its
+  pages are written in Windows-1252, which the connector decodes.
+- **Configuration:** none.
+- **Limits:** an atlas page holds every game of its platform, the largest over 5 MB, and a game
+  may have dozens of maps, each downloaded at the site's pace. It needs an explicit game
+  selection and refuses region and language filters. It serves the platforms it knows an atlas
+  for: the Nintendo, Sega, Sony, NEC, SNK, Bandai and Atari consoles and handhelds,
+  ColecoVision, Intellivision, CD-i, Xbox and Xbox 360, and `MAME` and `FBNeo - Arcade Games`
+  as its arcade atlas; a request naming another is refused. A game is acquired when the title
+  of its table names it exactly, regardless of case, punctuation, an article filed last, such
+  as `Legend of Zelda, The` for `The Legend Of Zelda`, and Roman numerals, such as `Mega Man 2`
+  for `Mega Man II`.
+
 ## Reference catalogs
 
 These read files the user downloads and passes to an `import-*` command; they contact no

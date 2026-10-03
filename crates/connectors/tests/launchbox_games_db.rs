@@ -195,17 +195,17 @@ fn locators(candidates: &[AssetCandidate]) -> Vec<&str> {
 }
 
 #[test]
-fn declares_every_stored_asset_type_but_icons_manuals_and_videos() {
+fn declares_every_stored_asset_type_but_icons_manuals_maps_and_videos() {
     let transport = FixtureTransport::new();
     let capabilities = LaunchBoxGamesDbConnector::with_transport(&transport).capabilities();
 
-    // Its dataset records neither icons, manuals nor videos.
+    // Its dataset records no icons, manuals, maps or videos.
     let expected: Vec<AssetType> = AssetType::ALL
         .into_iter()
         .filter(|asset_type| {
             !matches!(
                 asset_type,
-                AssetType::Icon | AssetType::Manual | AssetType::GameplayVideo
+                AssetType::Icon | AssetType::Manual | AssetType::Map | AssetType::GameplayVideo
             )
         })
         .collect();
