@@ -19,25 +19,46 @@ const DATAFILE_SOURCES: [&str; 2] = ["no-intro", "redump"];
 
 /// The language No-Intro and Redump leave implied by a release's region when its name gives
 /// none, by region.
-const REGION_LANGUAGES: [(&str, &str); 22] = [
+const REGION_LANGUAGES: [(&str, &str); 43] = [
+    ("Argentina", "Es"),
     ("Asia", "En"),
     ("Australia", "En"),
+    ("Austria", "De"),
     ("Brazil", "Pt"),
+    ("Bulgaria", "Bg"),
     ("Canada", "En"),
+    ("Chile", "Es"),
     ("China", "Zh"),
+    ("Croatia", "Hr"),
+    ("Czech", "Cs"),
+    ("Denmark", "Da"),
     ("Europe", "En"),
+    ("Finland", "Fi"),
     ("France", "Fr"),
     ("Germany", "De"),
+    ("Greece", "El"),
     ("Hong Kong", "Zh"),
+    ("Hungary", "Hu"),
+    ("India", "En"),
+    ("Ireland", "En"),
+    ("Israel", "He"),
     ("Italy", "It"),
     ("Japan", "Ja"),
     ("Korea", "Ko"),
+    ("Latin America", "Es"),
+    ("Mexico", "Es"),
     ("Netherlands", "Nl"),
+    ("New Zealand", "En"),
+    ("Norway", "No"),
+    ("Peru", "Es"),
+    ("Poland", "Pl"),
     ("Portugal", "Pt"),
     ("Russia", "Ru"),
+    ("Slovakia", "Sk"),
     ("Spain", "Es"),
     ("Sweden", "Sv"),
     ("Taiwan", "Zh"),
+    ("Turkey", "Tr"),
     ("UK", "En"),
     ("USA", "En"),
     ("United Kingdom", "En"),
@@ -120,6 +141,15 @@ pub fn expand_every_game(
     input.platforms = platforms;
     input.games = GameSelection::PlatformBound(games);
     input.languages.clear();
+    // Worldwide media serve the worldwide releases the regions keep.
+    if !input.regions.is_empty()
+        && !input
+            .regions
+            .iter()
+            .any(|region| region.trim().eq_ignore_ascii_case("World"))
+    {
+        input.regions.push("World".to_owned());
+    }
     Ok(input)
 }
 

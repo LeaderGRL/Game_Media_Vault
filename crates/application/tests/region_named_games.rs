@@ -139,3 +139,53 @@ fn a_source_blind_to_regions_discovers_the_games_named_without_the_region_filter
 
     assert_eq!(*source.discovered_regions.borrow(), [Vec::<String>::new()]);
 }
+
+/// A region-blind Source that looks games up two at a time.
+struct BatchedRegionBlindSource(RegionBlindSource);
+
+impl ConnectorPort for BatchedRegionBlindSource {
+    fn source_id(&self) -> &'static str {
+        self.0.source_id()
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        self.0.capabilities()
+    }
+
+    fn discovery_batch_size(&self) -> Option<usize> {
+        Some(2)
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        self.0.unsupported_request_reason(request)
+    }
+
+    fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        self.0.discover(request)
+    }
+
+    fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        self.0.download(candidate)
+    }
+}
+
+#[test]
+fn a_name_without_its_region_in_a_later_batch_keeps_a_region_blind_source_out() {
+    let source = BatchedRegionBlindSource(RegionBlindSource::new());
+    let connectors: Vec<&dyn ConnectorPort> = vec![&source];
+
+    // The first batch names its regions; the second does not.
+    let error = plan_acquisition(
+        &european(&["Tetris (Europe)", "Mario (Europe)", "Zelda"]),
+        &connectors,
+    )
+    .unwrap_err();
+
+    assert!(
+        error.to_string().contains("cannot tell regions apart"),
+        "{error}"
+    );
+}
