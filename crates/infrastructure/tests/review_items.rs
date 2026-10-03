@@ -1219,3 +1219,25 @@ fn keeping_the_best_two_links_an_original_only_one_retained_asset_outranks() {
     assert!(matches!(outcome, CandidateAssetOutcome::Linked(_)));
     assert_eq!(library_asset_count(&catalog), 2);
 }
+
+#[test]
+fn requeueing_review_work_moves_one_run_and_leaves_the_item_pending() {
+    let (_temp, catalog) = open_catalog();
+    let completed_run = start_run(&catalog);
+    let item = parked_item(&catalog, completed_run);
+    complete_run(&catalog, completed_run);
+    let other_run = start_run(&catalog);
+    parked_item(&catalog, other_run);
+
+    catalog.requeue_review_work(item.id, completed_run).unwrap();
+
+    // The run executing matches the candidate again; the other run keeps it parked.
+    let run = load_acquisition_run(&catalog, completed_run).unwrap();
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+    assert_eq!(counts(&catalog, completed_run), (1, 0, 0));
+    assert_eq!(counts(&catalog, other_run), (0, 1, 0));
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Pending
+    );
+}

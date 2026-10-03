@@ -1599,3 +1599,18 @@ fn keep_best_two_retains_no_original_two_retained_ones_outrank() {
         }]
     );
 }
+
+#[test]
+fn an_execution_links_the_work_parked_on_a_review_its_matcher_now_settles() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    // Parked under a stricter matcher, as before the matcher learned what settles it.
+    let run = park_in_new_run(&vault, &threshold, stricter_matching_policy());
+
+    let imported = execute(&vault, &FakeConnector::new(vec![threshold]), run).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+    assert_eq!(vault.work_states(run), vec![WorkState::Done]);
+    assert_eq!(vault.run(run).awaiting_review_work, 0);
+}

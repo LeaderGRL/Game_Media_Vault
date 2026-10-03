@@ -180,6 +180,11 @@ pub trait ReviewRepositoryPort {
         candidate_identity: &str,
     ) -> Result<bool, PortError>;
 
+    /// Requeues the work parked on a pending item in run `run_id`, reopening the run when it
+    /// completed, and leaves the item pending, so the run's execution matches the candidate
+    /// again. Work parked in other runs stays parked.
+    fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError>;
+
     /// Records a human decision on an undecided item and moves its parked work: accepting
     /// requeues it in runs that are not cancelled (reopening completed runs), rejecting
     /// completes it and detaches the Assets linked to the candidate, deferring keeps it parked.

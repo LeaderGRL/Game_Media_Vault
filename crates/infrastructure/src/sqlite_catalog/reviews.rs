@@ -190,6 +190,35 @@ impl ReviewRepositoryPort for SqliteCatalog {
         Ok(true)
     }
 
+    fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        // A decision taken meanwhile moved the work itself.
+        let pending = select_review_item(&transaction, "id = ?1", params![review_item_id])?
+            .is_some_and(|item| item.status == ReviewStatus::Pending);
+        if pending {
+            let requeued = transaction
+                .execute(
+                    "UPDATE acquisition_run_work SET state = 'queued', review_item_id = NULL
+                     WHERE review_item_id = ?1 AND run_id = ?2",
+                    params![review_item_id, run_id],
+                )
+                .map_err(sql_error)?;
+            if requeued > 0 {
+                transaction
+                    .execute(
+                        "UPDATE acquisition_runs SET status = 'running'
+                         WHERE id = ?1 AND status = 'completed'",
+                        params![run_id],
+                    )
+                    .map_err(sql_error)?;
+            }
+        }
+        transaction.commit().map_err(sql_error)
+    }
+
     fn decide_review_item(
         &self,
         review_item_id: i64,

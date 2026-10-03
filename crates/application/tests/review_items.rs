@@ -175,6 +175,10 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         unreachable!()
     }
 
+    fn requeue_review_work(&self, _review_item_id: i64, _run_id: i64) -> Result<(), PortError> {
+        unreachable!()
+    }
+
     fn decide_review_item(
         &self,
         _review_item_id: i64,
