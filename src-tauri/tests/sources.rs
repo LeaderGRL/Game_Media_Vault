@@ -1,11 +1,20 @@
-use game_media_vault_infrastructure::MachineSettingsFile;
+use game_media_vault_application::{CredentialState, Machine};
+use game_media_vault_infrastructure::{MachineSettingsFile, NoCredentials};
+
+/// A machine whose settings live in `settings` and which keeps no credential.
+fn machine(settings: &MachineSettingsFile) -> Machine<'_> {
+    Machine {
+        settings,
+        credentials: &NoCredentials,
+    }
+}
 
 #[test]
 fn the_desktop_describes_every_registered_source_without_a_vault() {
     let temp = tempfile::tempdir().unwrap();
     let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
 
-    let sources = game_media_vault_tauri::list_sources_on_machine(&settings).unwrap();
+    let sources = game_media_vault_tauri::list_sources_on_machine(machine(&settings)).unwrap();
 
     let source_ids: Vec<&str> = sources
         .iter()
@@ -14,6 +23,12 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
     assert_eq!(source_ids, ["libretro-thumbnails", "launchbox-games-db"]);
     assert!(sources.iter().all(|source| source.direct_media_download));
     assert!(sources.iter().all(|source| source.enabled));
+    // None of the registered Sources needs a credential yet.
+    assert!(
+        sources
+            .iter()
+            .all(|source| source.credential == CredentialState::NotNeeded)
+    );
 }
 
 #[test]
@@ -67,14 +82,14 @@ fn the_desktop_disables_a_source_on_this_machine_and_enables_it_again() {
     let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
 
     let disabled = game_media_vault_tauri::set_source_enabled_on_machine(
-        &settings,
+        machine(&settings),
         "launchbox-games-db",
         false,
     )
     .unwrap();
-    let listed = game_media_vault_tauri::list_sources_on_machine(&settings).unwrap();
+    let listed = game_media_vault_tauri::list_sources_on_machine(machine(&settings)).unwrap();
     let enabled = game_media_vault_tauri::set_source_enabled_on_machine(
-        &settings,
+        machine(&settings),
         "launchbox-games-db",
         true,
     )
@@ -90,4 +105,24 @@ fn the_desktop_disables_a_source_on_this_machine_and_enables_it_again() {
     assert!(!launchbox(&disabled));
     assert!(!launchbox(&listed));
     assert!(launchbox(&enabled));
+}
+
+#[test]
+fn the_desktop_gives_no_api_key_to_a_source_that_needs_none() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+
+    let error = game_media_vault_tauri::set_source_api_key_on_machine(
+        machine(&settings),
+        "libretro-thumbnails",
+        "zq-test-secret",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, "invalid_request");
+    assert!(
+        !error.message.contains("zq-test-secret"),
+        "{}",
+        error.message
+    );
 }

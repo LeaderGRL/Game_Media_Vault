@@ -1,21 +1,24 @@
 use std::{
     ffi::OsString,
+    io::{self, BufRead},
     path::{Path, PathBuf},
 };
 
 use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
-    AcquisitionRequestValidationError, ApplicationError, ConnectorPort, DEFAULT_LIBRARY_PAGE_SIZE,
-    DownloadLimits, ErrorKind, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest,
-    LibraryQuery, LibraryStatus, MachineSettingsPort, PortError, ReferenceCatalogSourcePort,
-    RepairActions, RepairSummary, VaultReport, acquire_run_with_connectors,
-    build_acquisition_request, cancel_acquisition_run, derive_assets, derive_packaging_models,
-    describe_sources, draft_from_document, export_acquisition_request, import_local_box_front,
+    AcquisitionRequestValidationError, ApiKey, ApplicationError, ConnectorPort,
+    DEFAULT_LIBRARY_PAGE_SIZE, DownloadLimits, ErrorKind, ImportLocalBoxFrontRequest,
+    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PortError,
+    ReferenceCatalogSourcePort, RepairActions, RepairSummary, VaultReport,
+    acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
+    clear_source_api_key, derive_assets, derive_packaging_models, describe_sources,
+    draft_from_document, export_acquisition_request, import_local_box_front,
     import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
     load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
-    repair_vault, resolve_review_item, resume_acquisition_run, search_library, set_source_enabled,
-    start_acquisition_run_with_connectors, summarize_source_failures, verify_vault,
+    repair_vault, resolve_review_item, resume_acquisition_run, search_library, set_source_api_key,
+    set_source_enabled, start_acquisition_run_with_connectors, summarize_source_failures,
+    verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -26,8 +29,8 @@ use game_media_vault_domain::{
     ReviewDecision, SourceSelection,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, NoMachineSettings,
-    SqliteCatalog, machine_settings,
+    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, KeyringCredentialStore,
+    NoCredentials, NoMachineSettings, SqliteCatalog, machine_settings,
 };
 use thiserror::Error;
 
@@ -344,6 +347,20 @@ enum SourceCommand {
     /// Keeps a Source out of every acquisition on this machine, for every vault; its queued
     /// work waits until it is enabled again.
     Disable { source_id: String },
+    /// Stores or forgets the API key a Source needs, in this machine's secure credential store.
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum KeyCommand {
+    /// Stores the API key of a Source, read from the first line of standard input so that
+    /// shells never keep it in their history.
+    Set { source_id: String },
+    /// Forgets the API key of a Source.
+    Clear { source_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -441,6 +458,17 @@ impl From<LimitArgs> for AcquisitionLimits {
     }
 }
 
+/// The API key on the first line of `input`.
+fn read_api_key(input: &mut dyn BufRead) -> Result<ApiKey, CliError> {
+    let mut line = String::new();
+    input.read_line(&mut line).map_err(|error| {
+        CliError::Port(PortError::new(format!(
+            "failed to read the API key from standard input: {error}"
+        )))
+    })?;
+    Ok(ApiKey::new(line)?)
+}
+
 /// Runs a command line with the registered connectors, as the settings of this machine leave
 /// them.
 pub fn run<I, T>(args: I) -> Result<String, CliError>
@@ -453,7 +481,12 @@ where
         .iter()
         .map(|connector| connector.as_ref() as &dyn ConnectorPort)
         .collect();
-    run_on_machine(args, &connectors, machine_settings().as_ref())
+    let settings = machine_settings();
+    let machine = Machine {
+        settings: settings.as_ref(),
+        credentials: &KeyringCredentialStore::machine(),
+    };
+    run_on_machine(args, &connectors, machine, &mut io::stdin().lock())
 }
 
 /// Builds and validates the Acquisition Request of an `acquire` command line without starting
@@ -474,7 +507,8 @@ where
 
 /// Runs a command line with the registered `connectors`, one per Source, which plan started
 /// runs and execute them.
-/// Every Source is enabled, and this machine's settings are neither read nor changed.
+/// Every Source is enabled and has no credential, and this machine's settings and credentials
+/// are neither read nor changed.
 pub fn run_with_connectors<I, T>(
     args: I,
     connectors: &[&dyn ConnectorPort],
@@ -483,15 +517,21 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    run_on_machine(args, connectors, &NoMachineSettings)
+    let machine = Machine {
+        settings: &NoMachineSettings,
+        credentials: &NoCredentials,
+    };
+    run_on_machine(args, connectors, machine, &mut io::empty())
 }
 
-/// Runs a command line with the registered `connectors`, one per Source, as the `settings` of
-/// this machine leave them, which plan started runs and execute them.
+/// Runs a command line with the registered `connectors`, one per Source, as what this `machine`
+/// keeps leaves them, which plan started runs and execute them. A secret, such as an API key,
+/// is read from `input`, never from the command line.
 pub fn run_on_machine<I, T>(
     args: I,
     registered: &[&dyn ConnectorPort],
-    settings: &dyn MachineSettingsPort,
+    machine: Machine<'_>,
+    input: &mut dyn BufRead,
 ) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
@@ -500,12 +540,12 @@ where
     let cli = Cli::try_parse_from(args)?;
     // Only commands that reach Sources read this machine's settings.
     let disabled_sources = if cli.command.reaches_sources() {
-        settings.disabled_sources()?
+        machine.settings.disabled_sources()?
     } else {
         Vec::new()
     };
-    let machine = machine_connectors(registered, &disabled_sources);
-    let connectors = machine.refs();
+    let wrapped = machine_connectors(registered, &disabled_sources);
+    let connectors = wrapped.refs();
     let connectors = connectors.as_slice();
 
     match cli.command {
@@ -573,18 +613,36 @@ where
         Command::Source {
             command: SourceCommand::List,
         } => Ok(serde_json::to_string_pretty(&describe_sources(
-            registered,
-            &disabled_sources,
-        ))?),
+            registered, machine,
+        )?)?),
         Command::Source {
             command: SourceCommand::Enable { source_id },
         } => Ok(serde_json::to_string_pretty(&set_source_enabled(
-            settings, registered, &source_id, true,
+            machine, registered, &source_id, true,
         )?)?),
         Command::Source {
             command: SourceCommand::Disable { source_id },
         } => Ok(serde_json::to_string_pretty(&set_source_enabled(
-            settings, registered, &source_id, false,
+            machine, registered, &source_id, false,
+        )?)?),
+        Command::Source {
+            command:
+                SourceCommand::Key {
+                    command: KeyCommand::Set { source_id },
+                },
+        } => {
+            let key = read_api_key(input)?;
+            Ok(serde_json::to_string_pretty(&set_source_api_key(
+                machine, registered, &source_id, &key,
+            )?)?)
+        }
+        Command::Source {
+            command:
+                SourceCommand::Key {
+                    command: KeyCommand::Clear { source_id },
+                },
+        } => Ok(serde_json::to_string_pretty(&clear_source_api_key(
+            machine, registered, &source_id,
         )?)?),
         Command::Source {
             command: SourceCommand::Failures { latest },

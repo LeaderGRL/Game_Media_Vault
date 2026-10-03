@@ -58,6 +58,10 @@ pub enum ApplicationError {
     SourceNotRegistered(String),
     #[error("source {source_id} takes no part in acquisitions: {reason}")]
     SourceDisabled { source_id: String, reason: String },
+    #[error("source {0} needs no API key")]
+    SourceNeedsNoApiKey(String),
+    #[error("an API key must be a single word without whitespace")]
+    InvalidApiKey,
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
     #[error("the engine cannot execute this acquisition request yet: {0}")]
@@ -132,6 +136,8 @@ impl ApplicationError {
             | Self::InvalidReferenceImportLimit
             | Self::InvalidThumbnailEdge
             | Self::NoRepairAction
+            | Self::InvalidApiKey
+            | Self::SourceNeedsNoApiKey(_)
             | Self::Validation(_)
             | Self::InvalidMatchingPolicy(_)
             | Self::ReviewAcceptanceNotCompeting { .. } => ErrorKind::InvalidRequest,
