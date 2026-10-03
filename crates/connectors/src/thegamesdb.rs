@@ -33,9 +33,12 @@ const MEDIA: [(AssetType, &str, Option<&str>); 6] = [
     (AssetType::WallpaperArtwork, "fanart", None),
 ];
 
-/// The most pages of images one discovery reads, which bounds what it takes from the key's
-/// monthly allowance.
+/// The most pages of images read for one batch of games, which bounds what a discovery takes
+/// from the key's monthly allowance.
 const MAX_IMAGE_PAGES: u32 = 10;
+
+/// The most games one request for images names, which keeps its address short.
+const IMAGE_BATCH_GAMES: usize = 20;
 
 /// The most pages of a game search one requested game reads.
 const MAX_SEARCH_PAGES: u32 = 5;
@@ -61,8 +64,9 @@ const PLATFORM_ALIASES: [(&str, &[&str]); 10] = [
     ("SNK - Neo Geo Pocket Color", &["Neo Geo Pocket Color"]),
 ];
 
-/// A platform TheGamesDB lists: its id and the words naming it.
-type ListedPlatform = (u64, BTreeSet<String>);
+/// A platform TheGamesDB lists: its id and the words naming it, with and without the words in
+/// parentheses, which may be an abbreviation it adds, as `(NES)`, or part of its name, as `(LCD)`.
+type ListedPlatform = (u64, [BTreeSet<String>; 2]);
 
 /// Reads the API key from this machine's credential store at each discovery, so a key stored or
 /// cleared meanwhile takes effect at once. Images are downloaded from their public location,
@@ -189,12 +193,16 @@ where
                     query.push(("page", &page_number));
                 }
                 let answer = self.get("v1.1/Games/ByGameName", &query, &key)?;
-                for game in answer
+                // A search without its list of games is no answer that none matched.
+                let found = answer
                     .pointer("/data/games")
                     .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
+                    .ok_or_else(|| {
+                        PortError::invalid_source_data(
+                            "TheGamesDB answered a game search without its games".to_owned(),
+                        )
+                    })?;
+                for game in found {
                     let (Some(id), Some(name), Some(on)) = (
                         game.get("id").and_then(Value::as_u64),
                         game.get("game_title").and_then(Value::as_str),
@@ -223,42 +231,46 @@ where
                 types.push(image_type);
             }
         }
-        let game_ids: Vec<String> = games.iter().map(|(id, ..)| id.to_string()).collect();
-        let (game_ids, types) = (game_ids.join(","), types.join(","));
+        let types = types.join(",");
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
-        for page in 1..=MAX_IMAGE_PAGES {
-            let page_number = page.to_string();
-            let mut query = vec![("games_id", game_ids.as_str()), ("filter[type]", &types)];
-            if page > 1 {
-                query.push(("page", &page_number));
-            }
-            let answer = self.get("v1/Games/Images", &query, &key)?;
-            let base = answer
-                .pointer("/data/base_url/original")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    PortError::invalid_source_data(
-                        "TheGamesDB listed images without their location".to_owned(),
-                    )
-                })?;
-            for (game_id, title, platform) in &games {
-                let path = format!("/data/images/{game_id}");
-                for image in answer
-                    .pointer(&path)
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(candidate) = candidate(image, base, title, platform, &media)
-                        && seen.insert(candidate.provider_candidate_id.clone())
+        // Batches keep each request's address short, however many games were found.
+        for batch in games.chunks(IMAGE_BATCH_GAMES) {
+            let game_ids: Vec<String> = batch.iter().map(|(id, ..)| id.to_string()).collect();
+            let game_ids = game_ids.join(",");
+            for page in 1..=MAX_IMAGE_PAGES {
+                let page_number = page.to_string();
+                let mut query = vec![("games_id", game_ids.as_str()), ("filter[type]", &types)];
+                if page > 1 {
+                    query.push(("page", &page_number));
+                }
+                let answer = self.get("v1/Games/Images", &query, &key)?;
+                let base = answer
+                    .pointer("/data/base_url/original")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        PortError::invalid_source_data(
+                            "TheGamesDB listed images without their location".to_owned(),
+                        )
+                    })?;
+                for (game_id, title, platform) in batch {
+                    let path = format!("/data/images/{game_id}");
+                    for image in answer
+                        .pointer(&path)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
                     {
-                        candidates.push(candidate);
+                        if let Some(candidate) = candidate(image, base, title, platform, &media)
+                            && seen.insert(candidate.provider_candidate_id.clone())
+                        {
+                            candidates.push(candidate);
+                        }
                     }
                 }
-            }
-            if !has_next_page(&answer) {
-                break;
+                if !has_next_page(&answer) {
+                    break;
+                }
             }
         }
         Ok(candidates)
@@ -299,10 +311,10 @@ where
                 listed
                     .values()
                     .filter_map(|listed| {
-                        Some((
-                            listed.get("id")?.as_u64()?,
-                            listed_platform_words(listed.get("name")?.as_str()?),
-                        ))
+                        Some((listed.get("id")?.as_u64()?, {
+                            let name = listed.get("name")?.as_str()?;
+                            [platform_words(name, true), listed_platform_words(name)]
+                        }))
                     })
                     .collect(),
             );
@@ -321,7 +333,9 @@ where
         };
         let mut same: Vec<u64> = listed
             .iter()
-            .filter(|(_, words)| wanted.contains(words))
+            .filter(|(_, [whole, abbreviated])| {
+                wanted.contains(whole) || wanted.contains(abbreviated)
+            })
             .map(|(id, _)| *id)
             .collect();
         same.sort_unstable();

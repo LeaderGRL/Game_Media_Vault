@@ -110,7 +110,8 @@ const PLATFORMS: &str = r#"{"code":200,"status":"Success","remaining_monthly_all
   "10":{"id":10,"name":"Sony Playstation","alias":"sony-playstation"},
   "6":{"id":6,"name":"Super Nintendo (SNES)","alias":"super-nintendo-snes"},
   "18":{"id":18,"name":"Sega Genesis","alias":"sega-genesis"},
-  "36":{"id":36,"name":"Sega Mega Drive","alias":"sega-mega-drive"}
+  "36":{"id":36,"name":"Sega Mega Drive","alias":"sega-mega-drive"},
+  "4052":{"id":4052,"name":"Handheld Electronic Games (LCD)","alias":"handheld-electronic-games-lcd"}
 }}}"#;
 
 const SEARCH: &str = r#"{"code":200,"status":"Success","remaining_monthly_allowance":99,"extra_allowance":0,
@@ -454,4 +455,64 @@ fn follows_the_pages_of_a_game_search() {
             .iter()
             .all(|(url, _)| !url.contains("SECRET"))
     );
+}
+
+#[test]
+fn a_platform_whose_name_holds_parentheses_is_known_by_its_whole_name() {
+    let api = FixtureApi::answering(&[(PLATFORMS_URL, PLATFORMS)]);
+
+    // The fixture answers no search: which platform the search names is what counts.
+    let _unanswered = connector(&api, Some("key")).discover(&request(|draft| {
+        draft.platforms = vec!["Handheld Electronic Games (LCD)".to_owned()]
+    }));
+
+    let searched = &api.requested()[1].0;
+    assert!(
+        searched.ends_with("filter%5Bplatform%5D=4052"),
+        "{searched}"
+    );
+}
+
+#[test]
+fn a_game_search_answered_without_its_games_is_invalid_source_data() {
+    let api = FixtureApi::answering(&[
+        (PLATFORMS_URL, PLATFORMS),
+        (SEARCH_URL, r#"{"code":200,"status":"Success","data":{}}"#),
+    ]);
+
+    let error = connector(&api, Some("key"))
+        .discover(&request(|_| {}))
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{}", error.message());
+}
+
+#[test]
+fn images_are_asked_for_in_batches_of_twenty_games() {
+    let games: Vec<String> = (1..=21)
+        .map(|id| format!(r#"{{"id":{id},"game_title":"Super Mario Bros.","platform":7}}"#))
+        .collect();
+    let search = format!(
+        r#"{{"code":200,"status":"Success","pages":{{"next":null}},"data":{{"count":21,"games":[{}]}}}}"#,
+        games.join(",")
+    );
+    let first: Vec<String> = (1..=20).map(|id| id.to_string()).collect();
+    let first_batch = format!(
+        "{API}/v1/Games/Images?games_id={}&filter%5Btype%5D=boxart",
+        first.join("%2C")
+    );
+    let second_batch = format!("{API}/v1/Games/Images?games_id=21&filter%5Btype%5D=boxart");
+    let api = FixtureApi::answering(&[
+        (PLATFORMS_URL, PLATFORMS),
+        (SEARCH_URL, &search),
+        (&first_batch, &images("null")),
+        (&second_batch, &images("null")),
+    ]);
+
+    connector(&api, Some("key"))
+        .discover(&request(|_| {}))
+        .unwrap();
+
+    let requested: Vec<String> = api.requested().into_iter().map(|(url, _)| url).collect();
+    assert_eq!(&requested[2..], [first_batch, second_batch]);
 }
