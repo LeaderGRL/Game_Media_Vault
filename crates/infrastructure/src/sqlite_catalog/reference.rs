@@ -101,11 +101,20 @@ impl ReferenceReviewRepositoryPort for SqliteCatalog {
         };
         let source_id = item.source_id.as_str();
         let merged = item.release_edition_id;
+        if !item.candidates.contains(&release_edition_id) {
+            return Ok(ReferenceReviewOutcome::NotACandidate);
+        }
+        // A record its source linked into another source's edition leaves it alone.
+        if holds_link(&transaction, merged, source_id)? {
+            let outcome = move_linked_record(&transaction, &item, release_edition_id)?;
+            if outcome == ReferenceReviewOutcome::Decided {
+                transaction.commit().map_err(sql_error)?;
+            }
+            return Ok(outcome);
+        }
         // Two editions holding records of one source, the item's or any linked since, are two
         // releases of it.
-        if !item.candidates.contains(&release_edition_id)
-            || share_a_source_of_record(&transaction, merged, release_edition_id)?
-        {
+        if share_a_source_of_record(&transaction, merged, release_edition_id)? {
             return Ok(ReferenceReviewOutcome::NotACandidate);
         }
         let holds_assets: bool = transaction
@@ -277,6 +286,12 @@ fn persist_reference_release_in_transaction(
     let normalized_region = normalize(&record.region);
     let normalized_edition = normalize(&record.edition_name);
     let dumps = dump_set(&record.assertions);
+    let edition = NormalizedEdition {
+        title: &normalized_title,
+        platform: &normalized_platform,
+        region: &normalized_region,
+        edition: &normalized_edition,
+    };
 
     if let Some((game_id, release_edition_id)) = transaction
         .query_row(
@@ -322,6 +337,14 @@ fn persist_reference_release_in_transaction(
             release_edition_id,
             dumps.as_deref(),
         )?;
+        revalidate_review_item(
+            transaction,
+            &source_id,
+            &source_record,
+            release_edition_id,
+            &edition,
+            dumps.as_deref(),
+        )?;
         return Ok(ImportedReleaseEdition {
             game_id,
             release_edition_id,
@@ -330,12 +353,6 @@ fn persist_reference_release_in_transaction(
 
     // Another source may already describe this release: its assertions then join that edition,
     // with the evidence of the link.
-    let edition = NormalizedEdition {
-        title: &normalized_title,
-        platform: &normalized_platform,
-        region: &normalized_region,
-        edition: &normalized_edition,
-    };
     let evidence = linked_release_edition(transaction, &source_id, &edition, dumps.as_deref())?;
     if let Evidence::Links(game_id, release_edition_id, evidence) = evidence {
         let link = link_assertion(identity, evidence.to_owned());
@@ -498,102 +515,93 @@ struct NormalizedEdition<'a> {
 /// whose record of another source last asserted exactly the record's dumps. Otherwise the one
 /// such edition another source titled the same. Several editions, by dumps or by title, link
 /// none of them, and dump evidence pointing at several editions forbids a title link. An edition
-/// already holding a record of the same source is never linked by dumps, since one catalog
-/// listing two releases of the same dumps describes two releases, but it counts among the
-/// editions they point at, and dumps pointing at it alone forbid a title link.
+/// already holding a record of the same source is never linked, since one catalog listing two
+/// records describes two releases, but it counts among the editions the evidence points at, and
+/// dumps pointing at it alone forbid a title link.
 fn linked_release_edition(
     transaction: &Transaction<'_>,
     source_id: &str,
     edition: &NormalizedEdition<'_>,
     dumps: Option<&str>,
 ) -> Result<Evidence, PortError> {
-    if let Some(dumps) = dumps {
+    let by_dumps = match dumps {
         // Every edition the dumps point at counts, so that one already holding a record of the
         // importing source never makes another look like the only match.
-        let editions: Vec<(i64, i64, bool)> = transaction
-            .prepare(
-                "SELECT DISTINCT r.game_id, r.id, EXISTS (
-                     SELECT 1 FROM release_assertions own
-                     WHERE own.release_edition_id = r.id
-                       AND own.source_id = ?5
-                       AND own.field = 'identifier'
-                       AND own.qualifier = 'source_record'
-                 )
-                 FROM reference_dump_sets d
-                 JOIN release_editions r ON r.id = d.release_edition_id
-                 WHERE d.dump_set = ?1
-                   AND d.source_id != ?5
-                   AND r.normalized_platform = ?2
-                   AND r.normalized_region = ?3
-                   AND r.normalized_edition_name = ?4",
-            )
-            .map_err(sql_error)?
-            .query_map(
-                params![
-                    dumps,
-                    edition.platform,
-                    edition.region,
-                    edition.edition,
-                    source_id
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .map_err(sql_error)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(sql_error)?;
-        match editions.as_slice() {
-            [] => {}
-            // An edition already holding a record of the importing source is another release, which
-            // no title links either.
-            [(_, _, true)] => return Ok(Evidence::Unlinked),
-            [(game_id, release_edition_id, false)] => {
-                return Ok(Evidence::Links(*game_id, *release_edition_id, "sha1"));
-            }
-            // Only the editions holding no record of the importing source may be the record's.
-            several => {
-                let candidates: Vec<i64> = several
-                    .iter()
-                    .filter(|(_, _, occupied)| !occupied)
-                    .map(|(_, release_edition_id, _)| *release_edition_id)
-                    .collect();
-                return Ok(if candidates.is_empty() {
-                    Evidence::Unlinked
-                } else {
-                    Evidence::Uncertain(candidates, "sha1")
-                });
-            }
+        Some(dumps) => editions_where(
+            transaction,
+            "SELECT DISTINCT r.game_id, r.id, EXISTS (
+                 SELECT 1 FROM release_assertions own
+                 WHERE own.release_edition_id = r.id
+                   AND own.source_id = ?5
+                   AND own.field = 'identifier'
+                   AND own.qualifier = 'source_record'
+             )
+             FROM reference_dump_sets d
+             JOIN release_editions r ON r.id = d.release_edition_id
+             WHERE d.dump_set = ?1
+               AND d.source_id != ?5
+               AND r.normalized_platform = ?2
+               AND r.normalized_region = ?3
+               AND r.normalized_edition_name = ?4",
+            params![
+                dumps,
+                edition.platform,
+                edition.region,
+                edition.edition,
+                source_id
+            ],
+        )?,
+        None => Vec::new(),
+    };
+    let (editions, evidence) = if by_dumps.is_empty() {
+        // Starting from the matching title assertions lets the assertion value index find them.
+        let by_title = editions_where(
+            transaction,
+            "SELECT DISTINCT r.game_id, r.id, EXISTS (
+                 SELECT 1 FROM release_assertions own
+                 WHERE own.release_edition_id = r.id
+                   AND own.source_id = ?5
+                   AND own.field = 'identifier'
+                   AND own.qualifier = 'source_record'
+             )
+             FROM release_assertions t
+             JOIN release_editions r ON r.id = t.release_edition_id
+             WHERE t.field = 'title'
+               AND t.qualifier = ''
+               AND t.normalized_value = ?1
+               AND t.source_id != ?5
+               AND r.normalized_platform = ?2
+               AND r.normalized_region = ?3
+               AND r.normalized_edition_name = ?4",
+            params![
+                edition.title,
+                edition.platform,
+                edition.region,
+                edition.edition,
+                source_id
+            ],
+        )?;
+        (by_title, "title")
+    } else {
+        (by_dumps, "sha1")
+    };
+    // Only the editions holding no record of the importing source may be the record's.
+    let candidates: Vec<(i64, i64)> = editions
+        .iter()
+        .filter(|(_, _, occupied)| !occupied)
+        .map(|(game_id, release_edition_id, _)| (*game_id, *release_edition_id))
+        .collect();
+    Ok(match (editions.as_slice(), candidates.as_slice()) {
+        ([_], [(game_id, release_edition_id)]) => {
+            Evidence::Links(*game_id, *release_edition_id, evidence)
         }
-    }
-    // Starting from the matching title assertions lets the assertion value index find them.
-    let editions = editions_where(
-        transaction,
-        "SELECT DISTINCT r.game_id, r.id
-         FROM release_assertions t
-         JOIN release_editions r ON r.id = t.release_edition_id
-         WHERE t.field = 'title'
-           AND t.qualifier = ''
-           AND t.normalized_value = ?1
-           AND t.source_id != ?5
-           AND r.normalized_platform = ?2
-           AND r.normalized_region = ?3
-           AND r.normalized_edition_name = ?4",
-        params![
-            edition.title,
-            edition.platform,
-            edition.region,
-            edition.edition,
-            source_id
-        ],
-    )?;
-    Ok(match editions.as_slice() {
-        [] => Evidence::Unlinked,
-        [(game_id, release_edition_id)] => Evidence::Links(*game_id, *release_edition_id, "title"),
-        several => Evidence::Uncertain(
+        (_, []) => Evidence::Unlinked,
+        (_, several) => Evidence::Uncertain(
             several
                 .iter()
                 .map(|(_, release_edition_id)| *release_edition_id)
                 .collect(),
-            "title",
+            evidence,
         ),
     })
 }
@@ -623,7 +631,8 @@ fn dump_set(assertions: &[ReleaseAssertion]) -> Option<String> {
 }
 
 /// Records the dumps the record last asserted, replacing what it asserted before, or forgets
-/// them when the record no longer names them whole.
+/// them when the record no longer names them whole. The records of other sources sharing the
+/// dumps it asserted before or now see other editions, so their items are brought up to date.
 fn record_dump_set(
     transaction: &Transaction<'_>,
     source_id: &str,
@@ -631,6 +640,14 @@ fn record_dump_set(
     release_edition_id: i64,
     dumps: Option<&str>,
 ) -> Result<(), PortError> {
+    let before: Option<String> = transaction
+        .query_row(
+            "SELECT dump_set FROM reference_dump_sets WHERE source_id = ?1 AND source_record = ?2",
+            params![source_id, source_record],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
     match dumps {
         Some(dumps) => transaction.execute(
             "INSERT INTO reference_dump_sets (source_id, source_record, release_edition_id, dump_set)
@@ -645,6 +662,168 @@ fn record_dump_set(
         ),
     }
     .map_err(sql_error)?;
+    if let Some(before) = before.as_deref().filter(|before| Some(*before) != dumps) {
+        revalidate_dump_peers(transaction, source_id, release_edition_id, before)?;
+    }
+    if let Some(dumps) = dumps {
+        revalidate_dump_peers(transaction, source_id, release_edition_id, dumps)?;
+    }
+    Ok(())
+}
+
+/// Brings the Reference Review Item of a record already in the catalog, which keeps
+/// `release_edition_id`, up to date with the editions its evidence points at now. A pending item
+/// names them, or goes when none is left. A decided item is asked again only once an edition
+/// the human did not see appears.
+fn revalidate_review_item(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    source_record: &str,
+    release_edition_id: i64,
+    edition: &NormalizedEdition<'_>,
+    dumps: Option<&str>,
+) -> Result<(), PortError> {
+    let item = transaction
+        .query_row(
+            "SELECT release_edition_id, status, candidates_json FROM reference_review_items
+             WHERE source_id = ?1 AND source_record = ?2",
+            params![source_id, source_record],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let (seen_edition, status, seen_candidates) = match item {
+        Some(item) => item,
+        // A record its dumps alone linked is asked about once they point at another edition too.
+        None if linked_by_dumps(transaction, source_id, release_edition_id)? => {
+            (release_edition_id, "linked".to_owned(), "[]".to_owned())
+        }
+        None => return Ok(()),
+    };
+    // The record's own edition holds its record, so the evidence never offers it.
+    let (candidates, evidence) =
+        match linked_release_edition(transaction, source_id, edition, dumps)? {
+            Evidence::Links(_, candidate, evidence) => (vec![candidate], evidence),
+            Evidence::Uncertain(candidates, evidence) => (candidates, evidence),
+            Evidence::Unlinked => (Vec::new(), ""),
+        };
+    if status != "pending" {
+        let seen: Vec<i64> = serde_json::from_str(&seen_candidates).map_err(|error| {
+            PortError::new(format!(
+                "catalog contains invalid review candidates: {error}"
+            ))
+        })?;
+        let unseen = candidates
+            .iter()
+            .any(|candidate| *candidate != seen_edition && !seen.contains(candidate));
+        if !unseen {
+            return Ok(());
+        }
+    }
+    if candidates.is_empty() {
+        transaction
+            .execute(
+                "DELETE FROM reference_review_items WHERE source_id = ?1 AND source_record = ?2",
+                params![source_id, source_record],
+            )
+            .map_err(sql_error)?;
+        return Ok(());
+    }
+    raise_review_item(
+        transaction,
+        source_id,
+        source_record,
+        release_edition_id,
+        &candidates,
+        evidence,
+    )
+}
+
+/// Whether the source holds its record on the edition only because its dumps linked them.
+fn linked_by_dumps(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    release_edition_id: i64,
+) -> Result<bool, PortError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM release_assertions
+                 WHERE release_edition_id = ?1 AND source_id = ?2
+                   AND field = 'identifier' AND qualifier = 'linked_by' AND value = 'sha1'
+             )",
+            params![release_edition_id, source_id],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
+}
+
+/// Brings up to date the items of the records of other sources than `source_id` that last
+/// asserted `dumps` on the platform, region and edition of `release_edition_id`, since an import
+/// of `source_id` changed the editions those dumps point at.
+fn revalidate_dump_peers(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    release_edition_id: i64,
+    dumps: &str,
+) -> Result<(), PortError> {
+    type Peer = (String, String, i64, Option<String>, String, String, String);
+    let peers: Vec<Peer> = transaction
+        .prepare(
+            "SELECT d.source_id, d.source_record, d.release_edition_id, (
+                 SELECT t.normalized_value FROM release_assertions t
+                 WHERE t.release_edition_id = d.release_edition_id
+                   AND t.source_id = d.source_id
+                   AND t.field = 'title' AND t.qualifier = ''
+                 ORDER BY t.id DESC LIMIT 1
+             ), r.normalized_platform, r.normalized_region, r.normalized_edition_name
+             FROM reference_dump_sets d
+             JOIN release_editions r ON r.id = d.release_edition_id
+             JOIN release_editions own ON own.id = ?3
+             WHERE d.dump_set = ?1
+               AND d.source_id != ?2
+               AND r.normalized_platform = own.normalized_platform
+               AND r.normalized_region = own.normalized_region
+               AND r.normalized_edition_name = own.normalized_edition_name",
+        )
+        .map_err(sql_error)?
+        .query_map(params![dumps, source_id, release_edition_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_error)?;
+    for (peer_source, peer_record, peer_edition, title, platform, region, edition) in peers {
+        // The record's latest title only counts once no other source shares its dumps.
+        let peer = NormalizedEdition {
+            title: title.as_deref().unwrap_or_default(),
+            platform: &platform,
+            region: &region,
+            edition: &edition,
+        };
+        revalidate_review_item(
+            transaction,
+            &peer_source,
+            &peer_record,
+            peer_edition,
+            &peer,
+            Some(dumps),
+        )?;
+    }
     Ok(())
 }
 
@@ -723,6 +902,137 @@ fn pending_review_item(
     .transpose()
 }
 
+/// Moves the record of `item`, which its source linked into another source's edition, alone to
+/// the candidate `chosen`, with the evidence of the decision. The edition it leaves keeps the
+/// claims of the other sources and its Assets.
+fn move_linked_record(
+    transaction: &Transaction<'_>,
+    item: &ReferenceReviewItem,
+    chosen: i64,
+) -> Result<ReferenceReviewOutcome, PortError> {
+    let source_id = item.source_id.as_str();
+    let left = item.release_edition_id;
+    // An edition holding a record of the item's source is another release of it.
+    if holds_record_of(transaction, chosen, source_id)? {
+        return Ok(ReferenceReviewOutcome::NotACandidate);
+    }
+    let identity = transaction
+        .query_row(
+            "SELECT source_location FROM release_assertions
+             WHERE release_edition_id = ?1 AND source_id = ?2
+               AND field = 'identifier' AND qualifier = 'source_record' AND value = ?3",
+            params![left, source_id, item.source_record],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    // The evidence that linked it there does not follow it.
+    transaction
+        .execute(
+            "DELETE FROM release_assertions
+             WHERE release_edition_id = ?1 AND source_id = ?2
+               AND field = 'identifier' AND qualifier = 'linked_by'",
+            params![left, source_id],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "UPDATE OR IGNORE release_assertions SET release_edition_id = ?2
+             WHERE release_edition_id = ?1 AND source_id = ?3",
+            params![left, chosen, source_id],
+        )
+        .map_err(sql_error)?;
+    // What stays behind repeats a claim the chosen edition already carries.
+    transaction
+        .execute(
+            "DELETE FROM release_assertions WHERE release_edition_id = ?1 AND source_id = ?2",
+            params![left, source_id],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "UPDATE reference_dump_sets SET release_edition_id = ?3
+             WHERE source_id = ?1 AND source_record = ?2",
+            params![source_id, item.source_record, chosen],
+        )
+        .map_err(sql_error)?;
+    if let Some(source_location) = identity {
+        let link = ReleaseAssertion {
+            source_id: item.source_id.clone(),
+            source_location,
+            field: ReleaseAssertionField::Identifier,
+            qualifier: Some("linked_by".to_owned()),
+            value: "review".to_owned(),
+        };
+        persist_release_assertions(transaction, chosen, &[link])?;
+    }
+    // The edition it leaves counts among those the human considered.
+    let mut considered = item.candidates.clone();
+    considered.push(left);
+    let considered = serde_json::to_string(&considered).map_err(|error| {
+        PortError::new(format!("failed to serialize review candidates: {error}"))
+    })?;
+    transaction
+        .execute(
+            "UPDATE reference_review_items
+             SET status = 'linked', release_edition_id = ?2, candidates_json = ?3
+             WHERE id = ?1",
+            params![item.id, chosen, considered],
+        )
+        .map_err(sql_error)?;
+    // The records of other sources sharing its dumps see them point at other editions now.
+    let dumps: Option<String> = transaction
+        .query_row(
+            "SELECT dump_set FROM reference_dump_sets WHERE source_id = ?1 AND source_record = ?2",
+            params![source_id, item.source_record],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    if let Some(dumps) = dumps {
+        revalidate_dump_peers(transaction, source_id, chosen, &dumps)?;
+    }
+    Ok(ReferenceReviewOutcome::Decided)
+}
+
+/// Whether the source linked its record into the edition, which another source founded.
+fn holds_link(
+    transaction: &Transaction<'_>,
+    release_edition_id: i64,
+    source_id: &str,
+) -> Result<bool, PortError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM release_assertions
+                 WHERE release_edition_id = ?1 AND source_id = ?2
+                   AND field = 'identifier' AND qualifier = 'linked_by'
+             )",
+            params![release_edition_id, source_id],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
+}
+
+/// Whether the edition holds a record of the source.
+fn holds_record_of(
+    transaction: &Transaction<'_>,
+    release_edition_id: i64,
+    source_id: &str,
+) -> Result<bool, PortError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM release_assertions
+                 WHERE release_edition_id = ?1 AND source_id = ?2
+                   AND field = 'identifier' AND qualifier = 'source_record'
+             )",
+            params![release_edition_id, source_id],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
+}
+
 /// Whether some source holds a record on both editions.
 fn share_a_source_of_record(
     transaction: &Transaction<'_>,
@@ -744,14 +1054,18 @@ fn share_a_source_of_record(
         .map_err(sql_error)
 }
 
+/// The editions `query` selects: each one's Game, its id and whether it holds a record of the
+/// importing source.
 fn editions_where(
     transaction: &Transaction<'_>,
     query: &str,
     parameters: impl rusqlite::Params,
-) -> Result<Vec<(i64, i64)>, PortError> {
+) -> Result<Vec<(i64, i64, bool)>, PortError> {
     let mut statement = transaction.prepare(query).map_err(sql_error)?;
     statement
-        .query_map(parameters, |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(parameters, |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(sql_error)?
         .collect::<rusqlite::Result<_>>()
         .map_err(sql_error)

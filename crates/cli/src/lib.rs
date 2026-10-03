@@ -384,7 +384,7 @@ enum ReferenceReviewCommand {
     /// Lists the records awaiting a human, with the editions each may describe.
     List,
     /// Decides that the record of an item describes one of its candidate editions, which its
-    /// own edition then merges into.
+    /// own edition merges into, or which it moves to alone when it was linked elsewhere.
     Link {
         id: i64,
         #[arg(long)]
