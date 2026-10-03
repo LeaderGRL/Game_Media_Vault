@@ -90,6 +90,7 @@ fn preserves_optional_filters_and_independent_asset_type_selection() {
         retention: RetentionPolicy::KeepBestPerType,
         limits: AcquisitionLimits {
             max_games: Some(25),
+            games_percent: None,
             max_downloads: Some(100),
             max_concurrent_downloads: Some(4),
             max_bytes: Some(5_000_000_000),
