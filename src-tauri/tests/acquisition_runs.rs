@@ -457,3 +457,62 @@ fn the_desktop_explains_a_plan_without_a_vault() {
         })
     );
 }
+
+/// The game list of the NES alone, holding one game.
+struct NesGameList;
+
+impl game_media_vault_application::PlatformCatalogSourcePort for NesGameList {
+    fn platform_releases(
+        &self,
+        platform: &str,
+    ) -> Result<Option<game_media_vault_application::ReferenceCatalogRead>, PortError> {
+        Ok(
+            (platform == "Nintendo - Nintendo Entertainment System").then(|| {
+                game_media_vault_application::ReferenceCatalogRead {
+                    releases: vec![ReferenceReleaseRecord {
+                        game_title: "Super Mario Bros.".to_owned(),
+                        platform: platform.to_owned(),
+                        region: "World".to_owned(),
+                        revision: None,
+                        edition_name: "Standard".to_owned(),
+                        assertions: vec![ReleaseAssertion {
+                            source_id: SourceId::from("no-intro"),
+                            source_location: "https://raw.githubusercontent.com/nes.dat".to_owned(),
+                            field: ReleaseAssertionField::Identifier,
+                            qualifier: Some("source_record".to_owned()),
+                            value: format!(
+                                "{}:{platform}Super Mario Bros. (World)",
+                                platform.len()
+                            ),
+                        }],
+                    }],
+                    skipped_records: 0,
+                }
+            }),
+        )
+    }
+}
+
+#[test]
+fn a_desktop_run_of_every_game_names_the_games_of_the_platforms_game_list() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let mut every_game = request_input();
+    every_game.games = GameSelection::All;
+
+    let started = game_media_vault_tauri::start_acquisition_run_in_vault_with(
+        &vault,
+        every_game,
+        &[&FixtureConnector],
+        &NesGameList,
+    )
+    .unwrap();
+
+    assert_eq!(
+        started.request.games(),
+        &GameSelection::PlatformBound(vec![game_media_vault_domain::PlatformBoundGameSelector {
+            game: "Super Mario Bros. (World)".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        }])
+    );
+}

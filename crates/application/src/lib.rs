@@ -10,6 +10,7 @@ mod imports;
 mod library;
 mod packaging;
 mod plan;
+mod platforms;
 mod ports;
 mod review;
 mod runs;
@@ -33,7 +34,8 @@ pub use documents::{
 pub use error::{ApplicationError, ErrorKind};
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
-    match_asset_candidate_to_release, review_matches_for_asset_candidate,
+    match_asset_candidate_to_release, match_asset_candidate_to_release_preferring,
+    review_matches_for_asset_candidate,
 };
 pub use identity::candidate_identity;
 pub use imports::{
@@ -53,6 +55,7 @@ pub use packaging::{
 pub use plan::{
     AcquisitionPlan, ExcludedSource, PlannedSource, SelectorCoverage, plan_acquisition,
 };
+pub use platforms::expand_every_game;
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort, MachineSettingsPort,
     ObjectStorePort, ParkedReview, PlatformCatalogSourcePort, PortError, ReferenceCatalogRead,

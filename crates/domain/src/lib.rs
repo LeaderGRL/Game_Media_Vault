@@ -887,18 +887,42 @@ pub fn match_asset_candidate_to_release(
     releases: &[LibraryEntry],
     policy: ValidatedMatchingPolicy,
 ) -> AssetCandidateMatch {
+    match_asset_candidate_to_release_preferring(candidate, releases, policy, &|_| false)
+}
+
+/// The regions that stand for a game, in order, when nothing a candidate records tells its
+/// releases apart; other regions follow in alphabetical order.
+const REPRESENTATIVE_REGIONS: [&str; 4] = ["world", "usa", "europe", "japan"];
+
+/// Matches `candidate` as `match_asset_candidate_to_release` does, except that releases of one
+/// Game tied for the best score, which nothing the candidate records tells apart (as a map
+/// records neither region nor edition), do not await review: the release standing for the game
+/// takes it. That is the first `preferred` one, such as a release the request names, then the
+/// standard edition, then the release of the first of World, USA, Europe and Japan, then the
+/// lowest id. Releases of several Games tied for the best score still await review.
+pub fn match_asset_candidate_to_release_preferring(
+    candidate: &AssetCandidate,
+    releases: &[LibraryEntry],
+    policy: ValidatedMatchingPolicy,
+    preferred: &dyn Fn(&LibraryEntry) -> bool,
+) -> AssetCandidateMatch {
     let mut scored_releases = releases
         .iter()
         .map(|release| {
             let evidence = asset_candidate_match_evidence(candidate, release);
             let score = match_evidence_score(&evidence);
-            (release.release_edition_id, score, evidence)
+            (release, score, evidence)
         })
         .collect::<Vec<_>>();
 
-    scored_releases.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    scored_releases.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0.release_edition_id.cmp(&right.0.release_edition_id))
+    });
 
-    let Some((release_edition_id, score, evidence)) = scored_releases.first().cloned() else {
+    let Some(&(best, score, _)) = scored_releases.first() else {
         return AssetCandidateMatch {
             release_edition_id: None,
             score: 0,
@@ -906,10 +930,26 @@ pub fn match_asset_candidate_to_release(
             evidence: Vec::new(),
         };
     };
+    let tied: Vec<&(&LibraryEntry, u8, Vec<MatchEvidence>)> = scored_releases
+        .iter()
+        .take_while(|(_, tied_score, _)| *tied_score == score)
+        .collect();
+    let one_game = tied
+        .iter()
+        .all(|(release, ..)| release.game_id == best.game_id);
+    let representative = if tied.len() > 1 && one_game {
+        tied.iter()
+            .copied()
+            .min_by_key(|(release, ..)| representative_rank(release, preferred))
+            .expect("the best release is tied with itself")
+    } else {
+        scored_releases.first().expect("a best release")
+    };
+    let (release, _, evidence) = representative;
+    let release_edition_id = release.release_edition_id;
+    let evidence = evidence.clone();
 
-    let ambiguous_best_score = scored_releases
-        .get(1)
-        .is_some_and(|candidate| candidate.1 == score);
+    let ambiguous_best_score = tied.len() > 1 && !one_game;
     let has_material_conflict = evidence.iter().any(|evidence| {
         evidence.score_delta < 0
             && matches!(
@@ -970,6 +1010,24 @@ pub fn review_matches_for_asset_candidate(
             .then_with(|| left.release_edition_id.cmp(&right.release_edition_id))
     });
     matches
+}
+
+/// How well a release stands for its game, the lowest first.
+fn representative_rank(
+    release: &LibraryEntry,
+    preferred: &dyn Fn(&LibraryEntry) -> bool,
+) -> (bool, bool, usize, String, i64) {
+    let region = release.region.trim().to_lowercase();
+    (
+        !preferred(release),
+        !release.edition_name.trim().eq_ignore_ascii_case("standard"),
+        REPRESENTATIVE_REGIONS
+            .iter()
+            .position(|known| *known == region)
+            .unwrap_or(REPRESENTATIVE_REGIONS.len()),
+        region,
+        release.release_edition_id,
+    )
 }
 
 fn asset_candidate_match_evidence(

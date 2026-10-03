@@ -98,7 +98,9 @@ only the one named; an API key is stored under the Source's id, any other creden
      Enter.
 - **Limits:** a key has a monthly allowance of requests. A discovery takes one request for the
   platform list, up to five pages of search per requested game and platform, and at most ten
-  pages of images for each batch of twenty games found. Without a stored key it is left out of
+  pages of images for each batch of twenty games found. A request naming more than 100 games,
+  such as one for a whole platform, leaves it out with the reason, so a single discovery never
+  spends the allowance. Without a stored key it is left out of
   every plan, with the reason. It needs an explicit game selection and refuses region and
   language filters. A platform is served when TheGamesDB names it with the same words,
   regardless of case and punctuation, with or without the words in parentheses it may add, such
@@ -256,6 +258,10 @@ downloads and passes to an `import-*` command, and contact no network.
   libretro republishes per platform in `github.com/libretro/libretro-database`
   (`metadat/no-intro`, then `metadat/redump`), asserted by No-Intro or Redump:
   `game-media-vault reference sync --platform "Nintendo - Nintendo Entertainment System"`.
+  An acquisition of every game of a platform (`acquire` without `--game`, or the desktop with
+  no game named) syncs the list of a platform the vault holds no release of, then names every
+  release of the vault's platforms, so that every Source, including those that look games up one
+  by one, serves it.
   Prototypes, betas, demos, samples, pirate copies, hacks, aftermarket releases, programs and
   BIOS images are left out; unlicensed releases are kept.
 - **Reached at:** `raw.githubusercontent.com` for the list named exactly after the platform,

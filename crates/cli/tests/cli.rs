@@ -2459,3 +2459,46 @@ fn a_platforms_game_list_is_synced_without_a_datafile() {
         serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
     assert_eq!(library[0]["game_title"], "Super Mario Bros.");
 }
+
+#[test]
+fn a_run_started_from_a_document_for_every_game_names_the_games_of_the_platforms_list() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let document_path = temp.path().join("request.json");
+    std::fs::write(
+        &document_path,
+        r#"{"format_version": 1, "request": {
+            "sources": {"mode": "explicit", "values": ["libretro-thumbnails"]},
+            "platforms": ["Nintendo - Nintendo Entertainment System"],
+            "games": {"mode": "all"},
+            "regions": [], "languages": [], "asset_types": ["box_front"],
+            "quality": null,
+            "retention": "keep_everything",
+            "limits": {}
+        }}"#,
+    )
+    .unwrap();
+    let machine = Machine {
+        settings: &MachineSettingsFile::at(temp.path().join("settings.json")),
+        credentials: &NoCredentials,
+    };
+
+    let started: serde_json::Value = serde_json::from_str(
+        &game_media_vault_cli::run_in_context(
+            cli_args(&vault, &["run", "start", document_path.to_str().unwrap()]),
+            &[&FixtureConnector],
+            machine,
+            &mut std::io::empty(),
+            &NesGameList,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Sources that look games up one by one serve it, as they serve `acquire`.
+    assert_eq!(started["request"]["games"]["mode"], "platform_bound");
+    assert_eq!(
+        started["request"]["games"]["values"][0]["game"],
+        "Super Mario Bros. (World)"
+    );
+}

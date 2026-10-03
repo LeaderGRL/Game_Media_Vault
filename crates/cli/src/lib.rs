@@ -11,16 +11,16 @@ use game_media_vault_application::{
     AcquisitionRequestValidationError, ApiKey, ApplicationError, ConnectorPort,
     DEFAULT_LIBRARY_PAGE_SIZE, DownloadLimits, ErrorKind, ImportLocalAssetRequest,
     ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PlatformCatalogSourcePort,
-    PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary, VaultReport,
-    acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
+    PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
+    VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     clear_source_credential, derive_assets, derive_packaging_models, describe_sources,
-    draft_from_document, export_acquisition_request, import_local_asset, import_reference_catalog,
-    keep_reference_review_item_apart, link_reference_review_item, list_acquisition_runs,
-    list_library, list_reference_review_items, list_review_items, load_acquisition_run,
-    machine_connectors, pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
-    resume_acquisition_run, search_library, set_source_credential, set_source_enabled,
-    start_acquisition_run_with_connectors, summarize_source_failures, sync_platform_catalog,
-    verify_vault,
+    draft_from_document, expand_every_game, export_acquisition_request, import_local_asset,
+    import_reference_catalog, keep_reference_review_item_apart, link_reference_review_item,
+    list_acquisition_runs, list_library, list_reference_review_items, list_review_items,
+    load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
+    repair_vault, resolve_review_item, resume_acquisition_run, search_library,
+    set_source_credential, set_source_enabled, start_acquisition_run_with_connectors,
+    summarize_source_failures, sync_platform_catalog, verify_vault,
 };
 use game_media_vault_connectors::{
     LibretroDatabase, MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog,
@@ -551,7 +551,13 @@ where
         settings: settings.as_ref(),
         credentials: credentials.as_ref(),
     };
-    run_on_machine(args, &connectors, machine, &mut io::stdin().lock())
+    run_in_context(
+        args,
+        &connectors,
+        machine,
+        &mut io::stdin().lock(),
+        &LibretroDatabase::new(),
+    )
 }
 
 /// Builds and validates the Acquisition Request of an `acquire` command line without starting
@@ -602,7 +608,20 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    run_in_context(args, registered, machine, input, &LibretroDatabase::new())
+    run_in_context(args, registered, machine, input, &NoPlatformCatalogs)
+}
+
+/// Knows no platform's game list, so that command lines run on a given machine, as tests run
+/// them, never reach libretro-database.
+struct NoPlatformCatalogs;
+
+impl PlatformCatalogSourcePort for NoPlatformCatalogs {
+    fn platform_releases(
+        &self,
+        _platform: &str,
+    ) -> Result<Option<ReferenceCatalogRead>, PortError> {
+        Ok(None)
+    }
 }
 
 /// Runs a command line as `run_on_machine` does, reading platforms' game lists from
@@ -632,10 +651,13 @@ where
     match cli.command {
         Command::Acquire(acquire) => {
             let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-            // A plan no connector can execute would fail every execution, so no run starts.
-            let run =
-                start_acquisition_run_with_connectors(&catalog, acquire.into_input(), connectors)
+            // Every game of a platform is the game list the vault holds for it, fetched if need be.
+            let input =
+                expand_every_game(&catalog, &catalog, platform_catalogs, acquire.into_input())
                     .map_err(map_start_run_error)?;
+            // A plan no connector can execute would fail every execution, so no run starts.
+            let run = start_acquisition_run_with_connectors(&catalog, input, connectors)
+                .map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&run)?)
         }
         Command::Plan(acquire) => {
@@ -647,6 +669,9 @@ where
             RunCommand::Start { request_file } => {
                 let draft = draft_from_document(read_request_document(&request_file)?)?;
                 let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+                // A document for every game is expanded as `acquire` expands one.
+                let draft = expand_every_game(&catalog, &catalog, platform_catalogs, draft)
+                    .map_err(map_start_run_error)?;
                 let run = start_acquisition_run_with_connectors(&catalog, draft, connectors)
                     .map_err(map_start_run_error)?;
                 Ok(serde_json::to_string_pretty(&run)?)

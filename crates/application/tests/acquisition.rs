@@ -1482,3 +1482,39 @@ fn a_run_executes_in_one_execution_at_a_time() {
     assert_eq!(execute(&vault, &connector, run_id).unwrap().len(), 1);
     assert!(vault.claim_execution(run_id).unwrap());
 }
+
+#[test]
+fn media_nothing_tells_apart_go_to_the_release_the_request_names() {
+    // A map records neither region nor edition, so it matches each release of Metroid alike.
+    let map = AssetCandidate {
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        ..candidate("Metroid")
+    };
+    let release = |release_edition_id, region: &str| LibraryEntry {
+        game_id: 9,
+        region: region.to_owned(),
+        edition_name: "Standard".to_owned(),
+        ..release_for(&map, release_edition_id)
+    };
+    let vault = FakeVault::with_library(vec![release(601, "USA"), release(602, "Europe")]);
+    let mut draft = request_draft();
+    draft.games =
+        game_media_vault_domain::GameSelection::Explicit(vec!["Metroid (Europe)".to_owned()]);
+    let run_id = vault
+        .create_run(
+            AcquisitionRequest::try_from_draft(draft).unwrap(),
+            vec![SOURCE_ID.to_owned()],
+        )
+        .unwrap()
+        .id;
+
+    let imported = execute(&vault, &FakeConnector::new(vec![map]), run_id).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(
+        vault.records.borrow()[0].existing_release_edition_id,
+        Some(602)
+    );
+    assert!(vault.review_items.borrow().is_empty());
+}
