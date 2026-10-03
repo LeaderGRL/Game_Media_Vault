@@ -3,9 +3,9 @@ use std::{io::Read, path::Path};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
-    Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReferenceReviewItem,
-    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage,
-    StoredObject,
+    Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReferenceReviewEdition,
+    ReferenceReviewItem, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure,
+    SourceFailureStage, StoredObject,
 };
 use thiserror::Error;
 
@@ -439,6 +439,12 @@ pub trait ReferenceCatalogRepositoryPort {
 pub trait ReferenceReviewRepositoryPort {
     /// The pending items, oldest first.
     fn list_reference_review_items(&self) -> Result<Vec<ReferenceReviewItem>, PortError>;
+
+    /// What the catalog knows of each edition, in order, leaving out those it no longer holds.
+    fn describe_reference_review_editions(
+        &self,
+        release_edition_ids: &[i64],
+    ) -> Result<Vec<ReferenceReviewEdition>, PortError>;
 
     /// Decides that the record of the pending item `item_id` describes the candidate
     /// `release_edition_id`: the record's own edition merges into it, or the record moves to it

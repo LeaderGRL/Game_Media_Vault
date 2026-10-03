@@ -4,8 +4,11 @@ use std::{
 };
 
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryRelease, PersistAsset, ReferenceReviewItem, SourceId,
+    AssetType, ImportedAsset, LibraryRelease, PersistAsset, ReferenceReviewEdition,
+    ReferenceReviewItem, SourceId,
 };
+
+use serde::Serialize;
 
 use crate::{
     ApplicationError, CatalogPort, ObjectStorePort, PortError, ReferenceCatalogRepositoryPort,
@@ -13,6 +16,15 @@ use crate::{
 };
 
 const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
+
+/// A pending Reference Review Item, with the editions it names as the catalog describes them now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DescribedReferenceReviewItem {
+    #[serde(flatten)]
+    pub item: ReferenceReviewItem,
+    /// The record's own edition, then its candidates.
+    pub editions: Vec<ReferenceReviewEdition>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportLocalBoxFrontRequest {
@@ -76,8 +88,17 @@ pub fn import_reference_catalog(
 /// those whose evidence pointed at several editions of other sources when they were imported.
 pub fn list_reference_review_items(
     reviews: &dyn ReferenceReviewRepositoryPort,
-) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
-    Ok(reviews.list_reference_review_items()?)
+) -> Result<Vec<DescribedReferenceReviewItem>, ApplicationError> {
+    let items = reviews.list_reference_review_items()?;
+    items
+        .into_iter()
+        .map(|item| {
+            let mut named = vec![item.release_edition_id];
+            named.extend(&item.candidates);
+            let editions = reviews.describe_reference_review_editions(&named)?;
+            Ok(DescribedReferenceReviewItem { item, editions })
+        })
+        .collect()
 }
 
 /// Decides that the record of the pending item `item_id` describes the candidate edition
@@ -87,7 +108,7 @@ pub fn link_reference_review_item(
     reviews: &dyn ReferenceReviewRepositoryPort,
     item_id: i64,
     release_edition_id: i64,
-) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
+) -> Result<Vec<DescribedReferenceReviewItem>, ApplicationError> {
     decided(
         reviews.link_reference_review_item(item_id, release_edition_id)?,
         item_id,
@@ -101,7 +122,7 @@ pub fn link_reference_review_item(
 pub fn keep_reference_review_item_apart(
     reviews: &dyn ReferenceReviewRepositoryPort,
     item_id: i64,
-) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
+) -> Result<Vec<DescribedReferenceReviewItem>, ApplicationError> {
     decided(
         reviews.keep_reference_review_item_apart(item_id)?,
         item_id,

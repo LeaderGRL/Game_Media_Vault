@@ -245,6 +245,38 @@ export interface ReviewItem {
   status: ReviewStatus;
 }
 
+/** A source's record on a Release Edition, with the title the source last gave it. */
+export interface ReferenceRecordSummary {
+  source_id: string;
+  source_record: string;
+  title: string;
+}
+
+/** What the catalog knows of an edition a Reference Review Item names. */
+export interface ReferenceReviewEdition {
+  release_edition_id: number;
+  game_title: string;
+  platform: string;
+  region: string;
+  edition_name: string;
+  records: ReferenceRecordSummary[];
+}
+
+/**
+ * A reference record whose evidence points at several editions of other sources, which a human
+ * tells apart. `editions` describes its own edition first, then its candidates, leaving out any
+ * the catalog no longer holds.
+ */
+export interface ReferenceReviewItem {
+  id: number;
+  source_id: string;
+  source_record: string;
+  release_edition_id: number;
+  evidence: "sha1" | "title";
+  candidates: number[];
+  editions: ReferenceReviewEdition[];
+}
+
 /** Image media types the vault inspector records, by the file extensions that carry them. */
 const PREVIEW_MEDIA_TYPES: Record<string, string> = {
   png: "image/png",

@@ -35,9 +35,10 @@ pub use game_media_vault_domain::{
 };
 pub use identity::candidate_identity;
 pub use imports::{
-    ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, ReferenceImportSummary,
-    import_local_box_front, import_reference_catalog, keep_reference_review_item_apart,
-    link_reference_review_item, list_library, list_reference_review_items,
+    DescribedReferenceReviewItem, ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest,
+    ReferenceImportSummary, import_local_box_front, import_reference_catalog,
+    keep_reference_review_item_apart, link_reference_review_item, list_library,
+    list_reference_review_items,
 };
 pub use library::{
     DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,

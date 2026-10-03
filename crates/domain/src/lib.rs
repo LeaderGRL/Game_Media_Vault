@@ -627,6 +627,27 @@ pub struct ReferenceReviewItem {
     pub candidates: Vec<i64>,
 }
 
+/// What the catalog knows of a Release Edition that a Reference Review Item names, so a human
+/// can tell the editions apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReferenceReviewEdition {
+    pub release_edition_id: i64,
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub edition_name: String,
+    /// The records sources hold on the edition, the one the catalog observed last at the end.
+    pub records: Vec<ReferenceRecordSummary>,
+}
+
+/// A source's record on a Release Edition: its identity and the title the source last gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReferenceRecordSummary {
+    pub source_id: SourceId,
+    pub source_record: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceReleaseRecord {
     pub game_title: String,
