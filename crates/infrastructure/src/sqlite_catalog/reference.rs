@@ -100,13 +100,14 @@ impl ReferenceReviewRepositoryPort for SqliteCatalog {
             return Ok(ReferenceReviewOutcome::ItemNotPending);
         };
         let source_id = item.source_id.as_str();
-        // An edition holding a record of the item's source by now is another release of it.
+        let merged = item.release_edition_id;
+        // Two editions holding records of one source, the item's or any linked since, are two
+        // releases of it.
         if !item.candidates.contains(&release_edition_id)
-            || holds_source_record(&transaction, release_edition_id, source_id)?
+            || share_a_source_of_record(&transaction, merged, release_edition_id)?
         {
             return Ok(ReferenceReviewOutcome::NotACandidate);
         }
-        let merged = item.release_edition_id;
         let holds_assets: bool = transaction
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM assets WHERE release_edition_id = ?1)",
@@ -131,9 +132,16 @@ impl ReferenceReviewRepositoryPort for SqliteCatalog {
         // chosen one, with the evidence of the decision.
         transaction
             .execute(
-                "UPDATE release_assertions SET release_edition_id = ?2
+                "UPDATE OR IGNORE release_assertions SET release_edition_id = ?2
                  WHERE release_edition_id = ?1",
                 params![merged, release_edition_id],
+            )
+            .map_err(sql_error)?;
+        // What stays behind repeats a claim the chosen edition already carries.
+        transaction
+            .execute(
+                "DELETE FROM release_assertions WHERE release_edition_id = ?1",
+                params![merged],
             )
             .map_err(sql_error)?;
         transaction
@@ -715,20 +723,22 @@ fn pending_review_item(
     .transpose()
 }
 
-/// Whether the edition `release_edition_id` holds a record of `source_id`.
-fn holds_source_record(
+/// Whether some source holds a record on both editions.
+fn share_a_source_of_record(
     transaction: &Transaction<'_>,
-    release_edition_id: i64,
-    source_id: &str,
+    first: i64,
+    second: i64,
 ) -> Result<bool, PortError> {
     transaction
         .query_row(
             "SELECT EXISTS (
-                 SELECT 1 FROM release_assertions
-                 WHERE release_edition_id = ?1 AND source_id = ?2
-                   AND field = 'identifier' AND qualifier = 'source_record'
+                 SELECT 1 FROM release_assertions AS one
+                 JOIN release_assertions AS other ON other.source_id = one.source_id
+                 WHERE one.release_edition_id = ?1 AND other.release_edition_id = ?2
+                   AND one.field = 'identifier' AND one.qualifier = 'source_record'
+                   AND other.field = 'identifier' AND other.qualifier = 'source_record'
              )",
-            params![release_edition_id, source_id],
+            params![first, second],
             |row| row.get(0),
         )
         .map_err(sql_error)

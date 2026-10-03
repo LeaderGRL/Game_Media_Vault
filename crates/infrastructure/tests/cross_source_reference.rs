@@ -706,6 +706,10 @@ fn keeping_a_reviewed_record_apart_leaves_every_edition_as_it_is() {
     assert_eq!(catalog.list_library().unwrap().len(), 3);
     assert!(links_of(&catalog, other, "mame-software-lists").is_empty());
     assert!(catalog.list_reference_review_items().unwrap().is_empty());
+    // A later import of the record keeps the decision.
+    let again = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    assert_eq!(again.release_edition_id, other);
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
 }
 
 #[test]
@@ -723,6 +727,28 @@ fn a_reviewed_record_links_only_to_one_of_its_candidates() {
             .unwrap(),
         ReferenceReviewOutcome::ItemNotPending
     );
+    assert_eq!(catalog.list_reference_review_items().unwrap().len(), 1);
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
+}
+
+#[test]
+fn a_reviewed_record_never_joins_two_releases_of_another_source() {
+    let (_temp, catalog) = catalog();
+    let (_, game_b, other, item) = reviewed_dumps(&catalog);
+    // A third catalog without dumps links its releases by title: one to the reviewed record's
+    // edition, another to the candidate.
+    let untested = |title| Release {
+        sha1: None,
+        ..release("tosec", title, "")
+    };
+    let linked_to_record = import(&catalog, &untested("Game C"));
+    let linked_to_candidate = import(&catalog, &untested("Game B"));
+    assert_eq!(linked_to_record.release_edition_id, other);
+    assert_eq!(linked_to_candidate.release_edition_id, game_b);
+
+    let outcome = catalog.link_reference_review_item(item, game_b).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::NotACandidate);
     assert_eq!(catalog.list_reference_review_items().unwrap().len(), 1);
     assert_eq!(catalog.list_library().unwrap().len(), 3);
 }

@@ -461,7 +461,8 @@ pub enum ReferenceReviewOutcome {
     Decided,
     /// No pending item has this id.
     ItemNotPending,
-    /// The edition is not one the record may describe, or now holds a record of its source.
+    /// The edition is not one the record may describe, or some source holds a record on both
+    /// editions, which would make them two releases of it.
     NotACandidate,
     /// The record's edition holds Assets, which merging does not move yet.
     EditionHoldsAssets,
