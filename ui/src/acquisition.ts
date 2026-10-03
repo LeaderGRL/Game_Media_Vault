@@ -58,6 +58,7 @@ export const KNOWN_SOURCES = [
   { value: "screenscraper", label: "ScreenScraper" },
   { value: "rawg", label: "RAWG" },
   { value: "psx-datacenter", label: "PSX DataCenter" },
+  { value: "vgmaps", label: "VGMaps" },
 ];
 
 /** A Source whose terms ask for a link back to it wherever its data shows. */

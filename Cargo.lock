@@ -1589,6 +1589,7 @@ name = "game-media-vault-connectors"
 version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
+ "encoding_rs",
  "game-media-vault-application",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",

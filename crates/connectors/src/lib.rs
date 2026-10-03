@@ -27,6 +27,7 @@ mod screenscraper;
 mod selection;
 mod steamgriddb;
 mod thegamesdb;
+mod vgmaps;
 mod xml;
 
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
@@ -37,6 +38,7 @@ pub use retry::RetryPolicy;
 pub use screenscraper::{SCREENSCRAPER_SOURCE_ID, ScreenScraperConnector};
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
 pub use thegamesdb::{THEGAMESDB_SOURCE_ID, TheGamesDbConnector};
+pub use vgmaps::{VGMAPS_SOURCE_ID, VgMapsConnector};
 
 pub use launchbox::{
     DatasetCache, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
@@ -76,6 +78,7 @@ pub fn registered_connectors(
         Box::new(ScreenScraperConnector::new(Arc::clone(&credentials))),
         Box::new(RawgConnector::new(credentials)),
         Box::new(PsxDataCenterConnector::new()),
+        Box::new(VgMapsConnector::new()),
     ]
 }
 
