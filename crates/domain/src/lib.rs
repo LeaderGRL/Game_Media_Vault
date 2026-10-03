@@ -183,7 +183,12 @@ pub struct QualityRequirements {
 // A misspelled limit must not be read as no limit.
 #[serde(deny_unknown_fields)]
 pub struct AcquisitionLimits {
+    /// For a request for every game, the most games of each platform kept, by name.
     pub max_games: Option<u32>,
+    /// For a request for every game, the share of each platform's games kept, by name and
+    /// rounded up, from 1 to 100 percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub games_percent: Option<u8>,
     pub max_downloads: Option<u32>,
     pub max_concurrent_downloads: Option<u16>,
     pub max_bytes: Option<u64>,
@@ -268,6 +273,32 @@ pub struct AcquisitionRun {
     pub outranked_work: u64,
     /// Completed work whose media its Source no longer serves.
     pub unavailable_work: u64,
+    /// Completed work settled without keeping its candidate: a human rejected it, or matching
+    /// dismissed it as no release of the vault.
+    pub dismissed_work: u64,
+    /// How far the discovery of each planned Source went, in plan order.
+    pub discoveries: Vec<SourceDiscovery>,
+}
+
+/// How far the discovery of one planned Source of a run went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceDiscovery {
+    pub source_id: String,
+    /// Whether the Source's discovery is complete, its work all queued.
+    pub complete: bool,
+    /// How many of the requested games its batches recorded while it is not complete; a Source
+    /// discovered at once records none before it completes.
+    pub discovered_games: u64,
+}
+
+impl SourceDiscovery {
+    pub fn new(source_id: impl Into<String>, complete: bool, discovered_games: u64) -> Self {
+        Self {
+            source_id: source_id.into(),
+            complete,
+            discovered_games,
+        }
+    }
 }
 
 /// One discovered Asset Candidate to process within an Acquisition Run. The key is the
@@ -289,6 +320,10 @@ pub enum AcquisitionRequestValidationError {
     NoConcurrentDownload,
     /// A request keeping the best originals of each type must keep at least one.
     NoKeptAsset,
+    /// A request may keep from 1 to 100 percent of its games.
+    InvalidGameShare,
+    /// A request keeping a number of games must keep at least one.
+    NoGameKept,
 }
 
 impl fmt::Display for AcquisitionRequestValidationError {
@@ -310,6 +345,11 @@ impl fmt::Display for AcquisitionRequestValidationError {
                 .write_str("acquisition request must allow at least one concurrent download"),
             Self::NoKeptAsset => {
                 formatter.write_str("acquisition request must keep at least one asset of each type")
+            }
+            Self::InvalidGameShare => formatter
+                .write_str("acquisition request must keep from 1 to 100 percent of its games"),
+            Self::NoGameKept => {
+                formatter.write_str("acquisition request must keep at least one game")
             }
         }
     }
@@ -446,6 +486,16 @@ impl AcquisitionRequest {
         }
         if draft.retention.kept_per_type() == Some(0) {
             return Err(AcquisitionRequestValidationError::NoKeptAsset);
+        }
+        if draft
+            .limits
+            .games_percent
+            .is_some_and(|percent| percent == 0 || percent > 100)
+        {
+            return Err(AcquisitionRequestValidationError::InvalidGameShare);
+        }
+        if draft.limits.max_games == Some(0) {
+            return Err(AcquisitionRequestValidationError::NoGameKept);
         }
 
         let regions = non_blank_values(draft.regions);

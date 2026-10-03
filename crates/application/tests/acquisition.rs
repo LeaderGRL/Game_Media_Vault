@@ -418,6 +418,7 @@ fn rejected_decision_skips_the_candidate_in_a_later_run() {
     let first_run = park_in_new_run(&vault, &ambiguous, matching_policy());
     resolve_review_item(&vault, vault.review_item(0).id, ReviewDecision::Reject).unwrap();
     assert_eq!(vault.run(first_run).completed_work, 1);
+    assert_eq!(vault.run(first_run).dismissed_work, 1);
 
     let later_run = vault.start_run();
     let connector = FakeConnector::new(vec![ambiguous]);
@@ -426,6 +427,8 @@ fn rejected_decision_skips_the_candidate_in_a_later_run() {
     assert!(imported.is_empty());
     assert!(connector.downloads.borrow().is_empty());
     assert_eq!(vault.run(later_run).completed_work, 1);
+    // Rejected, the candidate counts as dismissed rather than acquired in both runs.
+    assert_eq!(vault.run(later_run).dismissed_work, 1);
     assert_eq!(vault.review_item(0).status, ReviewStatus::Rejected);
 }
 

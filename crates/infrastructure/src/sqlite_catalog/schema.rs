@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 15;
+const VAULT_SCHEMA_VERSION: i32 = 16;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -31,7 +31,20 @@ const MIGRATIONS: &[Migration] = &[
     add_reference_review_items,
     add_asset_document_metadata,
     add_run_discovery_batches,
+    add_work_dismissed,
 ];
+
+/// Version 16 records which completed work settled without keeping its candidate, so a run
+/// tells the media it acquired from those a human rejected or matching dismissed. The column
+/// matches the `acquisition_run_work` layout of `SCHEMA`.
+fn add_work_dismissed(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(
+            "ALTER TABLE acquisition_run_work
+                 ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0 CHECK(dismissed IN (0, 1));",
+        )
+        .map_err(sql_error)
+}
 
 /// Version 15 records how many of the requested games the batches of the discovery of each
 /// Source of a run recorded, so an execution resumes with the next game. New catalogs create the same table.
@@ -322,6 +335,7 @@ const SCHEMA: &str = "
         quality_shortfalls_json TEXT,
         outranked_json TEXT,
         unavailable_reason TEXT,
+        dismissed INTEGER NOT NULL DEFAULT 0 CHECK(dismissed IN (0, 1)),
         UNIQUE(run_id, work_key),
         CHECK((state = 'parked') = (review_item_id IS NOT NULL))
     );

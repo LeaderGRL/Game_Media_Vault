@@ -8,8 +8,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, AssetType,
-    ConnectorCapabilities, GameSelection, ImportedAsset, PlatformBoundGameSelector, SourceId,
-    SourceSelection,
+    ConnectorCapabilities, GameSelection, ImportedAsset, PlatformBoundGameSelector,
+    SourceDiscovery, SourceId, SourceSelection,
 };
 use support::*;
 
@@ -219,6 +219,11 @@ fn an_execution_a_spent_quota_stopped_resumes_with_the_next_batch() {
     // The batch discovered before the quota ran out is acquired, and the run waits.
     assert!(error.to_string().contains("quota"), "{error}");
     assert_eq!(vault.run(run_id).completed_work, 2);
+    // The run says how far the Source's discovery went: two of the five games.
+    assert_eq!(
+        vault.run(run_id).discoveries,
+        [SourceDiscovery::new("per-game", false, 2)]
+    );
     assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Running);
 
     *source.quota_spent_at.borrow_mut() = None;

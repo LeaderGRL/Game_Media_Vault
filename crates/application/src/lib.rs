@@ -47,8 +47,8 @@ pub use imports::{
     list_library, list_reference_review_items, sync_platform_catalog,
 };
 pub use library::{
-    DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,
-    search_library,
+    DEFAULT_LIBRARY_PAGE_SIZE, LatestMedium, LibraryPage, LibraryQuery, LibraryStatus,
+    MAX_LIBRARY_PAGE_SIZE, latest_media, search_library,
 };
 pub use packaging::{
     IncompletePackaging, PackagingModelFailure, PackagingModelPort, PackagingModelSummary,

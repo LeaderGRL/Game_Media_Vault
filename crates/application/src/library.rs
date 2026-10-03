@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
 use game_media_vault_domain::{
-    AssetTypeSelector, CoverageStatus, LibraryRelease, ReleaseAssertionField,
+    AssetTypeSelector, CoverageStatus, LibraryAsset, LibraryRelease, ReleaseAssertionField,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{ApplicationError, CatalogPort, ReviewRepositoryPort};
+use crate::{ApplicationError, CatalogPort, ReviewRepositoryPort, platforms::platform_key};
 
 /// Releases per page when a query asks for none.
 pub const DEFAULT_LIBRARY_PAGE_SIZE: usize = 50;
@@ -31,6 +31,7 @@ pub enum LibraryStatus {
 pub struct LibraryQuery {
     /// Text the game title or its canonical title contains, ignoring case.
     pub text: Option<String>,
+    /// Platforms, each matching its spellings regardless of case and punctuation.
     pub platforms: Vec<String>,
     pub regions: Vec<String>,
     /// Sources that provided an Asset or an assertion of the release.
@@ -57,11 +58,54 @@ pub struct LibraryPage {
     /// The newest Release Edition the search considered. Release Editions are never deleted
     /// and new ones get larger ids, so passing it back keeps later pages to the same editions.
     pub as_of: i64,
+    /// Every platform whose releases retain an Asset, whatever the query, in name order, for a
+    /// filter to offer: once, as its first spelling in that order, however it is spelled.
+    pub platforms_with_media: Vec<String>,
+}
+
+/// A retained Asset, with the release it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LatestMedium {
+    pub release_edition_id: i64,
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub asset: LibraryAsset,
+}
+
+/// The `limit` Assets the vault retained last, newest first: Assets get larger ids as they are
+/// retained. Only they are read, however large the library.
+pub fn latest_media(
+    catalog: &dyn CatalogPort,
+    limit: usize,
+) -> Result<Vec<LatestMedium>, ApplicationError> {
+    let mut media: Vec<LatestMedium> = catalog
+        .list_latest_assets(limit)?
+        .into_iter()
+        .flat_map(|entry| {
+            let (release_edition_id, game_title, platform, region) = (
+                entry.release_edition_id,
+                entry.game_title,
+                entry.platform,
+                entry.region,
+            );
+            entry.assets.into_iter().map(move |asset| LatestMedium {
+                release_edition_id,
+                game_title: game_title.clone(),
+                platform: platform.clone(),
+                region: region.clone(),
+                asset,
+            })
+        })
+        .collect();
+    media.sort_by_key(|medium| std::cmp::Reverse(medium.asset.asset_id));
+    media.truncate(limit);
+    Ok(media)
 }
 
 /// Searches the Library. Releases are ordered by title, platform, region and edition, then by
 /// Release Edition; a page resumes after its cursor's place in that order and, given the `as_of`
-// of the first page, searches the same Release Editions in the same order, so releases added
+/// of the first page, searches the same Release Editions in the same order, so releases added
 /// between two pages never repeat or shift later pages. Filters see the current state of each
 /// release, which can change between pages.
 pub fn search_library(
@@ -81,6 +125,16 @@ pub fn search_library(
             .max()
             .unwrap_or(0)
     });
+    // Every platform holding media now, even past the snapshot a later page keeps to.
+    let mut spelled = BTreeSet::new();
+    let platforms_with_media: Vec<String> = releases
+        .iter()
+        .filter(|release| !release.entry.assets.is_empty())
+        .map(|release| release.entry.platform.trim().to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|platform| spelled.insert(platform_key(platform)))
+        .collect();
     releases.retain(|release| release.entry.release_edition_id <= as_of);
     releases.sort_by_cached_key(sort_key);
     let start = match query.after {
@@ -128,6 +182,7 @@ pub fn search_library(
         total,
         next_after,
         as_of,
+        platforms_with_media,
     })
 }
 
@@ -167,10 +222,14 @@ fn matches(query: &LibraryQuery, release: &LibraryRelease, needing_review: &BTre
     });
     text_matches
         && any_or_all(&query.platforms, |platform| {
-            platform.trim().eq_ignore_ascii_case(entry.platform.trim())
+            platform_key(platform) == platform_key(&entry.platform)
         })
+        // A release of several regions, such as `USA, Europe`, is of each.
         && any_or_all(&query.regions, |region| {
-            region.trim().eq_ignore_ascii_case(entry.region.trim())
+            entry
+                .region
+                .split(',')
+                .any(|named| region.trim().eq_ignore_ascii_case(named.trim()))
         })
         && any_or_all(&query.sources, |source| {
             entry.assets.iter().any(|asset| {

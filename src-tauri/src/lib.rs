@@ -7,9 +7,9 @@ use std::{
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApiKey, ApplicationError, ConnectorPort,
     DerivationSummary, DescribedReferenceReviewItem, DownloadLimits, ErrorKind, ExportSummary,
-    ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, Machine, PackagingModelSummary,
-    PlatformCatalogSourcePort, PortError, ReferenceCatalogSourcePort, ReferenceImportSummary,
-    SourceDescription, SourceFailureSummary, VaultReport,
+    ImportReferenceCatalogRequest, LatestMedium, LibraryPage, LibraryQuery, Machine,
+    PackagingModelSummary, PlatformCatalogSourcePort, PortError, ReferenceCatalogSourcePort,
+    ReferenceImportSummary, SourceDescription, SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
@@ -19,6 +19,7 @@ use game_media_vault_application::{
     expand_every_game, export_library as export_library_use_case,
     import_reference_catalog as import_reference_catalog_use_case,
     keep_reference_review_item_apart as keep_reference_review_item_apart_use_case,
+    latest_media as latest_media_use_case,
     link_reference_review_item as link_reference_review_item_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
     list_reference_review_items as list_reference_review_items_use_case,
@@ -235,6 +236,17 @@ pub fn search_library_in_vault(
 ) -> Result<LibraryPage, CommandError> {
     let catalog = open_existing_catalog(vault_root)?;
     Ok(search_library_use_case(&catalog, &catalog, query)?)
+}
+
+/// The `limit` media the vault at `vault_root` retained last, newest first.
+pub fn latest_media_in_vault(
+    vault_root: &Path,
+    limit: usize,
+) -> Result<Vec<LatestMedium>, CommandError> {
+    Ok(latest_media_use_case(
+        &open_existing_catalog(vault_root)?,
+        limit,
+    )?)
 }
 
 /// The failures the vault's executions recorded, by Source, with the `latest` of each.
@@ -507,6 +519,14 @@ fn search_library(
     query: LibraryQuery,
 ) -> Result<LibraryPage, CommandError> {
     search_library_in_vault(&session.root()?, &query)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn latest_media(
+    session: State<'_, VaultSession>,
+    limit: usize,
+) -> Result<Vec<LatestMedium>, CommandError> {
+    latest_media_in_vault(&session.root()?, limit)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1162,6 +1182,7 @@ pub fn run() {
             list_library,
             export_library,
             search_library,
+            latest_media,
             derive_thumbnails,
             derive_packaging_models,
             verify_vault,

@@ -7,7 +7,7 @@ use std::{
 use game_media_vault_application::{PortError, RunRepositoryPort};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, SourceFailure, SourceFailureStage,
+    AcquisitionWorkItem, SourceDiscovery, SourceFailure, SourceFailureStage,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -50,6 +50,7 @@ impl RunRepositoryPort for SqliteCatalog {
             )
             .map_err(sql_error)?;
 
+        let planned_sources_of_new_run = planned_sources.clone();
         Ok(AcquisitionRun {
             id: connection.last_insert_rowid(),
             request,
@@ -61,6 +62,8 @@ impl RunRepositoryPort for SqliteCatalog {
             below_quality_work: 0,
             outranked_work: 0,
             unavailable_work: 0,
+            dismissed_work: 0,
+            discoveries: planned_sources_discoveries(&planned_sources_of_new_run),
         })
     }
 
@@ -356,7 +359,11 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        complete_queued_work(&self.connect()?, run_id, work_key, None)
+        complete_queued_work(&self.connect()?, run_id, work_key, None, false)
+    }
+
+    fn dismiss_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        complete_queued_work(&self.connect()?, run_id, work_key, None, true)
     }
 
     fn complete_unavailable_work(
@@ -365,7 +372,7 @@ impl RunRepositoryPort for SqliteCatalog {
         work_key: &str,
         reason: &str,
     ) -> Result<(), PortError> {
-        complete_queued_work(&self.connect()?, run_id, work_key, Some(reason))
+        complete_queued_work(&self.connect()?, run_id, work_key, Some(reason), false)
     }
 
     fn record_source_failure(
@@ -449,12 +456,14 @@ fn complete_queued_work(
     run_id: i64,
     work_key: &str,
     unavailable_reason: Option<&str>,
+    dismissed: bool,
 ) -> Result<(), PortError> {
     connection
         .execute(
-            "UPDATE acquisition_run_work SET state = 'done', unavailable_reason = ?3
+            "UPDATE acquisition_run_work
+                 SET state = 'done', unavailable_reason = ?3, dismissed = ?4
                  WHERE run_id = ?1 AND work_key = ?2 AND state = 'queued'",
-            params![run_id, work_key, unavailable_reason],
+            params![run_id, work_key, unavailable_reason, dismissed],
         )
         .map_err(sql_error)?;
     let exists: bool = connection
@@ -484,15 +493,16 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                     COUNT(work.id) FILTER (WHERE work.state = 'done'),
                     COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL),
                     COUNT(work.id) FILTER (WHERE work.outranked_json IS NOT NULL),
-                    COUNT(work.id) FILTER (WHERE work.unavailable_reason IS NOT NULL)
+                    COUNT(work.id) FILTER (WHERE work.unavailable_reason IS NOT NULL),
+                    COUNT(work.id) FILTER (WHERE work.dismissed = 1)
              FROM acquisition_runs AS run
              LEFT JOIN acquisition_run_work AS work ON work.run_id = run.id
              WHERE run.id = ?1
              GROUP BY run.id",
             params![run_id],
             |row| {
-                // Queued, parked, done, below-quality and outranked work.
-                let mut counts = [0_i64; 6];
+                // Queued, parked, done, below-quality, outranked, unavailable and dismissed work.
+                let mut counts = [0_i64; 7];
                 for (index, count) in counts.iter_mut().enumerate() {
                     *count = row.get(4 + index)?;
                 }
@@ -512,7 +522,15 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         request_schema_version,
         status,
         planned_sources_json,
-        [queued, parked, done, below_quality, outranked, unavailable],
+        [
+            queued,
+            parked,
+            done,
+            below_quality,
+            outranked,
+            unavailable,
+            dismissed,
+        ],
     )) = row
     else {
         return Ok(None);
@@ -528,8 +546,9 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
     let request = AcquisitionRequest::try_from_draft(draft).map_err(|error| {
         PortError::new(format!("invalid persisted acquisition request: {error}"))
     })?;
-    let planned_sources = serde_json::from_str(&planned_sources_json)
+    let planned_sources: Vec<String> = serde_json::from_str(&planned_sources_json)
         .map_err(|error| PortError::new(format!("invalid persisted planned sources: {error}")))?;
+    let discoveries = discoveries_of(connection, run_id, &planned_sources)?;
     Ok(Some(AcquisitionRun {
         id: run_id,
         request,
@@ -541,7 +560,54 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         below_quality_work: count(below_quality),
         outranked_work: count(outranked),
         unavailable_work: count(unavailable),
+        dismissed_work: count(dismissed),
+        discoveries,
     }))
+}
+
+/// The discoveries of a run that has discovered nothing yet.
+fn planned_sources_discoveries(planned_sources: &[String]) -> Vec<SourceDiscovery> {
+    planned_sources
+        .iter()
+        .map(|source_id| SourceDiscovery::new(source_id.clone(), false, 0))
+        .collect()
+}
+
+/// How far the discovery of each of `planned_sources` went in run `run_id`.
+fn discoveries_of(
+    connection: &Connection,
+    run_id: i64,
+    planned_sources: &[String],
+) -> Result<Vec<SourceDiscovery>, PortError> {
+    let complete: Vec<String> = connection
+        .prepare("SELECT source_id FROM acquisition_run_discoveries WHERE run_id = ?1")
+        .map_err(sql_error)?
+        .query_map(params![run_id], |row| row.get(0))
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_error)?;
+    let batches: Vec<(String, i64)> = connection
+        .prepare("SELECT source_id, games FROM acquisition_run_discovery_batches WHERE run_id = ?1")
+        .map_err(sql_error)?
+        .query_map(params![run_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_error)?;
+    Ok(planned_sources
+        .iter()
+        .map(|source_id| {
+            let complete = complete.contains(source_id);
+            let games = if complete {
+                0
+            } else {
+                batches
+                    .iter()
+                    .find(|(batched, _)| batched == source_id)
+                    .map_or(0, |(_, games)| count(*games))
+            };
+            SourceDiscovery::new(source_id.clone(), complete, games)
+        })
+        .collect())
 }
 
 pub(super) fn parse_run_status(value: &str) -> Result<AcquisitionRunStatus, PortError> {

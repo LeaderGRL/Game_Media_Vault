@@ -17,8 +17,8 @@ use game_media_vault_domain::{
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryAsset, LibraryEntry,
     MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PersistAsset, QualityShortfall,
-    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage,
-    SourceId, SourceSelection, StoredObject, outranked_by,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceDiscovery, SourceFailure,
+    SourceFailureStage, SourceId, SourceSelection, StoredObject, outranked_by,
 };
 
 pub const SOURCE_ID: &str = "libretro-thumbnails";
@@ -139,6 +139,8 @@ pub struct FakeWork {
     pub shortfalls: Vec<QualityShortfall>,
     pub outranked: Option<Outranked>,
     pub unavailable: Option<String>,
+    /// Whether the work settled without keeping its candidate.
+    pub dismissed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -312,10 +314,18 @@ impl FakeVault {
                 item.decision = None;
             }
         }
-        self.move_parked_work(review_item_id, WorkState::Done, true);
+        // A superseded candidate is dismissed; an automatically resolved one was kept.
+        let dismissed = status == ReviewStatus::Superseded;
+        self.move_parked_work(review_item_id, WorkState::Done, true, dismissed);
     }
 
-    fn move_parked_work(&self, review_item_id: i64, target: WorkState, include_cancelled: bool) {
+    fn move_parked_work(
+        &self,
+        review_item_id: i64,
+        target: WorkState,
+        include_cancelled: bool,
+        dismissed: bool,
+    ) {
         for run in self.runs.borrow_mut().values_mut() {
             if run.status == AcquisitionRunStatus::Cancelled && !include_cancelled {
                 continue;
@@ -324,6 +334,7 @@ impl FakeVault {
             for work in &mut run.work {
                 if work.state == WorkState::Parked(review_item_id) {
                     work.state = target;
+                    work.dismissed = dismissed;
                     moved = true;
                 }
             }
@@ -389,6 +400,20 @@ impl RunRepositoryPort for FakeVault {
                     .iter()
                     .filter(|work| work.unavailable.is_some())
                     .count() as u64,
+                dismissed_work: run.work.iter().filter(|work| work.dismissed).count() as u64,
+                discoveries: run
+                    .planned_sources
+                    .iter()
+                    .map(|source_id| {
+                        let complete = run.discovered.contains(source_id);
+                        let games = if complete {
+                            0
+                        } else {
+                            run.discovered_games.get(source_id).copied().unwrap_or(0) as u64
+                        };
+                        SourceDiscovery::new(source_id.clone(), complete, games)
+                    })
+                    .collect(),
             }
         });
         if let Some(decision) = self.decision_after_next_run_read.borrow_mut().take() {
@@ -504,6 +529,7 @@ impl RunRepositoryPort for FakeVault {
                     shortfalls: Vec::new(),
                     outranked: None,
                     unavailable: None,
+                    dismissed: false,
                 });
             }
         }
@@ -542,6 +568,7 @@ impl RunRepositoryPort for FakeVault {
                     shortfalls: Vec::new(),
                     outranked: None,
                     unavailable: None,
+                    dismissed: false,
                 });
             }
         }
@@ -639,6 +666,16 @@ impl RunRepositoryPort for FakeVault {
         work.state = WorkState::Done;
         if let Some(status) = self.status_after_next_completion.borrow_mut().take() {
             run.status = status;
+        }
+        Ok(())
+    }
+
+    fn dismiss_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        self.complete_work(run_id, work_key)?;
+        let mut runs = self.runs.borrow_mut();
+        let run = runs.get_mut(&run_id).unwrap();
+        if let Some(work) = run.work.iter_mut().find(|work| work.item.key == work_key) {
+            work.dismissed = true;
         }
         Ok(())
     }
@@ -820,7 +857,7 @@ impl ReviewRepositoryPort for FakeVault {
             }
         }
         self.candidate_links.borrow_mut().remove(candidate_identity);
-        self.complete_work(run_id, candidate_identity)?;
+        self.dismiss_work(run_id, candidate_identity)?;
         Ok(true)
     }
 
@@ -863,12 +900,12 @@ impl ReviewRepositoryPort for FakeVault {
                     links.remove(&decided.candidate_identity);
                 }
                 drop(links);
-                self.move_parked_work(review_item_id, WorkState::Queued, false)
+                self.move_parked_work(review_item_id, WorkState::Queued, false, false)
             }
             ReviewDecision::Reject => {
                 links.remove(&decided.candidate_identity);
                 drop(links);
-                self.move_parked_work(review_item_id, WorkState::Done, true)
+                self.move_parked_work(review_item_id, WorkState::Done, true, true)
             }
             ReviewDecision::Defer => {}
         }
@@ -986,7 +1023,7 @@ impl FakeVault {
                         item.status = ReviewStatus::AutoResolved;
                         item.decision = None;
                     }
-                    self.move_parked_work(existing.id, WorkState::Queued, false);
+                    self.move_parked_work(existing.id, WorkState::Queued, false, false);
                 }
                 _ => {}
             }

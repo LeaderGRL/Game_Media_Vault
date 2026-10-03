@@ -86,7 +86,13 @@ pub fn expand_every_game(
     if !matches!(input.games, GameSelection::All) || input.platforms.is_empty() {
         return Ok(input);
     }
-    ensure_request_supported(&build_acquisition_request(input.clone())?)?;
+    // The games kept are the expansion's to apply, since planning applies no game limit; a
+    // request left unexpanded keeps its limit, which planning then refuses.
+    build_acquisition_request(input.clone())?;
+    let mut unlimited = input.clone();
+    unlimited.limits.max_games = None;
+    unlimited.limits.games_percent = None;
+    ensure_request_supported(&build_acquisition_request(unlimited)?)?;
     let mut releases = catalog.list_library()?;
     let mut synced = false;
     for platform in &input.platforms {
@@ -106,6 +112,8 @@ pub fn expand_every_game(
     }
     let mut platforms: Vec<String> = Vec::new();
     let mut games: Vec<PlatformBoundGameSelector> = Vec::new();
+    // A game is named once regardless of case, as a run requests it, so limits count it once.
+    let mut named = HashSet::new();
     let mut listed = false;
     for requested in &input.platforms {
         for release in releases
@@ -123,7 +131,10 @@ pub fn expand_every_game(
                 game: release_name(release),
                 platform: release.platform.clone(),
             };
-            if !games.contains(&game) {
+            if named.insert((
+                game.game.trim().to_lowercase(),
+                platform_key(&game.platform),
+            )) {
                 games.push(game);
             }
         }
@@ -138,8 +149,12 @@ pub fn expand_every_game(
         // No release of these platforms to name: Sources reading whole platforms still serve it.
         return Ok(input);
     }
+    let (max_games, games_percent) = (
+        input.limits.max_games.take(),
+        input.limits.games_percent.take(),
+    );
     input.platforms = platforms;
-    input.games = GameSelection::PlatformBound(games);
+    input.games = GameSelection::PlatformBound(kept_games(games, max_games, games_percent));
     input.languages.clear();
     // Worldwide media serve the worldwide releases the regions keep.
     if !input.regions.is_empty()
@@ -165,6 +180,43 @@ pub fn plan_acquisition_request(
 ) -> Result<AcquisitionPlan, ApplicationError> {
     let input = expand_every_game(catalog, references, platform_catalogs, input)?;
     plan_acquisition(&build_acquisition_request(input)?, connectors)
+}
+
+/// `games`, kept to the first `max_games`, or `games_percent` percent rounded up, of each
+/// platform by name, in the order the platforms came; a platform counts its games under each of
+/// its spellings, as the expansion finds them.
+fn kept_games(
+    games: Vec<PlatformBoundGameSelector>,
+    max_games: Option<u32>,
+    games_percent: Option<u8>,
+) -> Vec<PlatformBoundGameSelector> {
+    if max_games.is_none() && games_percent.is_none() {
+        return games;
+    }
+    let mut platforms: Vec<String> = Vec::new();
+    for game in &games {
+        let key = platform_key(&game.platform);
+        if !platforms.contains(&key) {
+            platforms.push(key);
+        }
+    }
+    let mut kept = Vec::new();
+    for platform in platforms {
+        let mut of_platform: Vec<PlatformBoundGameSelector> = games
+            .iter()
+            .filter(|game| platform_key(&game.platform) == platform)
+            .cloned()
+            .collect();
+        of_platform.sort_by_key(|game| game.game.to_lowercase());
+        let count = of_platform.len();
+        let by_share = games_percent.map_or(count, |percent| {
+            (count * usize::from(percent)).div_ceil(100)
+        });
+        let by_number = max_games.map_or(count, |max| max as usize);
+        of_platform.truncate(by_share.min(by_number));
+        kept.extend(of_platform);
+    }
+    kept
 }
 
 /// Whether `release` is of one of `regions`, any when none is named: a release of several
@@ -265,14 +317,16 @@ fn name_key_of(name: &str) -> String {
 /// Whether two spellings name one platform regardless of case, punctuation and spacing, as
 /// game lists are found: `NEC - PC Engine - TurboGrafx-16` is `NEC - PC Engine - TurboGrafx 16`.
 fn same_platform(listed: &str, requested: &str) -> bool {
-    let key = |platform: &str| -> String {
-        platform
-            .chars()
-            .filter(|character| character.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
-    key(listed) == key(requested)
+    platform_key(listed) == platform_key(requested)
+}
+
+/// What names a platform regardless of case and punctuation.
+pub(crate) fn platform_key(platform: &str) -> String {
+    platform
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// The name Sources know a release by: the name of its datafile entry, which carries its region

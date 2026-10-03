@@ -7,8 +7,8 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
-    AssetTypeSelector, GameSelection, QualityShortfall, RetentionPolicy, SourceFailureStage,
-    SourceId, SourceSelection,
+    AssetTypeSelector, GameSelection, QualityShortfall, RetentionPolicy, SourceDiscovery,
+    SourceFailureStage, SourceId, SourceSelection,
 };
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
 use rusqlite::Connection;
@@ -811,4 +811,75 @@ fn terminal_runs_reject_discovery_batches() {
         load_acquisition_run(&catalog, run.id).unwrap().queued_work,
         0
     );
+}
+
+#[test]
+fn a_run_says_how_far_the_discovery_of_each_planned_source_went() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let request = game_media_vault_application::build_acquisition_request(request()).unwrap();
+    let run = catalog
+        .create_run(
+            request,
+            vec![
+                "batched".to_owned(),
+                "whole".to_owned(),
+                "untouched".to_owned(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        run.discoveries,
+        [
+            SourceDiscovery::new("batched", false, 0),
+            SourceDiscovery::new("whole", false, 0),
+            SourceDiscovery::new("untouched", false, 0),
+        ]
+    );
+
+    catalog
+        .record_discovery_batch(run.id, "batched", 0, 25, &[work("first")])
+        .unwrap();
+    catalog
+        .record_discovery(run.id, "whole", &[work("second")])
+        .unwrap();
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    assert_eq!(
+        load_acquisition_run(&reopened, run.id).unwrap().discoveries,
+        [
+            SourceDiscovery::new("batched", false, 25),
+            SourceDiscovery::new("whole", true, 0),
+            SourceDiscovery::new("untouched", false, 0),
+        ]
+    );
+}
+
+#[test]
+fn a_run_counts_the_work_it_settled_without_keeping_its_candidate() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(
+            run.id,
+            SOURCE_ID,
+            &[work("rejected"), work("unmatched"), work("settled")],
+        )
+        .unwrap();
+
+    // A human rejected one candidate and matching dismissed another; the third settled as usual.
+    catalog.dismiss_work(run.id, "rejected").unwrap();
+    assert!(
+        catalog
+            .supersede_candidate_review(run.id, "unmatched")
+            .unwrap()
+    );
+    catalog.complete_work(run.id, "settled").unwrap();
+
+    let loaded = load_acquisition_run(&catalog, run.id).unwrap();
+    assert_eq!(loaded.completed_work, 3);
+    assert_eq!(loaded.dismissed_work, 2);
 }

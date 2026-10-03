@@ -1,6 +1,6 @@
 mod support;
 
-use game_media_vault_application::{LibraryQuery, LibraryStatus, search_library};
+use game_media_vault_application::{LibraryQuery, LibraryStatus, latest_media, search_library};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, AssetTypeSelector, LibraryAsset, LibraryEntry, MediaInfo,
     ReviewItem, ReviewStatus, SourceId,
@@ -274,5 +274,143 @@ fn stored_platforms_and_regions_match_without_surrounding_spaces() {
             }
         ),
         vec![7]
+    );
+}
+
+#[test]
+fn a_page_names_every_platform_whose_releases_hold_media() {
+    let vault = FakeVault::with_library(library());
+
+    // Whatever the query, so a filter can offer them all.
+    let page = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            text: Some("mario".to_owned()),
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(page.platforms_with_media, [DS_DIGITAL, SNES]);
+}
+
+#[test]
+fn a_later_page_names_the_platforms_that_gained_media_since_the_first() {
+    let vault = FakeVault::with_library(library());
+    let first = search_library(&vault, &vault, &LibraryQuery::default()).unwrap();
+    // Media of a new platform arrive between two pages.
+    vault.library.borrow_mut().push(with_asset(
+        release(9, "Wipeout", "Sony - PlayStation", "Europe"),
+        AssetType::BoxFront,
+        "libretro-thumbnails",
+    ));
+
+    let next = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            after: first
+                .releases
+                .first()
+                .map(|release| release.entry.release_edition_id),
+            as_of: Some(first.as_of),
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        next.platforms_with_media,
+        [DS_DIGITAL, SNES, "Sony - PlayStation"]
+    );
+}
+
+#[test]
+fn the_latest_media_come_newest_first() {
+    let vault = FakeVault::with_library(vec![
+        with_asset(
+            with_asset(
+                release(1, "Super Mario World", SNES, "USA"),
+                AssetType::BoxFront,
+                "libretro-thumbnails",
+            ),
+            AssetType::Screenshot,
+            "libretro-thumbnails",
+        ),
+        with_asset(
+            release(3, "Flipnote Studio", DS_DIGITAL, "USA"),
+            AssetType::BoxFront,
+            "local_import",
+        ),
+    ]);
+
+    let latest = latest_media(&vault, 2).unwrap();
+
+    assert_eq!(
+        latest
+            .iter()
+            .map(|medium| (medium.game_title.as_str(), medium.asset.asset_id))
+            .collect::<Vec<_>>(),
+        [("Flipnote Studio", 30), ("Super Mario World", 11)]
+    );
+    assert_eq!(latest[0].platform, DS_DIGITAL);
+}
+
+#[test]
+fn a_platform_spelled_two_ways_is_one_choice_that_finds_both() {
+    let vault = FakeVault::with_library(vec![
+        with_asset(
+            release(
+                1,
+                "Bonk's Adventure",
+                "NEC - PC Engine - TurboGrafx-16",
+                "USA",
+            ),
+            AssetType::BoxFront,
+            "libretro-thumbnails",
+        ),
+        with_asset(
+            release(2, "R-Type", "NEC - PC Engine - TurboGrafx 16", "Japan"),
+            AssetType::BoxFront,
+            "libretro-thumbnails",
+        ),
+    ]);
+
+    let page = search_library(&vault, &vault, &LibraryQuery::default()).unwrap();
+
+    // One choice, spelled as the first spelling in name order, finds the releases of both.
+    assert_eq!(
+        page.platforms_with_media,
+        ["NEC - PC Engine - TurboGrafx 16"]
+    );
+    assert_eq!(
+        ids(
+            &vault,
+            LibraryQuery {
+                platforms: page.platforms_with_media.clone(),
+                ..LibraryQuery::default()
+            }
+        ),
+        vec![1, 2]
+    );
+}
+
+#[test]
+fn a_region_finds_the_releases_of_several_regions_naming_it() {
+    let vault = FakeVault::with_library(vec![
+        release(1, "Tetris", "Nintendo - Game Boy", "USA, Europe"),
+        release(2, "Mario", "Nintendo - Game Boy", "Japan"),
+    ]);
+
+    assert_eq!(
+        ids(
+            &vault,
+            LibraryQuery {
+                regions: vec!["europe".to_owned()],
+                ..LibraryQuery::default()
+            }
+        ),
+        vec![1]
     );
 }
