@@ -37,9 +37,9 @@ pub struct SiteManners {
 }
 
 struct Site {
-    /// What the site asks, read from its robots.txt by the first request to it, which the
-    /// other requests to it wait for, and only they.
-    asked: OnceLock<Asked>,
+    /// What the site asks, once its robots.txt gave a definite answer. A request finding none
+    /// reads it, which the other requests to the site wait for, and only they.
+    asked: Mutex<Option<Arc<Asked>>>,
     /// When the next request to the site may leave.
     next: Mutex<Instant>,
 }
@@ -74,18 +74,26 @@ impl SiteManners {
             let mut sites = self.sites.lock().unwrap_or_else(PoisonError::into_inner);
             Arc::clone(sites.entry(origin.clone()).or_insert_with(|| {
                 Arc::new(Site {
-                    asked: OnceLock::new(),
+                    asked: Mutex::new(None),
                     next: Mutex::new(Instant::now()),
                 })
             }))
         };
-        let asked = site.asked.get_or_init(|| {
-            let asked = self.visit(&origin, transport);
-            // Reading robots.txt was a request too.
-            *site.next.lock().unwrap_or_else(PoisonError::into_inner) =
-                Instant::now() + asked.delay;
-            asked
-        });
+        let asked = {
+            let mut asked = site.asked.lock().unwrap_or_else(PoisonError::into_inner);
+            match &*asked {
+                Some(known) => Arc::clone(known),
+                None => {
+                    // A failure to read it is kept for no one: the next request reads it again.
+                    let read = Arc::new(self.visit(&origin, transport)?);
+                    // Reading robots.txt was a request too.
+                    *site.next.lock().unwrap_or_else(PoisonError::into_inner) =
+                        Instant::now() + read.delay;
+                    *asked = Some(Arc::clone(&read));
+                    read
+                }
+            }
+        };
         match &asked.rules {
             Err(reason) => {
                 return Err(PortError::new(format!("{origin} is left alone: {reason}")));
@@ -110,9 +118,10 @@ impl SiteManners {
     }
 
     /// What `origin` asks of this application: its rules and the pause between requests, which is
-    /// the longer of these manners' and its `Crawl-delay`.
-    fn visit(&self, origin: &str, transport: &dyn HttpTransport) -> Asked {
-        let mut rules = read_rules(origin, transport);
+    /// the longer of these manners' and its `Crawl-delay`; an error when its robots.txt could not
+    /// be read this time.
+    fn visit(&self, origin: &str, transport: &dyn HttpTransport) -> Result<Asked, PortError> {
+        let mut rules = read_rules(origin, transport)?;
         let mut delay = self.delay;
         let asked = rules
             .as_ref()
@@ -132,36 +141,44 @@ impl SiteManners {
             }
             _ => {}
         }
-        Asked { rules, delay }
+        Ok(Asked { rules, delay })
     }
 }
 
-/// The robots.txt rules of `origin` for this application, from its first half mebibyte.
-fn read_rules(origin: &str, transport: &dyn HttpTransport) -> Result<Option<Robot>, String> {
+/// The robots.txt rules of `origin` for this application, from its first half mebibyte: none
+/// when it has no robots.txt, or why it is left alone when its robots.txt makes no sense. An
+/// error when it could not be read this time, which a later request may.
+fn read_rules(
+    origin: &str,
+    transport: &dyn HttpTransport,
+) -> Result<Result<Option<Robot>, String>, PortError> {
+    let not_read = |reason: String| {
+        PortError::new(format!(
+            "the robots.txt of {origin} could not be read: {reason}"
+        ))
+    };
     match transport.get_stream(&format!("{origin}/robots.txt")) {
         Ok(stream) => {
             let mut body = Vec::new();
             stream
                 .take(MAX_ROBOTS_BYTES)
                 .read_to_end(&mut body)
-                .map_err(|error| format!("its robots.txt could not be read: {error}"))?;
-            Robot::new(ROBOTS_USER_AGENT, &body)
+                .map_err(|error| not_read(error.to_string()))?;
+            Ok(Robot::new(ROBOTS_USER_AGENT, &body)
                 .map(Some)
-                .map_err(|error| format!("its robots.txt could not be read: {error}"))
+                .map_err(|error| format!("its robots.txt makes no sense: {error}")))
         }
         // No robots.txt: the site sets no rule.
-        Err(error) if error.is_unavailable() => Ok(None),
-        Err(error) => Err(format!(
-            "its robots.txt could not be read: {}",
-            error.message()
-        )),
+        Err(error) if error.is_unavailable() => Ok(Ok(None)),
+        Err(error) => Err(not_read(error.message().to_owned())),
     }
 }
 
 /// Requests a site's pages and media only as its robots.txt allows `game-media-vault`, read once
 /// per site, and leaves at least the delay, or the site's longer `Crawl-delay`, between two
-/// requests to it. A site without robots.txt allows everything; one whose robots.txt cannot be
-/// read is left alone. Each call is admitted once, so the wrapped transport should send one
+/// requests to it. A site without robots.txt allows everything; while its robots.txt cannot be
+/// read, the site is asked nothing, and the next request reads it again. Each call is admitted
+/// once, so the wrapped transport should send one
 /// request per call, as `ReqwestHttpTransport::for_public_sites` does.
 pub struct PoliteTransport<T> {
     inner: T,

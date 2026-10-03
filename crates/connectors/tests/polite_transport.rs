@@ -139,7 +139,7 @@ fn a_site_without_robots_txt_allows_everything() {
 }
 
 #[test]
-fn a_site_whose_robots_txt_cannot_be_read_is_left_alone() {
+fn a_site_whose_robots_txt_cannot_be_read_is_asked_nothing() {
     let site = Website::with(&[("https://example.org/games/a.html", "game a")], &[ROBOTS]);
     let polite = PoliteTransport::with_delay(&site, Duration::ZERO);
 
@@ -296,4 +296,48 @@ fn a_site_slow_to_answer_its_robots_txt_never_holds_back_another_site() {
         started.elapsed()
     );
     slow.join().unwrap();
+}
+
+/// Fails the first read of robots.txt, as a site briefly unreachable does, then answers it.
+struct FlakyRobots {
+    robots_reads: std::sync::atomic::AtomicUsize,
+}
+
+impl HttpTransport for FlakyRobots {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        if url.ends_with("/robots.txt") {
+            let reads = self
+                .robots_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if reads == 0 {
+                return Err(PortError::new(format!(
+                    "download returned HTTP 503 Service Unavailable for {url}"
+                )));
+            }
+            return Ok(Box::new(Cursor::new(b"User-agent: *\nAllow: /\n".to_vec())));
+        }
+        Ok(Box::new(Cursor::new(b"page".to_vec())))
+    }
+}
+
+#[test]
+fn a_robots_txt_that_failed_to_load_is_read_again_by_the_next_request() {
+    let polite = PoliteTransport::with_delay(
+        FlakyRobots {
+            robots_reads: std::sync::atomic::AtomicUsize::new(0),
+        },
+        Duration::ZERO,
+    );
+
+    let first = read(&polite, "https://example.org/games/a.html").unwrap_err();
+
+    assert!(
+        first.message().contains("robots.txt"),
+        "{}",
+        first.message()
+    );
+    assert_eq!(
+        read(&polite, "https://example.org/games/a.html").unwrap(),
+        "page"
+    );
 }
