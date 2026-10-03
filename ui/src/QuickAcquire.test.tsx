@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ASSET_TYPE_FAMILIES } from "./acquisition";
+import { ANY_ASSET_TYPE, assetTypeLabel } from "./acquisition";
 import { QuickAcquire } from "./QuickAcquire";
 
 describe("QuickAcquire", () => {
@@ -20,7 +20,8 @@ describe("QuickAcquire", () => {
       games: { mode: "all" },
       regions: [],
       languages: [],
-      asset_types: ASSET_TYPE_FAMILIES.map((family) => family.value),
+      // Every type the planned Sources acquire: a Source left out narrows the request.
+      asset_types: [ANY_ASSET_TYPE],
       quality: null,
       retention: "keep_everything",
       limits: {},
@@ -52,5 +53,11 @@ describe("QuickAcquire", () => {
     render(<QuickAcquire starting onDownload={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "Starting…" })).toBeDisabled();
+  });
+});
+
+describe("assetTypeLabel", () => {
+  it("names the request for every type", () => {
+    expect(assetTypeLabel(ANY_ASSET_TYPE)).toBe("Every type");
   });
 });

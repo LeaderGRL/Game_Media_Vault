@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 
 import {
-  ASSET_TYPE_FAMILIES,
+  ANY_ASSET_TYPE,
   AcquisitionRequestDraft,
   buildAcquisitionRequest,
   emptyAcquisitionForm,
@@ -104,7 +104,7 @@ export function QuickAcquire({ starting, onDownload }: QuickAcquireProps) {
         ...emptyAcquisitionForm(),
         autoSources: true,
         platforms: platform,
-        assetTypes: ASSET_TYPE_FAMILIES.map((family) => family.value),
+        assetTypes: [ANY_ASSET_TYPE],
       }),
     );
   }
