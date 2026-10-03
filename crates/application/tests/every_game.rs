@@ -419,9 +419,10 @@ fn every_region_no_intro_names_implies_its_language() {
         listed(2, "Lego", "Denmark", "Lego (Denmark)"),
         listed(3, "Hra", "Czech", "Hra (Czech)"),
         listed(4, "Peli", "Finland", "Peli (Finland)"),
+        listed(5, "Elite", "United Kingdom", "Elite (United Kingdom)"),
     ]);
     let mut nordic_and_slavic = every_game_of(&[NES]);
-    nordic_and_slavic.languages = ["Pl", "Da", "Cs", "Fi"].map(str::to_owned).to_vec();
+    nordic_and_slavic.languages = ["Pl", "Da", "Cs", "Fi", "En"].map(str::to_owned).to_vec();
 
     let expanded =
         expand_every_game(&releases, &releases, &game_lists(), nordic_and_slavic).unwrap();
@@ -432,7 +433,8 @@ fn every_region_no_intro_names_implies_its_language() {
             "Wiedzmin (Poland)",
             "Lego (Denmark)",
             "Hra (Czech)",
-            "Peli (Finland)"
+            "Peli (Finland)",
+            "Elite (United Kingdom)"
         ])
     );
 }

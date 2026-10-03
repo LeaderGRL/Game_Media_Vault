@@ -19,7 +19,7 @@ const DATAFILE_SOURCES: [&str; 2] = ["no-intro", "redump"];
 
 /// The language No-Intro and Redump leave implied by a release's region when its name gives
 /// none, by region.
-const REGION_LANGUAGES: [(&str, &str); 42] = [
+const REGION_LANGUAGES: [(&str, &str); 43] = [
     ("Argentina", "Es"),
     ("Asia", "En"),
     ("Australia", "En"),
@@ -61,6 +61,7 @@ const REGION_LANGUAGES: [(&str, &str); 42] = [
     ("Turkey", "Tr"),
     ("UK", "En"),
     ("USA", "En"),
+    ("United Kingdom", "En"),
     ("World", "En"),
 ];
 
