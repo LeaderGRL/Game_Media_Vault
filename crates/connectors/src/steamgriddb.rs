@@ -234,7 +234,9 @@ fn candidate(
         None => collection.to_owned(),
     };
     Some(AssetCandidate {
-        provider_candidate_id: Some(format!("{collection}/{id}")),
+        // One image applies to every requested platform, each its own candidate: its id names the
+        // platform, which candidate identity otherwise lacks.
+        provider_candidate_id: Some(format!("{platform}/{collection}/{id}")),
         game_title: title.to_owned(),
         platform: platform.to_owned(),
         region: "Unknown".to_owned(),
