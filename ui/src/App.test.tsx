@@ -3,13 +3,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReferenceReviewItem, ReviewItem } from "./types";
 
-const { invokeMock, openVaultMock, referenceReviewMock, latestMediaMock, libraryQueries, pickFolder } =
+const {
+  invokeMock,
+  openVaultMock,
+  referenceReviewMock,
+  latestMediaMock,
+  libraryQueries,
+  reviewPageQueries,
+  pickFolder,
+} =
   vi.hoisted(() => ({
     invokeMock: vi.fn(),
     openVaultMock: vi.fn(),
     referenceReviewMock: vi.fn(),
     latestMediaMock: vi.fn(),
     libraryQueries: [] as Record<string, unknown>[],
+    reviewPageQueries: [] as Record<string, unknown>[],
     pickFolder: vi.fn(),
   }));
 
@@ -40,6 +49,20 @@ function searchLibrary(query: Record<string, unknown>) {
   );
 }
 
+/**
+ * Tests script the Review Items as `list_review_items` arrays; the App reads pages of them, so
+ * a page read answers with the scripted listing as a single page. A scripted value that is
+ * already a page is returned as is.
+ */
+function reviewPage(args: Record<string, unknown> | undefined) {
+  reviewPageQueries.push(args ?? {});
+  return Promise.resolve(invokeMock("list_review_items")).then((listing: unknown) =>
+    Array.isArray(listing)
+      ? { items: listing, undecided: listing.length, offset: args?.offset ?? 0 }
+      : (listing ?? { items: [], undecided: 0, offset: 0 }),
+  );
+}
+
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them. Like the backend, it answers with the vault's identity,
 // which tests take to be the path as typed unless they script another one.
@@ -53,6 +76,8 @@ vi.mock("@tauri-apps/api/core", () => ({
       ? openVaultMock(args)
       : command === "search_library"
         ? searchLibrary(args?.query as Record<string, unknown>)
+        : command === "review_page"
+          ? reviewPage(args)
         : command.includes("reference_review")
           ? referenceReviewMock(command, args)
           : command === "latest_media"
@@ -1816,6 +1841,56 @@ describe("App", () => {
 
     await vaultSettled();
     expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
+  });
+
+  it("decides every pending review at once and shows what is left", async () => {
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        decided = true;
+        return Promise.resolve({ decided: 1, left: 0 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept all suggestions" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Accept all suggestions" })).getByRole(
+        "button",
+        { name: "Accept 1" },
+      ),
+    );
+
+    expect(await screen.findByText("Decided 1.")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("decide_pending_reviews", {
+      decision: "accept_best_matches",
+      matching_policy: { high_confidence_threshold: 80, medium_confidence_threshold: 50 },
+    });
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("reads the page of reviews asked for", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_review_items"
+          ? { items: [reviewItem], undecided: 60, offset: 0 }
+          : [],
+      ),
+    );
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (60)" }));
+    reviewPageQueries.length = 0;
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+
+    await waitFor(() => expect(reviewPageQueries.at(-1)).toEqual({ offset: 25, limit: 25 }));
   });
 });
 

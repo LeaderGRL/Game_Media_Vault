@@ -1833,3 +1833,49 @@ video.asset-original {
   border-style: dashed;
   color: var(--text-2);
 }
+
+/* Review: bulk decisions and pages */
+
+.review-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  background: var(--surface);
+}
+
+.review-count {
+  margin: 0;
+  font-weight: 600;
+}
+
+.review-toolbar .tool-status {
+  margin: 0;
+}
+
+.review-bulk {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.review-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 12px 0;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}

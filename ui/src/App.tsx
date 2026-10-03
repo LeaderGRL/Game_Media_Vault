@@ -33,8 +33,11 @@ import type {
   ReferenceImportInput,
   ReferenceImportSummary,
   ReferenceReviewItem,
+  PendingReviewDecision,
+  PendingReviewSummary,
   ReviewDecision,
   ReviewItem,
+  ReviewPage,
 } from "./types";
 
 type RunAction = "pause" | "resume" | "cancel";
@@ -63,6 +66,9 @@ const SOURCE_FAILURES_SHOWN = 3;
 
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
+
+/** Review Items shown on a page of the Review view. */
+const REVIEW_PAGE_SIZE = 25;
 
 /** The media the Activity view shows as just arrived. */
 const LATEST_MEDIA_SHOWN = 12;
@@ -176,7 +182,11 @@ export function App() {
   const [waitingRunIds, setWaitingRunIds] = useState<Set<number>>(() => new Set());
   // Whether a poll is reading the latest media; a slow read is never doubled by the next poll.
   const followingMedia = useRef(false);
-  const reviewCount = reviewItems.length + referenceReviewItems.length;
+  // How many Review Items await a decision in all, and how many come before the page shown.
+  const [reviewUndecided, setReviewUndecided] = useState(0);
+  const reviewOffset = useRef(0);
+  const [shownReviewOffset, setShownReviewOffset] = useState(0);
+  const reviewCount = reviewUndecided + referenceReviewItems.length;
 
   /**
    * Searches a page of the Library with `filters`: the first one, or the one after `after`
@@ -356,6 +366,9 @@ export function App() {
     sourceFailuresRequest.current += 1;
     setSourceFailures(null);
     setReviewItems([]);
+    setReviewUndecided(0);
+    reviewOffset.current = 0;
+    setShownReviewOffset(0);
     referenceReviewGeneration.current += 1;
     setReferenceReviewItems([]);
     setDecidingReferenceIds(new Set());
@@ -399,7 +412,7 @@ export function App() {
       const libraryGeneration = supersedeLibraryRequests();
       const [library, reviews] = await Promise.all([
         searchLibrary(),
-        invoke<ReviewItem[]>("list_review_items"),
+        readReviewPage(),
         refreshReferenceReviews(vaultKey),
         // What the vault held when it opened, so media arriving later tell apart.
         refreshLatestMedia(vaultKey).catch(() => false),
@@ -415,7 +428,7 @@ export function App() {
         if (libraryGeneration === vaultDataGeneration.current) {
           showLibraryPage(library);
         }
-        setReviewItems(reviews);
+        showReviewPage(reviews);
       }
       setLoadedVaultRoot(vaultKey);
       if (activeViewRef.current === "activity") {
@@ -440,6 +453,79 @@ export function App() {
         setLoading(false);
       }
     }
+  }
+
+  /** Reads the page of the Review Items awaiting a decision the Review view shows. */
+  function readReviewPage() {
+    return invoke<ReviewPage>("review_page", {
+      offset: reviewOffset.current,
+      limit: REVIEW_PAGE_SIZE,
+    });
+  }
+
+  function showReviewPage(page: ReviewPage) {
+    setReviewItems(page.items);
+    setReviewUndecided(page.undecided);
+  }
+
+  /** Shows the page of Review Items after the first `offset`, or the last page past the end. */
+  async function showReviewOffset(offset: number) {
+    if (loadedVaultRoot === null || openedVaultRoot.current !== loadedVaultRoot) {
+      return;
+    }
+    const readingVaultRoot = loadedVaultRoot;
+    reviewOffset.current = offset;
+    setShownReviewOffset(offset);
+    reviewRefreshRequestGeneration.current += 1;
+    const generation = reviewRefreshRequestGeneration.current;
+    try {
+      let page = await readReviewPage();
+      // Decisions taken meanwhile can leave fewer items than the page starts at.
+      if (page.items.length === 0 && page.undecided > 0 && offset >= page.undecided) {
+        reviewOffset.current = Math.floor((page.undecided - 1) / REVIEW_PAGE_SIZE) * REVIEW_PAGE_SIZE;
+        setShownReviewOffset(reviewOffset.current);
+        page = await readReviewPage();
+      }
+      if (
+        activeVaultRoot.current === readingVaultRoot &&
+        generation === reviewRefreshRequestGeneration.current
+      ) {
+        showReviewPage(page);
+      }
+    } catch (reason) {
+      if (activeVaultRoot.current === readingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    }
+  }
+
+  /**
+   * Decides every Review Item awaiting a decision at once, then shows the first page, the
+   * Library the decisions changed and the runs they reopened.
+   */
+  async function decideAllReviews(decision: PendingReviewDecision) {
+    if (loadedVaultRoot === null) {
+      throw new Error("Open a vault before deciding reviews.");
+    }
+    const decidingVaultRoot = loadedVaultRoot;
+    const summary = await invoke<PendingReviewSummary>("decide_pending_reviews", {
+      decision,
+      matching_policy: MATCHING_POLICY,
+    });
+    if (activeVaultRoot.current !== decidingVaultRoot) {
+      return summary;
+    }
+    reviewMutationGeneration.current += 1;
+    reviewOffset.current = 0;
+    setShownReviewOffset(0);
+    try {
+      await Promise.all([refreshVaultData(decidingVaultRoot), refreshRuns(decidingVaultRoot)]);
+    } catch (reason) {
+      if (activeVaultRoot.current === decidingVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    }
+    return summary;
   }
 
   async function resolveReviewItem(reviewItemId: number, decision: ReviewDecision) {
@@ -475,7 +561,7 @@ export function App() {
       const libraryGeneration = supersedeLibraryRequests();
       // Decisions can attach or detach the candidate's asset, so the library is refreshed too.
       const [reviews, library] = await Promise.all([
-        invoke<ReviewItem[]>("list_review_items"),
+        readReviewPage(),
         searchLibrary(),
         // Accepting requeues parked work and may reopen completed runs.
         refreshRuns(resolvingVaultRoot),
@@ -486,7 +572,7 @@ export function App() {
       ) {
         return;
       }
-      setReviewItems(reviews);
+      showReviewPage(reviews);
       if (libraryGeneration === vaultDataGeneration.current) {
         showLibraryPage(library);
       }
@@ -500,14 +586,14 @@ export function App() {
         const refusalLibraryGeneration = supersedeLibraryRequests();
         try {
           const [reviews, library] = await Promise.all([
-            invoke<ReviewItem[]>("list_review_items"),
+            readReviewPage(),
             searchLibrary(),
           ]);
           if (
             activeVaultRoot.current === resolvingVaultRoot &&
             refusalRefreshGeneration === reviewRefreshRequestGeneration.current
           ) {
-            setReviewItems(reviews);
+            showReviewPage(reviews);
             if (refusalLibraryGeneration === vaultDataGeneration.current) {
               showLibraryPage(library);
             }
@@ -690,13 +776,13 @@ export function App() {
     reviewRefreshRequestGeneration.current += 1;
     const generation = reviewRefreshRequestGeneration.current;
     const decisions = reviewMutationGeneration.current;
-    const reviews = await invoke<ReviewItem[]>("list_review_items");
+    const reviews = await readReviewPage();
     if (
       activeVaultRoot.current === expectedVaultRoot &&
       generation === reviewRefreshRequestGeneration.current &&
       decisions === reviewMutationGeneration.current
     ) {
-      setReviewItems(reviews);
+      showReviewPage(reviews);
     }
   }
 
@@ -732,7 +818,7 @@ export function App() {
     const reviewGenerationAtStart = reviewMutationGeneration.current;
     const [library, reviews] = await Promise.all([
       searchLibrary(),
-      invoke<ReviewItem[]>("list_review_items"),
+      readReviewPage(),
     ]);
     // A review decision made meanwhile read both lists after this one.
     if (
@@ -747,7 +833,7 @@ export function App() {
       showLibraryPage(library);
     }
     if (reviewRefreshGeneration === reviewRefreshRequestGeneration.current) {
-      setReviewItems(reviews);
+      showReviewPage(reviews);
     }
   }
 
@@ -1437,9 +1523,14 @@ export function App() {
           {reviewItems.length > 0 || referenceReviewItems.length === 0 ? (
             <ReviewView
               items={reviewItems}
+              undecided={reviewUndecided}
+              offset={shownReviewOffset}
+              pageSize={REVIEW_PAGE_SIZE}
+              onPage={(offset) => void showReviewOffset(offset)}
               resolvingIds={resolvingIds}
               onResolve={resolveReviewItem}
               onLoadPreview={loadReviewPreview}
+              onDecideAll={vaultReady ? decideAllReviews : undefined}
             />
           ) : null}
         </Page>
