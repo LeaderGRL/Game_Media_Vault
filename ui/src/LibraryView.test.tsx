@@ -30,6 +30,7 @@ const entry: LibraryEntry = {
       width: 1200,
       height: 1600,
       original_filename: "mgs-front.png",
+      document: null,
       derived: [],
       provenance: [
         {
@@ -266,6 +267,90 @@ describe("LibraryView", () => {
     render(<LibraryView objectUrl={objectUrl} entries={[entry]} />);
 
     expect(screen.getByText("Coverage not evaluated for this platform")).toBeInTheDocument();
+  });
+
+  it("describes a PDF manual by what its file says of itself", () => {
+    const manual = {
+      ...entry.assets[0],
+      asset_id: 6,
+      asset_type: "manual" as const,
+      object_hash: "manual123",
+      media_type: "application/pdf",
+      width: null,
+      height: null,
+      original_filename: "mgs-manual.pdf",
+      document: {
+        page_count: 24,
+        version: "1.7",
+        encrypted: false,
+        title: "Metal Gear Solid Instruction Booklet",
+        author: "Konami",
+        subject: null,
+        keywords: null,
+        creator: null,
+        producer: null,
+        creation_date: null,
+        modification_date: null,
+      },
+    };
+    render(<LibraryView objectUrl={objectUrl} entries={[{ ...entry, assets: [manual] }]} />);
+
+    expect(screen.getByText("Manual")).toBeInTheDocument();
+    expect(screen.getByText("24 pages · PDF 1.7")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid Instruction Booklet · Konami")).toBeInTheDocument();
+  });
+
+  it("says when a PDF declares encryption", () => {
+    const manual = {
+      ...entry.assets[0],
+      asset_type: "manual" as const,
+      media_type: "application/pdf",
+      width: null,
+      height: null,
+      document: {
+        page_count: null,
+        version: "1.4",
+        encrypted: true,
+        title: null,
+        author: null,
+        subject: null,
+        keywords: null,
+        creator: null,
+        producer: null,
+        creation_date: null,
+        modification_date: null,
+      },
+    };
+    render(<LibraryView objectUrl={objectUrl} entries={[{ ...entry, assets: [manual] }]} />);
+
+    // Behind a password, its pages cannot be counted.
+    expect(screen.getByText("PDF 1.4 · encrypted")).toBeInTheDocument();
+  });
+
+  it("counts a single page in the singular", () => {
+    const leaflet = {
+      ...entry.assets[0],
+      asset_type: "manual" as const,
+      media_type: "application/pdf",
+      width: null,
+      height: null,
+      document: {
+        page_count: 1,
+        version: "1.4",
+        encrypted: false,
+        title: null,
+        author: null,
+        subject: null,
+        keywords: null,
+        creator: null,
+        producer: null,
+        creation_date: null,
+        modification_date: null,
+      },
+    };
+    render(<LibraryView objectUrl={objectUrl} entries={[{ ...entry, assets: [leaflet] }]} />);
+
+    expect(screen.getByText("1 page · PDF 1.4")).toBeInTheDocument();
   });
 
   it("groups media by Asset Type and names each type", () => {

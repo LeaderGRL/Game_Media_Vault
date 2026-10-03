@@ -71,6 +71,7 @@ const entry: LibraryEntry = {
       width: 1200,
       height: 1600,
       original_filename: "mgs-front.png",
+      document: null,
       derived: [],
       provenance: [
         {
