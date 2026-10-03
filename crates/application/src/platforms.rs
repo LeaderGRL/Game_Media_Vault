@@ -321,7 +321,7 @@ fn same_platform(listed: &str, requested: &str) -> bool {
 }
 
 /// What names a platform regardless of case and punctuation.
-fn platform_key(platform: &str) -> String {
+pub(crate) fn platform_key(platform: &str) -> String {
     platform
         .chars()
         .filter(|character| character.is_alphanumeric())

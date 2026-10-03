@@ -5,7 +5,7 @@ use game_media_vault_domain::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{ApplicationError, CatalogPort, ReviewRepositoryPort};
+use crate::{ApplicationError, CatalogPort, ReviewRepositoryPort, platforms::platform_key};
 
 /// Releases per page when a query asks for none.
 pub const DEFAULT_LIBRARY_PAGE_SIZE: usize = 50;
@@ -31,6 +31,7 @@ pub enum LibraryStatus {
 pub struct LibraryQuery {
     /// Text the game title or its canonical title contains, ignoring case.
     pub text: Option<String>,
+    /// Platforms, each matching its spellings regardless of case and punctuation.
     pub platforms: Vec<String>,
     pub regions: Vec<String>,
     /// Sources that provided an Asset or an assertion of the release.
@@ -58,7 +59,7 @@ pub struct LibraryPage {
     /// and new ones get larger ids, so passing it back keeps later pages to the same editions.
     pub as_of: i64,
     /// Every platform whose releases retain an Asset, whatever the query, in name order, for a
-    /// filter to offer.
+    /// filter to offer: once, as its first spelling in that order, however it is spelled.
     pub platforms_with_media: Vec<String>,
 }
 
@@ -125,12 +126,14 @@ pub fn search_library(
             .unwrap_or(0)
     });
     // Every platform holding media now, even past the snapshot a later page keeps to.
+    let mut spelled = BTreeSet::new();
     let platforms_with_media: Vec<String> = releases
         .iter()
         .filter(|release| !release.entry.assets.is_empty())
         .map(|release| release.entry.platform.trim().to_owned())
         .collect::<BTreeSet<_>>()
         .into_iter()
+        .filter(|platform| spelled.insert(platform_key(platform)))
         .collect();
     releases.retain(|release| release.entry.release_edition_id <= as_of);
     releases.sort_by_cached_key(sort_key);
@@ -219,7 +222,7 @@ fn matches(query: &LibraryQuery, release: &LibraryRelease, needing_review: &BTre
     });
     text_matches
         && any_or_all(&query.platforms, |platform| {
-            platform.trim().eq_ignore_ascii_case(entry.platform.trim())
+            platform_key(platform) == platform_key(&entry.platform)
         })
         && any_or_all(&query.regions, |region| {
             region.trim().eq_ignore_ascii_case(entry.region.trim())

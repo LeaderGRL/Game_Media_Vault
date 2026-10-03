@@ -356,3 +356,42 @@ fn the_latest_media_come_newest_first() {
     );
     assert_eq!(latest[0].platform, DS_DIGITAL);
 }
+
+#[test]
+fn a_platform_spelled_two_ways_is_one_choice_that_finds_both() {
+    let vault = FakeVault::with_library(vec![
+        with_asset(
+            release(
+                1,
+                "Bonk's Adventure",
+                "NEC - PC Engine - TurboGrafx-16",
+                "USA",
+            ),
+            AssetType::BoxFront,
+            "libretro-thumbnails",
+        ),
+        with_asset(
+            release(2, "R-Type", "NEC - PC Engine - TurboGrafx 16", "Japan"),
+            AssetType::BoxFront,
+            "libretro-thumbnails",
+        ),
+    ]);
+
+    let page = search_library(&vault, &vault, &LibraryQuery::default()).unwrap();
+
+    // One choice, spelled as the first spelling in name order, finds the releases of both.
+    assert_eq!(
+        page.platforms_with_media,
+        ["NEC - PC Engine - TurboGrafx 16"]
+    );
+    assert_eq!(
+        ids(
+            &vault,
+            LibraryQuery {
+                platforms: page.platforms_with_media.clone(),
+                ..LibraryQuery::default()
+            }
+        ),
+        vec![1, 2]
+    );
+}
