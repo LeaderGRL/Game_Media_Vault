@@ -80,3 +80,15 @@ fn a_folder_within_the_vault_takes_no_export() {
     }
     assert!(ExportFolder::outside_vault(&temp.path().join("export"), &vault).is_ok());
 }
+
+#[test]
+fn a_file_named_as_long_as_file_systems_allow_is_written() {
+    let temp = tempdir().unwrap();
+    let folder = ExportFolder::new(temp.path());
+    // The longest name an export gives: 240 bytes and a clash's hash suffix.
+    let path = Path::new("Box Front").join(format!("{}.png", "a".repeat(247)));
+
+    folder.write(&path, &mut &b"front"[..]).unwrap();
+
+    assert_eq!(fs::read(temp.path().join(&path)).unwrap(), b"front");
+}

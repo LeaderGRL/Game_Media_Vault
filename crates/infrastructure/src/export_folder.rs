@@ -1,10 +1,11 @@
 //! The folder on disk an export copies originals to.
 
 use std::{
-    fs,
-    io::Read,
-    io::{self, Write},
+    fs::{self, File, OpenOptions},
+    io::{self, Read},
     path::{Path, PathBuf},
+    process,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use game_media_vault_application::{ApplicationError, ExportTargetPort, PortError};
@@ -73,24 +74,41 @@ impl ExportTargetPort for ExportFolder {
             .parent()
             .ok_or_else(|| PortError::new(format!("{} has no folder", path.display())))?;
         fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| PortError::new(format!("{} names no file", path.display())))?;
-        // A name no other write takes, created for this one alone; dropped unrenamed, it goes.
-        let mut partial = tempfile::Builder::new()
-            .prefix(&format!(".{}.", file_name.to_string_lossy()))
-            .suffix(".partial")
-            .tempfile_in(parent)
-            .map_err(|error| io_error(&path, error))?;
-        io::copy(reader, &mut partial)
-            .and_then(|_| partial.flush())
-            .and_then(|()| partial.as_file().sync_all())
-            .map_err(|error| io_error(&path, error))?;
-        // Replaces a stale copy, on Windows too.
-        partial
-            .persist(&path)
-            .map(drop)
-            .map_err(|error| io_error(&path, error.error))
+        if path.file_name().is_none() {
+            return Err(PortError::new(format!("{} names no file", path.display())));
+        }
+        let (partial, mut file) = create_partial(parent).map_err(|error| io_error(&path, error))?;
+        let copied = io::copy(reader, &mut file).and_then(|_| file.sync_all());
+        drop(file);
+        // The rename replaces a stale copy.
+        if let Err(error) = copied.and_then(|()| fs::rename(&partial, &path)) {
+            let _ = fs::remove_file(&partial);
+            return Err(io_error(&path, error));
+        }
+        Ok(())
+    }
+}
+
+/// Copies this process has begun, which tell its partial files apart.
+static PARTIAL_COPIES: AtomicU64 = AtomicU64::new(0);
+
+/// A partial file in `parent` that no other write, of this export or another, takes: its name
+/// holds this process and a count of its copies, and it is created only if no file has it. The
+/// name is short whatever the final name, which may already be as long as file systems allow.
+fn create_partial(parent: &Path) -> io::Result<(PathBuf, File)> {
+    loop {
+        let copy = PARTIAL_COPIES.fetch_add(1, Ordering::Relaxed);
+        let partial = parent.join(format!(".export-{}-{copy}.partial", process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+        {
+            Ok(file) => return Ok((partial, file)),
+            // Left by an export that stopped midway in an earlier process of the same id.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
     }
 }
 
