@@ -128,8 +128,8 @@ from standard input (ADR 0005).
 - **Limits:** it covers only `Sony - PlayStation` (also named `PlayStation`, `PSX` or `PS1`), and
   refuses a request naming any other platform, which it would leave unserved. It needs an
   explicit game selection, since reading every game's page would take hours at that pace.
-  Regions narrow the lists read: `USA` and `North America` read NTSC-U; `Europe`, `PAL`,
-  `Australia` and `United Kingdom` read PAL; `Japan` reads NTSC-J. Any other region, and
+  Regions narrow the lists read: `USA` and `North America` read NTSC-U; `Europe` and `PAL` read
+  PAL, whose releases are recorded in Europe; `Japan` reads NTSC-J. Any other region, and
   language filters, are refused. A game is acquired only when exactly one row of a list names
   it as the request does, regardless of case, punctuation, spacing and the number of discs the
   list adds: several rows sharing a title are releases its title alone cannot tell apart. A

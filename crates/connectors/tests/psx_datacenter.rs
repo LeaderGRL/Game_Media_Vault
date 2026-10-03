@@ -86,6 +86,8 @@ const FINAL_FANTASY_VII: &str = r#"<html><head><title>FINAL FANTASY VII - (NTSC-
 <img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-F-GH.jpg"></a></td>
 <td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-F-P.html">
 <img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-F-P.jpg"></a></td>
+<td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-B-P.html?v=2">
+<img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-B-P.jpg"></a></td>
 <td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-F-XX.html">
 <img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-F-XX.jpg"></a></td>
 <td><a target="_blank" href="https://elsewhere.example/images/hires/U/F/SCUS-94163/SCUS-94163-B-GH.html">
@@ -162,6 +164,8 @@ fn refuses_requests_it_cannot_serve_without_reaching_the_site() {
         request(|draft| draft.games = GameSelection::All),
         request(|draft| draft.languages = vec!["en".to_owned()]),
         request(|draft| draft.regions = vec!["Brazil".to_owned()]),
+        // The PAL list records its releases in Europe, not in a country it also covers.
+        request(|draft| draft.regions = vec!["Australia".to_owned()]),
     ] {
         assert!(
             connector

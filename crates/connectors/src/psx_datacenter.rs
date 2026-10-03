@@ -37,16 +37,15 @@ const REGIONS: [(char, &str, &str); 3] = [
 
 /// The region a requested region name stands for, by the letter of the site's directories. Names
 /// are compared by their name key, regardless of case, punctuation and spacing.
-const REGION_NAMES: [(&str, char); 11] = [
+/// Countries the PAL list also covers are not among them, since its releases are recorded in
+/// Europe.
+const REGION_NAMES: [(&str, char); 8] = [
     ("usa", 'U'),
     ("us", 'U'),
     ("northamerica", 'U'),
     ("ntscu", 'U'),
     ("europe", 'P'),
     ("pal", 'P'),
-    ("australia", 'P'),
-    ("uk", 'P'),
-    ("unitedkingdom", 'P'),
     ("japan", 'J'),
     ("ntscj", 'J'),
 ];
@@ -392,6 +391,15 @@ fn candidate(
     edition_name: &str,
     game: &GameContext<'_>,
 ) -> Option<AssetCandidate> {
+    // A location the catalog would refuse, with a query, a fragment or credentials, is skipped
+    // rather than failing the discovery.
+    if location.query().is_some()
+        || location.fragment().is_some()
+        || !location.username().is_empty()
+        || location.password().is_some()
+    {
+        return None;
+    }
     let original_filename = location.path_segments()?.next_back()?.to_owned();
     if original_filename.is_empty() {
         return None;
