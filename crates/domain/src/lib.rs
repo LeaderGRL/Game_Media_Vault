@@ -1209,8 +1209,8 @@ fn exact_match_evidence(
 }
 
 /// The region each country belongs to, as a box sold there is one of the region's release:
-/// Australia and New Zealand with Europe, whose PAL releases they share.
-const REGION_OF_COUNTRY: [(&str, &str); 37] = [
+/// Australia, New Zealand and Oceania with Europe, whose PAL releases they share.
+const REGION_OF_COUNTRY: [(&str, &str); 38] = [
     ("austria", "europe"),
     ("belgium", "europe"),
     ("bulgaria", "europe"),
@@ -1237,6 +1237,7 @@ const REGION_OF_COUNTRY: [(&str, &str); 37] = [
     ("united kingdom", "europe"),
     ("australia", "europe"),
     ("new zealand", "europe"),
+    ("oceania", "europe"),
     ("canada", "usa"),
     ("north america", "usa"),
     ("hong kong", "asia"),

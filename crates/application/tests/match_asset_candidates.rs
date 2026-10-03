@@ -352,7 +352,11 @@ fn a_worldwide_box_agrees_with_every_region_and_a_canadian_one_with_usa() {
         region: "Europe".to_owned(),
         ..release()
     };
-    for (region, release) in [("World", european), ("Canada", release())] {
+    for (region, release) in [
+        ("World", european.clone()),
+        ("Oceania", european),
+        ("Canada", release()),
+    ] {
         let candidate = AssetCandidate {
             region: region.to_owned(),
             ..candidate()
