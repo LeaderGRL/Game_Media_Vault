@@ -452,6 +452,7 @@ pub enum AssetType {
     CartridgeBack,
     Disc,
     Pcb,
+    Manual,
     Screenshot,
     TitleScreen,
     Logo,
@@ -477,7 +478,7 @@ impl AssetTypeSelector {
 
 impl AssetType {
     /// Every stored type, in taxonomy order.
-    pub const ALL: [AssetType; 17] = [
+    pub const ALL: [AssetType; 18] = [
         Self::BoxFront,
         Self::BoxBack,
         Self::Spine,
@@ -486,6 +487,7 @@ impl AssetType {
         Self::CartridgeBack,
         Self::Disc,
         Self::Pcb,
+        Self::Manual,
         Self::Screenshot,
         Self::TitleScreen,
         Self::Logo,
@@ -508,6 +510,7 @@ impl AssetType {
             Self::CartridgeBack => AssetTypeSelector::CartridgeBack,
             Self::Disc => AssetTypeSelector::Disc,
             Self::Pcb => AssetTypeSelector::Pcb,
+            Self::Manual => AssetTypeSelector::Manual,
             Self::Screenshot => AssetTypeSelector::Screenshot,
             Self::TitleScreen => AssetTypeSelector::TitleScreen,
             Self::Logo => AssetTypeSelector::Logo,
@@ -529,6 +532,7 @@ impl AssetType {
             Self::CartridgeFront | Self::CartridgeBack | Self::Disc | Self::Pcb => {
                 AssetTypeSelector::PhysicalMedia
             }
+            Self::Manual => AssetTypeSelector::Documentation,
             Self::Screenshot
             | Self::TitleScreen
             | Self::Logo
@@ -552,6 +556,7 @@ impl AssetType {
             Self::CartridgeBack => "cartridge_back",
             Self::Disc => "disc",
             Self::Pcb => "pcb",
+            Self::Manual => "manual",
             Self::Screenshot => "screenshot",
             Self::TitleScreen => "title_screen",
             Self::Logo => "logo",

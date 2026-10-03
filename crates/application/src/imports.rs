@@ -27,7 +27,7 @@ pub struct DescribedReferenceReviewItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportLocalBoxFrontRequest {
+pub struct ImportLocalAssetRequest {
     pub existing_game_id: Option<i64>,
     pub game_title: String,
     pub platform: String,
@@ -151,10 +151,22 @@ fn decided(
     }
 }
 
+/// Imports a local Box Front, unchanged, as `import_local_asset` does.
 pub fn import_local_box_front(
     catalog: &dyn CatalogPort,
     object_store: &dyn ObjectStorePort,
-    request: ImportLocalBoxFrontRequest,
+    request: ImportLocalAssetRequest,
+) -> Result<ImportedAsset, ApplicationError> {
+    import_local_asset(catalog, object_store, AssetType::BoxFront, request)
+}
+
+/// Stores a local file unchanged as an original and records it as an Asset of `asset_type` on
+/// the release the request names, with the file as its provenance.
+pub fn import_local_asset(
+    catalog: &dyn CatalogPort,
+    object_store: &dyn ObjectStorePort,
+    asset_type: AssetType,
+    request: ImportLocalAssetRequest,
 ) -> Result<ImportedAsset, ApplicationError> {
     let original_filename = request
         .source_path
@@ -175,7 +187,7 @@ pub fn import_local_box_front(
         platform: request.platform,
         region: request.region,
         edition_name: request.edition_name,
-        asset_type: AssetType::BoxFront,
+        asset_type,
         object_hash: stored.hash,
         byte_len: stored.byte_len,
         media: stored.media,

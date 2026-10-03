@@ -1,7 +1,7 @@
 use std::fs;
 
 use game_media_vault_application::{
-    ApplicationError, CatalogPort, ImportLocalBoxFrontRequest, ReviewRepositoryPort,
+    ApplicationError, CatalogPort, ImportLocalAssetRequest, ReviewRepositoryPort,
     RunRepositoryPort, cancel_acquisition_run, complete_acquisition_run, import_local_box_front,
     load_acquisition_run, pause_acquisition_run, resume_acquisition_run, start_acquisition_run,
 };
@@ -163,7 +163,7 @@ fn cancellation_preserves_assets_accepted_before_the_run_was_cancelled() {
     let accepted = import_local_box_front(
         &catalog,
         &store,
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: None,
             game_title: "Accepted Game".to_owned(),
             platform: "Windows".to_owned(),
