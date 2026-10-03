@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use game_media_vault_domain::{
-    AssetTypeSelector, CoverageStatus, LibraryRelease, ReleaseAssertionField,
+    AssetTypeSelector, CoverageStatus, LibraryAsset, LibraryRelease, ReleaseAssertionField,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,49 @@ pub struct LibraryPage {
     /// The newest Release Edition the search considered. Release Editions are never deleted
     /// and new ones get larger ids, so passing it back keeps later pages to the same editions.
     pub as_of: i64,
+    /// Every platform whose releases retain an Asset, whatever the query, in name order, for a
+    /// filter to offer.
+    pub platforms_with_media: Vec<String>,
+}
+
+/// A retained Asset, with the release it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LatestMedium {
+    pub release_edition_id: i64,
+    pub game_title: String,
+    pub platform: String,
+    pub region: String,
+    pub asset: LibraryAsset,
+}
+
+/// The `limit` Assets the vault retained last, newest first: Assets get larger ids as they are
+/// retained.
+pub fn latest_media(
+    catalog: &dyn CatalogPort,
+    limit: usize,
+) -> Result<Vec<LatestMedium>, ApplicationError> {
+    let mut media: Vec<LatestMedium> = catalog
+        .list_library()?
+        .into_iter()
+        .flat_map(|entry| {
+            let (release_edition_id, game_title, platform, region) = (
+                entry.release_edition_id,
+                entry.game_title,
+                entry.platform,
+                entry.region,
+            );
+            entry.assets.into_iter().map(move |asset| LatestMedium {
+                release_edition_id,
+                game_title: game_title.clone(),
+                platform: platform.clone(),
+                region: region.clone(),
+                asset,
+            })
+        })
+        .collect();
+    media.sort_by_key(|medium| std::cmp::Reverse(medium.asset.asset_id));
+    media.truncate(limit);
+    Ok(media)
 }
 
 /// Searches the Library. Releases are ordered by title, platform, region and edition, then by
@@ -82,6 +125,13 @@ pub fn search_library(
             .unwrap_or(0)
     });
     releases.retain(|release| release.entry.release_edition_id <= as_of);
+    let platforms_with_media: Vec<String> = releases
+        .iter()
+        .filter(|release| !release.entry.assets.is_empty())
+        .map(|release| release.entry.platform.trim().to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     releases.sort_by_cached_key(sort_key);
     let start = match query.after {
         Some(after) => {
@@ -128,6 +178,7 @@ pub fn search_library(
         total,
         next_after,
         as_of,
+        platforms_with_media,
     })
 }
 

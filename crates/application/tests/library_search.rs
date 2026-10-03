@@ -1,6 +1,6 @@
 mod support;
 
-use game_media_vault_application::{LibraryQuery, LibraryStatus, search_library};
+use game_media_vault_application::{LibraryQuery, LibraryStatus, latest_media, search_library};
 use game_media_vault_domain::{
     AssetProvenance, AssetType, AssetTypeSelector, LibraryAsset, LibraryEntry, MediaInfo,
     ReviewItem, ReviewStatus, SourceId,
@@ -275,4 +275,53 @@ fn stored_platforms_and_regions_match_without_surrounding_spaces() {
         ),
         vec![7]
     );
+}
+
+#[test]
+fn a_page_names_every_platform_whose_releases_hold_media() {
+    let vault = FakeVault::with_library(library());
+
+    // Whatever the query, so a filter can offer them all.
+    let page = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            text: Some("mario".to_owned()),
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(page.platforms_with_media, [DS_DIGITAL, SNES]);
+}
+
+#[test]
+fn the_latest_media_come_newest_first() {
+    let vault = FakeVault::with_library(vec![
+        with_asset(
+            with_asset(
+                release(1, "Super Mario World", SNES, "USA"),
+                AssetType::BoxFront,
+                "libretro-thumbnails",
+            ),
+            AssetType::Screenshot,
+            "libretro-thumbnails",
+        ),
+        with_asset(
+            release(3, "Flipnote Studio", DS_DIGITAL, "USA"),
+            AssetType::BoxFront,
+            "local_import",
+        ),
+    ]);
+
+    let latest = latest_media(&vault, 2).unwrap();
+
+    assert_eq!(
+        latest
+            .iter()
+            .map(|medium| (medium.game_title.as_str(), medium.asset.asset_id))
+            .collect::<Vec<_>>(),
+        [("Flipnote Studio", 30), ("Super Mario World", 11)]
+    );
+    assert_eq!(latest[0].platform, DS_DIGITAL);
 }

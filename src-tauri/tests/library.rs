@@ -239,3 +239,33 @@ fn exports_the_selected_vaults_media_to_a_full_folder_path_outside_it() {
         );
     }
 }
+
+#[test]
+fn shows_the_media_the_selected_vault_retained_last() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let store = ContentAddressedStore::new(&vault);
+    for (title, file) in [("Metal Gear Solid", "mgs.png"), ("Vagrant Story", "vs.png")] {
+        let source = temp.path().join(file);
+        fs::write(&source, title.as_bytes()).unwrap();
+        import_local_box_front(
+            &catalog,
+            &store,
+            ImportLocalAssetRequest {
+                existing_game_id: None,
+                game_title: title.to_owned(),
+                platform: "Sony - PlayStation".to_owned(),
+                region: "France".to_owned(),
+                edition_name: "Original".to_owned(),
+                source_path: source,
+            },
+        )
+        .unwrap();
+    }
+
+    let latest = game_media_vault_tauri::latest_media_in_vault(&vault, 1).unwrap();
+
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0].game_title, "Vagrant Story");
+}
