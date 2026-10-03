@@ -312,9 +312,9 @@ fn tauri_async_adapter_runs_blocking_acquisition_off_the_calling_thread() {
         game_media_vault_tauri::execute_acquisition_run_in_vault_async(
             vault,
             started.id,
-            vec![Box::new(ThreadRecordingConnector {
+            registry_of(ThreadRecordingConnector {
                 worker_thread: Arc::clone(&worker_thread),
-            })],
+            }),
             matching_policy(),
         ),
     )
@@ -359,10 +359,10 @@ fn tauri_async_execution_preserves_pause_or_cancel_during_an_active_download() {
                 game_media_vault_tauri::execute_acquisition_run_in_vault_async(
                     execution_vault,
                     started.id,
-                    vec![Box::new(BlockingConnector {
+                    registry_of(BlockingConnector {
                         download_started: download_started_tx,
                         continue_download: Mutex::new(continue_download_rx),
-                    })],
+                    }),
                     matching_policy(),
                 ),
             )
@@ -402,9 +402,9 @@ fn tauri_async_start_checks_the_plan_off_the_calling_thread() {
         game_media_vault_tauri::start_acquisition_run_in_vault_async(
             vault,
             request_input(),
-            vec![Box::new(ThreadRecordingConnector {
+            registry_of(ThreadRecordingConnector {
                 worker_thread: Arc::clone(&worker_thread),
-            })],
+            }),
         ),
     )
     .unwrap();
@@ -542,4 +542,52 @@ fn the_desktop_plans_a_request_for_every_game_as_its_run_would_start() {
             .len(),
         1
     );
+}
+
+/// A registry holding `connector` alone.
+fn registry_of<C: ConnectorPort + 'static>(
+    connector: C,
+) -> impl game_media_vault_tauri::ConnectorRegistry {
+    move || Ok(vec![Box::new(connector) as Box<dyn ConnectorPort>])
+}
+
+/// The desktop's own connectors, whose HTTP clients panic, in debug builds, when built on the
+/// async runtime's workers.
+fn connectors_with_an_http_client()
+-> Result<Vec<Box<dyn ConnectorPort>>, game_media_vault_tauri::CommandError> {
+    let _client = game_media_vault_connectors::ReqwestHttpTransport::default();
+    Ok(vec![Box::new(FixtureConnector)])
+}
+
+#[test]
+fn the_desktop_builds_its_connectors_on_a_worker_rather_than_the_async_runtime() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+
+    let started = tauri::async_runtime::block_on(
+        game_media_vault_tauri::start_acquisition_run_in_vault_async(
+            vault.clone(),
+            request_input(),
+            connectors_with_an_http_client,
+        ),
+    )
+    .unwrap();
+    let plan = tauri::async_runtime::block_on(game_media_vault_tauri::plan_acquisition_async(
+        Some(vault.clone()),
+        request_input(),
+        connectors_with_an_http_client,
+    ))
+    .unwrap();
+    let executed = tauri::async_runtime::block_on(
+        game_media_vault_tauri::execute_acquisition_run_in_vault_async(
+            vault,
+            started.id,
+            connectors_with_an_http_client,
+            matching_policy(),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(plan.sources.len(), 1);
+    assert_eq!(executed.id, started.id);
 }
