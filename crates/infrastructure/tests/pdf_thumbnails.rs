@@ -147,3 +147,12 @@ fn pdfium_renders_the_first_page_of_a_pdf_as_its_thumbnail() {
     assert_eq!(image.height(), 256);
     assert!((197..=199).contains(&image.width()), "{}", image.width());
 }
+
+#[test]
+fn pdfium_is_never_looked_for_outside_an_absolute_directory() {
+    // An empty or relative directory would leave the loader to search the working directory
+    // and `PATH` for the library.
+    for directory in ["", "pdfium", "./pdfium"] {
+        assert!(!PdfiumRenderer::from_directory(Path::new(directory)).is_available());
+    }
+}

@@ -34,7 +34,8 @@ pub struct PdfiumRenderer {
 }
 
 impl PdfiumRenderer {
-    /// The pdfium library of `directory`, or none when it holds no library to bind.
+    /// The pdfium library of `directory`, or none when it holds no library to bind or is not an
+    /// absolute path.
     pub fn from_directory(directory: &Path) -> Self {
         Self::with(bind(directory))
     }
@@ -68,7 +69,12 @@ impl PdfiumRenderer {
     }
 }
 
+/// The pdfium library in `directory`, which must be absolute: an empty or relative one would
+/// leave the loader to search for the library, possibly in the working directory or `PATH`.
 fn bind(directory: &Path) -> Option<Arc<Pdfium>> {
+    if !directory.is_absolute() {
+        return None;
+    }
     let _serialized = pdfium_calls();
     Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(directory))
         .ok()
