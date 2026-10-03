@@ -131,6 +131,13 @@ cargo run -p game-media-vault-cli -- --vault my-vault acquire --source libretro-
 cargo run -p game-media-vault-cli -- --vault my-vault run execute 1
 ```
 
+Every game of a platform, kept to Japan, with every kind of media the Sources acquire and the
+three best of each type and game (`--auto-source` uses every Source whose key you stored):
+
+```bash
+cargo run -p game-media-vault-cli -- --vault my-vault acquire --auto-source --platform "Nintendo - Virtual Boy" --region Japan --asset-type any --keep-per-type 3
+```
+
 ```bash
 cargo run -p game-media-vault-cli -- --vault my-vault export --to "D:/Game Media"
 ```
