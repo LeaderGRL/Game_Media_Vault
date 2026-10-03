@@ -669,6 +669,9 @@ where
             RunCommand::Start { request_file } => {
                 let draft = draft_from_document(read_request_document(&request_file)?)?;
                 let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+                // A document for every game is expanded as `acquire` expands one.
+                let draft = expand_every_game(&catalog, &catalog, platform_catalogs, draft)
+                    .map_err(map_start_run_error)?;
                 let run = start_acquisition_run_with_connectors(&catalog, draft, connectors)
                     .map_err(map_start_run_error)?;
                 Ok(serde_json::to_string_pretty(&run)?)

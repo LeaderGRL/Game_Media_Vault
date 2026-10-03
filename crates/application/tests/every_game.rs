@@ -222,3 +222,39 @@ fn an_invalid_request_is_refused_before_any_game_list_is_fetched() {
     );
     assert!(lists.asked.borrow().is_empty());
 }
+
+#[test]
+fn a_platform_spelled_otherwise_is_the_one_the_vault_knows_by_its_list_name() {
+    let releases = Releases::holding(vec![entry(1, "Tetris", NES, "USA", "Standard")]);
+    let lists = game_lists();
+
+    // Game lists are found regardless of case and punctuation, and so are their releases.
+    let expanded = expand_every_game(
+        &releases,
+        &releases,
+        &lists,
+        every_game_of(&["nintendo-nintendo entertainment system"]),
+    )
+    .unwrap();
+
+    // Sources and the matcher then see the platform as the vault names it.
+    assert_eq!(expanded.platforms, [NES]);
+    assert_eq!(expanded.games, bound(&["Tetris (USA)"]));
+    assert!(lists.asked.borrow().is_empty());
+}
+
+#[test]
+fn an_unsupported_limit_is_refused_before_any_game_list_is_fetched() {
+    let releases = Releases::default();
+    let lists = game_lists();
+    let mut limited = every_game_of(&[NES]);
+    limited.limits.max_games = Some(5);
+
+    let error = expand_every_game(&releases, &releases, &lists, limited).unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::UnsupportedRequest(_)),
+        "{error:?}"
+    );
+    assert!(lists.asked.borrow().is_empty());
+}
