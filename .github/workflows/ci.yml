@@ -102,6 +102,18 @@ jobs:
         if: steps.rust.outputs.enabled == 'true'
         run: cargo test --workspace --all-features
 
+      # The pinned pdfium release builds ship (ADR 0006), to render PDF previews for real.
+      - name: Fetch pdfium
+        if: steps.rust.outputs.enabled == 'true'
+        shell: bash
+        run: bash scripts/fetch-pdfium.sh linux-x64 "$RUNNER_TEMP/pdfium"
+
+      - name: Render PDF previews with pdfium
+        if: steps.rust.outputs.enabled == 'true'
+        env:
+          GAME_MEDIA_VAULT_PDFIUM: ${{ runner.temp }}/pdfium
+        run: cargo test -p game-media-vault-infrastructure --test pdf_thumbnails -- --ignored
+
       - name: Build Rust workspace
         if: steps.rust.outputs.enabled == 'true'
         run: cargo build --workspace --all-targets --all-features
@@ -137,6 +149,15 @@ jobs:
 
       - name: Test Rust workspace
         run: cargo test --workspace --all-features
+
+      - name: Fetch pdfium
+        shell: bash
+        run: bash scripts/fetch-pdfium.sh win-x64 "$RUNNER_TEMP/pdfium"
+
+      - name: Render PDF previews with pdfium
+        env:
+          GAME_MEDIA_VAULT_PDFIUM: ${{ runner.temp }}/pdfium
+        run: cargo test -p game-media-vault-infrastructure --test pdf_thumbnails -- --ignored
 
       - name: Build Rust workspace
         run: cargo build --workspace --all-targets --all-features

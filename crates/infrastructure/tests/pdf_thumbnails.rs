@@ -128,8 +128,8 @@ fn several_transformers_hand_each_media_type_to_the_first_that_takes_it() {
     );
 }
 
-/// Needs a pdfium library in the directory `GAME_MEDIA_VAULT_PDFIUM` names, which no build
-/// provides yet.
+/// Needs a pdfium library in the directory `GAME_MEDIA_VAULT_PDFIUM` names, which CI fetches with
+/// `scripts/fetch-pdfium.sh` before running the ignored tests.
 #[test]
 #[ignore = "needs a pdfium library in GAME_MEDIA_VAULT_PDFIUM"]
 fn pdfium_renders_the_first_page_of_a_pdf_as_its_thumbnail() {

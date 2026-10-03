@@ -102,12 +102,15 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             executable: .exe
+            pdfium: win-x64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             executable: ""
+            pdfium: linux-x64
           - os: macos-latest
             target: aarch64-apple-darwin
             executable: ""
+            pdfium: mac-arm64
 
     steps:
       - name: Checkout tagged source
@@ -157,11 +160,14 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
           TARGET: ${{ matrix.target }}
           EXECUTABLE: ${{ matrix.executable }}
+          PDFIUM: ${{ matrix.pdfium }}
         run: |
           name="game-media-vault-$TAG-$TARGET"
           mkdir -p "dist/$name"
           cp "target/$TARGET/release/game-media-vault-tauri$EXECUTABLE" "dist/$name/game-media-vault-desktop$EXECUTABLE"
           cp "target/$TARGET/release/game-media-vault$EXECUTABLE" "dist/$name/game-media-vault$EXECUTABLE"
+          # The pinned pdfium, beside the executables where the application looks for it (ADR 0006).
+          bash scripts/fetch-pdfium.sh "$PDFIUM" "dist/$name"
           cd dist
           if test "$RUNNER_OS" = "Windows"; then
             7z a "$name.zip" "$name" > /dev/null
