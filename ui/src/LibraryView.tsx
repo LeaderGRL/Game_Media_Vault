@@ -6,6 +6,7 @@ import {
   filenameMediaType,
   type CoverageProfile,
   type CoverageStatus,
+  type DocumentMetadata,
   type LibraryAsset,
   type LibraryEntry,
   type LibraryFilters,
@@ -300,6 +301,7 @@ function LibraryResults({ entries, objectUrl, filtered }: LibraryResultsProps) {
                         </span>
                       ) : null}
                     </div>
+                    {asset.document ? <DocumentNote document={asset.document} /> : null}
                     <AssetPreferenceNote entry={entry} asset={asset} />
                   </div>
 
@@ -336,6 +338,25 @@ function LibraryResults({ entries, objectUrl, filtered }: LibraryResultsProps) {
 
 function formatField(field: ReleaseAssertionField) {
   return field.charAt(0).toUpperCase() + field.slice(1);
+}
+
+/** What a PDF original says of itself: its pages, version and encryption, then its title and author. */
+function DocumentNote({ document }: { document: DocumentMetadata }) {
+  const pages =
+    document.page_count === null
+      ? null
+      : `${document.page_count} ${document.page_count === 1 ? "page" : "pages"}`;
+  const summary = [pages, `PDF ${document.version}`, document.encrypted ? "encrypted" : null]
+    .filter(Boolean)
+    .join(" · ");
+  const credit = [document.title, document.author].filter(Boolean).join(" · ");
+  return (
+    <div>
+      <span className="detail-label">Document</span>
+      <strong>{summary}</strong>
+      {credit ? <span className="pixel-size">{credit}</span> : null}
+    </div>
+  );
 }
 
 interface AssetOriginalProps {

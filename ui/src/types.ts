@@ -56,9 +56,27 @@ export interface LibraryAsset {
   width: number | null;
   height: number | null;
   original_filename: string;
+  /** What a PDF original says of itself, or null for other media. */
+  document: DocumentMetadata | null;
   provenance: AssetProvenance[];
   /** Outputs of recipes applied to this Asset's original. */
   derived: DerivedAsset[];
+}
+
+/** What a PDF document says of itself: its page count, version, encryption and Info entries. */
+export interface DocumentMetadata {
+  /** Null when the page tree cannot be read, as behind a password. */
+  page_count: number | null;
+  version: string;
+  encrypted: boolean;
+  title: string | null;
+  author: string | null;
+  subject: string | null;
+  keywords: string | null;
+  creator: string | null;
+  producer: string | null;
+  creation_date: string | null;
+  modification_date: string | null;
 }
 
 /** A reproducible transformation of an original. */
