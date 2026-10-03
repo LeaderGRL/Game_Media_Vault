@@ -50,7 +50,8 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   automatically, uncertain ones become Review Items to accept, reject or defer.
 - **Library**: canonical values derived from every Source's claims, the Preferred Asset of each
   type, coverage of the packaging profiles, search with combinable filters and stable pages;
-  gameplay videos (MP4, WebM) play in place, and maps, manuals and scans show as images or PDF.
+  gameplay videos (MP4, WebM) play in place, image originals show as they are, and a PDF, such
+  as a manual or some maps, shows its first page once its thumbnail is rendered.
 - **Manuals and documents**: local files of any stored Asset Type, manuals included, import
   unchanged; a PDF original records its page count, title and author, and the Library shows
   them.
