@@ -498,102 +498,93 @@ struct NormalizedEdition<'a> {
 /// whose record of another source last asserted exactly the record's dumps. Otherwise the one
 /// such edition another source titled the same. Several editions, by dumps or by title, link
 /// none of them, and dump evidence pointing at several editions forbids a title link. An edition
-/// already holding a record of the same source is never linked by dumps, since one catalog
-/// listing two releases of the same dumps describes two releases, but it counts among the
-/// editions they point at, and dumps pointing at it alone forbid a title link.
+/// already holding a record of the same source is never linked, since one catalog listing two
+/// records describes two releases, but it counts among the editions the evidence points at, and
+/// dumps pointing at it alone forbid a title link.
 fn linked_release_edition(
     transaction: &Transaction<'_>,
     source_id: &str,
     edition: &NormalizedEdition<'_>,
     dumps: Option<&str>,
 ) -> Result<Evidence, PortError> {
-    if let Some(dumps) = dumps {
+    let by_dumps = match dumps {
         // Every edition the dumps point at counts, so that one already holding a record of the
         // importing source never makes another look like the only match.
-        let editions: Vec<(i64, i64, bool)> = transaction
-            .prepare(
-                "SELECT DISTINCT r.game_id, r.id, EXISTS (
-                     SELECT 1 FROM release_assertions own
-                     WHERE own.release_edition_id = r.id
-                       AND own.source_id = ?5
-                       AND own.field = 'identifier'
-                       AND own.qualifier = 'source_record'
-                 )
-                 FROM reference_dump_sets d
-                 JOIN release_editions r ON r.id = d.release_edition_id
-                 WHERE d.dump_set = ?1
-                   AND d.source_id != ?5
-                   AND r.normalized_platform = ?2
-                   AND r.normalized_region = ?3
-                   AND r.normalized_edition_name = ?4",
-            )
-            .map_err(sql_error)?
-            .query_map(
-                params![
-                    dumps,
-                    edition.platform,
-                    edition.region,
-                    edition.edition,
-                    source_id
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .map_err(sql_error)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(sql_error)?;
-        match editions.as_slice() {
-            [] => {}
-            // An edition already holding a record of the importing source is another release, which
-            // no title links either.
-            [(_, _, true)] => return Ok(Evidence::Unlinked),
-            [(game_id, release_edition_id, false)] => {
-                return Ok(Evidence::Links(*game_id, *release_edition_id, "sha1"));
-            }
-            // Only the editions holding no record of the importing source may be the record's.
-            several => {
-                let candidates: Vec<i64> = several
-                    .iter()
-                    .filter(|(_, _, occupied)| !occupied)
-                    .map(|(_, release_edition_id, _)| *release_edition_id)
-                    .collect();
-                return Ok(if candidates.is_empty() {
-                    Evidence::Unlinked
-                } else {
-                    Evidence::Uncertain(candidates, "sha1")
-                });
-            }
+        Some(dumps) => editions_where(
+            transaction,
+            "SELECT DISTINCT r.game_id, r.id, EXISTS (
+                 SELECT 1 FROM release_assertions own
+                 WHERE own.release_edition_id = r.id
+                   AND own.source_id = ?5
+                   AND own.field = 'identifier'
+                   AND own.qualifier = 'source_record'
+             )
+             FROM reference_dump_sets d
+             JOIN release_editions r ON r.id = d.release_edition_id
+             WHERE d.dump_set = ?1
+               AND d.source_id != ?5
+               AND r.normalized_platform = ?2
+               AND r.normalized_region = ?3
+               AND r.normalized_edition_name = ?4",
+            params![
+                dumps,
+                edition.platform,
+                edition.region,
+                edition.edition,
+                source_id
+            ],
+        )?,
+        None => Vec::new(),
+    };
+    let (editions, evidence) = if by_dumps.is_empty() {
+        // Starting from the matching title assertions lets the assertion value index find them.
+        let by_title = editions_where(
+            transaction,
+            "SELECT DISTINCT r.game_id, r.id, EXISTS (
+                 SELECT 1 FROM release_assertions own
+                 WHERE own.release_edition_id = r.id
+                   AND own.source_id = ?5
+                   AND own.field = 'identifier'
+                   AND own.qualifier = 'source_record'
+             )
+             FROM release_assertions t
+             JOIN release_editions r ON r.id = t.release_edition_id
+             WHERE t.field = 'title'
+               AND t.qualifier = ''
+               AND t.normalized_value = ?1
+               AND t.source_id != ?5
+               AND r.normalized_platform = ?2
+               AND r.normalized_region = ?3
+               AND r.normalized_edition_name = ?4",
+            params![
+                edition.title,
+                edition.platform,
+                edition.region,
+                edition.edition,
+                source_id
+            ],
+        )?;
+        (by_title, "title")
+    } else {
+        (by_dumps, "sha1")
+    };
+    // Only the editions holding no record of the importing source may be the record's.
+    let candidates: Vec<(i64, i64)> = editions
+        .iter()
+        .filter(|(_, _, occupied)| !occupied)
+        .map(|(game_id, release_edition_id, _)| (*game_id, *release_edition_id))
+        .collect();
+    Ok(match (editions.as_slice(), candidates.as_slice()) {
+        ([_], [(game_id, release_edition_id)]) => {
+            Evidence::Links(*game_id, *release_edition_id, evidence)
         }
-    }
-    // Starting from the matching title assertions lets the assertion value index find them.
-    let editions = editions_where(
-        transaction,
-        "SELECT DISTINCT r.game_id, r.id
-         FROM release_assertions t
-         JOIN release_editions r ON r.id = t.release_edition_id
-         WHERE t.field = 'title'
-           AND t.qualifier = ''
-           AND t.normalized_value = ?1
-           AND t.source_id != ?5
-           AND r.normalized_platform = ?2
-           AND r.normalized_region = ?3
-           AND r.normalized_edition_name = ?4",
-        params![
-            edition.title,
-            edition.platform,
-            edition.region,
-            edition.edition,
-            source_id
-        ],
-    )?;
-    Ok(match editions.as_slice() {
-        [] => Evidence::Unlinked,
-        [(game_id, release_edition_id)] => Evidence::Links(*game_id, *release_edition_id, "title"),
-        several => Evidence::Uncertain(
+        (_, []) => Evidence::Unlinked,
+        (_, several) => Evidence::Uncertain(
             several
                 .iter()
                 .map(|(_, release_edition_id)| *release_edition_id)
                 .collect(),
-            "title",
+            evidence,
         ),
     })
 }
@@ -744,14 +735,18 @@ fn share_a_source_of_record(
         .map_err(sql_error)
 }
 
+/// The editions `query` selects: each one's Game, its id and whether it holds a record of the
+/// importing source.
 fn editions_where(
     transaction: &Transaction<'_>,
     query: &str,
     parameters: impl rusqlite::Params,
-) -> Result<Vec<(i64, i64)>, PortError> {
+) -> Result<Vec<(i64, i64, bool)>, PortError> {
     let mut statement = transaction.prepare(query).map_err(sql_error)?;
     statement
-        .query_map(parameters, |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(parameters, |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(sql_error)?
         .collect::<rusqlite::Result<_>>()
         .map_err(sql_error)

@@ -652,6 +652,28 @@ fn dumps_pointing_at_an_edition_of_the_importing_source_forbid_a_title_link() {
     assert!(catalog.list_reference_review_items().unwrap().is_empty());
 }
 
+#[test]
+fn a_title_never_links_a_record_to_an_edition_holding_a_record_of_its_own_source() {
+    let (_temp, catalog) = catalog();
+    let first = import(&catalog, &release("no-intro", "Alpha", "aaaa"));
+    // Another catalog links its differently titled release by the shared dumps.
+    let beta = import(&catalog, &release("mame-software-lists", "Beta", "aaaa"));
+    assert_eq!(beta.release_edition_id, first.release_edition_id);
+
+    // That catalog's release without dumps carries the first catalog's title.
+    let alpha = import(
+        &catalog,
+        &Release {
+            sha1: None,
+            ..release("mame-software-lists", "Alpha", "")
+        },
+    );
+
+    assert_ne!(alpha.release_edition_id, first.release_edition_id);
+    assert!(links_of(&catalog, alpha.release_edition_id, "mame-software-lists").is_empty());
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
 /// Two releases of one catalog with the very same dumps, and a third catalog's record of those
 /// dumps, which awaits review: the editions of the first two, the third's, and its item id.
 fn reviewed_dumps(catalog: &SqliteCatalog) -> (i64, i64, i64, i64) {
