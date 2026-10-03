@@ -10,9 +10,10 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, GameSelection,
     ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
-    QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
-    SourceFailureStage, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
-    match_asset_candidate_to_release_preferring, review_matches_for_asset_candidate,
+    PlatformBoundGameSelector, QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceFailureStage, StoredObject, ValidatedMatchingPolicy,
+    confirmed_asset_candidate_match, match_asset_candidate_to_release_preferring,
+    review_matches_for_asset_candidate,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -671,26 +672,23 @@ pub(crate) struct DiscoveryBatch {
 /// The batch of the discovery of `connector` that starts at game `first_game` of `request`: the
 /// whole request, as its only batch, unless the connector looks games up a few at a time and the
 /// request names more. A game named without its platform is looked up on every requested
-/// platform, each lookup counting toward the batch.
+/// platform, each lookup counting toward the batch, and a game named twice, regardless of case
+/// and surrounding spaces, counts once.
 pub(crate) fn discovery_batch(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
     first_game: usize,
 ) -> Result<DiscoveryBatch, ApplicationError> {
-    let whole = |games| DiscoveryBatch {
+    let games = unique_games(request.games());
+    let count = game_count(&games);
+    let whole = || DiscoveryBatch {
         request: request.clone(),
-        games,
+        games: count,
         last: true,
     };
-    let (count, lookups_per_game) = match request.games() {
-        GameSelection::All => return Ok(whole(0)),
-        GameSelection::Explicit(games) => (games.len(), request.platforms().len().max(1)),
-        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => (games.len(), 1),
+    let Some(size) = batch_size(request, connector) else {
+        return Ok(whole());
     };
-    let Some(lookups) = connector.discovery_batch_size().filter(|size| *size > 0) else {
-        return Ok(whole(count));
-    };
-    let size = (lookups / lookups_per_game).max(1);
     // Games past the last stand for the last batch.
     let start = if first_game < count {
         first_game
@@ -699,23 +697,133 @@ pub(crate) fn discovery_batch(
     };
     let end = (start + size).min(count);
     if start == 0 && end == count {
-        return Ok(whole(count));
+        return Ok(whole());
     }
-    let games = match request.games() {
+    Ok(DiscoveryBatch {
+        request: with_games(request, slice(&games, start, end))?,
+        games: end - start,
+        last: end == count,
+    })
+}
+
+/// The requests `connector` is asked about before a run starts: the first batch of its
+/// discovery and, for games named with their platforms, a game of each platform that batch
+/// leaves out, batched alike, so a platform only a later batch names is checked too.
+pub(crate) fn planned_batches(
+    request: &AcquisitionRequest,
+    connector: &dyn ConnectorPort,
+) -> Result<Vec<AcquisitionRequest>, ApplicationError> {
+    let first = discovery_batch(request, connector, 0)?;
+    let first_platforms: HashSet<String> = platforms_named(first.request.games()).collect();
+    let mut checked = vec![first.request];
+    let (Some(size), false) = (batch_size(request, connector), first.last) else {
+        return Ok(checked);
+    };
+    let games = unique_games(request.games());
+    let (GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors)) = &games
+    else {
+        return Ok(checked);
+    };
+    let mut seen = first_platforms;
+    let others: Vec<PlatformBoundGameSelector> = selectors
+        .iter()
+        .filter(|selector| seen.insert(name_key(&selector.platform)))
+        .cloned()
+        .collect();
+    for chunk in others.chunks(size) {
+        let part = match &games {
+            GameSelection::QueryResult(_) => GameSelection::QueryResult(chunk.to_vec()),
+            _ => GameSelection::PlatformBound(chunk.to_vec()),
+        };
+        checked.push(with_games(request, part)?);
+    }
+    Ok(checked)
+}
+
+/// How many games one discovery of `connector` looks up for `request`, when it looks games up a
+/// few at a time: a game named without its platform takes a lookup on each requested platform.
+fn batch_size(request: &AcquisitionRequest, connector: &dyn ConnectorPort) -> Option<usize> {
+    let lookups = connector.discovery_batch_size().filter(|size| *size > 0)?;
+    let lookups_per_game = match request.games() {
+        GameSelection::Explicit(_) => request.platforms().len().max(1),
+        _ => 1,
+    };
+    Some((lookups / lookups_per_game).max(1))
+}
+
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// `games`, each once regardless of case and surrounding spaces, in request order.
+fn unique_games(games: &GameSelection) -> GameSelection {
+    let mut seen = HashSet::new();
+    match games {
+        GameSelection::All => GameSelection::All,
+        GameSelection::Explicit(games) => GameSelection::Explicit(
+            games
+                .iter()
+                .filter(|game| seen.insert((name_key(game), String::new())))
+                .cloned()
+                .collect(),
+        ),
+        GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors) => {
+            let unique = selectors
+                .iter()
+                .filter(|selector| {
+                    seen.insert((name_key(&selector.game), name_key(&selector.platform)))
+                })
+                .cloned()
+                .collect();
+            match games {
+                GameSelection::QueryResult(_) => GameSelection::QueryResult(unique),
+                _ => GameSelection::PlatformBound(unique),
+            }
+        }
+    }
+}
+
+fn game_count(games: &GameSelection) -> usize {
+    match games {
+        GameSelection::All => 0,
+        GameSelection::Explicit(games) => games.len(),
+        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => games.len(),
+    }
+}
+
+/// The games of `games` from `start` to `end`.
+fn slice(games: &GameSelection, start: usize, end: usize) -> GameSelection {
+    match games {
+        GameSelection::All => GameSelection::All,
         GameSelection::Explicit(games) => GameSelection::Explicit(games[start..end].to_vec()),
         GameSelection::PlatformBound(games) => {
             GameSelection::PlatformBound(games[start..end].to_vec())
         }
         GameSelection::QueryResult(games) => GameSelection::QueryResult(games[start..end].to_vec()),
-        GameSelection::All => unreachable!("a request for every game is discovered at once"),
+    }
+}
+
+/// The platforms `games` names with its games, regardless of case and surrounding spaces.
+fn platforms_named(games: &GameSelection) -> impl Iterator<Item = String> + '_ {
+    let selectors: &[PlatformBoundGameSelector] = match games {
+        GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors) => {
+            selectors
+        }
+        _ => &[],
     };
+    selectors
+        .iter()
+        .map(|selector| name_key(&selector.platform))
+}
+
+/// `request` naming `games` instead of its own.
+fn with_games(
+    request: &AcquisitionRequest,
+    games: GameSelection,
+) -> Result<AcquisitionRequest, ApplicationError> {
     let mut draft = request.to_draft();
     draft.games = games;
-    Ok(DiscoveryBatch {
-        request: build_acquisition_request(draft)?,
-        games: end - start,
-        last: end == count,
-    })
+    Ok(build_acquisition_request(draft)?)
 }
 
 fn discover_work(

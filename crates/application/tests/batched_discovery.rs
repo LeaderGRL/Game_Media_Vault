@@ -8,11 +8,17 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, AssetType,
-    ConnectorCapabilities, GameSelection, ImportedAsset, SourceId, SourceSelection,
+    ConnectorCapabilities, GameSelection, ImportedAsset, PlatformBoundGameSelector, SourceId,
+    SourceSelection,
 };
 use support::*;
 
+const NES: &str = "Nintendo - Nintendo Entertainment System";
+
 const GAMES: [&str; 5] = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"];
+
+/// A platform the per-game Sources of these tests do not serve.
+const SATURN: &str = "Sega - Saturn";
 
 /// A Source that looks games up one by one, as those under a quota do: it serves a Box Front
 /// for every game a request names, at most `batch` games per discovery.
@@ -49,7 +55,18 @@ impl PerGameSource {
 fn games_of(request: &AcquisitionRequest) -> Vec<String> {
     match request.games() {
         GameSelection::Explicit(games) => games.clone(),
+        GameSelection::PlatformBound(games) => games.iter().map(|game| game.game.clone()).collect(),
         other => panic!("the tests name their games: {other:?}"),
+    }
+}
+
+/// The platforms a request names its games on, or its own platforms.
+fn platforms_of(request: &AcquisitionRequest) -> Vec<String> {
+    match request.games() {
+        GameSelection::PlatformBound(games) => {
+            games.iter().map(|game| game.platform.clone()).collect()
+        }
+        _ => request.platforms().to_vec(),
     }
 }
 
@@ -75,7 +92,16 @@ impl ConnectorPort for PerGameSource {
         &self,
         request: &AcquisitionRequest,
     ) -> Result<Option<String>, PortError> {
-        let lookups = games_of(request).len() * request.platforms().len();
+        if platforms_of(request)
+            .iter()
+            .any(|platform| platform == SATURN)
+        {
+            return Ok(Some(format!("{SATURN} is not served")));
+        }
+        let lookups = match request.games() {
+            GameSelection::Explicit(games) => games.len() * request.platforms().len(),
+            _ => games_of(request).len(),
+        };
         Ok((lookups > self.batch).then(|| format!("more than {} lookups at once", self.batch)))
     }
 
@@ -261,4 +287,54 @@ fn the_work_of_a_recorded_batch_is_executed_before_the_next_batch_is_discovered(
     // Each batch is looked up once the media of the previous one are downloaded.
     assert_eq!(*source.downloads_at_lookups.borrow(), [0, 2, 4]);
     assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
+}
+
+#[test]
+fn a_game_named_twice_is_looked_up_once() {
+    let vault = vault_knowing_every_game();
+    let source = PerGameSource::new("per-game", 2);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&source];
+    let mut repeated = draft(&["per-game"]);
+    repeated.games = GameSelection::Explicit(names(&[
+        "Alpha", "Alpha", "Bravo", "alpha", "Bravo", "Charlie",
+    ]));
+    let run_id = start_acquisition_run_with_connectors(&vault, repeated, &connectors)
+        .unwrap()
+        .id;
+
+    execute(&vault, &[&source], run_id).unwrap();
+
+    assert_eq!(
+        source.lookups(),
+        [names(&["Alpha", "Bravo"]), names(&["Charlie"])]
+    );
+}
+
+#[test]
+fn a_platform_a_later_batch_names_is_checked_when_the_run_starts() {
+    let vault = vault_knowing_every_game();
+    let source = PerGameSource::new("per-game", 2);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&source];
+    let mut bound = draft(&["per-game"]);
+    bound.platforms.push(SATURN.to_owned());
+    bound.games = GameSelection::PlatformBound(
+        [
+            ("Alpha", NES),
+            ("Bravo", NES),
+            ("Charlie", NES),
+            ("Panzer", SATURN),
+        ]
+        .iter()
+        .map(|(game, platform)| PlatformBoundGameSelector {
+            game: (*game).to_owned(),
+            platform: (*platform).to_owned(),
+        })
+        .collect(),
+    );
+
+    // The Source refuses the Saturn game of the second batch, so no run starts without it.
+    let error = start_acquisition_run_with_connectors(&vault, bound, &connectors).unwrap_err();
+
+    assert!(error.to_string().contains(SATURN), "{error}");
+    assert!(source.lookups().is_empty());
 }
