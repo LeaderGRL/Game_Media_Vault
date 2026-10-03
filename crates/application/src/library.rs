@@ -104,7 +104,7 @@ pub fn latest_media(
 
 /// Searches the Library. Releases are ordered by title, platform, region and edition, then by
 /// Release Edition; a page resumes after its cursor's place in that order and, given the `as_of`
-// of the first page, searches the same Release Editions in the same order, so releases added
+/// of the first page, searches the same Release Editions in the same order, so releases added
 /// between two pages never repeat or shift later pages. Filters see the current state of each
 /// release, which can change between pages.
 pub fn search_library(
@@ -124,7 +124,7 @@ pub fn search_library(
             .max()
             .unwrap_or(0)
     });
-    releases.retain(|release| release.entry.release_edition_id <= as_of);
+    // Every platform holding media now, even past the snapshot a later page keeps to.
     let platforms_with_media: Vec<String> = releases
         .iter()
         .filter(|release| !release.entry.assets.is_empty())
@@ -132,6 +132,7 @@ pub fn search_library(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    releases.retain(|release| release.entry.release_edition_id <= as_of);
     releases.sort_by_cached_key(sort_key);
     let start = match query.after {
         Some(after) => {

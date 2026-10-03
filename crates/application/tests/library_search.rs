@@ -296,6 +296,37 @@ fn a_page_names_every_platform_whose_releases_hold_media() {
 }
 
 #[test]
+fn a_later_page_names_the_platforms_that_gained_media_since_the_first() {
+    let vault = FakeVault::with_library(library());
+    let first = search_library(&vault, &vault, &LibraryQuery::default()).unwrap();
+    // Media of a new platform arrive between two pages.
+    vault.library.borrow_mut().push(with_asset(
+        release(9, "Wipeout", "Sony - PlayStation", "Europe"),
+        AssetType::BoxFront,
+        "libretro-thumbnails",
+    ));
+
+    let next = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            after: first
+                .releases
+                .first()
+                .map(|release| release.entry.release_edition_id),
+            as_of: Some(first.as_of),
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        next.platforms_with_media,
+        [DS_DIGITAL, SNES, "Sony - PlayStation"]
+    );
+}
+
+#[test]
 fn the_latest_media_come_newest_first() {
     let vault = FakeVault::with_library(vec![
         with_asset(
