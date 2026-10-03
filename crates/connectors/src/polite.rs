@@ -84,6 +84,8 @@ impl SiteManners {
             match &*asked {
                 Some(known) => Arc::clone(known),
                 None => {
+                    // Reading robots.txt is a request too, which waits its turn, failing or not.
+                    thread::sleep(take_turn(&site.next, self.delay));
                     // A failure to read it is kept for no one: the next request reads it again.
                     let read = Arc::new(self.visit(&origin, transport)?);
                     // Reading robots.txt was a request too.
@@ -106,14 +108,7 @@ impl SiteManners {
             }
             Ok(_) => {}
         }
-        let wait = {
-            let mut next = site.next.lock().unwrap_or_else(PoisonError::into_inner);
-            let now = Instant::now();
-            let turn = (*next).max(now);
-            *next = turn + asked.delay;
-            turn - now
-        };
-        thread::sleep(wait);
+        thread::sleep(take_turn(&site.next, asked.delay));
         Ok(())
     }
 
@@ -143,6 +138,16 @@ impl SiteManners {
         }
         Ok(Asked { rules, delay })
     }
+}
+
+/// How long a request must wait for its turn at a site whose next request may leave at `next`,
+/// which then moves `delay` past that turn.
+fn take_turn(next: &Mutex<Instant>, delay: Duration) -> Duration {
+    let mut next = next.lock().unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    let turn = (*next).max(now);
+    *next = turn + delay;
+    turn - now
 }
 
 /// The robots.txt rules of `origin` for this application, from its first half mebibyte: none

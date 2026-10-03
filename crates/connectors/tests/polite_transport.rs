@@ -341,3 +341,17 @@ fn a_robots_txt_that_failed_to_load_is_read_again_by_the_next_request() {
         "page"
     );
 }
+
+#[test]
+fn a_failed_robots_txt_read_is_followed_by_the_pause_too() {
+    let site = Website::with(&[], &[ROBOTS]);
+    let polite = PoliteTransport::with_delay(&site, Duration::from_millis(60));
+
+    assert!(read(&polite, "https://example.org/games/a.html").is_err());
+    assert!(read(&polite, "https://example.org/games/a.html").is_err());
+
+    // Each failed read of robots.txt was a request, and the next one waited its turn.
+    let requests = site.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].1 - requests[0].1 + TIMER_SLACK >= Duration::from_millis(60));
+}
