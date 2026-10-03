@@ -10,8 +10,8 @@ use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApiKey, ApplicationError, ConnectorPort,
     DEFAULT_LIBRARY_PAGE_SIZE, DownloadLimits, ErrorKind, ImportLocalAssetRequest,
-    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PortError,
-    ReferenceCatalogSourcePort, RepairActions, RepairSummary, VaultReport,
+    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PlatformCatalogSourcePort,
+    PortError, ReferenceCatalogSourcePort, RepairActions, RepairSummary, VaultReport,
     acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     clear_source_credential, derive_assets, derive_packaging_models, describe_sources,
     draft_from_document, export_acquisition_request, import_local_asset, import_reference_catalog,
@@ -19,10 +19,12 @@ use game_media_vault_application::{
     list_library, list_reference_review_items, list_review_items, load_acquisition_run,
     machine_connectors, pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
     resume_acquisition_run, search_library, set_source_credential, set_source_enabled,
-    start_acquisition_run_with_connectors, summarize_source_failures, verify_vault,
+    start_acquisition_run_with_connectors, summarize_source_failures, sync_platform_catalog,
+    verify_vault,
 };
 use game_media_vault_connectors::{
-    MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
+    LibretroDatabase, MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog,
+    registered_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetType, AssetTypeSelector,
@@ -402,6 +404,12 @@ enum ReferenceCommand {
         #[command(subcommand)]
         command: ReferenceReviewCommand,
     },
+    /// Imports the game list libretro-database publishes for a platform, so that the media of
+    /// its games have releases to match, without a datafile to import.
+    Sync {
+        #[arg(long)]
+        platform: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -589,6 +597,22 @@ pub fn run_on_machine<I, T>(
     registered: &[&dyn ConnectorPort],
     machine: Machine<'_>,
     input: &mut dyn BufRead,
+) -> Result<String, CliError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    run_in_context(args, registered, machine, input, &LibretroDatabase::new())
+}
+
+/// Runs a command line as `run_on_machine` does, reading platforms' game lists from
+/// `platform_catalogs`.
+pub fn run_in_context<I, T>(
+    args: I,
+    registered: &[&dyn ConnectorPort],
+    machine: Machine<'_>,
+    input: &mut dyn BufRead,
+    platform_catalogs: &dyn PlatformCatalogSourcePort,
 ) -> Result<String, CliError>
 where
     I: IntoIterator<Item = T>,
@@ -853,6 +877,16 @@ where
                 }
             };
             Ok(serde_json::to_string_pretty(&items)?)
+        }
+        Command::Reference {
+            command: ReferenceCommand::Sync { platform },
+        } => {
+            let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+            Ok(serde_json::to_string_pretty(&sync_platform_catalog(
+                &catalog,
+                platform_catalogs,
+                &platform,
+            )?)?)
         }
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;

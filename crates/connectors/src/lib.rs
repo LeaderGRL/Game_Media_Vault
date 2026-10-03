@@ -16,6 +16,7 @@ use game_media_vault_domain::{
 
 mod datafile;
 mod launchbox;
+mod libretro_database;
 mod mame;
 mod naming;
 mod polite;
@@ -30,6 +31,7 @@ mod thegamesdb;
 mod vgmaps;
 mod xml;
 
+pub use libretro_database::LibretroDatabase;
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
 pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
@@ -775,11 +777,11 @@ fn repository_name(url: &str) -> Result<String, PortError> {
     Ok(repository.to_owned())
 }
 
-const NO_INTRO: DatafileSource = DatafileSource {
+pub(crate) const NO_INTRO: DatafileSource = DatafileSource {
     id: NO_INTRO_SOURCE_ID,
     name: "No-Intro",
 };
-const REDUMP: DatafileSource = DatafileSource {
+pub(crate) const REDUMP: DatafileSource = DatafileSource {
     id: REDUMP_SOURCE_ID,
     name: "Redump",
 };

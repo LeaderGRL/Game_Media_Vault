@@ -2392,3 +2392,70 @@ fn each_credential_of_a_source_is_stored_by_name() {
         .cloned();
     assert_eq!(kept.as_deref(), Some("s3cret"));
 }
+
+/// The game list of the NES alone, as libretro-database would publish it.
+struct NesGameList;
+
+impl game_media_vault_application::PlatformCatalogSourcePort for NesGameList {
+    fn platform_releases(
+        &self,
+        platform: &str,
+    ) -> Result<Option<game_media_vault_application::ReferenceCatalogRead>, PortError> {
+        Ok(
+            (platform == "Nintendo - Nintendo Entertainment System").then(|| {
+                game_media_vault_application::ReferenceCatalogRead {
+                    releases: vec![game_media_vault_domain::ReferenceReleaseRecord {
+                        game_title: "Super Mario Bros.".to_owned(),
+                        platform: platform.to_owned(),
+                        region: "World".to_owned(),
+                        revision: None,
+                        edition_name: "Standard".to_owned(),
+                        assertions: vec![game_media_vault_domain::ReleaseAssertion {
+                            source_id: "no-intro".into(),
+                            source_location: "https://raw.githubusercontent.com/nes.dat".to_owned(),
+                            field: game_media_vault_domain::ReleaseAssertionField::Identifier,
+                            qualifier: Some("source_record".to_owned()),
+                            value: "nes:Super Mario Bros. (World)".to_owned(),
+                        }],
+                    }],
+                    skipped_records: 0,
+                }
+            }),
+        )
+    }
+}
+
+#[test]
+fn a_platforms_game_list_is_synced_without_a_datafile() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let machine = Machine {
+        settings: &MachineSettingsFile::at(temp.path().join("settings.json")),
+        credentials: &NoCredentials,
+    };
+
+    let synced: serde_json::Value = serde_json::from_str(
+        &game_media_vault_cli::run_in_context(
+            cli_args(
+                &vault,
+                &[
+                    "reference",
+                    "sync",
+                    "--platform",
+                    "Nintendo - Nintendo Entertainment System",
+                ],
+            ),
+            &[],
+            machine,
+            &mut std::io::empty(),
+            &NesGameList,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(synced["imported_releases"], 1);
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    assert_eq!(library[0]["game_title"], "Super Mario Bros.");
+}
