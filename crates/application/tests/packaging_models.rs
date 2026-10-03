@@ -136,6 +136,7 @@ fn scan(asset_id: i64, asset_type: AssetType, hash: &str) -> LibraryAsset {
             media_type: "image/png".to_owned(),
             width: Some(1000),
             height: Some(1400),
+            document: None,
         },
         original_filename: format!("{hash}.png"),
         provenance: vec![AssetProvenance {

@@ -446,6 +446,8 @@ fn retained_assets(
                         media_type: row.get(4)?,
                         width: row.get(5)?,
                         height: row.get(6)?,
+                        // Ranking weighs no document metadata.
+                        document: None,
                     },
                 ))
             },

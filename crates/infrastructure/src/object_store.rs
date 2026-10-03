@@ -15,7 +15,10 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{MediaInfo, StoredObject};
 
-use crate::media::MediaInspector;
+use crate::{
+    image_transform::DEFAULT_MAX_ORIGINAL_BYTES,
+    media::{MediaInspector, document_metadata},
+};
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -33,11 +36,22 @@ fn staging_in_progress() -> MutexGuard<'static, BTreeSet<PathBuf>> {
 /// BLAKE3-addressed store of immutable original bytes (ADR 0002).
 pub struct ContentAddressedStore {
     root: PathBuf,
+    max_document_bytes: u64,
 }
 
 impl ContentAddressedStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            max_document_bytes: DEFAULT_MAX_ORIGINAL_BYTES,
+        }
+    }
+
+    /// Describes no PDF original larger than `max_document_bytes`, since reading what it says of
+    /// itself loads the whole file into memory.
+    pub fn with_max_document_bytes(mut self, max_document_bytes: u64) -> Self {
+        self.max_document_bytes = max_document_bytes;
+        self
     }
 
     pub fn object_path(&self, hash: &str) -> PathBuf {
@@ -116,7 +130,16 @@ impl ContentAddressedStore {
 impl ObjectStorePort for ContentAddressedStore {
     fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         let staged = self.stage(reader)?;
-        self.publish(staged, "objects")
+        let mut stored = self.publish(staged, "objects")?;
+        // A PDF describes itself past the prefix inspection streams, so its file is read once
+        // stored, unless it is too large to read into memory.
+        if stored.media.media_type == "application/pdf"
+            && stored.byte_len <= self.max_document_bytes
+        {
+            stored.media.document =
+                document_metadata(&self.object_path(&stored.hash)).map(Box::new);
+        }
+        Ok(stored)
     }
 }
 

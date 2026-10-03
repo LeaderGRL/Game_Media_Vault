@@ -1037,12 +1037,15 @@ pub struct StoredObject {
     pub media: MediaInfo,
 }
 
-/// What an original is, read from its bytes: its media type and, for images, its pixel size.
+/// What an original is, read from its bytes: its media type and, for images, its pixel size;
+/// for a PDF document, what its file says of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaInfo {
     pub media_type: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    #[serde(default)]
+    pub document: Option<Box<DocumentMetadata>>,
 }
 
 impl MediaInfo {
@@ -1052,8 +1055,27 @@ impl MediaInfo {
             media_type: "application/octet-stream".to_owned(),
             width: None,
             height: None,
+            document: None,
         }
     }
+}
+
+/// What a PDF document says of itself: its page count, the PDF version it declares, whether it
+/// declares encryption, and the entries of its Info dictionary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentMetadata {
+    /// Unknown when the page tree cannot be read, as behind a password.
+    pub page_count: Option<u32>,
+    pub version: String,
+    pub encrypted: bool,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub subject: Option<String>,
+    pub keywords: Option<String>,
+    pub creator: Option<String>,
+    pub producer: Option<String>,
+    pub creation_date: Option<String>,
+    pub modification_date: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

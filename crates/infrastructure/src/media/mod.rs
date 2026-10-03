@@ -5,12 +5,14 @@ mod boxes;
 mod heif;
 mod jpeg;
 mod jxl;
+mod pdf;
 mod pnm;
 mod tiff;
 
 use heif::HeifPropertyScanner;
 use jpeg::JpegFrameScanner;
 use jxl::JxlCodestreamScanner;
+pub(crate) use pdf::document_metadata;
 use pnm::PnmHeaderScanner;
 use tiff::TiffDirectoryScanner;
 
@@ -39,6 +41,7 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
                 media_type: media_type.to_owned(),
                 width: None,
                 height: None,
+                document: None,
             };
         }
     }
@@ -53,6 +56,7 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
         media_type: media_type.to_owned(),
         width: size.and_then(|size| u32::try_from(size.width).ok()),
         height: size.and_then(|size| u32::try_from(size.height).ok()),
+        document: None,
     }
 }
 

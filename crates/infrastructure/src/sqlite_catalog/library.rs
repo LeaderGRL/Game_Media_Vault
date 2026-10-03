@@ -26,7 +26,7 @@ impl SqliteCatalog {
                         a.id, a.asset_type, a.object_hash, a.byte_len, a.original_filename,
                         p.source_kind, p.source_asset_label, p.source_location,
                         p.match_decision_json,
-                        a.media_type, a.width, a.height
+                        a.media_type, a.width, a.height, a.document_json
                      FROM release_editions r
                      JOIN games g ON g.id = r.game_id
                      LEFT JOIN assets a ON a.release_edition_id = r.id
@@ -124,6 +124,16 @@ impl SqliteCatalog {
                         })?,
                     width: row.get(16).map_err(sql_error)?,
                     height: row.get(17).map_err(sql_error)?,
+                    document: row
+                        .get::<_, Option<String>>(18)
+                        .map_err(sql_error)?
+                        .map(|json| serde_json::from_str(&json))
+                        .transpose()
+                        .map_err(|error| {
+                            PortError::new(format!(
+                                "catalog contains invalid document metadata: {error}"
+                            ))
+                        })?,
                 };
                 let mut provenance = Vec::new();
                 if let (Some(id), Some(location)) = (source_id, source_location) {

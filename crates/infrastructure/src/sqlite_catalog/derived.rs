@@ -104,6 +104,7 @@ pub(super) fn derived_by_original(
                     media_type: row.get(4).map_err(sql_error)?,
                     width: row.get(5).map_err(sql_error)?,
                     height: row.get(6).map_err(sql_error)?,
+                    document: None,
                 },
             });
     }

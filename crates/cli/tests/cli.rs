@@ -536,6 +536,81 @@ fn imports_a_local_manual_unchanged() {
     assert_eq!(asset["media_type"], "application/pdf");
     assert_eq!(asset["byte_len"], bytes.len());
     assert_eq!(asset["original_filename"], "manual.pdf");
+    // Its file is no PDF a parser can read, so it describes nothing more.
+    assert!(asset["document"].is_null());
+}
+
+/// A PDF of `pages` blank pages whose Info dictionary names `title`, with a correct cross-reference
+/// table.
+fn pdf(title: &str, pages: usize) -> Vec<u8> {
+    let kids: Vec<String> = (0..pages).map(|page| format!("{} 0 R", 4 + page)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {pages} >>",
+            kids.join(" ")
+        ),
+        format!("<< /Title ({title}) /Author (Konami) >>"),
+    ];
+    objects.extend(
+        (0..pages).map(|_| "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_owned()),
+    );
+    let mut bytes = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for offset in offsets {
+        bytes.extend(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R /Info 3 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    bytes
+}
+
+#[test]
+fn the_metadata_of_a_pdf_manual_is_cataloged() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("manual.pdf");
+    fs::write(&source, pdf("Metal Gear Solid Manual", 2)).unwrap();
+
+    run_in_vault(
+        &vault,
+        &[
+            "import-asset",
+            "--asset-type",
+            "manual",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let document = &library[0]["assets"][0]["document"];
+    assert_eq!(document["page_count"], 2);
+    assert_eq!(document["title"], "Metal Gear Solid Manual");
+    assert_eq!(document["author"], "Konami");
+    assert_eq!(document["version"], "1.4");
+    assert_eq!(document["encrypted"], false);
 }
 
 #[test]

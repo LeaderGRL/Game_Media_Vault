@@ -1069,6 +1069,7 @@ fn box_front_record(object_hash: &str, width: u32, height: u32) -> PersistAsset 
             media_type: "image/png".to_owned(),
             width: Some(width),
             height: Some(height),
+            document: None,
         },
         ..auto_linked_record()
     }

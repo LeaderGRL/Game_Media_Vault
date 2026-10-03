@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 13;
+const VAULT_SCHEMA_VERSION: i32 = 14;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -29,7 +29,16 @@ const MIGRATIONS: &[Migration] = &[
     add_reference_dump_sets,
     add_run_work_source_index,
     add_reference_review_items,
+    add_asset_document_metadata,
 ];
+
+/// Version 14 records what each PDF original says of itself. Assets stored before keep none. The
+/// column matches the `assets` layout of `SCHEMA`.
+fn add_asset_document_metadata(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch("ALTER TABLE assets ADD COLUMN document_json TEXT;")
+        .map_err(sql_error)
+}
 
 /// Version 13 keeps the reference records whose evidence points at several editions of other
 /// sources, for a human to tell apart. The table matches `SCHEMA`.
@@ -245,6 +254,8 @@ const SCHEMA: &str = "
         media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
         width INTEGER CHECK(width IS NULL OR width > 0),
         height INTEGER CHECK(height IS NULL OR height > 0),
+        -- What a PDF original says of itself, as JSON, or NULL for other media.
+        document_json TEXT,
         UNIQUE(release_edition_id, asset_type, object_hash)
     );
     CREATE TABLE asset_provenance (
