@@ -12,6 +12,7 @@ mod tiff;
 use heif::HeifPropertyScanner;
 use jpeg::JpegFrameScanner;
 use jxl::JxlCodestreamScanner;
+pub(crate) use pdf::document_metadata;
 use pnm::PnmHeaderScanner;
 use tiff::TiffDirectoryScanner;
 
@@ -29,8 +30,6 @@ pub fn inspect_media(bytes: &[u8]) -> MediaInfo {
 
 /// Identifies an original from its first bytes: its media type and, for images whose header
 /// fits in `header`, their pixel size.
-pub(crate) use pdf::document_metadata;
-
 fn inspect_header(header: &[u8]) -> MediaInfo {
     for (signature, media_type) in [
         (&b"%PDF-"[..], "application/pdf"),
