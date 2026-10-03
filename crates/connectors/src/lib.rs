@@ -1,13 +1,14 @@
 use std::{
     io::Read,
     path::Path,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     thread,
     time::{Duration, SystemTime},
 };
 
 use game_media_vault_application::{
-    ConnectorPort, PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort,
+    ApiKey, ConnectorPort, CredentialStorePort, PortError, ReferenceCatalogRead,
+    ReferenceCatalogSourcePort,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
@@ -19,10 +20,12 @@ mod mame;
 mod naming;
 mod resume;
 mod retry;
+mod steamgriddb;
 mod xml;
 
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use retry::RetryPolicy;
+pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
 
 pub use launchbox::{
     DatasetCache, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
@@ -49,11 +52,15 @@ const THUMBNAIL_FOLDERS: [(AssetType, &str); 3] = [
 const LIBRETRO_GITMODULES_URL: &str =
     "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules";
 
-/// The connector of every implemented Source, in the order `Auto` considers them.
-pub fn registered_connectors() -> Vec<Box<dyn ConnectorPort>> {
+/// The connector of every implemented Source, in the order `Auto` considers them. Those that
+/// need an API key read it from this machine's `credentials`.
+pub fn registered_connectors(
+    credentials: Arc<dyn CredentialStorePort>,
+) -> Vec<Box<dyn ConnectorPort>> {
     vec![
         Box::new(LibretroThumbnailsConnector::new()),
         Box::new(LaunchBoxGamesDbConnector::new()),
+        Box::new(SteamGridDbConnector::new(credentials)),
     ]
 }
 
@@ -89,6 +96,16 @@ pub trait HttpTransport: Send + Sync {
         })
     }
 
+    /// Fetches `url` from an API that needs `api_key`, sent as a bearer token, and returns the
+    /// body, which such APIs keep small. A transport that cannot send a key refuses rather than
+    /// dropping it. Errors never show the key.
+    fn get_authorized(&self, url: &str, api_key: &ApiKey) -> Result<Vec<u8>, PortError> {
+        let _ = api_key;
+        Err(PortError::new(format!(
+            "this transport cannot send the API key {url} needs"
+        )))
+    }
+
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
         let mut stream = self.get_stream(url)?;
         let mut bytes = Vec::new();
@@ -98,6 +115,9 @@ pub trait HttpTransport: Send + Sync {
         Ok(bytes)
     }
 }
+
+/// The largest answer an API is trusted to send, which keeps a misbehaving one from filling memory.
+const MAX_API_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 pub struct ReqwestHttpTransport {
     client: Client,
@@ -124,8 +144,17 @@ impl ReqwestHttpTransport {
     /// Requests `url` once, asking for it only if it changed since `known`. A success, or a 304
     /// Not Modified answer to a request naming a known version, is a response; anything else
     /// is a failure.
-    fn attempt(&self, url: &str, known: &Validators) -> Result<Response, FailedRequest> {
+    fn attempt(
+        &self,
+        url: &str,
+        known: &Validators,
+        bearer: Option<&str>,
+    ) -> Result<Response, FailedRequest> {
         let mut request = self.client.get(url);
+        // The client drops it on a redirect to another host.
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
         if let Some(etag) = &known.etag {
             request = request.header(IF_NONE_MATCH, etag);
         }
@@ -169,15 +198,32 @@ struct FailedRequest {
 }
 
 impl HttpTransport for ReqwestHttpTransport {
+    fn get_authorized(&self, url: &str, api_key: &ApiKey) -> Result<Vec<u8>, PortError> {
+        let (response, _) = self.send(url, &Validators::default(), Some(api_key.expose()))?;
+        let mut body = Vec::new();
+        response
+            .take(MAX_API_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| {
+                PortError::new(format!("failed to read the answer of {url}: {error}"))
+            })?;
+        if body.len() as u64 > MAX_API_RESPONSE_BYTES {
+            return Err(PortError::invalid_source_data(format!(
+                "the answer of {url} exceeds {MAX_API_RESPONSE_BYTES} bytes"
+            )));
+        }
+        Ok(body)
+    }
+
     /// Retries transient failures (connection failures, HTTP 429 and 5xx) as the retry policy
     /// allows; any other refusal fails at once.
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
-        let (response, attempts) = self.send(url, &Validators::default())?;
+        let (response, attempts) = self.send(url, &Validators::default(), None)?;
         Ok(self.body(response, attempts))
     }
 
     fn get_if_changed(&self, url: &str, known: &Validators) -> Result<Fetched, PortError> {
-        let (response, attempts) = self.send(url, known)?;
+        let (response, attempts) = self.send(url, known, None)?;
         if response.status() == StatusCode::NOT_MODIFIED {
             return Ok(Fetched::Unchanged);
         }
@@ -212,10 +258,15 @@ impl ReqwestHttpTransport {
     }
 
     /// Requests `url` as the retry policy allows, with the attempts it took.
-    fn send(&self, url: &str, known: &Validators) -> Result<(Response, u32), PortError> {
+    fn send(
+        &self,
+        url: &str,
+        known: &Validators,
+        bearer: Option<&str>,
+    ) -> Result<(Response, u32), PortError> {
         let mut attempts = 1;
         loop {
-            match self.attempt(url, known) {
+            match self.attempt(url, known, bearer) {
                 Ok(response) => return Ok((response, attempts)),
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));

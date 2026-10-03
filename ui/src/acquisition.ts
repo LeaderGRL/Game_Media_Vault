@@ -53,6 +53,7 @@ export interface AcquisitionRun {
 export const KNOWN_SOURCES = [
   { value: "libretro-thumbnails", label: "Libretro Thumbnails" },
   { value: "launchbox-games-db", label: "LaunchBox Games Database" },
+  { value: "steamgriddb", label: "SteamGridDB" },
 ];
 
 /** A registered Source as planning knows it. */

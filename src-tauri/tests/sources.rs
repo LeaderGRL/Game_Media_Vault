@@ -20,14 +20,22 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
         .iter()
         .map(|source| source.source_id.as_str())
         .collect();
-    assert_eq!(source_ids, ["libretro-thumbnails", "launchbox-games-db"]);
+    assert_eq!(
+        source_ids,
+        ["libretro-thumbnails", "launchbox-games-db", "steamgriddb"]
+    );
     assert!(sources.iter().all(|source| source.direct_media_download));
     assert!(sources.iter().all(|source| source.enabled));
-    // None of the registered Sources needs a credential yet.
-    assert!(
-        sources
-            .iter()
-            .all(|source| source.credential == CredentialState::NotNeeded)
+    // Only SteamGridDB needs a key, which this machine does not store.
+    let credentials: Vec<CredentialState> =
+        sources.iter().map(|source| source.credential).collect();
+    assert_eq!(
+        credentials,
+        [
+            CredentialState::NotNeeded,
+            CredentialState::NotNeeded,
+            CredentialState::Missing
+        ]
     );
 }
 

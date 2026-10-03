@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use game_media_vault_application::ApiKey;
 use game_media_vault_connectors::{
     Fetched, HttpTransport, ReqwestHttpTransport, RetryPolicy, Validators,
 };
@@ -500,4 +501,42 @@ fn an_unchanged_answer_to_a_request_naming_no_version_is_refused() {
 
     assert!(error.message().contains("304"), "{}", error.message());
     assert_eq!(served.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_authorized_request_carries_its_api_key_as_a_bearer_token() {
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"success\":true}".to_vec(),
+    ]);
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let body = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_authorized(&url, &key)
+        .unwrap();
+
+    assert_eq!(body, b"{\"success\":true}");
+    let request = requests.lock().unwrap()[0].to_lowercase();
+    assert!(
+        request.contains("authorization: bearer zq-test-key"),
+        "{request}"
+    );
+}
+
+#[test]
+fn a_refused_authorized_request_never_shows_its_api_key() {
+    let (url, _) = serve_raw(vec![
+        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    ]);
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_authorized(&url, &key)
+        .unwrap_err();
+
+    assert!(error.message().contains("401"), "{}", error.message());
+    assert!(
+        !error.message().contains("zq-test-key"),
+        "{}",
+        error.message()
+    );
 }
