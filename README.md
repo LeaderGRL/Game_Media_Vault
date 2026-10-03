@@ -47,7 +47,7 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   unchanged; a PDF original records its page count, title and author, and the Library shows
   them.
 - **Derived Assets**: reproducible PNG thumbnails rendered from originals without touching them,
-  the first page of a PDF included once the machine provides pdfium
+  the first page of a PDF included with pdfium, which release builds ship
   ([ADR 0006](docs/adr/0006-render-pdf-previews-with-pdfium-from-explicit-directories.md)),
   and 3D models (glTF binary) of complete cardboard boxes built from their front, back and spine
   scans, which the desktop previews in 3D.
