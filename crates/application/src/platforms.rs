@@ -117,7 +117,7 @@ fn same_platform(listed: &str, requested: &str) -> bool {
 
 /// The name Sources know a release by: the name of its datafile entry, which carries its region
 /// and edition tags, or else its title followed by its region and edition tags.
-fn release_name(release: &LibraryEntry) -> String {
+pub(crate) fn release_name(release: &LibraryEntry) -> String {
     release
         .assertions
         .iter()

@@ -6,7 +6,7 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApiKey, ApplicationError, ConnectorPort,
-    DerivationSummary, DescribedReferenceReviewItem, DownloadLimits, ErrorKind,
+    DerivationSummary, DescribedReferenceReviewItem, DownloadLimits, ErrorKind, ExportSummary,
     ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, Machine, PackagingModelSummary,
     PlatformCatalogSourcePort, PortError, ReferenceCatalogSourcePort, ReferenceImportSummary,
     SourceDescription, SourceFailureSummary, VaultReport,
@@ -16,7 +16,8 @@ use game_media_vault_application::{
     clear_source_credential as clear_source_credential_use_case,
     derive_assets as derive_assets_use_case,
     derive_packaging_models as derive_packaging_models_use_case, describe_sources,
-    expand_every_game, import_reference_catalog as import_reference_catalog_use_case,
+    expand_every_game, export_library as export_library_use_case,
+    import_reference_catalog as import_reference_catalog_use_case,
     keep_reference_review_item_apart as keep_reference_review_item_apart_use_case,
     link_reference_review_item as link_reference_review_item_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
@@ -42,8 +43,8 @@ use game_media_vault_domain::{
     ReviewDecision, ReviewItem,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, GltfPackagingBuilder, KeyringCredentialStore, MediaTransformers,
-    SqliteCatalog, inspect_media, machine_settings,
+    ContentAddressedStore, ExportFolder, GltfPackagingBuilder, KeyringCredentialStore,
+    MediaTransformers, SqliteCatalog, inspect_media, machine_settings,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, http, ipc::Response};
@@ -538,6 +539,46 @@ async fn load_review_preview(
     Ok(Response::new(bytes))
 }
 
+/// Copies every original of the vault at `vault_root`, or of its releases of `platforms` when
+/// some are named, to the folder `destination` names as `<platform>/<game>/<Asset Type>/<file>`.
+/// The folder must be a full path outside the vault, which only stores originals by hash.
+pub fn export_library_from_vault(
+    vault_root: &Path,
+    destination: &str,
+    platforms: &[String],
+) -> Result<ExportSummary, CommandError> {
+    let destination = Path::new(destination.trim());
+    let refused = |message: &str| CommandError {
+        kind: ErrorKind::InvalidRequest.as_str(),
+        message: message.to_owned(),
+    };
+    // The desktop has no working directory a relative path could mean.
+    if !destination.is_absolute() {
+        return Err(refused("choose a full folder path to export to"));
+    }
+    let folder = ExportFolder::outside_vault(destination, vault_root)?;
+    let catalog = open_existing_catalog(vault_root)?;
+    Ok(export_library_use_case(
+        &catalog,
+        &ContentAddressedStore::new(vault_root),
+        &folder,
+        platforms,
+    )?)
+}
+
+/// Exports on a blocking worker, since copying originals takes as long as their size.
+pub async fn export_library_from_vault_async(
+    vault_root: PathBuf,
+    destination: String,
+    platforms: Vec<String>,
+) -> Result<ExportSummary, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        export_library_from_vault(&vault_root, &destination, &platforms)
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("export", error))?
+}
+
 /// Starts a run only if the registered `connectors`, which the desktop executes it with, can
 /// plan it.
 pub fn start_acquisition_run_in_vault(
@@ -750,6 +791,15 @@ async fn plan_acquisition(
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionPlan, CommandError> {
     plan_acquisition_async(request, machine_connectors()?).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn export_library(
+    session: State<'_, VaultSession>,
+    destination: String,
+    platforms: Vec<String>,
+) -> Result<ExportSummary, CommandError> {
+    export_library_from_vault_async(session.root()?, destination, platforms).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1018,6 +1068,8 @@ pub fn run() {
         // Opens in the system browser the sites the default capability names, such as RAWG's,
         // whose terms ask for a link back.
         .plugin(tauri_plugin_opener::init())
+        // Lets the user pick the folders of a vault and of an export.
+        .plugin(tauri_plugin_dialog::init())
         .manage(VaultSession::default())
         .register_asynchronous_uri_scheme_protocol(
             OBJECT_PROTOCOL,
@@ -1042,6 +1094,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_vault,
             list_library,
+            export_library,
             search_library,
             derive_thumbnails,
             derive_packaging_models,

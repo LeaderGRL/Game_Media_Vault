@@ -2502,3 +2502,67 @@ fn a_run_started_from_a_document_for_every_game_names_the_games_of_the_platforms
         "Super Mario Bros. (World)"
     );
 }
+
+#[test]
+fn the_library_exports_to_a_folder_people_browse() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("front.png");
+    fs::write(&source, b"\x89PNG\r\n\x1a\nfront").unwrap();
+    run_in_vault(
+        &vault,
+        &[
+            "import-asset",
+            "--asset-type",
+            "box_front",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "Sony - PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let export = temp.path().join("export");
+
+    let summary: serde_json::Value = serde_json::from_str(
+        &run_in_vault(&vault, &["export", "--to", export.to_str().unwrap()]).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(summary["exported"], 1);
+    assert_eq!(
+        fs::read(
+            export
+                .join("Sony - PlayStation")
+                .join("Metal Gear Solid (France) (Original)")
+                .join("Box Front")
+                .join("front.png")
+        )
+        .unwrap(),
+        b"\x89PNG\r\n\x1a\nfront"
+    );
+}
+
+#[test]
+fn an_export_to_a_folder_within_the_vault_is_refused() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+
+    let error = run_in_vault(
+        &vault,
+        &["export", "--to", vault.join("copies").to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    // The vault stays as it was: an export only ever copies out of it.
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(!vault.join("copies").exists());
+}

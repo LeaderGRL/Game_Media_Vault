@@ -18,6 +18,7 @@ import { ReferenceReviewView } from "./ReferenceReviewView";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
   DerivationSummary,
+  ExportSummary,
   LibraryEntry,
   LibraryFilters,
   LibraryPage,
@@ -666,6 +667,11 @@ export function App() {
   }
 
   /** Renders the thumbnails the Library lacks, then shows them. */
+  /** Copies the loaded vault's originals to `destination`, a folder people browse. */
+  async function exportLibrary(destination: string) {
+    return invoke<ExportSummary>("export_library", { destination, platforms: [] });
+  }
+
   function renderThumbnails() {
     return runVaultLibraryTask({
       runningVaults: renderingThumbnailVaults,
@@ -1056,6 +1062,7 @@ export function App() {
           loadingMore={loadingMore}
           searching={searchingLibrary}
           onLoadMore={() => void loadMoreReleases()}
+          onExport={loadedVaultRoot === null ? undefined : exportLibrary}
           onRenderThumbnails={
             loadedVaultRoot === null ? undefined : () => void renderThumbnails()
           }

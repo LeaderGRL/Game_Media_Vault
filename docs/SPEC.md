@@ -450,6 +450,10 @@ The database records MIME type, byte length, dimensions/duration where applicabl
 
 Identical files from multiple Sources reuse one physical object while retaining each provenance record.
 
+### Export
+
+The object store names originals by hash, which people cannot browse, so a vault's media export as copies to a folder of the user's choosing: `game-media-vault export --to <folder>` (`--platform` keeps to some platforms), or the desktop Library's « Export to folder », which picks the folder with the system's own dialog and remembers it. Both refuse a folder within the vault; the desktop also refuses a relative path, which the CLI resolves against its working directory. Each original goes to `<platform>/<game>/<Asset Type>/<file>`, the game named as Sources name its release (its No-Intro or Redump entry, such as `Super Mario Bros. (World)`, else its title with its region and edition tags) and the Asset Type by its label (`Box Front`, `Wallpaper - Artwork`). Names are written in Unicode's composed form; characters Windows refuses become `-`, trailing dots and spaces go, a device name such as `CON` gets a leading `_`, a name longer than 120 characters or 240 bytes is shortened keeping its extension, a file name without an extension gets the one of its media type, and every original one name would stand for, regardless of case, is told apart by the first eight characters of its hash, so that no name depends on the order the vault lists them in. Each copy is written beside its final name in a file of its own, then renamed into place, replacing a stale copy, so an interrupted export, or two exporting at once, leaves no partial file; a file already there with the same size is left as it is, so exporting again copies only what is new, and the summary counts both (`exported`, `already_exported`). The vault stays the source of truth: an export changes nothing in it.
+
 ## 16. Derived Assets
 
 Derivatives are reproducible outputs associated with their original Asset and a transformation recipe.

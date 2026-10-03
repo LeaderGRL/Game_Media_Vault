@@ -1,4 +1,5 @@
 mod credentials;
+mod export_folder;
 mod image_transform;
 mod machine_settings;
 mod media;
@@ -8,6 +9,7 @@ mod pdf_render;
 mod sqlite_catalog;
 
 pub use credentials::{KeyringCredentialStore, NoCredentials};
+pub use export_folder::ExportFolder;
 pub use image_transform::ImageTransformer;
 pub use machine_settings::{MachineSettingsFile, NoMachineSettings, machine_settings};
 pub use media::inspect_media;

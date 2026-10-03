@@ -18,6 +18,8 @@ pub enum ApplicationError {
     InvalidThumbnailEdge,
     #[error("a repair needs at least one action")]
     NoRepairAction,
+    #[error("choose a folder outside the vault, which stores originals by hash")]
+    ExportWithinVault,
     #[error("{0}")]
     Port(#[from] PortError),
     #[error("{0}")]
@@ -165,6 +167,7 @@ impl ApplicationError {
             | Self::InvalidReferenceImportLimit
             | Self::InvalidThumbnailEdge
             | Self::NoRepairAction
+            | Self::ExportWithinVault
             | Self::InvalidCredential
             | Self::CredentialNotOneWord(_)
             | Self::SourceNeedsNoApiKey(_)

@@ -179,3 +179,63 @@ fn builds_the_packaging_models_of_the_selected_vault_off_the_calling_thread() {
     let model = library[0].packaging_model.as_ref().unwrap();
     assert_eq!(model.media.media_type, "model/gltf-binary");
 }
+
+#[test]
+fn exports_the_selected_vaults_media_to_a_full_folder_path_outside_it() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let stored = ContentAddressedStore::new(&vault)
+        .store_original(&mut &b"\x89PNG\r\n\x1a\nfront"[..])
+        .unwrap();
+    catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: None,
+            existing_release_edition_id: None,
+            match_decision: None,
+            game_title: "Tetris".to_owned(),
+            platform: "Nintendo - Game Boy".to_owned(),
+            region: "World".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: stored.hash,
+            byte_len: stored.byte_len,
+            media: stored.media,
+            original_filename: "front.png".to_owned(),
+            source_id: SourceId::from("local_import"),
+            source_asset_label: None,
+            source_location: "C:/scans/front.png".to_owned(),
+        })
+        .unwrap();
+    let export = temp.path().join("export");
+
+    let summary =
+        tauri::async_runtime::block_on(game_media_vault_tauri::export_library_from_vault_async(
+            vault.clone(),
+            export.to_string_lossy().into_owned(),
+            Vec::new(),
+        ))
+        .unwrap();
+
+    assert_eq!(summary.exported, 1);
+    assert!(
+        export
+            .join("Nintendo - Game Boy")
+            .join("Tetris (World)")
+            .join("Box Front")
+            .join("front.png")
+            .is_file()
+    );
+    for refused in [
+        "relative/export".to_owned(),
+        vault.join("copies").to_string_lossy().into_owned(),
+    ] {
+        let error =
+            game_media_vault_tauri::export_library_from_vault(&vault, &refused, &[]).unwrap_err();
+        assert_eq!(
+            error.kind, "invalid_request",
+            "{refused}: {}",
+            error.message
+        );
+    }
+}

@@ -414,6 +414,13 @@ export function errorMessage(reason: unknown): string {
   return String(reason);
 }
 
+/** What copying the vault's media to a folder did. */
+export interface ExportSummary {
+  exported: number;
+  /** Originals a file of the same name and size already stood for. */
+  already_exported: number;
+}
+
 /** Outcome of rendering a recipe for every original that lacks its output. */
 export interface DerivationSummary {
   derived: number;
