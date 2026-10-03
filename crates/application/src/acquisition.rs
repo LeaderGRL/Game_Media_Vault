@@ -24,7 +24,7 @@ use crate::{
     candidate_identity, load_acquisition_run,
     plan::{capable_asset_types, ensure_request_supported},
     plan_acquisition,
-    platforms::{release_key, requested_release_keys},
+    platforms::{release_key, requested_release_keys, trailing_tags},
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -650,14 +650,61 @@ fn discover_source(
     first_game: usize,
 ) -> Result<(Vec<AcquisitionWorkItem>, Option<usize>), ApplicationError> {
     let batch = discovery_batch(request, connector, first_game)?;
-    if let Some(reason) = connector.unsupported_request_reason(&batch.request)? {
+    let (request, refusal) = as_served_by(&batch.request, connector)?;
+    if let Some(reason) = refusal {
         return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
             reason,
         });
     }
-    let work = discover_work(&batch.request, connector, asset_types)?;
+    let work = discover_work(&request, connector, asset_types)?;
     Ok((work, (!batch.last).then_some(batch.games)))
+}
+
+/// `request` as `connector` is asked about it and discovers it, with why the connector refuses
+/// it, if it does: as it is, or without its regions when the connector cannot tell regions
+/// apart but every game the request names carries one of them in its name, as `Tetris (Europe)`
+/// or a worldwide `(World)` release does, which keeps the request to those regions already.
+pub(crate) fn as_served_by(
+    request: &AcquisitionRequest,
+    connector: &dyn ConnectorPort,
+) -> Result<(AcquisitionRequest, Option<String>), ApplicationError> {
+    let refusal = connector.unsupported_request_reason(request)?;
+    if refusal.is_none() || request.regions().is_empty() || !names_carry_regions(request) {
+        return Ok((request.clone(), refusal));
+    }
+    let mut draft = request.to_draft();
+    draft.regions.clear();
+    let without_regions = build_acquisition_request(draft)?;
+    Ok(
+        match connector.unsupported_request_reason(&without_regions)? {
+            None => (without_regions, None),
+            Some(_) => (request.clone(), refusal),
+        },
+    )
+}
+
+/// Whether every game `request` names carries one of its regions, or `World`, in a tag of its
+/// name, such as `(USA, Europe)`.
+fn names_carry_regions(request: &AcquisitionRequest) -> bool {
+    let carries = |name: &str| {
+        trailing_tags(name).into_iter().any(|tag| {
+            tag.split(',').map(str::trim).any(|region| {
+                region.eq_ignore_ascii_case("World")
+                    || request
+                        .regions()
+                        .iter()
+                        .any(|wanted| wanted.trim().eq_ignore_ascii_case(region))
+            })
+        })
+    };
+    match request.games() {
+        GameSelection::All => false,
+        GameSelection::Explicit(games) => games.iter().all(|game| carries(game)),
+        GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors) => {
+            selectors.iter().all(|selector| carries(&selector.game))
+        }
+    }
 }
 
 /// The games of a request one discovery of a Source looks up.

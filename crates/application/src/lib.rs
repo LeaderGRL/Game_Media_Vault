@@ -57,7 +57,7 @@ pub use packaging::{
 pub use plan::{
     AcquisitionPlan, ExcludedSource, PlannedSource, SelectorCoverage, plan_acquisition,
 };
-pub use platforms::expand_every_game;
+pub use platforms::{expand_every_game, plan_acquisition_request};
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort, MachineSettingsPort,
     ObjectStorePort, ParkedReview, PlatformCatalogSourcePort, PortError, ReferenceCatalogRead,

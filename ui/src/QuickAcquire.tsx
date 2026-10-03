@@ -92,11 +92,13 @@ interface QuickAcquireProps {
 
 /**
  * The shortest way to acquire: every kind of media of every game of one platform, from every
- * Source. Sources tell media of some regions apart, and none tells languages apart, so a
- * request kept to some of them is a custom one.
+ * Source, kept if need be to the games of some regions and languages, which the platform's game
+ * list tells apart.
  */
 export function QuickAcquire({ starting, onDownload }: QuickAcquireProps) {
   const [platform, setPlatform] = useState("");
+  const [regions, setRegions] = useState("");
+  const [languages, setLanguages] = useState("");
   const [perType, setPerType] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -107,6 +109,8 @@ export function QuickAcquire({ starting, onDownload }: QuickAcquireProps) {
       ...emptyAcquisitionForm(),
       autoSources: true,
       platforms: platform,
+      regions,
+      languages,
       assetTypes: [ANY_ASSET_TYPE],
       ...(perType.trim() === ""
         ? {}
@@ -140,6 +144,22 @@ export function QuickAcquire({ starting, onDownload }: QuickAcquireProps) {
               <option key={name} value={name} />
             ))}
           </datalist>
+        </label>
+        <label>
+          Regions (comma-separated, empty for any)
+          <input
+            value={regions}
+            placeholder="Europe, France"
+            onChange={(event) => setRegions(event.target.value)}
+          />
+        </label>
+        <label>
+          Languages (comma-separated, empty for any)
+          <input
+            value={languages}
+            placeholder="Fr"
+            onChange={(event) => setLanguages(event.target.value)}
+          />
         </label>
         <label>
           Media per type (empty for all)

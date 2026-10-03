@@ -516,3 +516,30 @@ fn a_desktop_run_of_every_game_names_the_games_of_the_platforms_game_list() {
         }])
     );
 }
+
+#[test]
+fn the_desktop_plans_a_request_for_every_game_as_its_run_would_start() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let mut every_game = request_input();
+    every_game.games = GameSelection::All;
+
+    let plan = game_media_vault_tauri::plan_acquisition_in_vault_with(
+        &vault,
+        every_game,
+        &[&FixtureConnector],
+        &NesGameList,
+    )
+    .unwrap();
+
+    assert_eq!(plan.sources.len(), 1);
+    // The platform's game list was imported, as starting the run imports it.
+    let catalog = SqliteCatalog::open_existing(vault.join("catalog.sqlite3")).unwrap();
+    assert_eq!(
+        game_media_vault_application::CatalogPort::list_library(&catalog)
+            .unwrap()
+            .len(),
+        1
+    );
+}

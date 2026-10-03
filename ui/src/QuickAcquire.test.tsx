@@ -94,3 +94,27 @@ describe("QuickAcquire media per type", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Media per type must be a whole number");
   });
 });
+
+describe("QuickAcquire regions and languages", () => {
+  it("keeps every game to the regions and languages chosen", () => {
+    const onDownload = vi.fn();
+    render(<QuickAcquire starting={false} onDownload={onDownload} />);
+    fireEvent.change(screen.getByLabelText("Platform"), {
+      target: { value: "Sega - Mega Drive - Genesis" },
+    });
+
+    fireEvent.change(screen.getByLabelText("Regions (comma-separated, empty for any)"), {
+      target: { value: "Europe, France" },
+    });
+    fireEvent.change(screen.getByLabelText("Languages (comma-separated, empty for any)"), {
+      target: { value: "Fr" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
+
+    expect(onDownload.mock.calls[0][0]).toMatchObject({
+      games: { mode: "all" },
+      regions: ["Europe", "France"],
+      languages: ["Fr"],
+    });
+  });
+});

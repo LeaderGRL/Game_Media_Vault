@@ -75,6 +75,8 @@ pub enum ApplicationError {
     SourceNotRegistered(String),
     #[error("no game list is known for platform {0}")]
     PlatformCatalogNotFound(String),
+    #[error("no release of {0} is of the requested regions and speaks the requested languages")]
+    NoMatchingReleases(String),
     #[error("source {source_id} takes no part in acquisitions: {reason}")]
     SourceDisabled { source_id: String, reason: String },
     #[error("source {0} needs no API key")]
@@ -182,7 +184,8 @@ impl ApplicationError {
             | Self::ReviewItemNotFound(_)
             | Self::ReleaseEditionMissing(_)
             | Self::SourceNotRegistered(_)
-            | Self::PlatformCatalogNotFound(_) => ErrorKind::NotFound,
+            | Self::PlatformCatalogNotFound(_)
+            | Self::NoMatchingReleases(_) => ErrorKind::NotFound,
             Self::RunHasQueuedWork { .. }
             | Self::RunAlreadyExecuting(_)
             | Self::InvalidRunTransition { .. }

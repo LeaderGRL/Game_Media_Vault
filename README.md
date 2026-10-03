@@ -108,9 +108,9 @@ In the app:
 
 1. **Open vault**: the vault is created in `Documents/Game Media Vault` unless you choose another
    folder, and opens again next time.
-2. **Acquire**: pick a platform, optionally how many media of each type to keep, and press
-   **Download everything**. Every game of the platform is collected, with every kind of media
-   every Source has; the Runs view shows the progress.
+2. **Acquire**: pick a platform, optionally regions, languages and how many media of each type
+   to keep, and press **Download everything**. Every game of the platform is collected, with
+   every kind of media every Source has; the Runs view shows the progress.
 3. **Library**: browse what arrived, and **Export to folder** to get readable copies, as
    `<platform>/<game>/<Asset Type>/<file>`.
 

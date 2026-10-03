@@ -18,9 +18,10 @@ use game_media_vault_application::{
     import_local_asset, import_reference_catalog, keep_reference_review_item_apart,
     link_reference_review_item, list_acquisition_runs, list_library, list_reference_review_items,
     list_review_items, load_acquisition_run, machine_connectors, pause_acquisition_run,
-    plan_acquisition, repair_vault, resolve_review_item, resume_acquisition_run, search_library,
-    set_source_credential, set_source_enabled, start_acquisition_run_with_connectors,
-    summarize_source_failures, sync_platform_catalog, verify_vault,
+    plan_acquisition, plan_acquisition_request, repair_vault, resolve_review_item,
+    resume_acquisition_run, search_library, set_source_credential, set_source_enabled,
+    start_acquisition_run_with_connectors, summarize_source_failures, sync_platform_catalog,
+    verify_vault,
 };
 use game_media_vault_connectors::{
     LibretroDatabase, MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog,
@@ -676,8 +677,23 @@ where
             Ok(serde_json::to_string_pretty(&run)?)
         }
         Command::Plan(acquire) => {
-            let request = build_acquisition_request(acquire.into_input())?;
-            let plan = plan_acquisition(&request, connectors).map_err(map_start_run_error)?;
+            let input = acquire.into_input();
+            // A request for every game is planned as `acquire` would start it, from the game
+            // list it imports; any other plan needs no vault.
+            let plan =
+                if matches!(input.games, GameSelection::All) && !input.platforms.is_empty() {
+                    let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
+                    plan_acquisition_request(
+                        &catalog,
+                        &catalog,
+                        platform_catalogs,
+                        input,
+                        connectors,
+                    )
+                } else {
+                    plan_acquisition(&build_acquisition_request(input)?, connectors)
+                }
+                .map_err(map_start_run_error)?;
             Ok(serde_json::to_string_pretty(&plan)?)
         }
         Command::Run { command } => match command {

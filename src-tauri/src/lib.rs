@@ -26,7 +26,7 @@ use game_media_vault_application::{
     load_acquisition_run as load_acquisition_run_use_case,
     load_review_preview as load_review_preview_use_case, machine_registry,
     pause_acquisition_run as pause_acquisition_run_use_case,
-    plan_acquisition as plan_acquisition_use_case,
+    plan_acquisition as plan_acquisition_use_case, plan_acquisition_request,
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
     search_library as search_library_use_case,
@@ -630,13 +630,40 @@ pub fn plan_acquisition_with_connectors(
     Ok(plan_acquisition_use_case(&request, connectors)?)
 }
 
-/// Plans on a blocking worker, since connectors may consult their Source.
+/// Plans `request` as starting a run of it in the vault at `vault_root` would: a request for
+/// every game of its platforms is expanded from their game lists, read from
+/// `platform_catalogs` and imported when the vault holds none.
+pub fn plan_acquisition_in_vault_with(
+    vault_root: &Path,
+    request: AcquisitionRequestInput,
+    connectors: &[&dyn ConnectorPort],
+    platform_catalogs: &dyn PlatformCatalogSourcePort,
+) -> Result<AcquisitionPlan, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    Ok(plan_acquisition_request(
+        &catalog,
+        &catalog,
+        platform_catalogs,
+        request,
+        connectors,
+    )?)
+}
+
+/// Plans on a blocking worker, since connectors may consult their Source: in the open vault when
+/// there is one, as a run there would start, or else without one.
 pub async fn plan_acquisition_async(
+    vault_root: Option<PathBuf>,
     request: AcquisitionRequestInput,
     registry: Vec<Box<dyn ConnectorPort>>,
 ) -> Result<AcquisitionPlan, CommandError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        plan_acquisition_with_connectors(request, &registry_refs(&registry))
+    tauri::async_runtime::spawn_blocking(move || match vault_root {
+        Some(vault_root) => plan_acquisition_in_vault_with(
+            &vault_root,
+            request,
+            &registry_refs(&registry),
+            &LibretroDatabase::new(),
+        ),
+        None => plan_acquisition_with_connectors(request, &registry_refs(&registry)),
     })
     .await
     .map_err(|error| CommandError::worker_failed("acquisition planning", error))?
@@ -803,9 +830,10 @@ pub fn cancel_acquisition_run_in_vault(
 
 #[tauri::command(rename_all = "snake_case")]
 async fn plan_acquisition(
+    session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionPlan, CommandError> {
-    plan_acquisition_async(request, machine_connectors()?).await
+    plan_acquisition_async(session.root().ok(), request, machine_connectors()?).await
 }
 
 #[tauri::command(rename_all = "snake_case")]

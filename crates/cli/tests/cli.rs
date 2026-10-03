@@ -2619,3 +2619,42 @@ fn a_request_document_misspelling_a_kept_number_is_an_invalid_request() {
     assert_eq!(error.exit_code(), 2, "{error}");
     assert!(error.to_string().contains("per_typo"), "{error}");
 }
+
+#[test]
+fn plan_names_the_games_of_the_platforms_list_as_acquire_does() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let machine = Machine {
+        settings: &MachineSettingsFile::at(temp.path().join("settings.json")),
+        credentials: &NoCredentials,
+    };
+
+    let plan: serde_json::Value = serde_json::from_str(
+        &game_media_vault_cli::run_in_context(
+            cli_args(
+                &vault,
+                &[
+                    "plan",
+                    "--source",
+                    "libretro-thumbnails",
+                    "--platform",
+                    "Nintendo - Nintendo Entertainment System",
+                    "--asset-type",
+                    "box-front",
+                ],
+            ),
+            &[&FixtureConnector],
+            machine,
+            &mut std::io::empty(),
+            &NesGameList,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(plan["sources"][0]["source_id"], "libretro-thumbnails");
+    // The platform's game list was imported, as acquiring imports it.
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    assert_eq!(library[0]["game_title"], "Super Mario Bros.");
+}
