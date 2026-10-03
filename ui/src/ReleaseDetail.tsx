@@ -194,9 +194,8 @@ export function coverOf(entry: LibraryEntry): LibraryAsset | undefined {
   const preferredFront = entry.preferred_assets.find(
     (preferred) => preferred.asset_type === "box_front",
   )?.asset_id;
-  const images = byAssetType(entry.assets).filter(
-    (asset) => isImageOriginal(asset) || thumbnailOf(asset) !== undefined,
-  );
+  // A document's thumbnail is its first page, never a cover.
+  const images = byAssetType(entry.assets).filter(isImageOriginal);
   return (
     images.find((asset) => asset.asset_id === preferredFront) ??
     images.find((asset) => asset.asset_type === "box_front") ??

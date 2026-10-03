@@ -3,7 +3,12 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { LibraryView } from "./LibraryView";
-import { NO_LIBRARY_FILTERS, type LibraryEntry, type LibraryFilters } from "./types";
+import {
+  NO_LIBRARY_FILTERS,
+  type LibraryAsset,
+  type LibraryEntry,
+  type LibraryFilters,
+} from "./types";
 
 vi.mock("./modelScene", () => ({ showModel: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
@@ -173,5 +178,36 @@ describe("LibraryView", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Export to folder" }));
 
     expect(await within(dialog).findByText(/Copied 3 files/)).toBeInTheDocument();
+  });
+
+  it("shows a game by its first image, never by a document", () => {
+    const manual: LibraryAsset = {
+      ...entry.assets[0],
+      asset_id: 7,
+      asset_type: "manual",
+      object_hash: "manual-pdf",
+      media_type: "application/pdf",
+      original_filename: "manual.pdf",
+      derived: [
+        {
+          recipe: { transform: "thumbnail", max_edge: 256 },
+          object_hash: "manual-page",
+          byte_len: 512,
+          media_type: "image/png",
+          width: 181,
+          height: 256,
+        },
+      ],
+    };
+    const screenshot: LibraryAsset = {
+      ...entry.assets[0],
+      asset_id: 8,
+      asset_type: "screenshot",
+      object_hash: "shot",
+      original_filename: "shot.png",
+    };
+    library({ entries: [{ ...entry, assets: [manual, screenshot] }] });
+
+    expect(screen.getByRole("img", { name: "Screenshot of Metal Gear Solid" })).toBeInTheDocument();
   });
 });
