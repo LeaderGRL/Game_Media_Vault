@@ -659,6 +659,22 @@ export function App() {
     setSources(described);
   }
 
+  /** Stores on this machine the API key a Source needs, for every vault, never showing it. */
+  async function setSourceApiKey(sourceId: string, key: string) {
+    sourcesRequest.current += 1;
+    setSources(
+      await invoke<SourceDescription[]>("set_source_api_key", { source_id: sourceId, key }),
+    );
+  }
+
+  /** Forgets the API key this machine stores for a Source. */
+  async function clearSourceApiKey(sourceId: string) {
+    sourcesRequest.current += 1;
+    setSources(
+      await invoke<SourceDescription[]>("clear_source_api_key", { source_id: sourceId }),
+    );
+  }
+
   /** Reads the failures the loaded vault recorded, which executions add to meanwhile. */
   async function readSourceFailures() {
     sourceFailuresRequest.current += 1;
@@ -983,6 +999,8 @@ export function App() {
           error={sourcesError}
           failures={sourceFailures}
           onSetEnabled={setSourceEnabled}
+          onSetApiKey={setSourceApiKey}
+          onClearApiKey={clearSourceApiKey}
         />
       ) : null}
       {activeView === "runs" ? (

@@ -56,6 +56,9 @@ export const KNOWN_SOURCES = [
   { value: "steamgriddb", label: "SteamGridDB" },
 ];
 
+/** Whether a Source has the credential it needs on this machine. */
+export type CredentialState = "not_needed" | "missing" | "stored" | "unreadable";
+
 /** A registered Source as planning knows it. */
 export interface SourceDescription {
   source_id: string;
@@ -63,6 +66,8 @@ export interface SourceDescription {
   direct_media_download: boolean;
   /** Whether the Source takes part in acquisitions on this machine. */
   enabled: boolean;
+  /** Whether this machine stores the credential the Source needs, never the credential. */
+  credential: CredentialState;
 }
 
 /** A failure of a Source an execution recorded. */
