@@ -8,8 +8,9 @@ use game_media_vault_domain::{
 };
 
 use crate::{
-    ApplicationError, CatalogPort, PlatformCatalogSourcePort, ReferenceCatalogRepositoryPort,
-    build_acquisition_request, plan::ensure_request_supported, sync_platform_catalog,
+    AcquisitionPlan, ApplicationError, CatalogPort, ConnectorPort, PlatformCatalogSourcePort,
+    ReferenceCatalogRepositoryPort, build_acquisition_request, plan::ensure_request_supported,
+    plan_acquisition, sync_platform_catalog,
 };
 
 /// The Sources whose datafiles name a release as Sources name its media, such as
@@ -84,12 +85,16 @@ pub fn expand_every_game(
     }
     let mut platforms: Vec<String> = Vec::new();
     let mut games: Vec<PlatformBoundGameSelector> = Vec::new();
+    let mut listed = false;
     for requested in &input.platforms {
-        for release in releases.iter().filter(|release| {
-            same_platform(&release.platform, requested)
-                && in_regions(release, &input.regions)
-                && speaks(release, &input.languages)
-        }) {
+        for release in releases
+            .iter()
+            .filter(|release| same_platform(&release.platform, requested))
+        {
+            listed = true;
+            if !in_regions(release, &input.regions) || !speaks(release, &input.languages) {
+                continue;
+            }
             if !platforms.contains(&release.platform) {
                 platforms.push(release.platform.clone());
             }
@@ -102,6 +107,12 @@ pub fn expand_every_game(
             }
         }
     }
+    if games.is_empty() && listed {
+        // Every game of the request is none of the releases listed, rather than every one.
+        return Err(ApplicationError::NoMatchingReleases(
+            input.platforms.join(", "),
+        ));
+    }
     if games.is_empty() {
         // No release of these platforms to name: Sources reading whole platforms still serve it.
         return Ok(input);
@@ -110,6 +121,20 @@ pub fn expand_every_game(
     input.games = GameSelection::PlatformBound(games);
     input.languages.clear();
     Ok(input)
+}
+
+/// Plans `input` across `connectors` as starting a run of it would: a request for every game of
+/// its platforms is expanded first, as `expand_every_game` does, which may import a platform's
+/// game list into the vault.
+pub fn plan_acquisition_request(
+    catalog: &dyn CatalogPort,
+    references: &dyn ReferenceCatalogRepositoryPort,
+    platform_catalogs: &dyn PlatformCatalogSourcePort,
+    input: AcquisitionRequestDraft,
+    connectors: &[&dyn ConnectorPort],
+) -> Result<AcquisitionPlan, ApplicationError> {
+    let input = expand_every_game(catalog, references, platform_catalogs, input)?;
+    plan_acquisition(&build_acquisition_request(input)?, connectors)
 }
 
 /// Whether `release` is of one of `regions`, any when none is named: a release of several

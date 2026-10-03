@@ -1,14 +1,15 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, io::Read};
 
 use game_media_vault_application::{
-    ApplicationError, CatalogPort, PlatformCatalogSourcePort, PortError, ReferenceCatalogRead,
-    ReferenceCatalogRepositoryPort, expand_every_game,
+    ApplicationError, CatalogPort, ConnectorPort, PlatformCatalogSourcePort, PortError,
+    ReferenceCatalogRead, ReferenceCatalogRepositoryPort, expand_every_game,
+    plan_acquisition_request,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequestDraft, AssetTypeSelector, GameSelection, ImportedAsset,
-    ImportedReleaseEdition, LibraryEntry, PersistAsset, PlatformBoundGameSelector,
-    ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField, RetentionPolicy,
-    SourceSelection,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType,
+    AssetTypeSelector, ConnectorCapabilities, GameSelection, ImportedAsset, ImportedReleaseEdition,
+    LibraryEntry, PersistAsset, PlatformBoundGameSelector, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, RetentionPolicy, SourceSelection,
 };
 
 const NES: &str = "Nintendo - Nintendo Entertainment System";
@@ -327,4 +328,68 @@ fn a_tag_that_lists_no_language_leaves_the_language_to_the_region() {
         expanded.games,
         bound(&["Tetris (USA) (Unl)", "Zelda (Europe) (Alt)"])
     );
+}
+
+#[test]
+fn every_game_kept_to_a_region_no_release_is_of_is_refused_rather_than_broadened() {
+    let releases = Releases::holding(vec![listed(1, "Mario", "Japan", "Mario (Japan)")]);
+    let mut european = every_game_of(&[NES]);
+    european.regions = vec!["Europe".to_owned()];
+
+    let error = expand_every_game(&releases, &releases, &game_lists(), european).unwrap_err();
+
+    assert!(
+        matches!(error, ApplicationError::NoMatchingReleases(_)),
+        "{error:?}"
+    );
+}
+
+/// A Source that refuses language filters, as every Source does.
+struct LanguageBlind;
+
+impl ConnectorPort for LanguageBlind {
+    fn source_id(&self) -> &'static str {
+        "language-blind"
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::BoxFront],
+            direct_media_download: true,
+        }
+    }
+
+    fn unsupported_request_reason(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> Result<Option<String>, PortError> {
+        Ok((!request.languages().is_empty()).then(|| "cannot tell languages apart".to_owned()))
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        unreachable!("planning never discovers")
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        unreachable!("planning never downloads")
+    }
+}
+
+#[test]
+fn a_request_for_every_game_is_planned_as_its_run_would_start() {
+    let releases = Releases::holding(vec![listed(1, "Tintin", "France", "Tintin (France)")]);
+    let mut french = every_game_of(&[NES]);
+    french.languages = vec!["Fr".to_owned()];
+
+    // Expanded, the request names the French games and keeps no language filter.
+    let plan = plan_acquisition_request(
+        &releases,
+        &releases,
+        &game_lists(),
+        french,
+        &[&LanguageBlind as &dyn ConnectorPort],
+    )
+    .unwrap();
+
+    assert_eq!(plan.sources.len(), 1);
 }
