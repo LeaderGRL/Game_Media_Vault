@@ -267,3 +267,50 @@ fn a_game_list_that_does_not_parse_is_invalid_source_data() {
 
     assert!(error.is_invalid_source_data(), "{}", error.message());
 }
+
+#[test]
+fn a_list_named_exactly_after_its_platform_needs_no_listing() {
+    let site = FixtureSite::serving(&[(
+        &raw("no-intro", &format!("{NES}.dat")),
+        &NES_DAT.replace(
+            &format!("name \"{NES}\""),
+            &format!("name \"{NES} (Headered)\""),
+        ),
+    )]);
+
+    let read = LibretroDatabase::with_transport(&site)
+        .platform_releases(NES)
+        .unwrap()
+        .unwrap();
+
+    // A variant the header qualifies the platform with is no part of its name.
+    assert_eq!(read.releases[0].platform, NES);
+    assert_eq!(site.requested(), [raw("no-intro", &format!("{NES}.dat"))]);
+}
+
+/// Refuses every listing as GitHub does once an address spent its hourly allowance.
+struct RateLimitedSite;
+
+impl HttpTransport for RateLimitedSite {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        if url.starts_with("https://api.github.com") {
+            Err(PortError::new(format!(
+                "download returned HTTP 403 Forbidden for {url}"
+            )))
+        } else {
+            Err(PortError::unavailable(format!(
+                "download returned HTTP 404 for {url}"
+            )))
+        }
+    }
+}
+
+#[test]
+fn a_listing_github_refuses_for_its_rate_limit_says_so() {
+    let error = LibretroDatabase::with_transport(RateLimitedSite)
+        .platform_releases("Nintendo - Wonder Console")
+        .unwrap_err();
+
+    assert!(error.message().contains("403"), "{}", error.message());
+    assert!(error.message().contains("60"), "{}", error.message());
+}

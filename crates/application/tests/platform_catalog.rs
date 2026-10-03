@@ -62,6 +62,7 @@ fn a_platforms_game_list_is_imported_without_the_entries_no_retail_release_stand
             release("Super Mario Bros.", "World", "Standard"),
             release("Action 52", "USA", "Unl"),
             release("Tetris", "USA", "Proto"),
+            release("Tetris 2", "USA", "Prototype"),
             release("The Legend of Zelda", "USA", "Beta 2"),
             release("Kirby's Adventure", "USA", "Demo · Kiosk"),
             release("Mega Man", "Japan", "Hack"),
@@ -78,7 +79,7 @@ fn a_platforms_game_list_is_imported_without_the_entries_no_retail_release_stand
             platform: NES.to_owned(),
             imported_releases: 2,
             skipped_records: 1,
-            left_out_releases: 6,
+            left_out_releases: 7,
         }
     );
     let titles: Vec<String> = catalog

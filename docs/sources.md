@@ -258,10 +258,12 @@ downloads and passes to an `import-*` command, and contact no network.
   `game-media-vault reference sync --platform "Nintendo - Nintendo Entertainment System"`.
   Prototypes, betas, demos, samples, pirate copies, hacks, aftermarket releases, programs and
   BIOS images are left out; unlicensed releases are kept.
-- **Reached at:** GitHub's contents API, which lists both directories once, then
-  `raw.githubusercontent.com` for the list itself.
+- **Reached at:** `raw.githubusercontent.com` for the list named exactly after the platform,
+  and GitHub's contents API, which lists both directories once, only when neither holds a list
+  of that exact name.
 - **Configuration:** none. GitHub limits listings to 60 an hour per address without an
-  account; a sync takes at most two.
+  account; a sync of a platform named as the catalog names it takes none, and any other at most
+  two.
 
 ### No-Intro (`no-intro`) and Redump (`redump`)
 

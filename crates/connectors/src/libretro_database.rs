@@ -15,6 +15,7 @@ use url::Url;
 use crate::{
     HttpTransport, NO_INTRO, REDUMP, ReqwestHttpTransport,
     datafile::{DatafileGame, DatafileSource},
+    naming::platform_name,
     selection::name_key,
 };
 
@@ -24,6 +25,10 @@ const DIRECTORIES: [(&str, &DatafileSource); 2] = [("no-intro", &NO_INTRO), ("re
 
 const CONTENTS_API: &str =
     "https://api.github.com/repos/libretro/libretro-database/contents/metadat/";
+
+/// Where GitHub's raw host serves the game lists, by directory.
+const RAW_LISTS: &str =
+    "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/";
 
 /// The only host game lists are downloaded from.
 const RAW_HOST: &str = "raw.githubusercontent.com";
@@ -68,9 +73,22 @@ impl<T> LibretroDatabase<T> {
 }
 
 impl<T: HttpTransport> PlatformCatalogSourcePort for LibretroDatabase<T> {
-    /// The platform is the file named after it with the same words, regardless of case and
-    /// punctuation, as `NEC - PC Engine - TurboGrafx 16` for `NEC - PC Engine - TurboGrafx-16`.
+    /// The platform is the file named exactly after it, read without listing any directory, or
+    /// else the file named after it with the same words, regardless of case and punctuation, as
+    /// `NEC - PC Engine - TurboGrafx 16` for `NEC - PC Engine - TurboGrafx-16`.
     fn platform_releases(&self, platform: &str) -> Result<Option<ReferenceCatalogRead>, PortError> {
+        for (directory, source) in DIRECTORIES {
+            let file = ListedFile {
+                platform: platform.to_owned(),
+                location: raw_location(directory, platform),
+            };
+            match self.read(&file.location) {
+                Ok(text) => return parse_game_list(&text, source, &file).map(Some),
+                // No list of that exact name: another directory, or a listing, may hold it.
+                Err(error) if error.is_unavailable() => {}
+                Err(error) => return Err(error),
+            }
+        }
         let wanted = name_key(platform);
         for (directory, source) in DIRECTORIES {
             let Some(file) = self
@@ -95,12 +113,23 @@ impl<T: HttpTransport> LibretroDatabase<T> {
             return Ok(files.clone());
         }
         let url = format!("{CONTENTS_API}{directory}");
-        let answer: Value =
-            serde_json::from_slice(&self.transport.get_bytes(&url)?).map_err(|error| {
-                PortError::invalid_source_data(format!(
-                    "GitHub answered {url} with no JSON: {error}"
+        let body = self.transport.get_bytes(&url).map_err(|error| {
+            // GitHub refuses listings once an address spends its hourly allowance.
+            if ["HTTP 403", "HTTP 429"]
+                .iter()
+                .any(|status| error.message().contains(status))
+            {
+                PortError::new(format!(
+                    "{}; GitHub allows 60 listings an hour to an address without an account, so try again later",
+                    error.message()
                 ))
-            })?;
+            } else {
+                error
+            }
+        })?;
+        let answer: Value = serde_json::from_slice(&body).map_err(|error| {
+            PortError::invalid_source_data(format!("GitHub answered {url} with no JSON: {error}"))
+        })?;
         let Some(entries) = answer.as_array() else {
             // GitHub explains a refusal, such as a spent rate limit, in a message.
             let message = answer
@@ -130,6 +159,19 @@ impl<T: HttpTransport> LibretroDatabase<T> {
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+}
+
+/// Where GitHub's raw host would serve the list of `directory` named exactly after `platform`.
+fn raw_location(directory: &str, platform: &str) -> Url {
+    let mut location = Url::parse(RAW_LISTS)
+        .and_then(|lists| lists.join(&format!("{directory}/")))
+        .expect("the raw host has a valid location");
+    location
+        .path_segments_mut()
+        .expect("an https location has path segments")
+        .pop_if_empty()
+        .push(&format!("{platform}.dat"));
+    location
 }
 
 /// The game list a listing entry names, when it is a datafile GitHub's raw host serves.
@@ -174,7 +216,9 @@ fn parse_game_list(
                 if let Some(name) =
                     text_field(fields, "name").filter(|name| !name.trim().is_empty())
                 {
-                    platform = name.to_owned();
+                    // A variant the header qualifies the platform with, such as `(Headered)`,
+                    // is no part of its name.
+                    platform = platform_name(name);
                 }
                 version = text_field(fields, "version").map(str::to_owned);
             }

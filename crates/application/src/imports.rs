@@ -131,9 +131,10 @@ fn is_retail(release: &ReferenceReleaseRecord) -> bool {
     !release.game_title.starts_with("[BIOS]")
         && !release.edition_name.split(" · ").any(|tag| {
             let tag = tag.trim().to_lowercase();
+            // A tag such as `Proto 2` or `Prototype` starts with the word.
             NON_RETAIL_TAGS
                 .iter()
-                .any(|non_retail| tag == *non_retail || tag.starts_with(&format!("{non_retail} ")))
+                .any(|non_retail| tag.starts_with(non_retail))
         })
 }
 
