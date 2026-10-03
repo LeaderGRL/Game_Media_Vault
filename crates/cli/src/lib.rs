@@ -14,11 +14,11 @@ use game_media_vault_application::{
     PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
     VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     clear_source_credential, derive_assets, derive_packaging_models, describe_sources,
-    draft_from_document, expand_every_game, export_acquisition_request, import_local_asset,
-    import_reference_catalog, keep_reference_review_item_apart, link_reference_review_item,
-    list_acquisition_runs, list_library, list_reference_review_items, list_review_items,
-    load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
-    repair_vault, resolve_review_item, resume_acquisition_run, search_library,
+    draft_from_document, expand_every_game, export_acquisition_request, export_library,
+    import_local_asset, import_reference_catalog, keep_reference_review_item_apart,
+    link_reference_review_item, list_acquisition_runs, list_library, list_reference_review_items,
+    list_review_items, load_acquisition_run, machine_connectors, pause_acquisition_run,
+    plan_acquisition, repair_vault, resolve_review_item, resume_acquisition_run, search_library,
     set_source_credential, set_source_enabled, start_acquisition_run_with_connectors,
     summarize_source_failures, sync_platform_catalog, verify_vault,
 };
@@ -32,8 +32,8 @@ use game_media_vault_domain::{
     QualityRequirements, RetentionPolicy, ReviewDecision, SourceSelection,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, GltfPackagingBuilder, KeyringCredentialStore, MediaTransformers,
-    NoCredentials, NoMachineSettings, SqliteCatalog, machine_settings,
+    ContentAddressedStore, ExportFolder, GltfPackagingBuilder, KeyringCredentialStore,
+    MediaTransformers, NoCredentials, NoMachineSettings, SqliteCatalog, machine_settings,
 };
 use thiserror::Error;
 
@@ -196,6 +196,15 @@ enum Command {
     },
     /// Searches the Library and prints one page of matching releases.
     Search(SearchArgs),
+    /// Copies every original to a folder people browse, as
+    /// `<platform>/<game>/<Asset Type>/<file>`, leaving copies already there.
+    Export {
+        #[arg(long)]
+        to: PathBuf,
+        /// Exports only the releases of these platforms.
+        #[arg(long = "platform")]
+        platforms: Vec<String>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -916,6 +925,15 @@ where
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             Ok(serde_json::to_string_pretty(&list_library(&catalog)?)?)
+        }
+        Command::Export { to, platforms } => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            Ok(serde_json::to_string_pretty(&export_library(
+                &catalog,
+                &ContentAddressedStore::new(&cli.vault),
+                &ExportFolder::new(to),
+                &platforms,
+            )?)?)
         }
         Command::Search(search) => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;

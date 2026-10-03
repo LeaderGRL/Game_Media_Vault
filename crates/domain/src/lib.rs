@@ -552,6 +552,32 @@ impl AssetType {
         }
     }
 
+    /// The name of this type in words, as people read it, such as `Box Front`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BoxFront => "Box Front",
+            Self::BoxBack => "Box Back",
+            Self::Spine => "Spine",
+            Self::Box3dRender => "Box 3D Render",
+            Self::CartridgeFront => "Cartridge Front",
+            Self::CartridgeBack => "Cartridge Back",
+            Self::Disc => "Disc",
+            Self::Pcb => "PCB",
+            Self::Manual => "Manual",
+            Self::Map => "Map",
+            Self::Screenshot => "Screenshot",
+            Self::TitleScreen => "Title Screen",
+            Self::GameplayVideo => "Gameplay Video",
+            Self::Logo => "Logo",
+            Self::Icon => "Icon",
+            Self::WallpaperArtwork => "Wallpaper / Artwork",
+            Self::Flyer => "Flyer",
+            Self::ArcadeCabinet => "Arcade Cabinet",
+            Self::ControlPanel => "Control Panel",
+            Self::Marquee => "Marquee",
+        }
+    }
+
     /// The stable name of this type, as requests, candidate identities and the catalog spell it.
     pub fn as_str(self) -> &'static str {
         match self {

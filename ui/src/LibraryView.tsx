@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 
 import { ASSET_TYPE_FAMILIES, assetTypeLabel, attributionOf } from "./acquisition";
+import { ExportPanel } from "./ExportPanel";
 import { ExternalLink } from "./ExternalLink";
 import { PackagingModelPreview } from "./PackagingModelPreview";
 import {
@@ -17,6 +18,7 @@ import {
   type PackagingFamily,
   type PreferenceReason,
   type ReleaseAssertionField,
+  type ExportSummary,
   type ReleaseCoverage,
 } from "./types";
 
@@ -45,6 +47,8 @@ interface LibraryViewProps {
   buildingPackagingModels?: boolean;
   /** Outcome of the latest 3D box build. */
   packagingModelStatus?: string | null;
+  /** Copies the vault's media to a folder; the export panel shows only with it. */
+  onExport?: (destination: string) => Promise<ExportSummary>;
 }
 
 /** Longest edge of the thumbnails the Library shows instead of their originals. */
@@ -72,9 +76,11 @@ export function LibraryView({
   onBuildPackagingModels,
   buildingPackagingModels = false,
   packagingModelStatus = null,
+  onExport,
 }: LibraryViewProps) {
   return (
     <>
+      {onExport ? <ExportPanel onExport={onExport} /> : null}
       {onRenderThumbnails ? (
         <div className="library-actions">
           <button type="button" disabled={renderingThumbnails} onClick={onRenderThumbnails}>

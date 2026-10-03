@@ -366,6 +366,32 @@ describe("App", () => {
     );
   });
 
+  it("exports the loaded vault\x27s media to the folder typed in", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "export_library") {
+        return Promise.resolve({ exported: 2, already_exported: 0 });
+      }
+      if (command === "list_library") {
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Export folder"), {
+      target: { value: "D:\Media" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Export to folder" }));
+
+    expect(await screen.findByText("Copied 2 files to D:\Media.")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("export_library", {
+      destination: "D:\Media",
+      platforms: [],
+    });
+  });
+
   it("builds the 3D boxes the Library lacks and shows them", async () => {
     const model = {
       recipe: {

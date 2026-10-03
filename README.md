@@ -53,6 +53,9 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   type, coverage of the packaging profiles, search with combinable filters and stable pages;
   gameplay videos (MP4, WebM) play in place, image originals show as they are, and a PDF, such
   as a manual or some maps, shows its first page once its thumbnail is rendered.
+- **Export**: every original copies to a folder of your choosing, as
+  `<platform>/<game>/<Asset Type>/<file>` with readable, Windows-safe names; exporting again
+  copies only what is new.
 - **Manuals and documents**: local files of any stored Asset Type, manuals included, import
   unchanged; a PDF original records its page count, title and author, and the Library shows
   them.
@@ -113,6 +116,10 @@ cargo run -p game-media-vault-cli -- --vault my-vault acquire --source libretro-
 
 ```bash
 cargo run -p game-media-vault-cli -- --vault my-vault run execute 1
+```
+
+```bash
+cargo run -p game-media-vault-cli -- --vault my-vault export --to "D:/Game Media"
 ```
 
 `cargo run -p game-media-vault-cli -- --help` lists every command: `acquire` and `plan`, `run`

@@ -5,6 +5,7 @@ mod credentials;
 mod derived;
 mod documents;
 mod error;
+mod export;
 mod identity;
 mod imports;
 mod library;
@@ -32,6 +33,7 @@ pub use documents::{
     export_acquisition_request,
 };
 pub use error::{ApplicationError, ErrorKind};
+pub use export::{ExportSummary, ExportTargetPort, export_library};
 pub use game_media_vault_domain::{
     AcquisitionRequestDraft as AcquisitionRequestInput, AcquisitionRequestValidationError,
     match_asset_candidate_to_release, match_asset_candidate_to_release_preferring,
