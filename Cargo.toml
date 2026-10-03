@@ -40,3 +40,13 @@ unicode-normalization = "0.1"
 url = "2"
 texting_robots = "0.2"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# Full debug info gave every test binary a PDB of 60 to 300 MB on Windows, tens of GB in all.
+# The workspace's own crates keep line tables, so panics and backtraces still name files and
+# lines; dependencies keep none. `CARGO_PROFILE_DEV_DEBUG=true` brings full debug info back to
+# the workspace's crates.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
