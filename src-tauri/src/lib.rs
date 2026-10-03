@@ -6,16 +6,20 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApiKey, ApplicationError, ConnectorPort,
-    DerivationSummary, DownloadLimits, ErrorKind, ImportReferenceCatalogRequest, LibraryPage,
-    LibraryQuery, Machine, PackagingModelSummary, PortError, ReferenceCatalogSourcePort,
-    ReferenceImportSummary, SourceDescription, SourceFailureSummary, VaultReport,
+    DerivationSummary, DescribedReferenceReviewItem, DownloadLimits, ErrorKind,
+    ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, Machine, PackagingModelSummary,
+    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription,
+    SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     clear_source_api_key as clear_source_api_key_use_case, derive_assets as derive_assets_use_case,
     derive_packaging_models as derive_packaging_models_use_case, describe_sources,
     import_reference_catalog as import_reference_catalog_use_case,
+    keep_reference_review_item_apart as keep_reference_review_item_apart_use_case,
+    link_reference_review_item as link_reference_review_item_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
+    list_reference_review_items as list_reference_review_items_use_case,
     list_review_items as list_review_items_use_case,
     load_acquisition_run as load_acquisition_run_use_case,
     load_review_preview as load_review_preview_use_case, machine_registry,
@@ -244,6 +248,41 @@ pub fn resolve_review_item_in_vault(
     )?)
 }
 
+/// The reference records awaiting a human, with the editions each names.
+pub fn load_reference_review_items(
+    vault_root: &Path,
+) -> Result<Vec<DescribedReferenceReviewItem>, CommandError> {
+    Ok(list_reference_review_items_use_case(
+        &open_existing_catalog(vault_root)?,
+    )?)
+}
+
+/// Decides that the record of a Reference Review Item describes one of its candidates, and
+/// returns the items still pending.
+pub fn link_reference_review_item_in_vault(
+    vault_root: &Path,
+    item_id: i64,
+    release_edition_id: i64,
+) -> Result<Vec<DescribedReferenceReviewItem>, CommandError> {
+    Ok(link_reference_review_item_use_case(
+        &open_existing_catalog(vault_root)?,
+        item_id,
+        release_edition_id,
+    )?)
+}
+
+/// Decides that the record of a Reference Review Item describes none of its candidates, and
+/// returns the items still pending.
+pub fn keep_reference_review_item_apart_in_vault(
+    vault_root: &Path,
+    item_id: i64,
+) -> Result<Vec<DescribedReferenceReviewItem>, CommandError> {
+    Ok(keep_reference_review_item_apart_use_case(
+        &open_existing_catalog(vault_root)?,
+        item_id,
+    )?)
+}
+
 /// The connectors of a registry, one per Source, as the use cases take them.
 fn registry_refs(registry: &[Box<dyn ConnectorPort>]) -> Vec<&dyn ConnectorPort> {
     registry
@@ -426,6 +465,30 @@ fn search_library(
 #[tauri::command(rename_all = "snake_case")]
 fn list_review_items(session: State<'_, VaultSession>) -> Result<Vec<ReviewItem>, CommandError> {
     load_review_items(&session.root()?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn list_reference_review_items(
+    session: State<'_, VaultSession>,
+) -> Result<Vec<DescribedReferenceReviewItem>, CommandError> {
+    load_reference_review_items(&session.root()?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn link_reference_review_item(
+    session: State<'_, VaultSession>,
+    item_id: i64,
+    release_edition_id: i64,
+) -> Result<Vec<DescribedReferenceReviewItem>, CommandError> {
+    link_reference_review_item_in_vault(&session.root()?, item_id, release_edition_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn keep_reference_review_item_apart(
+    session: State<'_, VaultSession>,
+    item_id: i64,
+) -> Result<Vec<DescribedReferenceReviewItem>, CommandError> {
+    keep_reference_review_item_apart_in_vault(&session.root()?, item_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -798,6 +861,9 @@ pub fn run() {
             list_review_items,
             resolve_review_item,
             load_review_preview,
+            list_reference_review_items,
+            link_reference_review_item,
+            keep_reference_review_item_apart,
             build_acquisition_request,
             plan_acquisition,
             start_acquisition_run,
