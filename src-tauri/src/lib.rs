@@ -1085,8 +1085,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Lets the user pick the folders of a vault and of an export.
         .plugin(tauri_plugin_dialog::init())
-        // A vault named without a full path is kept in the user's Documents.
-        .manage(VaultSession::keeping_named_vaults_in(dirs::document_dir()))
+        // A vault named without a full path is kept in the user's Documents, or in their home
+        // folder on a system that names no Documents folder.
+        .manage(VaultSession::keeping_named_vaults_in(
+            dirs::document_dir().or_else(dirs::home_dir),
+        ))
         .register_asynchronous_uri_scheme_protocol(
             OBJECT_PROTOCOL,
             |context, request, responder| {

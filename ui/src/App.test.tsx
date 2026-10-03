@@ -1890,6 +1890,37 @@ describe("App acquisition", () => {
     expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
   });
 
+  it("shows the media a run acquired so far when the Library opens while it executes", async () => {
+    let library: LibraryEntry[] = [];
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "start_acquisition_run") {
+        return Promise.resolve(startedRun);
+      }
+      if (command === "execute_acquisition_run") {
+        // The execution goes on; what it imported is already in the vault.
+        library = [entry];
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        return Promise.resolve(library);
+      }
+      return Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.change(screen.getByLabelText("Platform"), {
+      target: { value: "Nintendo - Game Boy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
+    await screen.findByRole("button", { name: "Executing…" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+
+    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
   it("shows the shared validator message when the backend rejects a request", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "start_acquisition_run") {

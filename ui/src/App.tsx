@@ -529,6 +529,16 @@ export function App() {
   function showView(view: View) {
     activeViewRef.current = view;
     setActiveView(view);
+    // Executions import as they go: the Library shows what they imported so far when it opens,
+    // rather than only once they end.
+    if (view === "library" && executingRunIds.size > 0) {
+      const refreshingVaultRoot = activeVaultRoot.current;
+      refreshVaultData(refreshingVaultRoot).catch((reason) => {
+        if (activeVaultRoot.current === refreshingVaultRoot) {
+          setError(errorMessage(reason));
+        }
+      });
+    }
   }
 
   async function refreshRuns(expectedVaultRoot: string | null) {
