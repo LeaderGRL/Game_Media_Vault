@@ -148,3 +148,31 @@ fn refuses_a_range_past_the_end_and_ignores_one_it_cannot_read() {
         assert_eq!(whole.body().as_slice(), PNG_BYTES, "{range}");
     }
 }
+
+#[test]
+fn answers_an_open_range_of_a_large_object_a_part_at_a_time() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let mut video = vec![0, 0, 0, 0x18];
+    video.extend_from_slice(b"ftypisommp41");
+    video.resize(5 * 1024 * 1024, 7);
+    let stored = ContentAddressedStore::new(&vault)
+        .store_original(&mut video.as_slice())
+        .unwrap();
+    let session = VaultSession::default();
+    session.open(&vault, false).unwrap();
+
+    let response = object_response(&session, &format!("/{}", stored.hash), Some("bytes=0-"));
+
+    // A player asks for the rest of the media and reads it a part at a time, so a large one is
+    // never held in memory whole.
+    let part = 4 * 1024 * 1024;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+    assert_eq!(
+        response.headers()["content-range"],
+        format!("bytes 0-{}/{}", part - 1, video.len()).as_str()
+    );
+    assert_eq!(response.body().as_slice(), &video[..part]);
+}

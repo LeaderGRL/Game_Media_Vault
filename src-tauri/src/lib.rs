@@ -901,6 +901,10 @@ struct ObjectPart {
 /// Bytes read from the start of an object to name its media type, as storing reads them.
 const MEDIA_TYPE_PREFIX: u64 = 256 * 1024;
 
+/// The most bytes one ranged response holds. A player asks for the rest of a video and reads it
+/// a part at a time, so a large one is never held in memory whole.
+const MAX_RANGE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// The part of `file` the `range` header asks for, or all of it, reading only those bytes; none
 /// when the range starts past its end.
 fn object_part(
@@ -918,7 +922,9 @@ fn object_part(
     let (partial, first, last) = match range.map(|range| requested_range(range, length)) {
         None | Some(RequestedRange::Whole) => (false, 0, length),
         Some(RequestedRange::Unsatisfiable) => return Ok(None),
-        Some(RequestedRange::Part { first, last }) => (true, first, last + 1),
+        Some(RequestedRange::Part { first, last }) => {
+            (true, first, (last + 1).min(first + MAX_RANGE_BYTES))
+        }
     };
     file.seek(SeekFrom::Start(first))?;
     let mut bytes = Vec::new();

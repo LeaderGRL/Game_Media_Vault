@@ -574,14 +574,14 @@ function formatBytes(byteLength: number) {
   return (byteLength / 1024).toFixed(1) + " KiB";
 }
 
+/** Video containers the webview plays itself. */
+const PLAYABLE_VIDEO_TYPES = ["video/mp4", "video/webm"];
+
 /**
  * Whether an original is an image. Assets imported before media inspection (vaults upgraded
  * from schema version 2) still have unknown media, so their file name decides until the vault
  * is verified again.
  */
-/** Video containers the webview plays itself. */
-const PLAYABLE_VIDEO_TYPES = ["video/mp4", "video/webm"];
-
 function isImageOriginal(asset: LibraryAsset) {
   const mediaType =
     asset.media_type === "application/octet-stream"
