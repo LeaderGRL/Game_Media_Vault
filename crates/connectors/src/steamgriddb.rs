@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::{
     HttpTransport, ReqwestHttpTransport,
-    selection::{name_key, wanted_games},
+    selection::{name_key, platform_key, wanted_games},
 };
 
 pub const STEAMGRIDDB_SOURCE_ID: &str = "steamgriddb";
@@ -236,7 +236,7 @@ fn candidate(
     Some(AssetCandidate {
         // One image applies to every requested platform, each its own candidate: its id names the
         // platform, which candidate identity otherwise lacks.
-        provider_candidate_id: Some(format!("{platform}/{collection}/{id}")),
+        provider_candidate_id: Some(format!("{}/{collection}/{id}", platform_key(platform))),
         game_title: title.to_owned(),
         platform: platform.to_owned(),
         region: "Unknown".to_owned(),

@@ -16,7 +16,7 @@ use url::Url;
 
 use crate::{
     HttpTransport, ReqwestHttpTransport, RetryPolicy,
-    selection::{name_key, wanted_games},
+    selection::{name_key, platform_key, wanted_games},
 };
 
 pub const RAWG_SOURCE_ID: &str = "rawg";
@@ -175,7 +175,7 @@ where
                 {
                     images.push((
                         AssetType::WallpaperArtwork,
-                        format!("{platform}/games/{id}/background"),
+                        format!("{}/games/{id}/background", platform_key(&platform)),
                         "background",
                         location,
                     ));
@@ -196,7 +196,7 @@ where
                         };
                         images.push((
                             AssetType::Screenshot,
-                            format!("{platform}/screenshots/{shot}"),
+                            format!("{}/screenshots/{shot}", platform_key(&platform)),
                             "screenshot",
                             location,
                         ));

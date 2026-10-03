@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::{
     HttpTransport, ReqwestHttpTransport,
-    selection::{name_key, wanted_games},
+    selection::{name_key, platform_key, wanted_games},
 };
 
 pub const SCREENSCRAPER_SOURCE_ID: &str = "screenscraper";
@@ -612,7 +612,10 @@ fn candidate(media: &Value, found: &Found<'_>) -> Option<AssetCandidate> {
     };
     Some(AssetCandidate {
         // One media may serve several platforms of one system, each its own candidate.
-        provider_candidate_id: Some(format!("{}/{system_id}/{game_id}/{name}", found.platform)),
+        provider_candidate_id: Some(format!(
+            "{}/{system_id}/{game_id}/{name}",
+            platform_key(found.platform)
+        )),
         game_title: found.title.to_owned(),
         platform: found.platform.to_owned(),
         region: region.to_owned(),

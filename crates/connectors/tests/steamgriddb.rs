@@ -194,7 +194,7 @@ fn discovers_the_media_of_a_requested_game_found_by_its_exact_name() {
     assert_eq!(
         logo,
         &AssetCandidate {
-            provider_candidate_id: Some(format!("{NES}/logos/101")),
+            provider_candidate_id: Some("nintendonintendoentertainmentsystem/logos/101".to_owned()),
             game_title: "Super Mario Bros.".to_owned(),
             platform: NES.to_owned(),
             region: "Unknown".to_owned(),
@@ -367,6 +367,27 @@ fn each_requested_platform_gets_a_candidate_identity_of_its_own() {
         .collect();
     assert_eq!(
         ids,
-        [format!("{NES}/logos/101"), format!("{famicom}/logos/101"),]
+        [
+            "nintendonintendoentertainmentsystem/logos/101",
+            "nintendofamilycomputerdisksystem/logos/101",
+        ]
     );
+}
+
+#[test]
+fn a_platform_spelled_otherwise_keeps_the_candidate_identity() {
+    let api = super_mario_api();
+    let ids = |platform: &str| -> Vec<String> {
+        connector(&api, Some("key"))
+            .discover(&request(|draft| {
+                draft.platforms = vec![platform.to_owned()];
+                draft.asset_types = vec![AssetTypeSelector::Logo];
+            }))
+            .unwrap()
+            .into_iter()
+            .filter_map(|candidate| candidate.provider_candidate_id)
+            .collect()
+    };
+
+    assert_eq!(ids(NES), ids("  nintendo - nintendo entertainment system "));
 }

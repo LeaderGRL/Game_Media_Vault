@@ -127,7 +127,7 @@ fn atlas() -> String {
 
 fn candidate(file: &str, label: &str) -> AssetCandidate {
     AssetCandidate {
-        provider_candidate_id: Some(format!("{NES}/NES/{file}")),
+        provider_candidate_id: Some(format!("nintendonintendoentertainmentsystem/NES/{file}")),
         game_title: "Super Mario Bros.".to_owned(),
         platform: NES.to_owned(),
         region: "Unknown".to_owned(),
