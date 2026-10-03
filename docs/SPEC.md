@@ -624,7 +624,7 @@ The desktop webview never reads files directly. Original objects of the opened v
 - Lazy media decoding; inspect headers/metadata before full decode where possible.
 - Concurrent independent source work under per-source limits.
 - No UI dependency in background workers.
-- Desktop commands that may wait on a Source (starting a run, whose plan check can consult it, executing a run, loading a review preview) run on blocking workers so the window stays responsive.
+- Desktop commands that may wait on a Source (starting a run, whose plan check can consult it, executing a run, loading a review preview) run on blocking workers so the window stays responsive, and build their connectors there: a connector's HTTP client is never built on the async runtime's workers.
 - Benchmark matching, catalog lookup, hashing, and high-volume import paths before micro-optimizing them.
 
 ## 23. Reliability and Observability
