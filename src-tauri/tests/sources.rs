@@ -26,7 +26,8 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
             "libretro-thumbnails",
             "launchbox-games-db",
             "steamgriddb",
-            "thegamesdb"
+            "thegamesdb",
+            "psx-datacenter"
         ]
     );
     assert!(sources.iter().all(|source| source.direct_media_download));
@@ -41,6 +42,7 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
             CredentialState::NotNeeded,
             CredentialState::Missing,
             CredentialState::Missing,
+            CredentialState::NotNeeded,
         ]
     );
 }

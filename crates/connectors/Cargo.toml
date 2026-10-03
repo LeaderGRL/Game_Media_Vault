@@ -10,8 +10,10 @@ game-media-vault-domain.workspace = true
 dirs.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true
+scraper.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+texting_robots.workspace = true
 url.workspace = true
 zip.workspace = true
 

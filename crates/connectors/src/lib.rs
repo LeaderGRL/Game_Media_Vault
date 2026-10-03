@@ -18,6 +18,8 @@ mod datafile;
 mod launchbox;
 mod mame;
 mod naming;
+mod polite;
+mod psx_datacenter;
 mod resume;
 mod retry;
 mod selection;
@@ -26,6 +28,8 @@ mod thegamesdb;
 mod xml;
 
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
+pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
+pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
 pub use retry::RetryPolicy;
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
 pub use thegamesdb::{THEGAMESDB_SOURCE_ID, TheGamesDbConnector};
@@ -65,6 +69,7 @@ pub fn registered_connectors(
         Box::new(LaunchBoxGamesDbConnector::new()),
         Box::new(SteamGridDbConnector::new(Arc::clone(&credentials))),
         Box::new(TheGamesDbConnector::new(credentials)),
+        Box::new(PsxDataCenterConnector::new()),
     ]
 }
 
@@ -165,6 +170,26 @@ impl ReqwestHttpTransport {
                 .build()
                 .expect("failed to build the HTTP client"),
             retry,
+        }
+    }
+
+    /// A transport for public websites, which a well-behaved client asks each thing once: one
+    /// attempt, which also leaves nothing to resume a cut download with, and no redirect, which
+    /// could lead to another site's pages. Every request it sends is then one its caller, such as
+    /// `PoliteTransport`, admitted.
+    pub fn for_public_sites() -> Self {
+        let client = Client::builder()
+            .user_agent("game-media-vault/0.1")
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build the HTTP client");
+        Self {
+            client: client.clone(),
+            keyed_client: client,
+            retry: RetryPolicy {
+                max_attempts: 1,
+                ..RetryPolicy::default()
+            },
         }
     }
 

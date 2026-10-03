@@ -615,3 +615,28 @@ fn a_keyed_request_follows_no_redirect_that_would_carry_its_api_key_away() {
     assert!(!error.message().contains("zq-test-key"));
     assert_eq!(requests.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn a_transport_for_public_sites_asks_once_and_follows_no_redirect() {
+    let (url, served) = serve(vec!["HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK"]);
+
+    let error = ReqwestHttpTransport::for_public_sites()
+        .get_stream(&url)
+        .err()
+        .unwrap();
+
+    assert!(error.message().contains("503"), "{}", error.message());
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0\r\n\r\n"
+            .to_vec(),
+    ]);
+    let error = ReqwestHttpTransport::for_public_sites()
+        .get_stream(&url)
+        .err()
+        .unwrap();
+
+    assert!(error.message().contains("302"), "{}", error.message());
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}

@@ -55,6 +55,7 @@ export const KNOWN_SOURCES = [
   { value: "launchbox-games-db", label: "LaunchBox Games Database" },
   { value: "steamgriddb", label: "SteamGridDB" },
   { value: "thegamesdb", label: "TheGamesDB" },
+  { value: "psx-datacenter", label: "PSX DataCenter" },
 ];
 
 /** Whether a Source has the credential it needs on this machine. */
