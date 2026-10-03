@@ -15,11 +15,11 @@ use game_media_vault_application::{
     acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     clear_source_api_key, derive_assets, derive_packaging_models, describe_sources,
     draft_from_document, export_acquisition_request, import_local_box_front,
-    import_reference_catalog, list_acquisition_runs, list_library, list_review_items,
-    load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
-    repair_vault, resolve_review_item, resume_acquisition_run, search_library, set_source_api_key,
-    set_source_enabled, start_acquisition_run_with_connectors, summarize_source_failures,
-    verify_vault,
+    import_reference_catalog, list_acquisition_runs, list_library, list_reference_review_items,
+    list_review_items, load_acquisition_run, machine_connectors, pause_acquisition_run,
+    plan_acquisition, repair_vault, resolve_review_item, resume_acquisition_run, search_library,
+    set_source_api_key, set_source_enabled, start_acquisition_run_with_connectors,
+    summarize_source_failures, verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -170,6 +170,11 @@ enum Command {
     /// while no other process uses the vault: interrupted and running stores look alike.
     Repair(RepairArgs),
     Library,
+    /// Reference data of the vault and the questions it leaves for a human.
+    Reference {
+        #[command(subcommand)]
+        command: ReferenceCommand,
+    },
     /// Searches the Library and prints one page of matching releases.
     Search(SearchArgs),
 }
@@ -362,6 +367,21 @@ enum KeyCommand {
     Set { source_id: String },
     /// Forgets the API key of a Source.
     Clear { source_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReferenceCommand {
+    /// The reference records whose evidence points at several editions of other sources.
+    Review {
+        #[command(subcommand)]
+        command: ReferenceReviewCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReferenceReviewCommand {
+    /// Lists the records awaiting a human, with the editions each may describe.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -764,6 +784,17 @@ where
                 .map(MameSoftwareListCatalog::with_mame_version)
                 .unwrap_or_default();
             import_reference_datafile(&cli.vault, &source, file, max_games)
+        }
+        Command::Reference {
+            command:
+                ReferenceCommand::Review {
+                    command: ReferenceReviewCommand::List,
+                },
+        } => {
+            let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            Ok(serde_json::to_string_pretty(&list_reference_review_items(
+                &catalog,
+            )?)?)
         }
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;

@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 12;
+const VAULT_SCHEMA_VERSION: i32 = 13;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -28,7 +28,31 @@ const MIGRATIONS: &[Migration] = &[
     add_source_failures,
     add_reference_dump_sets,
     add_run_work_source_index,
+    add_reference_review_items,
 ];
+
+/// Version 13 keeps the reference records whose evidence points at several editions of other
+/// sources, for a human to tell apart. The table matches `SCHEMA`.
+fn add_reference_review_items(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(REFERENCE_REVIEW_ITEMS_TABLE)
+        .map_err(sql_error)
+}
+
+/// One item per reference record, naming the edition the record keeps meanwhile and the
+/// candidate editions, as a JSON array of their ids.
+const REFERENCE_REVIEW_ITEMS_TABLE: &str = "
+    CREATE TABLE reference_review_items (
+        id INTEGER PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        source_record TEXT NOT NULL,
+        release_edition_id INTEGER NOT NULL REFERENCES release_editions(id),
+        evidence TEXT NOT NULL CHECK(evidence IN ('sha1', 'title')),
+        candidates_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'linked', 'kept_apart')),
+        UNIQUE(source_id, source_record)
+    );
+";
 
 /// Version 12 indexes run work by the Source of its candidate, so an execution reads ahead
 /// only the few oldest queued items of each Source rather than ranking the whole queue every
@@ -315,6 +339,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         .map_err(sql_error)?;
     transaction
         .execute_batch(RUN_WORK_SOURCE_INDEX)
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(REFERENCE_REVIEW_ITEMS_TABLE)
         .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)

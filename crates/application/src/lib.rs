@@ -36,7 +36,7 @@ pub use game_media_vault_domain::{
 pub use identity::candidate_identity;
 pub use imports::{
     ImportLocalBoxFrontRequest, ImportReferenceCatalogRequest, ReferenceImportSummary,
-    import_local_box_front, import_reference_catalog, list_library,
+    import_local_box_front, import_reference_catalog, list_library, list_reference_review_items,
 };
 pub use library::{
     DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,
@@ -52,7 +52,8 @@ pub use plan::{
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort, MachineSettingsPort,
     ObjectStorePort, ParkedReview, PortError, ReferenceCatalogRead, ReferenceCatalogRepositoryPort,
-    ReferenceCatalogSourcePort, ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
+    ReferenceCatalogSourcePort, ReferenceReviewRepositoryPort, ReviewDecisionOutcome,
+    ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{
     MAX_REVIEW_PREVIEW_BYTES, ReviewPreview, list_review_items, load_review_preview,

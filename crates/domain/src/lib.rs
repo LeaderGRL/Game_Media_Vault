@@ -612,6 +612,21 @@ pub struct ReleaseAssertion {
     pub value: String,
 }
 
+/// A reference record whose evidence points at several Release Editions of other sources, which
+/// a human tells apart. The record keeps its own edition meanwhile, so nothing merges silently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReferenceReviewItem {
+    pub id: i64,
+    pub source_id: SourceId,
+    pub source_record: String,
+    /// The edition the record keeps until a human decides.
+    pub release_edition_id: i64,
+    /// What points at the candidates: the record's dumps (`sha1`) or its title (`title`).
+    pub evidence: String,
+    /// The editions of other sources the record may describe.
+    pub candidates: Vec<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceReleaseRecord {
     pub game_title: String,

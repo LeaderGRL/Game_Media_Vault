@@ -3,11 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use game_media_vault_domain::{AssetType, ImportedAsset, LibraryRelease, PersistAsset, SourceId};
+use game_media_vault_domain::{
+    AssetType, ImportedAsset, LibraryRelease, PersistAsset, ReferenceReviewItem, SourceId,
+};
 
 use crate::{
     ApplicationError, CatalogPort, ObjectStorePort, PortError, ReferenceCatalogRepositoryPort,
-    ReferenceCatalogSourcePort,
+    ReferenceCatalogSourcePort, ReferenceReviewRepositoryPort,
 };
 
 const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
@@ -68,6 +70,14 @@ pub fn import_reference_catalog(
         imported_releases,
         skipped_records: read.skipped_records,
     })
+}
+
+/// The reference records awaiting a human to tell which Release Edition, if any, they describe:
+/// those whose evidence pointed at several editions of other sources when they were imported.
+pub fn list_reference_review_items(
+    reviews: &dyn ReferenceReviewRepositoryPort,
+) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
+    Ok(reviews.list_reference_review_items()?)
 }
 
 pub fn import_local_box_front(
