@@ -117,6 +117,10 @@ In the app:
 Sources that need an API key (SteamGridDB, TheGamesDB, ScreenScraper, RAWG) take part once you
 store yours in the Sources view.
 
+Debug builds keep line tables only, so building and testing everything takes about 5 GB in
+`target/`. Cargo never removes older builds from it, though: `cargo clean` empties it when it
+grows, and the next build takes a few minutes.
+
 Command-line interface, with a vault in `./my-vault`:
 
 ```bash
