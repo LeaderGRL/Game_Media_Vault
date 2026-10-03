@@ -101,7 +101,13 @@ fn video_media_type(header: &[u8]) -> Option<&'static str> {
         .get(brands_start + 8..box_end.min(header.len()))
         .unwrap_or_default();
     if std::iter::once(major)
-        .chain(compatible.chunks_exact(4))
+        .chain(
+            compatible
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|brand| brand.as_slice()),
+        )
         .any(|brand| IMAGE_BRANDS.contains(&brand))
     {
         return None;
