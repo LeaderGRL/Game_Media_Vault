@@ -45,7 +45,7 @@ const MAX_SEARCH_PAGES: u32 = 5;
 
 /// The platforms TheGamesDB names with other words than the No-Intro and Redump catalogs do: each
 /// catalog name with the TheGamesDB names it stands for.
-const PLATFORM_ALIASES: [(&str, &[&str]); 10] = [
+const PLATFORM_ALIASES: [(&str, &[&str]); 11] = [
     (
         "Nintendo - Super Nintendo Entertainment System",
         &["Super Nintendo (SNES)"],
@@ -57,6 +57,7 @@ const PLATFORM_ALIASES: [(&str, &[&str]); 10] = [
     ("Sega - Mega-CD - Sega CD", &["Sega CD"]),
     ("Sega - Master System - Mark III", &["Sega Master System"]),
     ("NEC - PC Engine - TurboGrafx-16", &["TurboGrafx 16"]),
+    ("NEC - PC Engine CD - TurboGrafx-CD", &["TurboGrafx CD"]),
     ("Sony - PlayStation Portable", &["Sony PSP"]),
     ("Bandai - WonderSwan", &["WonderSwan"]),
     ("Bandai - WonderSwan Color", &["WonderSwan Color"]),
@@ -253,10 +254,18 @@ where
                             "TheGamesDB listed images without their location".to_owned(),
                         )
                     })?;
+                // A listing without its images is no answer that the games have none.
+                let images = answer
+                    .pointer("/data/images")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        PortError::invalid_source_data(
+                            "TheGamesDB listed images without them".to_owned(),
+                        )
+                    })?;
                 for (game_id, title, platform) in batch {
-                    let path = format!("/data/images/{game_id}");
-                    for image in answer
-                        .pointer(&path)
+                    for image in images
+                        .get(&game_id.to_string())
                         .and_then(Value::as_array)
                         .into_iter()
                         .flatten()

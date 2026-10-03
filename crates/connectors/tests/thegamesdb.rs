@@ -111,7 +111,8 @@ const PLATFORMS: &str = r#"{"code":200,"status":"Success","remaining_monthly_all
   "6":{"id":6,"name":"Super Nintendo (SNES)","alias":"super-nintendo-snes"},
   "18":{"id":18,"name":"Sega Genesis","alias":"sega-genesis"},
   "36":{"id":36,"name":"Sega Mega Drive","alias":"sega-mega-drive"},
-  "4052":{"id":4052,"name":"Handheld Electronic Games (LCD)","alias":"handheld-electronic-games-lcd"}
+  "4052":{"id":4052,"name":"Handheld Electronic Games (LCD)","alias":"handheld-electronic-games-lcd"},
+  "4955":{"id":4955,"name":"TurboGrafx CD","alias":"turbografx-cd"}
 }}}"#;
 
 const SEARCH: &str = r#"{"code":200,"status":"Success","remaining_monthly_allowance":99,"extra_allowance":0,
@@ -386,6 +387,7 @@ fn platforms_it_names_otherwise_are_known_by_their_catalog_names() {
     for (platform, ids) in [
         ("Nintendo - Super Nintendo Entertainment System", "6"),
         ("Sega - Mega Drive - Genesis", "18%2C36"),
+        ("NEC - PC Engine CD - TurboGrafx-CD", "4955"),
     ] {
         let api = FixtureApi::answering(&[(PLATFORMS_URL, PLATFORMS)]);
 
@@ -515,4 +517,22 @@ fn images_are_asked_for_in_batches_of_twenty_games() {
 
     let requested: Vec<String> = api.requested().into_iter().map(|(url, _)| url).collect();
     assert_eq!(&requested[2..], [first_batch, second_batch]);
+}
+
+#[test]
+fn an_image_listing_answered_without_its_images_is_invalid_source_data() {
+    let api = FixtureApi::answering(&[
+        (PLATFORMS_URL, PLATFORMS),
+        (SEARCH_URL, SEARCH),
+        (
+            &images_url("boxart"),
+            r#"{"code":200,"status":"Success","pages":{"next":null},"data":{"count":0,"base_url":{"original":"https://cdn.thegamesdb.net/images/original/"}}}"#,
+        ),
+    ]);
+
+    let error = connector(&api, Some("key"))
+        .discover(&request(|_| {}))
+        .unwrap_err();
+
+    assert!(error.is_invalid_source_data(), "{}", error.message());
 }
