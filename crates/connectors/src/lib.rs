@@ -20,6 +20,7 @@ mod mame;
 mod naming;
 mod polite;
 mod psx_datacenter;
+mod rawg;
 mod resume;
 mod retry;
 mod screenscraper;
@@ -31,6 +32,7 @@ mod xml;
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
 pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
+pub use rawg::{RAWG_SOURCE_ID, RawgConnector};
 pub use retry::RetryPolicy;
 pub use screenscraper::{SCREENSCRAPER_SOURCE_ID, ScreenScraperConnector};
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
@@ -71,7 +73,8 @@ pub fn registered_connectors(
         Box::new(LaunchBoxGamesDbConnector::new()),
         Box::new(SteamGridDbConnector::new(Arc::clone(&credentials))),
         Box::new(TheGamesDbConnector::new(Arc::clone(&credentials))),
-        Box::new(ScreenScraperConnector::new(credentials)),
+        Box::new(ScreenScraperConnector::new(Arc::clone(&credentials))),
+        Box::new(RawgConnector::new(credentials)),
         Box::new(PsxDataCenterConnector::new()),
     ]
 }
@@ -205,6 +208,15 @@ impl ReqwestHttpTransport {
     /// could lead to another site's pages. Every request it sends is then one its caller, such as
     /// `PoliteTransport`, admitted.
     pub fn for_public_sites() -> Self {
+        Self::following_no_redirect(RetryPolicy {
+            max_attempts: 1,
+            ..RetryPolicy::default()
+        })
+    }
+
+    /// A transport that follows no redirect, which could lead to another server than the one a
+    /// connector trusts its media from, while retrying transient failures as `retry` allows.
+    pub fn following_no_redirect(retry: RetryPolicy) -> Self {
         let client = Client::builder()
             .user_agent("game-media-vault/0.1")
             .redirect(reqwest::redirect::Policy::none())
@@ -213,10 +225,7 @@ impl ReqwestHttpTransport {
         Self {
             client: client.clone(),
             keyed_client: client,
-            retry: RetryPolicy {
-                max_attempts: 1,
-                ..RetryPolicy::default()
-            },
+            retry,
         }
     }
 

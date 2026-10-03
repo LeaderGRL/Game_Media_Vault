@@ -855,6 +855,9 @@ fn plain_response(status: http::StatusCode, message: &str) -> http::Response<Vec
 
 pub fn run() {
     tauri::Builder::default()
+        // Opens in the system browser the sites the default capability names, such as RAWG's,
+        // whose terms ask for a link back.
+        .plugin(tauri_plugin_opener::init())
         .manage(VaultSession::default())
         .register_asynchronous_uri_scheme_protocol(
             OBJECT_PROTOCOL,

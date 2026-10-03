@@ -56,8 +56,25 @@ export const KNOWN_SOURCES = [
   { value: "steamgriddb", label: "SteamGridDB" },
   { value: "thegamesdb", label: "TheGamesDB" },
   { value: "screenscraper", label: "ScreenScraper" },
+  { value: "rawg", label: "RAWG" },
   { value: "psx-datacenter", label: "PSX DataCenter" },
 ];
+
+/** A Source whose terms ask for a link back to it wherever its data shows. */
+export interface Attribution {
+  /** Its name, as the link reads. */
+  name: string;
+  url: string;
+}
+
+const ATTRIBUTIONS: { source_id: string; attribution: Attribution }[] = [
+  { source_id: "rawg", attribution: { name: "RAWG", url: "https://rawg.io" } },
+];
+
+/** The link back a Source's terms ask for, if they ask for one. */
+export function attributionOf(sourceId: string): Attribution | undefined {
+  return ATTRIBUTIONS.find((known) => known.source_id === sourceId)?.attribution;
+}
 
 /** Whether a Source has the credential it needs on this machine. */
 export type CredentialState = "not_needed" | "missing" | "stored" | "unreadable";

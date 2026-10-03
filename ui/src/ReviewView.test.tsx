@@ -5,6 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import { ReviewView } from "./ReviewView";
 import type { ReviewItem } from "./types";
 
+// Links open in the system browser, through the opener plugin the tests stand in for.
+const { openUrl } = vi.hoisted(() => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl }));
+
 const item: ReviewItem = {
   id: 17,
   candidate_identity: "connector:review-game",
@@ -271,5 +275,20 @@ describe("ReviewView", () => {
     );
     expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject candidate" })).toBeDisabled();
+  });
+  it("links RAWG's own site beside a candidate it provided, as its terms ask", () => {
+    render(
+      <ReviewView
+        items={[{ ...item, candidate: { ...item.candidate, source_id: "rawg" } }]}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "RAWG" });
+    expect(link).toHaveAttribute("href", "https://rawg.io");
+    fireEvent.click(link);
+    expect(openUrl).toHaveBeenCalledWith("https://rawg.io");
   });
 });
