@@ -222,7 +222,7 @@ fn candidate(asset_type: AssetType, media: &str, region: &str, label: &str) -> A
         "png"
     };
     AssetCandidate {
-        provider_candidate_id: Some(format!("{PLAYSTATION}/57/1234/{media}")),
+        provider_candidate_id: Some(format!("sonyplaystation/57/1234/{media}")),
         game_title: "Ridge Racer".to_owned(),
         platform: PLAYSTATION.to_owned(),
         region: region.to_owned(),
@@ -386,8 +386,8 @@ fn a_region_filter_keeps_the_media_of_the_requested_regions() {
     assert_eq!(
         found,
         [
-            ("Sony - PlayStation/57/1234/box-2D(us)", "USA"),
-            ("Sony - PlayStation/57/1234/ss(wor)", "World")
+            ("sonyplaystation/57/1234/box-2D(us)", "USA"),
+            ("sonyplaystation/57/1234/ss(wor)", "World")
         ]
     );
 }
@@ -557,10 +557,10 @@ fn each_arcade_platform_gets_its_own_candidates_from_one_search() {
     assert_eq!(
         found,
         [
-            ("MAME", "MAME/75/1234/box-2D(us)"),
+            ("MAME", "mame/75/1234/box-2D(us)"),
             (
                 "FBNeo - Arcade Games",
-                "FBNeo - Arcade Games/75/1234/box-2D(us)"
+                "fbneoarcadegames/75/1234/box-2D(us)"
             ),
         ]
     );

@@ -194,7 +194,7 @@ fn discovers_the_media_of_a_requested_game_found_by_its_exact_name() {
     assert_eq!(
         logo,
         &AssetCandidate {
-            provider_candidate_id: Some("logos/101".to_owned()),
+            provider_candidate_id: Some("nintendonintendoentertainmentsystem/logos/101".to_owned()),
             game_title: "Super Mario Bros.".to_owned(),
             platform: NES.to_owned(),
             region: "Unknown".to_owned(),
@@ -346,4 +346,48 @@ fn a_credential_store_that_cannot_be_read_leaves_it_out_of_plans_without_failing
         reason.contains("the credential store is locked"),
         "{reason}"
     );
+}
+
+#[test]
+fn each_requested_platform_gets_a_candidate_identity_of_its_own() {
+    let api = super_mario_api();
+    let famicom = "Nintendo - Family Computer Disk System";
+
+    let candidates = connector(&api, Some("key"))
+        .discover(&request(|draft| {
+            draft.platforms = vec![NES.to_owned(), famicom.to_owned()];
+            draft.asset_types = vec![AssetTypeSelector::Logo];
+        }))
+        .unwrap();
+
+    // One image applies to both platforms; candidate identity tells them apart by their id.
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.provider_candidate_id.as_deref().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "nintendonintendoentertainmentsystem/logos/101",
+            "nintendofamilycomputerdisksystem/logos/101",
+        ]
+    );
+}
+
+#[test]
+fn a_platform_spelled_otherwise_keeps_the_candidate_identity() {
+    let api = super_mario_api();
+    let ids = |platform: &str| -> Vec<String> {
+        connector(&api, Some("key"))
+            .discover(&request(|draft| {
+                draft.platforms = vec![platform.to_owned()];
+                draft.asset_types = vec![AssetTypeSelector::Logo];
+            }))
+            .unwrap()
+            .into_iter()
+            .filter_map(|candidate| candidate.provider_candidate_id)
+            .collect()
+    };
+
+    assert_eq!(ids(NES), ids("  nintendo - nintendo entertainment system "));
 }

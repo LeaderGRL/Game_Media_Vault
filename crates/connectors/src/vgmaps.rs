@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::{
     HttpTransport, PoliteTransport, ReqwestHttpTransport,
-    selection::{name_key, wanted_games},
+    selection::{name_key, platform_key, wanted_games},
 };
 
 pub const VGMAPS_SOURCE_ID: &str = "vgmaps";
@@ -217,13 +217,13 @@ where
                 .collect();
             // A table a shared atlas qualifies with the requested platform is that platform's;
             // an unqualified one serves a platform that has none of its own.
-            let platform_key = name_key(&platform);
+            let requested_key = platform_key(&platform);
             let own: Vec<&Game> = named
                 .iter()
                 .copied()
                 .filter(|game| {
                     game.platform
-                        .is_some_and(|its| name_key(its) == platform_key)
+                        .is_some_and(|its| platform_key(its) == requested_key)
                 })
                 .collect();
             let chosen: Vec<&Game> = if own.is_empty() {
@@ -239,7 +239,11 @@ where
                     candidates.push(AssetCandidate {
                         // One map may serve several platforms of one atlas, each its own
                         // candidate.
-                        provider_candidate_id: Some(format!("{platform}/{atlas}/{}", map.file)),
+                        provider_candidate_id: Some(format!(
+                            "{}/{atlas}/{}",
+                            platform_key(&platform),
+                            map.file
+                        )),
                         game_title: title.clone(),
                         platform: platform.clone(),
                         region: "Unknown".to_owned(),

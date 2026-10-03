@@ -201,7 +201,7 @@ fn discovery_keeps_the_games_named_exactly_so_on_the_requested_platform() {
         [
             candidate(
                 AssetType::WallpaperArtwork,
-                "Sony - PlayStation 4/games/7/background",
+                "sonyplaystation4/games/7/background",
                 "background",
                 "https://media.rawg.io/media/games/594/celeste.jpg",
                 PS4,
@@ -209,7 +209,7 @@ fn discovery_keeps_the_games_named_exactly_so_on_the_requested_platform() {
             // Images RAWG's media server does not serve are left out.
             candidate(
                 AssetType::Screenshot,
-                "Sony - PlayStation 4/screenshots/101",
+                "sonyplaystation4/screenshots/101",
                 "screenshot",
                 "https://media.rawg.io/media/screenshots/a1/shot-1.jpg",
                 PS4,
@@ -269,7 +269,7 @@ fn media_are_downloaded_from_rawg_without_the_key() {
     connector(&api, Some("zq-key"))
         .download(&candidate(
             AssetType::Screenshot,
-            "Sony - PlayStation 4/screenshots/101",
+            "sonyplaystation4/screenshots/101",
             "screenshot",
             url,
             PS4,

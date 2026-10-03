@@ -48,3 +48,9 @@ pub(crate) fn name_key(name: &str) -> String {
         .flat_map(char::to_lowercase)
         .collect()
 }
+
+/// A platform as the provider candidate ids of media that apply to several platforms name it,
+/// regardless of how a request spells it, so that one candidate keeps one identity.
+pub(crate) fn platform_key(platform: &str) -> String {
+    name_key(platform)
+}
