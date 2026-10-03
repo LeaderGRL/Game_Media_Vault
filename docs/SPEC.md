@@ -221,6 +221,10 @@ The Preferred Asset of each Release Edition and Asset Type is derived from its r
 
 A Keep Best Per Type run links an acquired original only if it would become the Preferred Asset, comparing it with the retained Assets in the same transaction as the link. An outranked original is not linked: its work completes with the outranking Asset and the reason recorded (shown as "outranked" run counts), and the candidate is settled as for a below-quality original. Bytes a retained Asset already holds add provenance to it. Keep Best Per Type never detaches Assets other runs or imports retained; they only stop being preferred (ADR 0004).
 
+### Keep the Best N Per Type
+
+`keep_best` with `per_type: N` (`--keep-per-type N`, or « Keep the best N per type » in the Acquire view) generalizes Keep Best Per Type, which keeps one: a run links an acquired original only while fewer than N retained Assets of its Release Edition and Asset Type rank above it, by the same preference. An outranked original records the last of the N retained Assets that rank above it, with the reason, and is settled as under Keep Best Per Type. Retained Assets are never detached, so a type can hold more than N Assets when better originals arrive after worse ones; the N best among them stay the ones a run compares with. Comparing needs the original's bytes, so every candidate is still downloaded. A request keeping zero Assets per type is invalid.
+
 ## 9. Release Edition Identity
 
 A Release Edition is distinct when one or more materially collectible properties differ, including:

@@ -2566,3 +2566,27 @@ fn an_export_to_a_folder_within_the_vault_is_refused() {
     assert_eq!(error.exit_code(), 2, "{error}");
     assert!(!vault.join("copies").exists());
 }
+
+#[test]
+fn acquire_keeps_the_number_of_assets_of_each_type_asked_for() {
+    let temp = tempdir().unwrap();
+    let request = game_media_vault_cli::acquisition_request_from_args(cli_args(
+        &temp.path().join("vault"),
+        &[
+            "acquire",
+            "--auto-source",
+            "--platform",
+            "Nintendo - Nintendo Entertainment System",
+            "--asset-type",
+            "box-front",
+            "--keep-per-type",
+            "3",
+        ],
+    ))
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&request).unwrap()["retention"],
+        serde_json::json!({"keep_best": {"per_type": 3}})
+    );
+}

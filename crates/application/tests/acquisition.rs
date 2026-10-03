@@ -1518,3 +1518,81 @@ fn media_nothing_tells_apart_go_to_the_release_the_request_names() {
     );
     assert!(vault.review_items.borrow().is_empty());
 }
+
+fn keep_best_two_run(vault: &FakeVault) -> i64 {
+    vault
+        .create_run(
+            request_with(|draft| {
+                draft.retention = RetentionPolicy::KeepBest { per_type: 2 };
+            }),
+            vec![SOURCE_ID.to_owned()],
+        )
+        .unwrap()
+        .id
+}
+
+/// `release` retaining a Box Front of each of `media`, with ids from 40 on.
+fn with_retained_box_fronts(release: LibraryEntry, media: Vec<MediaInfo>) -> LibraryEntry {
+    let assets = media
+        .into_iter()
+        .zip(40..)
+        .map(|(media, asset_id)| {
+            with_retained_box_front(release.clone(), asset_id, media)
+                .assets
+                .remove(0)
+        })
+        .collect();
+    LibraryEntry { assets, ..release }
+}
+
+#[test]
+fn keep_best_two_links_an_original_only_one_retained_original_outranks() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![with_retained_box_fronts(
+        release_for(&smb, 73),
+        vec![png(1200, 1600)],
+    )]);
+    let run_id = keep_best_two_run(&vault);
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![smb]),
+        run_id,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.run(run_id).outranked_work, 0);
+}
+
+#[test]
+fn keep_best_two_retains_no_original_two_retained_ones_outrank() {
+    let smb = candidate("Super Mario Bros.");
+    let vault = FakeVault::with_library(vec![with_retained_box_fronts(
+        release_for(&smb, 73),
+        vec![png(1200, 1600), png(1000, 1400)],
+    )]);
+    let run_id = keep_best_two_run(&vault);
+
+    let imported = execute_storing(
+        &vault,
+        &FakeConnector::new(vec![smb]),
+        run_id,
+        &FakeStore::storing(png(640, 900)),
+    )
+    .unwrap();
+
+    assert!(imported.is_empty());
+    // The second best of the two kept is the one the original fails to beat.
+    assert_eq!(
+        vault.outranked(run_id),
+        vec![Outranked {
+            preferred_asset_id: 41,
+            reason: PreferenceReason::MorePixels {
+                preferred: 1_400_000,
+                other: Some(576_000),
+            },
+        }]
+    );
+}

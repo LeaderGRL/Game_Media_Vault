@@ -826,7 +826,7 @@ impl ReviewRepositoryPort for FakeVault {
         record: PersistAsset,
         retention: RetentionPolicy,
     ) -> Result<CandidateAssetOutcome, PortError> {
-        if retention == RetentionPolicy::KeepBestPerType
+        if let Some(kept) = retention.kept_per_type()
             && let Some(release_edition_id) = record.existing_release_edition_id
             && let Some(outranked) = outranked_by(
                 &StoredObject {
@@ -835,6 +835,7 @@ impl ReviewRepositoryPort for FakeVault {
                     media: record.media.clone(),
                 },
                 &self.retained_assets(release_edition_id, record.asset_type),
+                kept,
             )
         {
             let recorded = outranked.clone();

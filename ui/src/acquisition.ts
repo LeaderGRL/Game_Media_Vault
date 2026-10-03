@@ -4,7 +4,13 @@ export type SourceSelection = { mode: "auto" } | { mode: "explicit"; values: str
 
 export type GameSelection = { mode: "all" } | { mode: "explicit"; values: string[] };
 
-export type RetentionPolicy = "keep_everything" | "keep_best_per_type";
+export type RetentionPolicy =
+  | "keep_everything"
+  | "keep_best_per_type"
+  | { keep_best: { per_type: number } };
+
+/** The retention the form offers; `keep_best` keeps the number of Assets per type it names. */
+export type RetentionChoice = "keep_everything" | "keep_best_per_type" | "keep_best";
 
 /** Optional quality requirements; omitted fields impose nothing (Rust `QualityRequirements`). */
 export interface QualityRequirementsDraft {
@@ -236,7 +242,9 @@ export interface AcquisitionForm {
   /** Comma-separated; empty means any language. */
   languages: string;
   assetTypes: string[];
-  retention: RetentionPolicy;
+  retention: RetentionChoice;
+  /** How many Assets of each type `keep_best` keeps for each release. */
+  keptPerType: string;
   /** Minimum width in pixels; empty imposes none. */
   minWidth: string;
   /** Minimum height in pixels; empty imposes none. */
@@ -253,6 +261,7 @@ export function emptyAcquisitionForm(): AcquisitionForm {
     languages: "",
     assetTypes: [],
     retention: "keep_everything",
+    keptPerType: "",
     minWidth: "",
     minHeight: "",
   };
@@ -267,8 +276,8 @@ function entries(text: string, separator: string | RegExp): string[] {
 
 /**
  * Builds the request draft from the form. Validation stays in Rust: the backend rejects drafts
- * without sources, platforms or Asset Types with the shared validator's message. Only pixel sizes
- * are checked first, with `pixelSizeProblem`, since JSON cannot carry numbers a `u32` rejects.
+ * without sources, platforms or Asset Types with the shared validator's message. Only numbers
+ * are checked first, with `numberProblem`, since JSON cannot carry numbers a `u32` rejects.
  */
 export function buildAcquisitionRequest(form: AcquisitionForm): AcquisitionRequestDraft {
   const games = entries(form.games, /\r?\n/);
@@ -280,7 +289,10 @@ export function buildAcquisitionRequest(form: AcquisitionForm): AcquisitionReque
     languages: entries(form.languages, ","),
     asset_types: form.assetTypes,
     quality: qualityRequirements(form),
-    retention: form.retention,
+    retention:
+      form.retention === "keep_best"
+        ? { keep_best: { per_type: Number(form.keptPerType.trim()) } }
+        : form.retention,
     limits: {},
   };
 }
@@ -304,6 +316,18 @@ export function pixelSizeProblem(form: AcquisitionForm): string | null {
     }
   }
   return null;
+}
+
+/** Why a number of the form cannot be sent, or `null` when every one can. */
+export function numberProblem(form: AcquisitionForm): string | null {
+  const problem = pixelSizeProblem(form);
+  if (problem !== null || form.retention !== "keep_best") {
+    return problem;
+  }
+  const kept = form.keptPerType.trim();
+  return /^\d+$/.test(kept) && Number(kept) >= 1 && Number(kept) <= MAX_PIXEL_SIZE
+    ? null
+    : `Assets kept per type must be a whole number from 1 up to ${MAX_PIXEL_SIZE}.`;
 }
 
 function qualityRequirements(form: AcquisitionForm): QualityRequirementsDraft | null {
