@@ -224,8 +224,12 @@ fn matches(query: &LibraryQuery, release: &LibraryRelease, needing_review: &BTre
         && any_or_all(&query.platforms, |platform| {
             platform_key(platform) == platform_key(&entry.platform)
         })
+        // A release of several regions, such as `USA, Europe`, is of each.
         && any_or_all(&query.regions, |region| {
-            region.trim().eq_ignore_ascii_case(entry.region.trim())
+            entry
+                .region
+                .split(',')
+                .any(|named| region.trim().eq_ignore_ascii_case(named.trim()))
         })
         && any_or_all(&query.sources, |source| {
             entry.assets.iter().any(|asset| {

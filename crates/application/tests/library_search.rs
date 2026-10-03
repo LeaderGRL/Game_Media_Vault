@@ -395,3 +395,22 @@ fn a_platform_spelled_two_ways_is_one_choice_that_finds_both() {
         vec![1, 2]
     );
 }
+
+#[test]
+fn a_region_finds_the_releases_of_several_regions_naming_it() {
+    let vault = FakeVault::with_library(vec![
+        release(1, "Tetris", "Nintendo - Game Boy", "USA, Europe"),
+        release(2, "Mario", "Nintendo - Game Boy", "Japan"),
+    ]);
+
+    assert_eq!(
+        ids(
+            &vault,
+            LibraryQuery {
+                regions: vec!["europe".to_owned()],
+                ..LibraryQuery::default()
+            }
+        ),
+        vec![1]
+    );
+}
