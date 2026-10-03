@@ -130,3 +130,44 @@ fn an_original_lists_every_media_type_recorded_for_its_bytes() {
         }]
     );
 }
+
+#[test]
+fn the_assets_retained_last_are_read_alone_with_their_releases_and_derivatives() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_asset(box_front("Metal Gear Solid", "aaa"))
+        .unwrap();
+    catalog.persist_asset(box_front("Wipeout", "ccc")).unwrap();
+    catalog
+        .persist_asset(box_front("Vagrant Story", "bbb"))
+        .unwrap();
+    let thumbnail = StoredObject {
+        hash: "thumb-ccc".to_owned(),
+        byte_len: 512,
+        media: png(192, 256),
+    };
+    catalog
+        .record_derivative("ccc", &THUMBNAIL, &thumbnail)
+        .unwrap();
+
+    let latest = catalog.list_latest_assets(2).unwrap();
+
+    // The two Assets retained last, each with its release and derivatives, and no other.
+    assert_eq!(
+        latest
+            .iter()
+            .map(|entry| (entry.game_title.as_str(), entry.assets.len()))
+            .collect::<Vec<_>>(),
+        [("Vagrant Story", 1), ("Wipeout", 1)]
+    );
+    assert_eq!(
+        latest[1].assets[0]
+            .derived
+            .iter()
+            .map(|derived| derived.object_hash.as_str())
+            .collect::<Vec<_>>(),
+        ["thumb-ccc"]
+    );
+    assert!(latest[0].assets[0].derived.is_empty());
+}

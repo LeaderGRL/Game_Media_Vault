@@ -145,6 +145,10 @@ impl CatalogPort for SqliteCatalog {
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
         self.library_entries()
     }
+
+    fn list_latest_assets(&self, limit: usize) -> Result<Vec<LibraryEntry>, PortError> {
+        self.latest_library_assets(limit)
+    }
 }
 
 fn normalize(value: &str) -> String {

@@ -85,6 +85,27 @@ pub trait CatalogPort {
     /// claim observed again comes after the claims recorded before), which
     /// Canonical Value selection relies on.
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
+
+    /// The Release Editions holding the `limit` Assets retained last, each with those of its
+    /// Assets alone and no assertions, in library order: Assets get larger ids as they are
+    /// retained. They are kept from the whole library by default; a catalog reads them alone.
+    fn list_latest_assets(&self, limit: usize) -> Result<Vec<LibraryEntry>, PortError> {
+        let mut entries = self.list_library()?;
+        let mut latest: Vec<i64> = entries
+            .iter()
+            .flat_map(|entry| entry.assets.iter().map(|asset| asset.asset_id))
+            .collect();
+        latest.sort_unstable_by(|left, right| right.cmp(left));
+        latest.truncate(limit);
+        for entry in &mut entries {
+            entry.assertions.clear();
+            entry
+                .assets
+                .retain(|asset| latest.contains(&asset.asset_id));
+        }
+        entries.retain(|entry| !entry.assets.is_empty());
+        Ok(entries)
+    }
 }
 
 /// Outcome of recording a human decision on a Review Item.

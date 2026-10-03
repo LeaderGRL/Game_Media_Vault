@@ -73,13 +73,13 @@ pub struct LatestMedium {
 }
 
 /// The `limit` Assets the vault retained last, newest first: Assets get larger ids as they are
-/// retained.
+/// retained. Only they are read, however large the library.
 pub fn latest_media(
     catalog: &dyn CatalogPort,
     limit: usize,
 ) -> Result<Vec<LatestMedium>, ApplicationError> {
     let mut media: Vec<LatestMedium> = catalog
-        .list_library()?
+        .list_latest_assets(limit)?
         .into_iter()
         .flat_map(|entry| {
             let (release_edition_id, game_title, platform, region) = (

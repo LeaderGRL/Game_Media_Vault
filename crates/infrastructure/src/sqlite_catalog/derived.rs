@@ -75,15 +75,27 @@ impl DerivativeRepositoryPort for SqliteCatalog {
 /// The Derived Assets of every original, in recipe order.
 pub(super) fn derived_by_original(
     connection: &Connection,
+    latest: Option<usize>,
 ) -> Result<HashMap<String, Vec<DerivedAsset>>, PortError> {
+    let filter = match latest {
+        None => "",
+        Some(_) => {
+            "WHERE original_hash IN (SELECT object_hash FROM assets ORDER BY id DESC LIMIT ?1)"
+        }
+    };
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT original_hash, recipe_json, object_hash, byte_len, media_type, width, height
              FROM derived_objects
-             ORDER BY original_hash, recipe_key",
-        )
+             {filter}
+             ORDER BY original_hash, recipe_key"
+        ))
         .map_err(sql_error)?;
-    let mut rows = statement.query([]).map_err(sql_error)?;
+    let mut rows = match latest {
+        None => statement.query([]),
+        Some(limit) => statement.query([i64::try_from(limit).unwrap_or(i64::MAX)]),
+    }
+    .map_err(sql_error)?;
     let mut derived: HashMap<String, Vec<DerivedAsset>> = HashMap::new();
     while let Some(row) = rows.next().map_err(sql_error)? {
         let recipe_json: String = row.get(1).map_err(sql_error)?;
