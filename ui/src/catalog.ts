@@ -139,7 +139,7 @@ export interface Option {
 }
 
 /** The regions No-Intro and Redump name releases with, the most common first. */
-export const REGIONS: Option[] = [
+export const COMMON_REGIONS: Option[] = [
   "World",
   "Europe",
   "USA",
@@ -159,6 +159,38 @@ export const REGIONS: Option[] = [
   "Asia",
   "Russia",
 ].map((region) => ({ value: region, label: region }));
+
+/** The other regions No-Intro names releases with, in name order. */
+export const OTHER_REGIONS: Option[] = [
+  "Argentina",
+  "Austria",
+  "Bulgaria",
+  "Chile",
+  "Croatia",
+  "Czech",
+  "Denmark",
+  "Finland",
+  "Greece",
+  "Hong Kong",
+  "Hungary",
+  "India",
+  "Ireland",
+  "Israel",
+  "Latin America",
+  "Mexico",
+  "New Zealand",
+  "Norway",
+  "Peru",
+  "Poland",
+  "Portugal",
+  "Slovakia",
+  "Taiwan",
+  "Turkey",
+  "United Kingdom",
+].map((region) => ({ value: region, label: region }));
+
+/** Every region No-Intro names releases with, the common ones first. */
+export const REGIONS: Option[] = [...COMMON_REGIONS, ...OTHER_REGIONS];
 
 /** The languages No-Intro and Redump name releases with, by the code they write. */
 export const LANGUAGES: Option[] = [

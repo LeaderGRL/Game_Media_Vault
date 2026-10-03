@@ -1817,3 +1817,8 @@ video.asset-original {
 .release-detail {
   display: contents;
 }
+
+.chip.more {
+  border-style: dashed;
+  color: var(--text-2);
+}

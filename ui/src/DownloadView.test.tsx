@@ -149,4 +149,18 @@ describe("DownloadView", () => {
 
     expect(screen.getByRole("button", { name: "Start download" })).toBeDisabled();
   });
+
+  it("offers the less common regions on request", () => {
+    const onStart = vi.fn();
+    render(<DownloadView sources={SOURCES} onStart={onStart} />);
+    fireEvent.click(screen.getByLabelText("Super Nintendo Entertainment System"));
+    const regions = screen.getByRole("group", { name: "Regions" });
+    expect(within(regions).queryByRole("button", { name: "Poland" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(regions).getByRole("button", { name: "More regions" }));
+    fireEvent.click(within(regions).getByRole("button", { name: "Poland" }));
+    start();
+
+    expect(onStart.mock.calls[0][0][0].regions).toEqual(["Poland"]);
+  });
 });

@@ -9,7 +9,14 @@ import {
   type SourceDescription,
   sourceLabel,
 } from "./acquisition";
-import { CONSOLES, LANGUAGES, REGIONS, consoleName, consolesByMaker } from "./catalog";
+import {
+  COMMON_REGIONS,
+  CONSOLES,
+  LANGUAGES,
+  OTHER_REGIONS,
+  consoleName,
+  consolesByMaker,
+} from "./catalog";
 import { ChipGroup, Segmented } from "./controls";
 import { Icon } from "./icons";
 
@@ -257,7 +264,9 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         <ChipGroup
           label="Regions"
           anyLabel="Any region"
-          options={REGIONS.filter((region) => region.value !== "World")}
+          options={COMMON_REGIONS.filter((region) => region.value !== "World")}
+          more={OTHER_REGIONS}
+          moreLabel="More regions"
           selected={regions}
           onChange={setRegions}
         />

@@ -10,6 +10,8 @@ export function ChipGroup({
   selected,
   onChange,
   anyLabel,
+  more = [],
+  moreLabel = "More",
 }: {
   label: string;
   options: Option[];
@@ -17,7 +19,14 @@ export function ChipGroup({
   onChange: (selected: string[]) => void;
   /** Words of the chip standing for an empty selection. */
   anyLabel: string;
+  /** Less common options, shown on request or once one of them is selected. */
+  more?: Option[];
+  moreLabel?: string;
 }) {
+  const [showingMore, setShowingMore] = useState(false);
+  const moreShown =
+    showingMore || more.some((option) => selected.includes(option.value));
+  const shown = moreShown ? [...options, ...more] : options;
   return (
     <div className="chip-group" role="group" aria-label={label}>
       <button
@@ -28,7 +37,7 @@ export function ChipGroup({
       >
         {anyLabel}
       </button>
-      {options.map((option) => {
+      {shown.map((option) => {
         const pressed = selected.includes(option.value);
         return (
           <button
@@ -48,6 +57,11 @@ export function ChipGroup({
           </button>
         );
       })}
+      {more.length > 0 && !moreShown ? (
+        <button type="button" className="chip more" onClick={() => setShowingMore(true)}>
+          {moreLabel}
+        </button>
+      ) : null}
     </div>
   );
 }
