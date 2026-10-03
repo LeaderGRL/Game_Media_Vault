@@ -1,4 +1,6 @@
-use game_media_vault_application::match_asset_candidate_to_release;
+use game_media_vault_application::{
+    match_asset_candidate_to_release, match_asset_candidate_to_release_preferring,
+};
 use game_media_vault_domain::{
     AssetCandidate, AssetType, LibraryEntry, MatchConfidence, MatchSignal, MatchingPolicy,
     SourceId, ValidatedMatchingPolicy,
@@ -184,9 +186,10 @@ fn missing_region_and_edition_values_do_not_increase_confidence() {
 }
 
 #[test]
-fn equally_strong_release_matches_are_deterministic_but_not_auto_linked() {
+fn equally_strong_matches_of_different_games_are_deterministic_but_not_auto_linked() {
     let first = release();
     let second = LibraryEntry {
+        game_id: 8,
         release_edition_id: 12,
         ..release()
     };
@@ -201,4 +204,79 @@ fn equally_strong_release_matches_are_deterministic_but_not_auto_linked() {
     assert_eq!(forward.score, 100);
     assert_eq!(forward.confidence, MatchConfidence::Medium);
     assert_eq!(forward.auto_link_release_edition_id(), None);
+}
+
+/// A release of Metroid on the NES, one of the game's four.
+fn metroid(release_edition_id: i64, region: &str, edition_name: &str) -> LibraryEntry {
+    LibraryEntry {
+        game_id: 9,
+        game_title: "Metroid".to_owned(),
+        release_edition_id,
+        platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+        region: region.to_owned(),
+        edition_name: edition_name.to_owned(),
+        assertions: Vec::new(),
+        assets: Vec::new(),
+    }
+}
+
+fn metroid_releases() -> Vec<LibraryEntry> {
+    vec![
+        metroid(1, "Europe", "Standard"),
+        metroid(2, "Europe", "Virtual Console"),
+        metroid(3, "USA", "Virtual Console"),
+        metroid(4, "USA", "Standard"),
+    ]
+}
+
+/// A map, which records neither region nor edition.
+fn metroid_map() -> AssetCandidate {
+    AssetCandidate {
+        game_title: "Metroid".to_owned(),
+        region: "Unknown".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        ..candidate()
+    }
+}
+
+#[test]
+fn media_nothing_tells_between_one_games_releases_go_to_its_representative_release() {
+    let result = match_asset_candidate_to_release(
+        &metroid_map(),
+        &metroid_releases(),
+        matching_policy(80, 50),
+    );
+
+    // The standard edition, then World, USA, Europe and Japan, stand for the game.
+    assert_eq!(result.release_edition_id, Some(4));
+    assert_eq!(result.score, 80);
+    assert_eq!(result.confidence, MatchConfidence::High);
+    assert_eq!(result.auto_link_release_edition_id(), Some(4));
+}
+
+#[test]
+fn a_release_the_request_names_stands_for_its_game_first() {
+    let result = match_asset_candidate_to_release_preferring(
+        &metroid_map(),
+        &metroid_releases(),
+        matching_policy(80, 50),
+        &|release| release.region == "Europe",
+    );
+
+    assert_eq!(result.release_edition_id, Some(1));
+    assert_eq!(result.confidence, MatchConfidence::High);
+}
+
+#[test]
+fn media_whose_region_conflicts_with_every_release_still_await_review() {
+    let japanese = AssetCandidate {
+        region: "Japan".to_owned(),
+        ..metroid_map()
+    };
+
+    let result =
+        match_asset_candidate_to_release(&japanese, &metroid_releases(), matching_policy(50, 50));
+
+    assert_ne!(result.confidence, MatchConfidence::High);
+    assert_eq!(result.auto_link_release_edition_id(), None);
 }

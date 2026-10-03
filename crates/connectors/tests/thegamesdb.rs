@@ -545,3 +545,24 @@ fn describes_the_monthly_allowance_its_requests_draw_on() {
 
     assert!(limits.contains("monthly allowance"), "{limits}");
 }
+
+#[test]
+fn a_request_for_more_games_than_its_allowance_can_look_up_is_refused() {
+    let api = FixtureApi::answering(&[]);
+    let games: Vec<game_media_vault_domain::PlatformBoundGameSelector> = (0..101)
+        .map(|index| game_media_vault_domain::PlatformBoundGameSelector {
+            game: format!("Game {index} (USA)"),
+            platform: NES.to_owned(),
+        })
+        .collect();
+
+    let reason = connector(&api, Some("key"))
+        .unsupported_request_reason(&request(|draft| {
+            draft.games = GameSelection::PlatformBound(games);
+        }))
+        .unwrap()
+        .unwrap();
+
+    assert!(reason.contains("101 games"), "{reason}");
+    assert!(api.requested().is_empty());
+}

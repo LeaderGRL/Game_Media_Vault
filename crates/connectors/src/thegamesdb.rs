@@ -43,6 +43,10 @@ const IMAGE_BATCH_GAMES: usize = 20;
 /// The most pages of a game search one requested game reads.
 const MAX_SEARCH_PAGES: u32 = 5;
 
+/// The most games one request may look up, which keeps a request for a whole platform from
+/// spending a key's monthly allowance in one discovery.
+const MAX_REQUESTED_GAMES: usize = 100;
+
 /// The platforms TheGamesDB names with other words than the No-Intro and Redump catalogs do: each
 /// catalog name with the TheGamesDB names it stands for.
 const PLATFORM_ALIASES: [(&str, &[&str]); 11] = [
@@ -148,6 +152,12 @@ where
                 "TheGamesDB needs an explicit game selection, since its monthly allowance cannot list whole platforms"
                     .to_owned(),
             ));
+        }
+        let requested = wanted_games(request).len();
+        if requested > MAX_REQUESTED_GAMES {
+            return Ok(Some(format!(
+                "TheGamesDB looks games up one by one under a monthly allowance of requests: {requested} games are more than the {MAX_REQUESTED_GAMES} one request may look up"
+            )));
         }
         if !request.regions().is_empty() {
             return Ok(Some(

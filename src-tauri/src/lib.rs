@@ -8,15 +8,15 @@ use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApiKey, ApplicationError, ConnectorPort,
     DerivationSummary, DescribedReferenceReviewItem, DownloadLimits, ErrorKind,
     ImportReferenceCatalogRequest, LibraryPage, LibraryQuery, Machine, PackagingModelSummary,
-    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, SourceDescription,
-    SourceFailureSummary, VaultReport,
+    PlatformCatalogSourcePort, PortError, ReferenceCatalogSourcePort, ReferenceImportSummary,
+    SourceDescription, SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     clear_source_credential as clear_source_credential_use_case,
     derive_assets as derive_assets_use_case,
     derive_packaging_models as derive_packaging_models_use_case, describe_sources,
-    import_reference_catalog as import_reference_catalog_use_case,
+    expand_every_game, import_reference_catalog as import_reference_catalog_use_case,
     keep_reference_review_item_apart as keep_reference_review_item_apart_use_case,
     link_reference_review_item as link_reference_review_item_use_case,
     list_acquisition_runs as list_acquisition_runs_use_case, list_library as list_library_use_case,
@@ -34,7 +34,8 @@ use game_media_vault_application::{
     summarize_source_failures, verify_vault as verify_vault_use_case,
 };
 use game_media_vault_connectors::{
-    MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
+    LibretroDatabase, MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog,
+    registered_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, DerivationRecipe, LibraryRelease, MatchingPolicy,
@@ -544,7 +545,20 @@ pub fn start_acquisition_run_in_vault(
     request: AcquisitionRequestInput,
     connectors: &[&dyn ConnectorPort],
 ) -> Result<AcquisitionRun, CommandError> {
+    start_acquisition_run_in_vault_with(vault_root, request, connectors, &LibretroDatabase::new())
+}
+
+/// Starts a run as `start_acquisition_run_in_vault` does. A request for every game of its
+/// platforms becomes the games the vault's releases of them name, reading the game list of a
+/// platform the vault does not know yet from `platform_catalogs`.
+pub fn start_acquisition_run_in_vault_with(
+    vault_root: &Path,
+    request: AcquisitionRequestInput,
+    connectors: &[&dyn ConnectorPort],
+    platform_catalogs: &dyn PlatformCatalogSourcePort,
+) -> Result<AcquisitionRun, CommandError> {
     let catalog = SqliteCatalog::open(vault_root.join("catalog.sqlite3"))?;
+    let request = expand_every_game(&catalog, &catalog, platform_catalogs, request)?;
     Ok(start_acquisition_run_with_connectors(
         &catalog, request, connectors,
     )?)

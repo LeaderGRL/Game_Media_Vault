@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::Read,
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc},
     thread,
@@ -12,7 +12,7 @@ use game_media_vault_domain::{
     LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
     QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
     SourceFailureStage, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
-    match_asset_candidate_to_release, review_matches_for_asset_candidate,
+    match_asset_candidate_to_release_preferring, review_matches_for_asset_candidate,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -23,6 +23,7 @@ use crate::{
     candidate_identity, load_acquisition_run,
     plan::{capable_asset_types, ensure_request_supported},
     plan_acquisition,
+    platforms::{release_key, requested_release_keys},
 };
 
 /// A concurrent human decision can close a Review Item between reading it and writing the
@@ -56,6 +57,8 @@ struct Acquisition<'a> {
     run_id: i64,
     matching_policy: ValidatedMatchingPolicy,
     releases: Vec<LibraryEntry>,
+    /// The names of the releases the request names, which stand for their game first.
+    requested_releases: HashSet<String>,
     quality: Option<QualityRequirements>,
     retention: RetentionPolicy,
     /// Whether the last failure came from the Source of the processed work, such as a failed
@@ -347,6 +350,7 @@ pub fn acquire_run_with_connectors(
         run_id,
         matching_policy,
         releases: catalog.list_library()?,
+        requested_releases: requested_release_keys(&run.request),
         quality: run.request.quality().cloned(),
         retention: run.request.retention(),
         source_failed: Cell::new(false),
@@ -755,10 +759,11 @@ impl Acquisition<'_> {
                 Route::Accepted(*release_edition_id)
             }
             Some((ReviewStatus::Rejected, _)) => Route::Rejected,
-            _ => Route::Matched(match_asset_candidate_to_release(
+            _ => Route::Matched(match_asset_candidate_to_release_preferring(
                 &work.candidate,
                 &self.releases,
                 self.matching_policy,
+                &|release| self.requested_releases.contains(&release_key(release)),
             )),
         }
     }
