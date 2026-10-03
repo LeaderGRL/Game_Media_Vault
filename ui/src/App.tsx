@@ -14,6 +14,7 @@ import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
 import { SourcesView } from "./SourcesView";
 import { ReferenceImportForm } from "./ReferenceImportForm";
+import { ReferenceReviewView } from "./ReferenceReviewView";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
   DerivationSummary,
@@ -23,6 +24,7 @@ import type {
   PackagingModelSummary,
   ReferenceImportInput,
   ReferenceImportSummary,
+  ReferenceReviewItem,
   ReviewDecision,
   ReviewItem,
 } from "./types";
@@ -94,6 +96,12 @@ export function App() {
   const pendingSearchRef = useRef<LibraryFilters | null>(null);
   const [searchingLibrary, setSearchingLibrary] = useState(false);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
+  // The reference records awaiting review in the loaded vault, and those being decided.
+  const [referenceReviewItems, setReferenceReviewItems] = useState<ReferenceReviewItem[]>([]);
+  const [decidingReferenceIds, setDecidingReferenceIds] = useState<Set<number>>(() => new Set());
+  // The latest read or decision of the reference records: an older one settling later applies
+  // nothing.
+  const referenceReviewGeneration = useRef(0);
   const [activeView, setActiveView] = useState<View>("library");
   const [loading, setLoading] = useState(false);
   const [resolvingIds, setResolvingIds] = useState<Set<number>>(() => new Set());
@@ -126,7 +134,8 @@ export function App() {
   const sourceFailuresRequest = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
-  const reviewCountLabel = `${reviewItems.length} ${reviewItems.length === 1 ? "review" : "reviews"}`;
+  const reviewCount = reviewItems.length + referenceReviewItems.length;
+  const reviewCountLabel = `${reviewCount} ${reviewCount === 1 ? "review" : "reviews"}`;
 
   /**
    * Searches a page of the Library with `filters`: the first one, or the one after `after`
@@ -291,6 +300,9 @@ export function App() {
     sourceFailuresRequest.current += 1;
     setSourceFailures(null);
     setReviewItems([]);
+    referenceReviewGeneration.current += 1;
+    setReferenceReviewItems([]);
+    setDecidingReferenceIds(new Set());
     setLoadedVaultRoot(null);
     setResolvingIds(new Set());
     setRuns([]);
@@ -320,6 +332,7 @@ export function App() {
       const [library, reviews] = await Promise.all([
         searchLibrary(),
         invoke<ReviewItem[]>("list_review_items"),
+        refreshReferenceReviews(vaultKey),
       ]);
       if (
         activeVaultRoot.current !== vaultKey ||
@@ -434,6 +447,66 @@ export function App() {
         setResolvingIds((current) => {
           const next = new Set(current);
           next.delete(reviewItemId);
+          return next;
+        });
+      }
+    }
+  }
+
+  /** Reads the reference records awaiting review in the opened vault `expectedVaultRoot`. */
+  async function refreshReferenceReviews(expectedVaultRoot: string) {
+    if (openedVaultRoot.current !== expectedVaultRoot) {
+      return;
+    }
+    referenceReviewGeneration.current += 1;
+    const generation = referenceReviewGeneration.current;
+    const listed = await invoke<ReferenceReviewItem[]>("list_reference_review_items");
+    if (
+      activeVaultRoot.current === expectedVaultRoot &&
+      generation === referenceReviewGeneration.current
+    ) {
+      setReferenceReviewItems(listed);
+    }
+  }
+
+  /**
+   * Links a reference record to one of its candidates or keeps it apart through `decide`, which
+   * answers the records still pending, then shows the Library the decision changed.
+   */
+  async function decideReferenceReview(
+    itemId: number,
+    decide: () => Promise<ReferenceReviewItem[]>,
+  ) {
+    if (loadedVaultRoot === null) {
+      return;
+    }
+    const decidingVaultRoot = loadedVaultRoot;
+    setDecidingReferenceIds((current) => new Set(current).add(itemId));
+    setError(null);
+    try {
+      const pending = await decide();
+      if (activeVaultRoot.current !== decidingVaultRoot) {
+        return;
+      }
+      referenceReviewGeneration.current += 1;
+      setReferenceReviewItems(pending);
+      // Linking merges or moves records between editions, which the Library shows.
+      await showChangedLibrary(decidingVaultRoot);
+    } catch (reason) {
+      if (activeVaultRoot.current === decidingVaultRoot) {
+        setError(errorMessage(reason));
+        // A refused decision usually means the record changed meanwhile.
+        try {
+          await refreshReferenceReviews(decidingVaultRoot);
+        } catch {
+          // The refused decision stays the reported error.
+        }
+      }
+    } finally {
+      if (activeVaultRoot.current === decidingVaultRoot) {
+        setDecidingReferenceIds((current) => {
+          const next = new Set(current);
+          next.delete(itemId);
           return next;
         });
       }
@@ -567,15 +640,29 @@ export function App() {
     }
   }
 
-  /** Imports a reference catalog file into the opened vault, then shows its releases. */
-  function importReferenceCatalog(input: ReferenceImportInput) {
-    return runVaultLibraryTask({
+  /**
+   * Imports a reference catalog file into the opened vault, then shows its releases and the
+   * records it left awaiting review.
+   */
+  async function importReferenceCatalog(input: ReferenceImportInput) {
+    const importVaultRoot = loadedVaultRoot;
+    await runVaultLibraryTask({
       runningVaults: importingReferenceVaults,
       setRunning: setImportingReference,
       setStatus: setReferenceImportStatus,
       run: () => invoke<ReferenceImportSummary>("import_reference_catalog", { input }),
       describe: describeReferenceImport,
     });
+    if (importVaultRoot === null) {
+      return;
+    }
+    try {
+      await refreshReferenceReviews(importVaultRoot);
+    } catch (reason) {
+      if (activeVaultRoot.current === importVaultRoot) {
+        setError(errorMessage(reason));
+      }
+    }
   }
 
   /** Renders the thumbnails the Library lacks, then shows them. */
@@ -919,7 +1006,7 @@ export function App() {
           className={activeView === "review" ? "active" : ""}
           onClick={() => showView("review")}
         >
-          Review ({reviewItems.length})
+          Review ({reviewCount})
         </button>
         <button
           type="button"
@@ -979,12 +1066,37 @@ export function App() {
         </>
       ) : null}
       {activeView === "review" ? (
-        <ReviewView
-          items={reviewItems}
-          resolvingIds={resolvingIds}
-          onResolve={resolveReviewItem}
-          onLoadPreview={loadReviewPreview}
-        />
+        <>
+          {referenceReviewItems.length > 0 ? (
+            <ReferenceReviewView
+              items={referenceReviewItems}
+              decidingIds={decidingReferenceIds}
+              onLink={(itemId, releaseEditionId) =>
+                void decideReferenceReview(itemId, () =>
+                  invoke<ReferenceReviewItem[]>("link_reference_review_item", {
+                    item_id: itemId,
+                    release_edition_id: releaseEditionId,
+                  }),
+                )
+              }
+              onKeepApart={(itemId) =>
+                void decideReferenceReview(itemId, () =>
+                  invoke<ReferenceReviewItem[]>("keep_reference_review_item_apart", {
+                    item_id: itemId,
+                  }),
+                )
+              }
+            />
+          ) : null}
+          {reviewItems.length > 0 || referenceReviewItems.length === 0 ? (
+            <ReviewView
+              items={reviewItems}
+              resolvingIds={resolvingIds}
+              onResolve={resolveReviewItem}
+              onLoadPreview={loadReviewPreview}
+            />
+          ) : null}
+        </>
       ) : null}
       {activeView === "acquire" ? (
         <AcquireView

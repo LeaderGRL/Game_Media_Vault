@@ -1,11 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LibraryEntry, ReviewItem } from "./types";
+import type { LibraryEntry, ReferenceReviewItem, ReviewItem } from "./types";
 
-const { invokeMock, openVaultMock, libraryQueries } = vi.hoisted(() => ({
+const { invokeMock, openVaultMock, referenceReviewMock, libraryQueries } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openVaultMock: vi.fn(),
+  referenceReviewMock: vi.fn(),
   libraryQueries: [] as Record<string, unknown>[],
 }));
 
@@ -26,6 +27,8 @@ function searchLibrary(query: Record<string, unknown>) {
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them. Like the backend, it answers with the vault's identity,
 // which tests take to be the path as typed unless they script another one.
+// The Reference Review commands are mocked apart too, answering no items unless a test
+// scripts some, so the scripted order of the other commands stays theirs.
 vi.mock("@tauri-apps/api/core", () => ({
   // Mirrors how Tauri addresses custom protocols on Windows.
   convertFileSrc: (path: string, protocol: string) => "http://" + protocol + ".localhost/" + path,
@@ -34,7 +37,9 @@ vi.mock("@tauri-apps/api/core", () => ({
       ? openVaultMock(args)
       : command === "search_library"
         ? searchLibrary(args?.query as Record<string, unknown>)
-        : invokeMock(command, ...(args === undefined ? [] : [args])),
+        : command.includes("reference_review")
+          ? referenceReviewMock(command, args)
+          : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
@@ -129,6 +134,23 @@ const reviewItem: ReviewItem = {
   status: "pending",
 };
 
+const referenceReviewItem: ReferenceReviewItem = {
+  id: 4,
+  source_id: "redump",
+  source_record: "nintendo - game boy|Game C (World)",
+  release_edition_id: 30,
+  evidence: "sha1",
+  candidates: [10, 20],
+  editions: [30, 10, 20].map((release_edition_id, index) => ({
+    release_edition_id,
+    game_title: ["Game C", "Game A", "Game B"][index],
+    platform: "Nintendo - Game Boy",
+    region: "World",
+    edition_name: "Standard",
+    records: [],
+  })),
+};
+
 describe("App", () => {
   beforeEach(() => {
     invokeMock.mockReset();
@@ -140,6 +162,8 @@ describe("App", () => {
     );
     openVaultMock.mockReset();
     openVaultMock.mockImplementation(sameIdentity);
+    referenceReviewMock.mockReset();
+    referenceReviewMock.mockImplementation(() => Promise.resolve([]));
   });
 
   it("searches the Library with the filters entered", async () => {
@@ -723,6 +747,86 @@ describe("App", () => {
     expect(invokeMock).toHaveBeenCalledWith("import_reference_catalog", {
       input: { kind: "no_intro", file: "D:/dats/nes.dat", max_games: 5000, mame_version: null },
     });
+  });
+
+  it("shows the reference records awaiting review with the vault", async () => {
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    referenceReviewMock.mockImplementation(() => Promise.resolve([referenceReviewItem]));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    expect(screen.getByRole("article", { name: "Reference review #4" })).toBeInTheDocument();
+    expect(referenceReviewMock).toHaveBeenCalledWith("list_reference_review_items", undefined);
+    // Only reference records await review, so the empty acquisition review state stays hidden.
+    expect(screen.queryByText("No review items")).not.toBeInTheDocument();
+  });
+
+  it("links a reference record to a candidate and shows the Library it changed", async () => {
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    referenceReviewMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_reference_review_items" ? [referenceReviewItem] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    libraryQueries.length = 0;
+
+    fireEvent.click(screen.getByRole("button", { name: "Same release as Game B" }));
+
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+    expect(referenceReviewMock).toHaveBeenCalledWith("link_reference_review_item", {
+      item_id: 4,
+      release_edition_id: 20,
+    });
+    await waitFor(() => expect(libraryQueries).toHaveLength(1));
+  });
+
+  it("reports a refused reference decision and shows the records as they are", async () => {
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    let pending = [referenceReviewItem];
+    referenceReviewMock.mockImplementation((command: string) => {
+      if (command === "keep_reference_review_item_apart") {
+        pending = [];
+        return Promise.reject({
+          kind: "not_found",
+          message: "reference review item #4 does not exist or was already decided",
+        });
+      }
+      return Promise.resolve(pending);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Distinct release" }));
+
+    expect(await screen.findByText(/already decided/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("shows the reference records an import left awaiting review", async () => {
+    let imported = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "import_reference_catalog") {
+        imported = true;
+        return Promise.resolve({ imported_releases: 3, skipped_records: 0 });
+      }
+      return Promise.resolve([]);
+    });
+    referenceReviewMock.mockImplementation(() =>
+      Promise.resolve(imported ? [referenceReviewItem] : []),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Load vault" }));
+    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+      target: { value: "D:/dats/gb.dat" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
+
+    expect(await screen.findByRole("button", { name: "Review (1)" })).toBeInTheDocument();
   });
 
   it("shows the releases a failed import persisted before failing", async () => {

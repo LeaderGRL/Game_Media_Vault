@@ -243,6 +243,13 @@ input:focus {
   margin-top: 18px;
 }
 
+/* Candidate editions are listed without markers. */
+ul.review-matches {
+  margin-bottom: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .review-match {
   border: 1px solid #303744;
   border-radius: 10px;
