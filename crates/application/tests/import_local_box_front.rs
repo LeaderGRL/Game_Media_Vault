@@ -127,5 +127,6 @@ fn cover_media() -> MediaInfo {
         media_type: "image/png".to_owned(),
         width: Some(1200),
         height: Some(1600),
+        document: None,
     }
 }

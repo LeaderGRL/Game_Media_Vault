@@ -15,7 +15,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_domain::{MediaInfo, StoredObject};
 
-use crate::media::MediaInspector;
+use crate::media::{MediaInspector, document_metadata};
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -116,7 +116,14 @@ impl ContentAddressedStore {
 impl ObjectStorePort for ContentAddressedStore {
     fn store_original(&self, reader: &mut dyn Read) -> Result<StoredObject, PortError> {
         let staged = self.stage(reader)?;
-        self.publish(staged, "objects")
+        let mut stored = self.publish(staged, "objects")?;
+        // A PDF describes itself past the prefix inspection streams, so its file is read once
+        // stored.
+        if stored.media.media_type == "application/pdf" {
+            stored.media.document =
+                document_metadata(&self.object_path(&stored.hash)).map(Box::new);
+        }
+        Ok(stored)
     }
 }
 

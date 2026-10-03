@@ -5,6 +5,7 @@ mod boxes;
 mod heif;
 mod jpeg;
 mod jxl;
+mod pdf;
 mod pnm;
 mod tiff;
 
@@ -28,6 +29,8 @@ pub fn inspect_media(bytes: &[u8]) -> MediaInfo {
 
 /// Identifies an original from its first bytes: its media type and, for images whose header
 /// fits in `header`, their pixel size.
+pub(crate) use pdf::document_metadata;
+
 fn inspect_header(header: &[u8]) -> MediaInfo {
     for (signature, media_type) in [
         (&b"%PDF-"[..], "application/pdf"),
@@ -39,6 +42,7 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
                 media_type: media_type.to_owned(),
                 width: None,
                 height: None,
+                document: None,
             };
         }
     }
@@ -53,6 +57,7 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
         media_type: media_type.to_owned(),
         width: size.and_then(|size| u32::try_from(size.width).ok()),
         height: size.and_then(|size| u32::try_from(size.height).ok()),
+        document: None,
     }
 }
 

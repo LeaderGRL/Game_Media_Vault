@@ -17,6 +17,7 @@ fn original(asset_id: i64, width: Option<u32>, height: Option<u32>, byte_len: u6
             media_type: "image/png".to_owned(),
             width,
             height,
+            document: None,
         },
         original_filename: format!("front-{asset_id}.png"),
         provenance: Vec::new(),

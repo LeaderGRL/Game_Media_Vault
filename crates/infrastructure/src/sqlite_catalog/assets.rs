@@ -143,12 +143,21 @@ fn persist_new_asset_row(
     asset_type: &str,
     byte_len: i64,
 ) -> Result<ImportedAsset, PortError> {
+    let document_json = record
+        .media
+        .document
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            PortError::new(format!("failed to serialize document metadata: {error}"))
+        })?;
     transaction
         .execute(
             "INSERT INTO assets (
                 release_edition_id, asset_type, object_hash, byte_len, original_filename,
-                media_type, width, height
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                media_type, width, height, document_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(release_edition_id, asset_type, object_hash) DO NOTHING",
             params![
                 release_edition_id,
@@ -159,6 +168,7 @@ fn persist_new_asset_row(
                 record.media.media_type,
                 record.media.width,
                 record.media.height,
+                document_json,
             ],
         )
         .map_err(sql_error)?;

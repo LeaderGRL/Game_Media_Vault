@@ -888,6 +888,7 @@ fn png(width: u32, height: u32) -> MediaInfo {
         media_type: "image/png".to_owned(),
         width: Some(width),
         height: Some(height),
+        document: None,
     }
 }
 

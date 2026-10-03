@@ -9,6 +9,7 @@ blake3.workspace = true
 dirs.workspace = true
 image.workspace = true
 imagesize.workspace = true
+lopdf.workspace = true
 keyring.workspace = true
 game-media-vault-application.workspace = true
 game-media-vault-domain.workspace = true

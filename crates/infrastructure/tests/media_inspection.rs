@@ -37,6 +37,7 @@ fn storing_an_original_records_its_media_type_and_pixel_size() {
             media_type: "image/png".to_owned(),
             width: Some(1200),
             height: Some(1600),
+            document: None,
         }
     );
     assert_eq!(
@@ -45,6 +46,7 @@ fn storing_an_original_records_its_media_type_and_pixel_size() {
             media_type: "image/jpeg".to_owned(),
             width: Some(640),
             height: Some(480),
+            document: None,
         }
     );
 }
@@ -57,6 +59,7 @@ fn originals_that_are_not_images_have_no_pixel_size() {
             media_type: "application/pdf".to_owned(),
             width: None,
             height: None,
+            document: None,
         }
     );
     assert_eq!(
@@ -65,6 +68,7 @@ fn originals_that_are_not_images_have_no_pixel_size() {
             media_type: "application/octet-stream".to_owned(),
             width: None,
             height: None,
+            document: None,
         }
     );
 }
@@ -80,6 +84,7 @@ fn jpeg_xl_originals_are_recorded_as_images() {
             media_type: "image/jxl".to_owned(),
             width: Some(64),
             height: Some(64),
+            document: None,
         }
     );
 }
@@ -109,6 +114,7 @@ fn jpeg_xl_codestreams_after_large_container_boxes_still_give_the_pixel_size() {
             media_type: "image/jxl".to_owned(),
             width: Some(64),
             height: Some(64),
+            document: None,
         }
     );
 }
@@ -139,6 +145,7 @@ fn heif_properties_after_large_boxes_still_give_the_pixel_size() {
             media_type: "image/avif".to_owned(),
             width: Some(1920),
             height: Some(1080),
+            document: None,
         }
     );
 }
@@ -149,6 +156,7 @@ fn other_raster_originals_are_recorded_as_images() {
         media_type: media_type.to_owned(),
         width: Some(640),
         height: Some(480),
+        document: None,
     };
     let mut qoi = b"qoif".to_vec();
     qoi.extend_from_slice(&640_u32.to_be_bytes());
@@ -186,6 +194,7 @@ fn portable_anymap_headers_with_long_comments_still_give_the_pixel_size() {
             media_type: "image/x-portable-anymap".to_owned(),
             width: Some(640),
             height: Some(480),
+            document: None,
         }
     );
 }
@@ -212,6 +221,7 @@ fn icon_originals_are_recorded_as_images() {
             media_type: "image/x-icon".to_owned(),
             width: Some(32),
             height: Some(32),
+            document: None,
         }
     );
 }
@@ -232,6 +242,7 @@ fn jpeg_frames_after_large_metadata_still_give_the_pixel_size() {
             media_type: "image/jpeg".to_owned(),
             width: Some(2400),
             height: Some(3200),
+            document: None,
         }
     );
 }
@@ -259,6 +270,7 @@ fn tiff_directories_past_the_inspected_prefix_still_give_the_pixel_size() {
             media_type: "image/tiff".to_owned(),
             width: Some(1800),
             height: Some(2400),
+            document: None,
         }
     );
 }
@@ -280,6 +292,7 @@ fn a_gltf_binary_is_recorded_as_a_3d_model() {
             media_type: "model/gltf-binary".to_owned(),
             width: None,
             height: None,
+            document: None,
         }
     );
 }

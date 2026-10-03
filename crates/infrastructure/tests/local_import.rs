@@ -325,6 +325,7 @@ fn imported_originals_list_their_media_type_and_pixel_size() {
             media_type: "image/png".to_owned(),
             width: Some(1200),
             height: Some(1600),
+            document: None,
         }
     );
 }
