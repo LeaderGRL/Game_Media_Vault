@@ -169,12 +169,18 @@ pub(crate) fn trailing_tags(name: &str) -> Vec<&str> {
     tags
 }
 
-/// Whether `code` is a language code as No-Intro writes it, such as `En` or `Zh`.
+/// The ISO 639-1 codes No-Intro and Redump write languages with, so that another tag of the same
+/// shape, such as `Unl` or `Alt`, is never read as a language.
+const LANGUAGE_CODES: [&str; 46] = [
+    "Af", "Ar", "Bg", "Ca", "Cs", "Cy", "Da", "De", "El", "En", "Es", "Et", "Eu", "Fa", "Fi", "Fr",
+    "Ga", "Gd", "He", "Hi", "Hr", "Hu", "Id", "Is", "It", "Ja", "Ko", "Lt", "Lv", "Ms", "Nl", "No",
+    "Pl", "Pt", "Ro", "Ru", "Sk", "Sl", "Sq", "Sr", "Sv", "Th", "Tr", "Uk", "Vi", "Zh",
+];
+
+/// Whether `code` is a language as No-Intro writes it, such as `En`, `Zh` or `Zh-Hant`.
 fn is_language_code(code: &str) -> bool {
-    let bytes = code.as_bytes();
-    matches!(bytes.len(), 2 | 3)
-        && bytes[0].is_ascii_uppercase()
-        && bytes[1..].iter().all(u8::is_ascii_lowercase)
+    let language = code.split_once('-').map_or(code, |(language, _)| language);
+    LANGUAGE_CODES.contains(&language)
 }
 
 /// The keys of the releases a request names game by game, as `release_key` gives them; none

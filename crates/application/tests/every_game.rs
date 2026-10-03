@@ -311,3 +311,20 @@ fn every_game_kept_to_a_language_names_the_releases_whose_name_or_region_speaks_
     // No Source tells languages apart: the games named are the language's.
     assert!(expanded.languages.is_empty());
 }
+
+#[test]
+fn a_tag_that_lists_no_language_leaves_the_language_to_the_region() {
+    let releases = Releases::holding(vec![
+        listed(1, "Tetris", "USA", "Tetris (USA) (Unl)"),
+        listed(2, "Zelda", "Europe", "Zelda (Europe) (Alt)"),
+    ]);
+    let mut english = every_game_of(&[NES]);
+    english.languages = vec!["en".to_owned()];
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), english).unwrap();
+
+    assert_eq!(
+        expanded.games,
+        bound(&["Tetris (USA) (Unl)", "Zelda (Europe) (Alt)"])
+    );
+}
