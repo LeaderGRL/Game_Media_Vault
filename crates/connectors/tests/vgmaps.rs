@@ -90,6 +90,7 @@ fn atlas() -> String {
                 ("World 1", "SuperMarioBros-World1-1.png", "1-1"),
                 ("World 1", "SuperMarioBros-World1-2.png", "1-2"),
                 ("Bonus Maps", "SuperMarioBros-WarpZone.png", "Warp Zone"),
+                ("Guide", "SuperMarioBros-Guide.pdf", "Guide"),
                 (
                     "Ending",
                     "http://elsewhere.example.com/ending.png",
@@ -187,6 +188,7 @@ fn discovery_takes_the_maps_of_the_game_named_exactly_so_on_its_atlas() {
             candidate("SuperMarioBros-World1-1.png", "World 1 · 1-1"),
             candidate("SuperMarioBros-World1-2.png", "World 1 · 1-2"),
             candidate("SuperMarioBros-WarpZone.png", "Bonus Maps · Warp Zone"),
+            candidate("SuperMarioBros-Guide.pdf", "Guide"),
         ]
     );
     assert_eq!(site.requested(), [NES_ATLAS]);
@@ -311,4 +313,17 @@ fn a_title_numbered_or_filed_otherwise_than_the_catalog_does_is_found() {
         .map(|candidate| candidate.source_asset_label.as_deref().unwrap())
         .collect();
     assert_eq!(labels, ["Stages · Air Man", "Floors · Floor 1"]);
+}
+
+#[test]
+fn the_nintendo_switch_atlas_is_known() {
+    let site = FixtureSite::serving(&[]);
+
+    let reason = VgMapsConnector::with_transport(&site)
+        .unsupported_request_reason(&request(|draft| {
+            draft.platforms = vec!["Nintendo - Nintendo Switch".to_owned()];
+        }))
+        .unwrap();
+
+    assert_eq!(reason, None);
 }

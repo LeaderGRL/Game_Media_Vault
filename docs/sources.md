@@ -223,7 +223,7 @@ only the one named; an API key is stored under the Source's id, any other creden
 ### VGMaps (`vgmaps`)
 
 - **Provides:** maps of games' levels and worlds (Map), ripped or drawn by the site's
-  community, each kept with the area and name its atlas gives it as the source label, such as
+  community, as images or, for some, PDF documents, each kept with the area and name its atlas gives it as the source label, such as
   `World 1 · 1-1`. Maps record no region and apply to the requested platform.
 - **Reached at:** the public website `www.vgmaps.com`: the atlas page of each requested
   platform, such as `Atlas/NES/index.htm`, read once for every game requested on it, then the

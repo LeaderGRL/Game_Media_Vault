@@ -39,6 +39,7 @@ const ATLASES: &[(&str, &str)] = &[
     ("Nintendo - Game Boy Advance", "GBA"),
     ("Nintendo - Nintendo DS", "DS"),
     ("Nintendo - Nintendo 3DS", "3DS"),
+    ("Nintendo - Nintendo Switch", "Switch"),
     ("Nintendo - Virtual Boy", "VirtualBoy"),
     ("Sega - Master System - Mark III", "MasterSystem"),
     ("Sega - Game Gear", "GameGear"),
@@ -71,8 +72,9 @@ const ATLASES: &[(&str, &str)] = &[
     ("FBNeo - Arcade Games", "Arcade"),
 ];
 
-/// The image formats maps are published in, by the extension of their file.
-const MAP_EXTENSIONS: [&str; 4] = [".png", ".gif", ".jpg", ".jpeg"];
+/// The formats maps are published in, by the extension of their file: images, and PDF documents
+/// for maps drawn as pages.
+const MAP_EXTENSIONS: [&str; 5] = [".png", ".gif", ".jpg", ".jpeg", ".pdf"];
 
 /// Reads the atlas page of each requested platform once, finds each requested game by its exact
 /// title, and takes the maps its table links.
@@ -299,7 +301,8 @@ fn atlas_games(html: &str, page: &Url) -> Vec<Game> {
     games
 }
 
-/// The map a link names, when it links an image on the site itself, relative to its atlas page.
+/// The map a link names, when it links an image or a PDF document on the site itself, relative
+/// to its atlas page.
 fn map(link: ElementRef<'_>, page: &Url) -> Option<Map> {
     let href = link.value().attr("href")?.trim();
     let lowercase = href.to_ascii_lowercase();
