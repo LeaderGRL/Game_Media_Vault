@@ -536,3 +536,12 @@ fn an_image_listing_answered_without_its_images_is_invalid_source_data() {
 
     assert!(error.is_invalid_source_data(), "{}", error.message());
 }
+
+#[test]
+fn describes_the_monthly_allowance_its_requests_draw_on() {
+    let api = FixtureApi::answering(&[]);
+
+    let limits = connector(&api, None).rate_limits().unwrap();
+
+    assert!(limits.contains("monthly allowance"), "{limits}");
+}

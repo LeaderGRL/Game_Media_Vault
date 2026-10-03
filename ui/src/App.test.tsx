@@ -2792,6 +2792,7 @@ describe("App Library requests", () => {
       direct_media_download: true,
       enabled: true,
       credential: "missing",
+      rate_limits: null,
     };
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(

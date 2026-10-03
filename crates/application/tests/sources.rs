@@ -3,7 +3,7 @@ mod support;
 use game_media_vault_application::{
     ApiKey, ApplicationError, ConnectorPort, CredentialState, CredentialStorePort, ErrorKind,
     Machine, MachineSettingsPort, PortError, SourceDescription, clear_source_api_key,
-    describe_sources, set_source_api_key, set_source_enabled,
+    describe_sources, machine_registry, set_source_api_key, set_source_enabled,
 };
 use game_media_vault_domain::AssetType;
 use support::{FakeConnector, FakeCredentials, FakeSettings};
@@ -55,6 +55,7 @@ fn sources_are_described_with_the_capabilities_planning_uses() {
                 direct_media_download: true,
                 enabled: true,
                 credential: CredentialState::NotNeeded,
+                rate_limits: None,
             },
             SourceDescription {
                 source_id: "snap-source".to_owned(),
@@ -62,6 +63,7 @@ fn sources_are_described_with_the_capabilities_planning_uses() {
                 direct_media_download: true,
                 enabled: true,
                 credential: CredentialState::NotNeeded,
+                rate_limits: None,
             },
         ]
     );
@@ -239,4 +241,23 @@ fn a_credential_store_that_cannot_be_read_still_lets_every_source_be_described()
 
     assert_eq!(sources[0].credential, CredentialState::Unreadable);
     assert_eq!(sources[1].credential, CredentialState::NotNeeded);
+}
+
+#[test]
+fn what_a_source_is_known_to_limit_is_described_through_the_machine_registry() {
+    let limited = FakeConnector {
+        source_id: "limited-source",
+        rate_limits: Some("one request a second"),
+        ..FakeConnector::new(Vec::new())
+    };
+    let registry = machine_registry(vec![Box::new(limited) as Box<dyn ConnectorPort>], &[]);
+    let connectors: Vec<&dyn ConnectorPort> = registry.iter().map(Box::as_ref).collect();
+    let machine = FakeMachine::default();
+
+    let sources = describe_sources(&connectors, machine.machine()).unwrap();
+
+    assert_eq!(
+        sources[0].rate_limits.as_deref(),
+        Some("one request a second")
+    );
 }

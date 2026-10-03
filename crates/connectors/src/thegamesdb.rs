@@ -118,6 +118,10 @@ where
         }
     }
 
+    fn rate_limits(&self) -> Option<String> {
+        Some("Each API key has a monthly allowance of requests. A discovery takes one for the platform list, up to five pages of search per requested game and platform, and up to ten pages of images per twenty games found.".to_owned())
+    }
+
     /// Checked without reaching the API.
     fn unsupported_request_reason(
         &self,

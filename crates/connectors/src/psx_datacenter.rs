@@ -98,6 +98,10 @@ where
         }
     }
 
+    fn rate_limits(&self) -> Option<String> {
+        Some("Read at most once a second, or slower when its robots.txt asks, each request sent once.".to_owned())
+    }
+
     /// Checked without reaching the site.
     fn unsupported_request_reason(
         &self,

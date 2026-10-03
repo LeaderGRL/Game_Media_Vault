@@ -1771,6 +1771,7 @@ fn source_list_describes_the_registered_sources_without_a_vault() {
             "direct_media_download": true,
             "enabled": true,
             "credential": "not_needed",
+            "rate_limits": null,
         }])
     );
     assert!(!vault.exists());

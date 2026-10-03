@@ -901,3 +901,14 @@ fn a_dataset_whose_metadata_does_not_read_is_not_kept() {
     // The second discovery held no copy to name.
     assert_eq!(transport.known.lock().unwrap()[1].etag, None);
 }
+
+#[test]
+fn describes_how_seldom_it_downloads_its_dataset() {
+    let transport = FixtureTransport::new();
+
+    let limits = LaunchBoxGamesDbConnector::with_transport(&transport)
+        .rate_limits()
+        .unwrap();
+
+    assert!(limits.contains("once per"), "{limits}");
+}

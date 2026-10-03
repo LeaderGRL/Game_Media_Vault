@@ -14,6 +14,7 @@ describe("SourcesView", () => {
             direct_media_download: true,
             enabled: true,
             credential: "not_needed",
+            rate_limits: null,
           },
           {
             source_id: "index-only",
@@ -21,6 +22,7 @@ describe("SourcesView", () => {
             direct_media_download: false,
             enabled: true,
             credential: "not_needed",
+            rate_limits: null,
           },
         ]}
       />,
@@ -32,6 +34,40 @@ describe("SourcesView", () => {
     // An unknown Source keeps its id, and one that cannot download says so.
     const indexOnly = screen.getByRole("region", { name: "index-only" });
     expect(within(indexOnly).getByText("Cannot download media directly")).toBeInTheDocument();
+  });
+
+  it("shows what a Source is known to limit", () => {
+    render(
+      <SourcesView
+        sources={[
+          {
+            source_id: "thegamesdb",
+            asset_types: ["box_front"],
+            direct_media_download: true,
+            enabled: true,
+            credential: "not_needed",
+            rate_limits: "Each API key has a monthly allowance of requests.",
+          },
+          {
+            source_id: "libretro-thumbnails",
+            asset_types: ["box_front"],
+            direct_media_download: true,
+            enabled: true,
+            credential: "not_needed",
+            rate_limits: null,
+          },
+        ]}
+      />,
+    );
+
+    const limited = screen.getByRole("region", { name: "TheGamesDB" });
+    expect(within(limited).getByText("Limits")).toBeInTheDocument();
+    expect(
+      within(limited).getByText("Each API key has a monthly allowance of requests."),
+    ).toBeInTheDocument();
+    // A Source whose limits are unknown says nothing of them.
+    const unknown = screen.getByRole("region", { name: "Libretro Thumbnails" });
+    expect(within(unknown).queryByText("Limits")).not.toBeInTheDocument();
   });
 
   it("says why the Sources could not be read", () => {
@@ -53,6 +89,7 @@ describe("SourcesView", () => {
     direct_media_download: true,
     enabled: true,
     credential: "not_needed" as const,
+    rate_limits: null,
   };
   const launchbox = {
     source_id: "launchbox-games-db",
@@ -60,6 +97,7 @@ describe("SourcesView", () => {
     direct_media_download: true,
     enabled: true,
     credential: "not_needed" as const,
+    rate_limits: null,
   };
 
   it("summarizes the failures the loaded vault recorded for each Source", () => {
@@ -146,6 +184,7 @@ describe("SourcesView", () => {
     direct_media_download: true,
     enabled: true,
     credential: "missing" as const,
+    rate_limits: null,
   };
 
   it("says whether a Source that needs an API key has one, never asking others", () => {
