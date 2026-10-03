@@ -20,12 +20,15 @@ mod mame;
 mod naming;
 mod resume;
 mod retry;
+mod selection;
 mod steamgriddb;
+mod thegamesdb;
 mod xml;
 
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use retry::RetryPolicy;
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
+pub use thegamesdb::{THEGAMESDB_SOURCE_ID, TheGamesDbConnector};
 
 pub use launchbox::{
     DatasetCache, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
@@ -60,7 +63,8 @@ pub fn registered_connectors(
     vec![
         Box::new(LibretroThumbnailsConnector::new()),
         Box::new(LaunchBoxGamesDbConnector::new()),
-        Box::new(SteamGridDbConnector::new(credentials)),
+        Box::new(SteamGridDbConnector::new(Arc::clone(&credentials))),
+        Box::new(TheGamesDbConnector::new(credentials)),
     ]
 }
 
@@ -106,6 +110,22 @@ pub trait HttpTransport: Send + Sync {
         )))
     }
 
+    /// Fetches `url` from an API that takes `api_key` as its `parameter` query parameter, and
+    /// returns the body, which such APIs keep small. The request follows no redirect, which
+    /// would carry the key wherever it points, and errors name `url` without the key. A
+    /// transport that cannot send a key refuses rather than dropping it.
+    fn get_with_query_key(
+        &self,
+        url: &str,
+        parameter: &str,
+        api_key: &ApiKey,
+    ) -> Result<Vec<u8>, PortError> {
+        let _ = (parameter, api_key);
+        Err(PortError::new(format!(
+            "this transport cannot send the API key {url} needs"
+        )))
+    }
+
     fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
         let mut stream = self.get_stream(url)?;
         let mut bytes = Vec::new();
@@ -121,6 +141,8 @@ const MAX_API_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 pub struct ReqwestHttpTransport {
     client: Client,
+    /// Follows no redirect, for requests whose URL carries an API key.
+    keyed_client: Client,
     retry: RetryPolicy,
 }
 
@@ -137,20 +159,26 @@ impl ReqwestHttpTransport {
                 .user_agent("game-media-vault/0.1")
                 .build()
                 .expect("failed to build the HTTP client"),
+            keyed_client: Client::builder()
+                .user_agent("game-media-vault/0.1")
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("failed to build the HTTP client"),
             retry,
         }
     }
 
-    /// Requests `url` once, asking for it only if it changed since `known`. A success, or a 304
-    /// Not Modified answer to a request naming a known version, is a response; anything else
-    /// is a failure.
+    /// Requests `target` once, asking for it only if it changed since `known`. A success, or a
+    /// 304 Not Modified answer to a request naming a known version, is a response; anything
+    /// else is a failure.
     fn attempt(
         &self,
-        url: &str,
+        target: &Target<'_>,
         known: &Validators,
         bearer: Option<&str>,
     ) -> Result<Response, FailedRequest> {
-        let mut request = self.client.get(url);
+        let url = target.shown;
+        let mut request = target.client.get(target.url);
         // The client drops it on a redirect to another host.
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
@@ -162,10 +190,11 @@ impl ReqwestHttpTransport {
             request = request.header(IF_MODIFIED_SINCE, last_modified);
         }
         let response = request.send().map_err(|error| FailedRequest {
-            message: format!("download of {url} failed: {error}"),
             // Only failures to reach the Source may pass; a request that cannot be built or
             // that redirects without end fails the same way every time.
             transient: error.is_connect() || error.is_timeout() || error.is_request(),
+            // The URL sent may carry a key, so only the one shown names the request.
+            message: format!("download of {url} failed: {}", error.without_url()),
             unavailable: false,
             retry_after: None,
         })?;
@@ -189,6 +218,31 @@ impl ReqwestHttpTransport {
     }
 }
 
+/// The body of an API's `response` to the request errors name as `url`, refused once it grows
+/// past what an API is trusted to send.
+fn api_answer(response: Response, url: &str) -> Result<Vec<u8>, PortError> {
+    let mut body = Vec::new();
+    response
+        .take(MAX_API_RESPONSE_BYTES + 1)
+        .read_to_end(&mut body)
+        // The response's own errors would name the URL sent, so they are left unsaid.
+        .map_err(|_| PortError::new(format!("failed to read the answer of {url}")))?;
+    if body.len() as u64 > MAX_API_RESPONSE_BYTES {
+        return Err(PortError::invalid_source_data(format!(
+            "the answer of {url} exceeds {MAX_API_RESPONSE_BYTES} bytes"
+        )));
+    }
+    Ok(body)
+}
+
+/// What one request asks for: the URL sent, through which client, and the URL its errors name,
+/// which differs when the one sent carries a key.
+struct Target<'a> {
+    client: &'a Client,
+    url: &'a str,
+    shown: &'a str,
+}
+
 /// Why one request failed, and whether asking again may succeed.
 struct FailedRequest {
     message: String,
@@ -200,19 +254,27 @@ struct FailedRequest {
 impl HttpTransport for ReqwestHttpTransport {
     fn get_authorized(&self, url: &str, api_key: &ApiKey) -> Result<Vec<u8>, PortError> {
         let (response, _) = self.send(url, &Validators::default(), Some(api_key.expose()))?;
-        let mut body = Vec::new();
-        response
-            .take(MAX_API_RESPONSE_BYTES + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| {
-                PortError::new(format!("failed to read the answer of {url}: {error}"))
-            })?;
-        if body.len() as u64 > MAX_API_RESPONSE_BYTES {
-            return Err(PortError::invalid_source_data(format!(
-                "the answer of {url} exceeds {MAX_API_RESPONSE_BYTES} bytes"
-            )));
-        }
-        Ok(body)
+        api_answer(response, url)
+    }
+
+    fn get_with_query_key(
+        &self,
+        url: &str,
+        parameter: &str,
+        api_key: &ApiKey,
+    ) -> Result<Vec<u8>, PortError> {
+        let mut keyed = Url::parse(url)
+            .map_err(|error| PortError::new(format!("{url} is not a URL: {error}")))?;
+        keyed
+            .query_pairs_mut()
+            .append_pair(parameter, api_key.expose());
+        let target = Target {
+            client: &self.keyed_client,
+            url: keyed.as_str(),
+            shown: url,
+        };
+        let (response, _) = self.send_to(&target, &Validators::default(), None)?;
+        api_answer(response, url)
     }
 
     /// Retries transient failures (connection failures, HTTP 429 and 5xx) as the retry policy
@@ -264,9 +326,24 @@ impl ReqwestHttpTransport {
         known: &Validators,
         bearer: Option<&str>,
     ) -> Result<(Response, u32), PortError> {
+        let target = Target {
+            client: &self.client,
+            url,
+            shown: url,
+        };
+        self.send_to(&target, known, bearer)
+    }
+
+    /// Requests `target` as the retry policy allows, with the attempts it took.
+    fn send_to(
+        &self,
+        target: &Target<'_>,
+        known: &Validators,
+        bearer: Option<&str>,
+    ) -> Result<(Response, u32), PortError> {
         let mut attempts = 1;
         loop {
-            match self.attempt(url, known, bearer) {
+            match self.attempt(target, known, bearer) {
                 Ok(response) => return Ok((response, attempts)),
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));

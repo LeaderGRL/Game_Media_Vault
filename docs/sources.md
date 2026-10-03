@@ -73,6 +73,40 @@ from standard input (ADR 0005).
   filters. A game is acquired only when SteamGridDB names it exactly as the request does,
   regardless of case and punctuation; its media apply to every platform the request names.
 
+### TheGamesDB (`thegamesdb`)
+
+- **Provides:** box fronts and backs (Box Front, Box Back), screenshots, title screens, clear
+  logos (Logo) and fan art (Wallpaper / Artwork). The image type and box side each comes from,
+  such as `boxart: front`, is kept as its source label. Banners have no Asset Type and are not
+  acquired.
+- **Reached at:** the API at `api.thegamesdb.net`, which lists its platforms, finds each requested
+  game by name on them and lists the media of the games found in one paged request, and
+  `cdn.thegamesdb.net` for the images, downloaded without the key.
+- **Configuration:** an API key from the user's own TheGamesDB account, kept in this machine's
+  credential store (ADR 0005). The API takes the key as a query parameter, which the connector
+  adds only to the requests it sends: errors name the request without it, and the request
+  follows no redirect, which would carry it elsewhere. To get one:
+  1. Create an account and sign in at `https://thegamesdb.net`.
+  2. Follow **API Access Request** at the bottom of the page, fill in the request and confirm
+     it. The key appears in the list on that page once TheGamesDB approves it.
+  3. In the desktop Sources view, paste the key in TheGamesDB's API key field and choose
+     **Store key**. Or run `game-media-vault source key set thegamesdb`, paste the key and press
+     Enter.
+- **Limits:** a key has a monthly allowance of requests. A discovery takes one request for the
+  platform list, up to five pages of search per requested game and platform, and at most ten
+  pages of images for each batch of twenty games found. Without a stored key it is left out of
+  every plan, with the reason. It needs an explicit game selection and refuses region and
+  language filters. A platform is served when TheGamesDB names it with the same words,
+  regardless of case and punctuation, with or without the words in parentheses it may add, such
+  as `Nintendo Entertainment System (NES)` for
+  `Nintendo - Nintendo Entertainment System`. A qualifier of the requested name, such as
+  `(Digital)`, counts, so a digital platform is never taken for the physical one. A few catalog
+  names TheGamesDB words otherwise are known by alias, such as `Super Nintendo (SNES)` for
+  `Nintendo - Super Nintendo Entertainment System`, and `Sega Genesis` with `Sega Mega Drive` for
+  `Sega - Mega Drive - Genesis`. A game is acquired only when TheGamesDB names it exactly as the
+  request does, regardless of case, punctuation and spacing, on one of those platforms.
+
+
 ## Reference catalogs
 
 These read files the user downloads and passes to an `import-*` command; they contact no

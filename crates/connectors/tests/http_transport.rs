@@ -540,3 +540,78 @@ fn a_refused_authorized_request_never_shows_its_api_key() {
         error.message()
     );
 }
+
+#[test]
+fn a_request_keyed_by_query_carries_its_api_key_as_that_parameter() {
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+    ]);
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let body = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_with_query_key(&format!("{url}?name=Zelda"), "apikey", &key)
+        .unwrap();
+
+    assert_eq!(body, b"{}");
+    let request = requests.lock().unwrap()[0].clone();
+    assert!(
+        request.starts_with("GET /media.png?name=Zelda&apikey=zq-test-key "),
+        "{request}"
+    );
+}
+
+#[test]
+fn a_refused_keyed_request_never_shows_its_api_key() {
+    let (url, _) = serve_raw(vec![
+        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    ]);
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_with_query_key(&url, "apikey", &key)
+        .unwrap_err();
+
+    assert!(error.message().contains("403"), "{}", error.message());
+    assert!(
+        !error.message().contains("zq-test-key"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_keyed_request_that_cannot_connect_never_shows_its_api_key() {
+    // Nothing listens on a port that was just released.
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_with_query_key(&format!("http://{address}/v1/Platforms"), "apikey", &key)
+        .unwrap_err();
+
+    assert!(
+        !error.message().contains("zq-test-key"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_keyed_request_follows_no_redirect_that_would_carry_its_api_key_away() {
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0\r\n\r\n"
+            .to_vec(),
+    ]);
+    let key = ApiKey::new("zq-test-key").unwrap();
+
+    let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+        .get_with_query_key(&url, "apikey", &key)
+        .unwrap_err();
+
+    assert!(error.message().contains("302"), "{}", error.message());
+    assert!(!error.message().contains("zq-test-key"));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
