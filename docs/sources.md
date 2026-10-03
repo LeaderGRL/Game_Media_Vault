@@ -159,6 +159,36 @@ only the one named; an API key is stored under the Source's id, any other creden
   request naming another is refused. A game is acquired only when one of its ScreenScraper names
   is the requested title, regardless of case, punctuation and spacing.
 
+### RAWG (`rawg`)
+
+- **Provides:** screenshots and each game's background image (Wallpaper / Artwork), kept with
+  the source label `screenshot` or `background`. RAWG's images record no region and apply to
+  every requested platform RAWG lists the game on.
+- **Reached at:** the API at `api.rawg.io`, which searches each requested title once, whatever
+  the platforms, and lists with each game it finds the platforms it is on, its background image
+  and screenshots; and `media.rawg.io` for the images, downloaded without the key. An image
+  another server serves is left out.
+- **Configuration:** an API key from the user's own RAWG account, kept in this machine's
+  credential store (ADR 0005). The API takes the key as a query parameter, which the connector
+  adds only to its searches: errors name the request without it, and the request follows no
+  redirect. RAWG's free plan is meant for personal and non-commercial projects, and asks for an
+  active link to RAWG wherever its data shows. To get one:
+  1. Create a free account and sign in at `https://rawg.io`.
+  2. Open `https://rawg.io/apidocs` and choose **Get API Key**. Fill in the form, naming Game
+     Media Vault and its repository (`https://github.com/LeaderGRL/Game_Media_Vault`) as the
+     project, and accept the terms. The key shows on that page once RAWG issues it.
+  3. In the desktop Sources view, paste the key in RAWG's API key field and choose **Store
+     key**. Or run `game-media-vault source key set rawg`, paste the key and press Enter.
+- **Limits:** a free key has a monthly allowance of requests. A discovery takes one search per
+  requested title. Without a stored key it is left out of every plan, with the reason. It needs
+  an explicit game selection and refuses region and language filters. A platform is served when
+  RAWG names it with the same words, regardless of case and punctuation, with or without the
+  maker the catalog names first, such as `PlayStation 4` for `Sony - PlayStation 4` and
+  `SEGA Saturn` for `Sega - Saturn`. A few catalog names RAWG words otherwise are known by
+  alias, such as `SNES` for `Nintendo - Super Nintendo Entertainment System` and `Genesis` for
+  `Sega - Mega Drive - Genesis`. A game is acquired only when RAWG names it exactly as the
+  request does, regardless of case, punctuation and spacing, on one of those platforms.
+
 ### PSX DataCenter (`psx-datacenter`)
 
 - **Provides:** high-resolution scans of PlayStation box fronts and backs (Box Front, Box Back)

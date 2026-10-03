@@ -56,6 +56,7 @@ export const KNOWN_SOURCES = [
   { value: "steamgriddb", label: "SteamGridDB" },
   { value: "thegamesdb", label: "TheGamesDB" },
   { value: "screenscraper", label: "ScreenScraper" },
+  { value: "rawg", label: "RAWG" },
   { value: "psx-datacenter", label: "PSX DataCenter" },
 ];
 

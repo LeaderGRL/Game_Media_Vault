@@ -20,6 +20,7 @@ mod mame;
 mod naming;
 mod polite;
 mod psx_datacenter;
+mod rawg;
 mod resume;
 mod retry;
 mod screenscraper;
@@ -31,6 +32,7 @@ mod xml;
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
 pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
+pub use rawg::{RAWG_SOURCE_ID, RawgConnector};
 pub use retry::RetryPolicy;
 pub use screenscraper::{SCREENSCRAPER_SOURCE_ID, ScreenScraperConnector};
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
@@ -71,7 +73,8 @@ pub fn registered_connectors(
         Box::new(LaunchBoxGamesDbConnector::new()),
         Box::new(SteamGridDbConnector::new(Arc::clone(&credentials))),
         Box::new(TheGamesDbConnector::new(Arc::clone(&credentials))),
-        Box::new(ScreenScraperConnector::new(credentials)),
+        Box::new(ScreenScraperConnector::new(Arc::clone(&credentials))),
+        Box::new(RawgConnector::new(credentials)),
         Box::new(PsxDataCenterConnector::new()),
     ]
 }
