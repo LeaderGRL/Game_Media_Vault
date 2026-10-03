@@ -39,7 +39,7 @@ use game_media_vault_domain::{
     ReviewDecision, ReviewItem,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, KeyringCredentialStore,
+    ContentAddressedStore, GltfPackagingBuilder, KeyringCredentialStore, MediaTransformers,
     SqliteCatalog, inspect_media, machine_settings,
 };
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,7 @@ pub async fn derive_thumbnails_in_vault_async(
         Ok(derive_assets_use_case(
             &catalog,
             &ContentAddressedStore::new(&vault_root),
-            &ImageTransformer::new(),
+            &MediaTransformers::machine(),
             &DerivationRecipe::Thumbnail { max_edge },
         )?)
     })

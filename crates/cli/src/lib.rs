@@ -30,7 +30,7 @@ use game_media_vault_domain::{
     QualityRequirements, RetentionPolicy, ReviewDecision, SourceSelection,
 };
 use game_media_vault_infrastructure::{
-    ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, KeyringCredentialStore,
+    ContentAddressedStore, GltfPackagingBuilder, KeyringCredentialStore, MediaTransformers,
     NoCredentials, NoMachineSettings, SqliteCatalog, machine_settings,
 };
 use thiserror::Error;
@@ -792,7 +792,7 @@ where
             Ok(serde_json::to_string_pretty(&derive_assets(
                 &catalog,
                 &store,
-                &ImageTransformer::new(),
+                &MediaTransformers::machine(),
                 &DerivationRecipe::Thumbnail { max_edge },
             )?)?)
         }
