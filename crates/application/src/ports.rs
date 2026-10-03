@@ -218,6 +218,13 @@ pub trait RunRepositoryPort: Send + Sync {
     /// The status of the run, without anything else about it.
     fn run_status(&self, run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError>;
 
+    /// Claims the run for one execution on this machine while no other execution holds it, and
+    /// returns whether it did. A process that ends releases its claims.
+    fn claim_execution(&self, run_id: i64) -> Result<bool, PortError>;
+
+    /// Releases the claim an execution made on the run.
+    fn release_execution(&self, run_id: i64) -> Result<(), PortError>;
+
     fn list_runs(&self) -> Result<Vec<AcquisitionRun>, PortError>;
 
     /// Changes the run status only if it still equals `expected`. Completing a run fails while

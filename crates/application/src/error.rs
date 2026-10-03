@@ -48,6 +48,8 @@ pub enum ApplicationError {
         "connector {source_id} returned a candidate whose locator is not an absolute URL free of userinfo, query and fragment"
     )]
     UnsafeCandidateLocator { source_id: String },
+    #[error("acquisition run #{0} is already executing on this machine")]
+    RunAlreadyExecuting(i64),
     #[error("acquisition run cannot execute connector work while {status:?}")]
     RunNotExecutable { status: AcquisitionRunStatus },
     #[error(
@@ -146,6 +148,7 @@ impl ApplicationError {
             | Self::ReleaseEditionMissing(_)
             | Self::SourceNotRegistered(_) => ErrorKind::NotFound,
             Self::RunHasQueuedWork { .. }
+            | Self::RunAlreadyExecuting(_)
             | Self::InvalidRunTransition { .. }
             | Self::RunNotExecutable { .. }
             | Self::ReviewItemNotActionable { .. }

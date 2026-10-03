@@ -3,8 +3,10 @@
 //! versioning.
 
 use std::{
-    fs::{self, OpenOptions},
+    collections::HashMap,
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use game_media_vault_application::{CatalogPort, PortError};
@@ -23,6 +25,8 @@ mod verify;
 pub struct SqliteCatalog {
     path: PathBuf,
     mode: CatalogOpenMode,
+    /// The locks of the runs this catalog executes, by run, held until released.
+    executions: Mutex<HashMap<i64, File>>,
     #[cfg(test)]
     busy_handler: Option<fn(i32) -> bool>,
 }
@@ -48,6 +52,7 @@ impl SqliteCatalog {
         Ok(Self {
             path,
             mode: CatalogOpenMode::ExistingOnly,
+            executions: Mutex::new(HashMap::new()),
             #[cfg(test)]
             busy_handler: None,
         })
@@ -65,6 +70,7 @@ impl SqliteCatalog {
         let catalog = Self {
             path,
             mode: CatalogOpenMode::ExistingOnly,
+            executions: Mutex::new(HashMap::new()),
             #[cfg(test)]
             busy_handler: None,
         };
@@ -213,6 +219,7 @@ mod tests {
                     let catalog = SqliteCatalog {
                         path: catalog_path,
                         mode: CatalogOpenMode::ExistingOnly,
+                        executions: Mutex::new(HashMap::new()),
                         busy_handler: Some(record_busy_thread),
                     };
                     catalog

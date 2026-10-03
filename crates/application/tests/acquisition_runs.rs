@@ -52,6 +52,14 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(None)
     }
 
+    fn claim_execution(&self, _run_id: i64) -> Result<bool, PortError> {
+        Ok(true)
+    }
+
+    fn release_execution(&self, _run_id: i64) -> Result<(), PortError> {
+        Ok(())
+    }
+
     fn run_status(&self, _run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
         Ok(None)
     }
@@ -243,6 +251,14 @@ impl RunRepositoryPort for RacingRunRepository {
 
     fn get_run(&self, run_id: i64) -> Result<Option<AcquisitionRun>, PortError> {
         Ok((run_id == 11).then(|| self.run()))
+    }
+
+    fn claim_execution(&self, _run_id: i64) -> Result<bool, PortError> {
+        Ok(true)
+    }
+
+    fn release_execution(&self, _run_id: i64) -> Result<(), PortError> {
+        Ok(())
     }
 
     fn run_status(&self, _run_id: i64) -> Result<Option<AcquisitionRunStatus>, PortError> {
