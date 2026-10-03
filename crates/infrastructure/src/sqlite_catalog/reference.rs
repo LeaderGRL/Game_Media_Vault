@@ -3,8 +3,8 @@ use game_media_vault_application::{
     ReferenceReviewRepositoryPort,
 };
 use game_media_vault_domain::{
-    ImportedReleaseEdition, ReferenceReleaseRecord, ReferenceReviewItem, ReleaseAssertion,
-    ReleaseAssertionField, SourceId,
+    ImportedReleaseEdition, ReferenceRecordSummary, ReferenceReleaseRecord, ReferenceReviewEdition,
+    ReferenceReviewItem, ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -85,6 +85,64 @@ impl ReferenceReviewRepositoryPort for SqliteCatalog {
                 },
             )
             .collect()
+    }
+
+    fn describe_reference_review_editions(
+        &self,
+        release_edition_ids: &[i64],
+    ) -> Result<Vec<ReferenceReviewEdition>, PortError> {
+        let connection = self.connect()?;
+        let mut editions = Vec::with_capacity(release_edition_ids.len());
+        for &release_edition_id in release_edition_ids {
+            let Some((game_title, platform, region, edition_name)) = connection
+                .query_row(
+                    "SELECT g.title, r.platform, r.region, r.edition_name
+                     FROM release_editions r
+                     JOIN games g ON g.id = r.game_id
+                     WHERE r.id = ?1",
+                    params![release_edition_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(sql_error)?
+            else {
+                continue;
+            };
+            let records = connection
+                .prepare(
+                    "SELECT s.source_id, s.value, COALESCE((
+                         SELECT t.value FROM release_assertions t
+                         WHERE t.release_edition_id = s.release_edition_id
+                           AND t.source_id = s.source_id
+                           AND t.field = 'title' AND t.qualifier = ''
+                         ORDER BY t.id DESC LIMIT 1
+                     ), '')
+                     FROM release_assertions s
+                     WHERE s.release_edition_id = ?1
+                       AND s.field = 'identifier' AND s.qualifier = 'source_record'
+                     ORDER BY s.id",
+                )
+                .map_err(sql_error)?
+                .query_map(params![release_edition_id], |row| {
+                    Ok(ReferenceRecordSummary {
+                        source_id: SourceId::from(row.get::<_, String>(0)?),
+                        source_record: row.get(1)?,
+                        title: row.get(2)?,
+                    })
+                })
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(sql_error)?;
+            editions.push(ReferenceReviewEdition {
+                release_edition_id,
+                game_title,
+                platform,
+                region,
+                edition_name,
+                records,
+            });
+        }
+        Ok(editions)
     }
 
     fn link_reference_review_item(

@@ -2036,6 +2036,21 @@ fn reference_records_whose_dumps_point_at_several_editions_await_review() {
     assert_eq!(items[0]["source_id"], "redump");
     assert_eq!(items[0]["evidence"], "sha1");
     assert_eq!(items[0]["candidates"].as_array().unwrap().len(), 2);
+    // Each edition it names comes described, the record's own first, so a human can tell them
+    // apart.
+    let editions = items[0]["editions"].as_array().unwrap();
+    let titles: Vec<&str> = editions
+        .iter()
+        .map(|edition| edition["game_title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Game C", "Game A", "Game B"]);
+    assert_eq!(
+        editions[0]["release_edition_id"],
+        items[0]["release_edition_id"]
+    );
+    assert_eq!(editions[1]["platform"], "Nintendo - Game Boy");
+    assert_eq!(editions[1]["records"][0]["source_id"], "no-intro");
+    assert_eq!(editions[1]["records"][0]["title"], "Game A");
 }
 
 #[test]
