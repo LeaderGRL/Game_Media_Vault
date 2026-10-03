@@ -1850,6 +1850,46 @@ describe("App acquisition", () => {
     });
   });
 
+  it("downloads everything of a platform at once, following the run in the Runs view", async () => {
+    let runs: unknown[] = [];
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "start_acquisition_run") {
+        runs = [startedRun];
+        return Promise.resolve(startedRun);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      return Promise.resolve(command === "list_acquisition_runs" ? runs : []);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.change(screen.getByLabelText("Platform"), {
+      target: { value: "Nintendo - Game Boy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
+
+    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "start_acquisition_run",
+      expect.objectContaining({
+        request: expect.objectContaining({
+          platforms: ["Nintendo - Game Boy"],
+          games: { mode: "all" },
+        }),
+      }),
+    );
+    // Nothing is left to start by hand: the run executes as soon as it is started.
+    expect(invokeMock).toHaveBeenCalledWith("execute_acquisition_run", {
+      run_id: 1,
+      matching_policy: { high_confidence_threshold: 80, medium_confidence_threshold: 50 },
+    });
+    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
+  });
+
   it("shows the shared validator message when the backend rejects a request", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "start_acquisition_run") {

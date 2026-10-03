@@ -11,6 +11,7 @@ import type {
   SourceFailureSummary,
 } from "./acquisition";
 import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
+import { QuickAcquire } from "./QuickAcquire";
 import { ReviewView } from "./ReviewView";
 import { RunsView } from "./RunsView";
 import { SourcesView } from "./SourcesView";
@@ -851,7 +852,8 @@ export function App() {
     return () => clearInterval(timer);
   }, [executingRunIds]);
 
-  async function startRun(request: AcquisitionRequestDraft) {
+  /** Starts a run of `request`, and with `execute` executes it at once. */
+  async function startRun(request: AcquisitionRequestDraft, execute = false) {
     if (loadedVaultRoot === null) {
       setError("Open a vault before starting an acquisition.");
       return;
@@ -876,6 +878,10 @@ export function App() {
     // The run is persisted from here on: show it even if the list refresh fails.
     setRuns((current) => [...current.filter((run) => run.id !== started.id), started]);
     showView("runs");
+    if (execute) {
+      // Its progress shows in the Runs view, which follows executing runs.
+      void executeRun(started.id);
+    }
     try {
       await refreshRuns(startingVaultRoot);
     } catch (reason) {
@@ -1137,11 +1143,20 @@ export function App() {
         </>
       ) : null}
       {activeView === "acquire" ? (
-        <AcquireView
-          starting={startingRun}
-          onStart={(request) => void startRun(request)}
-          onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
-        />
+        <>
+          <QuickAcquire
+            starting={startingRun}
+            onDownload={(request) => void startRun(request, true)}
+          />
+          <details className="custom-request">
+            <summary>Custom request: some games, Sources, regions or Asset Types</summary>
+            <AcquireView
+              starting={startingRun}
+              onStart={(request) => void startRun(request)}
+              onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
+            />
+          </details>
+        </>
       ) : null}
       {activeView === "sources" ? (
         <SourcesView

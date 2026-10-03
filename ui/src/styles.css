@@ -475,6 +475,26 @@ select:focus {
   border-color: #6f8cff;
 }
 
+.quick-acquire {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  border: 1px solid #292f3a;
+  border-radius: 12px;
+  padding: 22px;
+  background: #151920;
+}
+
+.quick-acquire button[type="submit"] {
+  justify-self: start;
+}
+
+.custom-request > summary {
+  margin-bottom: 14px;
+  color: #c3cad6;
+  cursor: pointer;
+}
+
 .acquire-form {
   display: grid;
   gap: 18px;
