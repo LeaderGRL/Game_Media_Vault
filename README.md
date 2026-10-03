@@ -49,7 +49,9 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
 - **Matching and Review**: each candidate is scored against the Library; confident matches link
   automatically, uncertain ones become Review Items to accept, reject or defer.
 - **Library**: canonical values derived from every Source's claims, the Preferred Asset of each
-  type, coverage of the packaging profiles, search with combinable filters and stable pages.
+  type, coverage of the packaging profiles, search with combinable filters and stable pages;
+  gameplay videos (MP4, WebM) play in place, image originals show as they are, and a PDF, such
+  as a manual or some maps, shows its first page once its thumbnail is rendered.
 - **Manuals and documents**: local files of any stored Asset Type, manuals included, import
   unchanged; a PDF original records its page count, title and author, and the Library shows
   them.
@@ -71,7 +73,7 @@ planned next.
 | --- | --- |
 | `crates/domain` | Domain model: requests, releases, assets, matching, coverage |
 | `crates/application` | Use cases and the ports they depend on |
-| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, SteamGridDB, TheGamesDB, PSX DataCenter, and the No-Intro, Redump and MAME software list reference catalogs |
+| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, SteamGridDB, TheGamesDB, ScreenScraper, RAWG, PSX DataCenter, VGMaps, and the No-Intro, Redump and MAME software list reference catalogs |
 | `crates/infrastructure` | SQLite catalog, content-addressed object store, image and PDF transforms, credential store |
 | `crates/cli` | The `game-media-vault` command-line interface |
 | `src-tauri` | The Tauri desktop shell |
