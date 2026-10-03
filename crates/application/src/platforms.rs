@@ -112,6 +112,8 @@ pub fn expand_every_game(
     }
     let mut platforms: Vec<String> = Vec::new();
     let mut games: Vec<PlatformBoundGameSelector> = Vec::new();
+    // A game is named once regardless of case, as a run requests it, so limits count it once.
+    let mut named = HashSet::new();
     let mut listed = false;
     for requested in &input.platforms {
         for release in releases
@@ -129,7 +131,10 @@ pub fn expand_every_game(
                 game: release_name(release),
                 platform: release.platform.clone(),
             };
-            if !games.contains(&game) {
+            if named.insert((
+                game.game.trim().to_lowercase(),
+                platform_key(&game.platform),
+            )) {
                 games.push(game);
             }
         }

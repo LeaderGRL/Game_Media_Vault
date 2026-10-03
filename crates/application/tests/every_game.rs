@@ -550,3 +550,19 @@ fn a_game_limit_counts_the_games_of_a_platform_under_each_of_its_spellings() {
         ])
     );
 }
+
+#[test]
+fn a_game_limit_counts_a_game_named_in_two_cases_once() {
+    // Two releases name the same game in different cases, which a run requests once.
+    let releases = Releases::holding(vec![
+        listed(1, "Asterix", "Europe", "Asterix (Europe)"),
+        listed(2, "Asterix", "Europe", "ASTERIX (Europe)"),
+        listed(3, "Tetris", "USA", "Tetris (USA)"),
+    ]);
+    let mut two = every_game_of(&[NES]);
+    two.limits.max_games = Some(2);
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), two).unwrap();
+
+    assert_eq!(expanded.games, bound(&["Asterix (Europe)", "Tetris (USA)"]));
+}
