@@ -72,6 +72,20 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(false)
     }
 
+    fn discovered_batches(&self, _run_id: i64, _source_id: &str) -> Result<usize, PortError> {
+        Ok(0)
+    }
+
+    fn record_discovery_batch(
+        &self,
+        _run_id: i64,
+        _source_id: &str,
+        _batch: usize,
+        _work: &[AcquisitionWorkItem],
+    ) -> Result<bool, PortError> {
+        Ok(true)
+    }
+
     fn record_discovery(
         &self,
         _run_id: i64,
@@ -271,6 +285,20 @@ impl RunRepositoryPort for RacingRunRepository {
 
     fn has_discovered(&self, _run_id: i64, _source_id: &str) -> Result<bool, PortError> {
         Ok(false)
+    }
+
+    fn discovered_batches(&self, _run_id: i64, _source_id: &str) -> Result<usize, PortError> {
+        Ok(0)
+    }
+
+    fn record_discovery_batch(
+        &self,
+        _run_id: i64,
+        _source_id: &str,
+        _batch: usize,
+        _work: &[AcquisitionWorkItem],
+    ) -> Result<bool, PortError> {
+        Ok(true)
     }
 
     fn record_discovery(

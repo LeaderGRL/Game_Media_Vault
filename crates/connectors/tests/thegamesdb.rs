@@ -566,3 +566,14 @@ fn a_request_for_more_games_than_its_allowance_can_look_up_is_refused() {
     assert!(reason.contains("101 games"), "{reason}");
     assert!(api.requested().is_empty());
 }
+
+#[test]
+fn looks_games_up_as_many_at_a_time_as_one_request_may_so_whole_platforms_are_discovered_in_batches()
+ {
+    let api = FixtureApi::answering(&[]);
+
+    assert_eq!(
+        connector(&api, Some("key")).discovery_batch_size(),
+        Some(100)
+    );
+}

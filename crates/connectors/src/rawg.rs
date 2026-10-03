@@ -19,6 +19,10 @@ use crate::{
     selection::{name_key, platform_key, wanted_games},
 };
 
+/// The most games one discovery looks up: the Source answers one request per game, so a
+/// request for a whole platform is discovered that many games at a time.
+const DISCOVERY_BATCH: usize = 25;
+
 pub const RAWG_SOURCE_ID: &str = "rawg";
 
 const API: &str = "https://api.rawg.io/api/games";
@@ -137,6 +141,12 @@ where
     /// Searches each requested game by name once, keeping the games named exactly so that RAWG
     /// lists on a requested platform, and takes their background image and the screenshots the
     /// search lists with them.
+    /// Games are looked up one by one, so a request for many is discovered a batch at a time,
+    /// each recorded as it completes.
+    fn discovery_batch_size(&self) -> Option<usize> {
+        Some(DISCOVERY_BATCH)
+    }
+
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         if let Some(reason) = self.unsupported_request_reason(request)? {
             return Err(PortError::new(reason));

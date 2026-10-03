@@ -147,6 +147,8 @@ pub struct FakeRun {
     pub planned_sources: Vec<String>,
     pub status: AcquisitionRunStatus,
     pub discovered: BTreeSet<String>,
+    /// Batches recorded of each discovery not complete yet.
+    pub batches: BTreeMap<String, usize>,
     pub work: Vec<FakeWork>,
 }
 
@@ -348,6 +350,7 @@ impl RunRepositoryPort for FakeVault {
                 planned_sources,
                 status: AcquisitionRunStatus::Running,
                 discovered: BTreeSet::new(),
+                batches: BTreeMap::new(),
                 work: Vec::new(),
             },
         );
@@ -452,6 +455,52 @@ impl RunRepositoryPort for FakeVault {
 
     fn has_discovered(&self, run_id: i64, source_id: &str) -> Result<bool, PortError> {
         Ok(self.runs.borrow()[&run_id].discovered.contains(source_id))
+    }
+
+    fn discovered_batches(&self, run_id: i64, source_id: &str) -> Result<usize, PortError> {
+        Ok(self.runs.borrow()[&run_id]
+            .batches
+            .get(source_id)
+            .copied()
+            .unwrap_or(0))
+    }
+
+    fn record_discovery_batch(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        batch: usize,
+        work: &[AcquisitionWorkItem],
+    ) -> Result<bool, PortError> {
+        let mut runs = self.runs.borrow_mut();
+        let run = runs.get_mut(&run_id).unwrap();
+        if matches!(
+            run.status,
+            AcquisitionRunStatus::Cancelled | AcquisitionRunStatus::Completed
+        ) {
+            return Ok(false);
+        }
+        let recorded = run.batches.entry(source_id.to_owned()).or_default();
+        if run.discovered.contains(source_id) || *recorded != batch {
+            return Ok(true);
+        }
+        *recorded += 1;
+        for item in work {
+            if !run
+                .work
+                .iter()
+                .any(|existing| existing.item.key == item.key)
+            {
+                run.work.push(FakeWork {
+                    item: item.clone(),
+                    state: WorkState::Queued,
+                    shortfalls: Vec::new(),
+                    outranked: None,
+                    unavailable: None,
+                });
+            }
+        }
+        Ok(true)
     }
 
     fn record_discovery(

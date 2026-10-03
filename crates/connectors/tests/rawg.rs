@@ -281,3 +281,13 @@ fn media_are_downloaded_from_rawg_without_the_key() {
     assert_eq!(media, b"rawg image fixture");
     assert_eq!(api.requested(), [(url.to_owned(), None)]);
 }
+
+#[test]
+fn looks_games_up_a_few_at_a_time_so_whole_platforms_are_discovered_in_batches() {
+    let api = FixtureApi::answering(&[]);
+
+    assert_eq!(
+        connector(&api, Some("key")).discovery_batch_size(),
+        Some(25)
+    );
+}

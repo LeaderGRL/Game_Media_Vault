@@ -733,3 +733,65 @@ fn a_run_is_claimed_by_one_execution_at_a_time_across_processes() {
     first.release_execution(run.id).unwrap();
     assert!(second.claim_execution(run.id).unwrap());
 }
+
+#[test]
+fn discovery_batches_queue_their_work_in_order_and_survive_a_reopening() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    let catalog = SqliteCatalog::open(&path).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    assert_eq!(catalog.discovered_batches(run.id, SOURCE_ID).unwrap(), 0);
+
+    assert!(
+        catalog
+            .record_discovery_batch(run.id, SOURCE_ID, 0, &[work("first")])
+            .unwrap()
+    );
+    // A batch other than the next one, as a repeated one, is ignored.
+    catalog
+        .record_discovery_batch(run.id, SOURCE_ID, 0, &[work("again")])
+        .unwrap();
+    catalog
+        .record_discovery_batch(run.id, SOURCE_ID, 2, &[work("ahead")])
+        .unwrap();
+    catalog
+        .record_discovery_batch(run.id, SOURCE_ID, 1, &[work("second")])
+        .unwrap();
+    drop(catalog);
+
+    let reopened = SqliteCatalog::open_existing(&path).unwrap();
+    assert_eq!(reopened.discovered_batches(run.id, SOURCE_ID).unwrap(), 2);
+    // The discovery completes with its last batch only.
+    assert!(!reopened.has_discovered(run.id, SOURCE_ID).unwrap());
+    assert_eq!(
+        load_acquisition_run(&reopened, run.id).unwrap().queued_work,
+        2
+    );
+    reopened
+        .record_discovery(run.id, SOURCE_ID, &[work("last")])
+        .unwrap();
+    assert!(reopened.has_discovered(run.id, SOURCE_ID).unwrap());
+    assert_eq!(
+        load_acquisition_run(&reopened, run.id).unwrap().queued_work,
+        3
+    );
+}
+
+#[test]
+fn terminal_runs_reject_discovery_batches() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    cancel_acquisition_run(&catalog, run.id).unwrap();
+
+    let recorded = catalog
+        .record_discovery_batch(run.id, SOURCE_ID, 0, &[work("late")])
+        .unwrap();
+
+    assert!(!recorded);
+    assert_eq!(catalog.discovered_batches(run.id, SOURCE_ID).unwrap(), 0);
+    assert_eq!(
+        load_acquisition_run(&catalog, run.id).unwrap().queued_work,
+        0
+    );
+}

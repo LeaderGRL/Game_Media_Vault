@@ -8,8 +8,8 @@ use std::{
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, ImportedAsset,
-    LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
+    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, GameSelection,
+    ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
     QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
     SourceFailureStage, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
     match_asset_candidate_to_release_preferring, review_matches_for_asset_candidate,
@@ -294,10 +294,13 @@ enum Step {
 ///
 /// Only the Sources the run's plan kept when it started are contacted. Each is discovered once
 /// per run: its candidates are persisted as queued work, so resuming never rediscovers it, and a
-/// pause stops further discoveries. Sources progress independently: one without a registered
-/// connector, that now refuses the plan, cannot be reached, fails to discover or fails to
-/// download leaves the others' work to run, keeps the run running, and its error is returned
-/// once that work is done. Each queued candidate is matched against the library through its own
+/// pause stops further discoveries. A Source that looks games up a few at a time is discovered
+/// one batch of games per pass, each recorded as it completes and its work executed before the
+/// next batch, so an execution that stops, as on a spent quota, resumes with the next batch.
+/// Sources progress independently: one without a registered connector, that now refuses the
+/// plan, cannot be reached, fails to discover or fails to download is asked no further in that
+/// execution and leaves the others' work and batches to run, keeps the run running, and its
+/// error is returned once that work is done. Each queued candidate is matched against the library through its own
 /// Source's connector and is either imported, left unattached, or parked on its Review Item
 /// until a human decides. The run completes only once every planned Source was discovered.
 ///
@@ -377,9 +380,14 @@ where
     let mut source_failure = None;
     // Sources whose work failed; their remaining work waits for a later execution.
     let mut failed_sources: Vec<String> = Vec::new();
+    // Sources disabled or failing to discover; they are discovered further in a later execution.
+    let mut undiscoverable: Vec<String> = Vec::new();
     loop {
         for source_id in &run.planned_sources {
-            if runs.has_discovered(run_id, source_id)? {
+            if runs.has_discovered(run_id, source_id)?
+                || undiscoverable.contains(source_id)
+                || failed_sources.contains(source_id)
+            {
                 continue;
             }
             // A pause, even one landing during a failed discovery, keeps the snapshots already
@@ -389,22 +397,24 @@ where
             }
             // A Source disabled on this machine is not discovered, which is no failure of it.
             if let Some(reason) = disabled_reason_of(connectors, source_id) {
+                undiscoverable.push(source_id.clone());
                 source_failure.get_or_insert(ApplicationError::SourceDisabled {
                     source_id: source_id.clone(),
                     reason,
                 });
                 continue;
             }
+            let batch = runs.discovered_batches(run_id, source_id)?;
             let discovered = planned_connector(&run.request, source_id, connectors).and_then(
-                |(connector, asset_types)| discover_source(&run.request, connector, &asset_types),
+                |(connector, asset_types)| {
+                    discover_source(&run.request, connector, &asset_types, batch)
+                },
             );
-            match discovered {
-                // A cancellation or completion that won the race while discovering stops
-                // quietly.
-                Ok(work) => {
-                    if !runs.record_discovery(run_id, source_id, &work)? {
-                        return Ok(imported_assets);
-                    }
+            // A cancellation or completion that won the race while discovering stops quietly.
+            let recorded = match discovered {
+                Ok((work, true)) => runs.record_discovery(run_id, source_id, &work)?,
+                Ok((work, false)) => {
+                    runs.record_discovery_batch(run_id, source_id, batch, &work)?
                 }
                 Err(error) => {
                     runs.record_source_failure(
@@ -413,8 +423,13 @@ where
                         SourceFailureStage::Discovery,
                         &error.to_string(),
                     )?;
+                    undiscoverable.push(source_id.clone());
                     source_failure.get_or_insert(error);
+                    true
                 }
+            };
+            if !recorded {
+                return Ok(imported_assets);
             }
         }
         // Sources take turns: each round processes the oldest queued work of every Source that
@@ -482,6 +497,22 @@ where
                 }
                 Err(error) => return Err(error),
             }
+        }
+        // The batches Sources have left are discovered, and their work executed, in this
+        // execution too, unless the run stopped meanwhile.
+        let mut batches_left = false;
+        for source_id in &run.planned_sources {
+            if !undiscoverable.contains(source_id)
+                && !failed_sources.contains(source_id)
+                && !runs.has_discovered(run_id, source_id)?
+            {
+                batches_left = true;
+            }
+        }
+        if batches_left
+            && load_acquisition_run(runs, run_id)?.status == AcquisitionRunStatus::Running
+        {
+            continue;
         }
         // A Source left undiscovered or failing keeps the run running for a later execution.
         if let Some(error) = source_failure.take() {
@@ -586,20 +617,56 @@ pub fn start_acquisition_run_with_connectors(
     Ok(runs.create_run(request, planned_sources)?)
 }
 
-/// Discovers the work of one Source once its connector accepts the plan, which may consult the
-/// Source. Only Sources not yet discovered need it: a persisted snapshot executes without them.
+/// Discovers the work of batch `batch` of one Source, counting from zero, once its connector
+/// accepts that batch, which may consult the Source, and tells whether it was the last. Only
+/// Sources not yet discovered need it: a persisted snapshot executes without them.
 fn discover_source(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
     asset_types: &[AssetType],
-) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
-    if let Some(reason) = connector.unsupported_request_reason(request)? {
+    batch: usize,
+) -> Result<(Vec<AcquisitionWorkItem>, bool), ApplicationError> {
+    let (request, last) = discovery_batch(request, connector, batch)?;
+    if let Some(reason) = connector.unsupported_request_reason(&request)? {
         return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
             reason,
         });
     }
-    discover_work(request, connector, asset_types)
+    Ok((discover_work(&request, connector, asset_types)?, last))
+}
+
+/// The part of `request` batch `batch` of the discovery of `connector` looks up, counting from
+/// zero, and whether it is the last: the whole request, as its only batch, unless the connector
+/// looks games up a few at a time and the request names more.
+pub(crate) fn discovery_batch(
+    request: &AcquisitionRequest,
+    connector: &dyn ConnectorPort,
+    batch: usize,
+) -> Result<(AcquisitionRequest, bool), ApplicationError> {
+    let size = connector.discovery_batch_size().unwrap_or(0);
+    let count = match request.games() {
+        GameSelection::All => 0,
+        GameSelection::Explicit(games) => games.len(),
+        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => games.len(),
+    };
+    if size == 0 || count <= size {
+        return Ok((request.clone(), true));
+    }
+    // A batch past the last stands for the last.
+    let start = (batch * size).min((count - 1) / size * size);
+    let end = (start + size).min(count);
+    let games = match request.games() {
+        GameSelection::Explicit(games) => GameSelection::Explicit(games[start..end].to_vec()),
+        GameSelection::PlatformBound(games) => {
+            GameSelection::PlatformBound(games[start..end].to_vec())
+        }
+        GameSelection::QueryResult(games) => GameSelection::QueryResult(games[start..end].to_vec()),
+        GameSelection::All => unreachable!("a request for every game is discovered at once"),
+    };
+    let mut draft = request.to_draft();
+    draft.games = games;
+    Ok((build_acquisition_request(draft)?, end == count))
 }
 
 fn discover_work(

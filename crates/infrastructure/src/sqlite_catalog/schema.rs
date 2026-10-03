@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 14;
+const VAULT_SCHEMA_VERSION: i32 = 15;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -30,7 +30,26 @@ const MIGRATIONS: &[Migration] = &[
     add_run_work_source_index,
     add_reference_review_items,
     add_asset_document_metadata,
+    add_run_discovery_batches,
 ];
+
+/// Version 15 records how many batches of games the discovery of each Source of a run recorded,
+/// so an execution resumes with the next one. New catalogs create the same table.
+fn add_run_discovery_batches(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(RUN_DISCOVERY_BATCHES_TABLE)
+        .map_err(sql_error)
+}
+
+/// The batches recorded of each discovery not complete yet.
+const RUN_DISCOVERY_BATCHES_TABLE: &str = "
+    CREATE TABLE acquisition_run_discovery_batches (
+        run_id INTEGER NOT NULL REFERENCES acquisition_runs(id),
+        source_id TEXT NOT NULL,
+        batches INTEGER NOT NULL CHECK(batches > 0),
+        PRIMARY KEY(run_id, source_id)
+    );
+";
 
 /// Version 14 records what each PDF original says of itself. Assets stored before keep none. The
 /// column matches the `assets` layout of `SCHEMA`.
@@ -353,6 +372,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         .map_err(sql_error)?;
     transaction
         .execute_batch(REFERENCE_REVIEW_ITEMS_TABLE)
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(RUN_DISCOVERY_BATCHES_TABLE)
         .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)

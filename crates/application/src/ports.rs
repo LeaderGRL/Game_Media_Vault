@@ -241,6 +241,23 @@ pub trait RunRepositoryPort: Send + Sync {
     /// Whether `source_id` already recorded its discovered work for the run.
     fn has_discovered(&self, run_id: i64, source_id: &str) -> Result<bool, PortError>;
 
+    /// How many batches of the discovery of `source_id` the run recorded, while that discovery
+    /// is not complete.
+    fn discovered_batches(&self, run_id: i64, source_id: &str) -> Result<usize, PortError>;
+
+    /// Queues the work of batch `batch` of the discovery of `source_id`, counting from zero,
+    /// and records the batch, atomically, leaving the discovery incomplete; its last batch is
+    /// recorded by `record_discovery`. A batch other than the next one is ignored, as is work
+    /// whose key the run already recorded. Returns `false`, recording nothing, when the run was
+    /// cancelled or completed meanwhile.
+    fn record_discovery_batch(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        batch: usize,
+        work: &[AcquisitionWorkItem],
+    ) -> Result<bool, PortError>;
+
     /// Queues the work discovered from one Source and marks its discovery complete, atomically.
     /// Work whose key is already recorded for the run is ignored, and so is any later discovery
     /// of an already discovered source: a run keeps a single snapshot per source. Returns
@@ -334,6 +351,13 @@ pub trait ConnectorPort: Send + Sync {
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 
+    /// The most games one discovery looks up, for a Source that looks games up one by one under
+    /// a quota or a pace: a request naming more is discovered, and checked, that many games at
+    /// a time, each batch recorded as it completes. `None` discovers a request at once.
+    fn discovery_batch_size(&self) -> Option<usize> {
+        None
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 
     /// Why the Source takes no part in acquisitions at all, such as being disabled on this
@@ -378,6 +402,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
         (**self).discover(request)
     }
 
+    fn discovery_batch_size(&self) -> Option<usize> {
+        (**self).discovery_batch_size()
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         (**self).download(candidate)
     }
@@ -418,6 +446,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         (**self).discover(request)
+    }
+
+    fn discovery_batch_size(&self) -> Option<usize> {
+        (**self).discovery_batch_size()
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {

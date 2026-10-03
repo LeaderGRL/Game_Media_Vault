@@ -323,6 +323,10 @@ impl<C: ConnectorPort> ConnectorPort for MachineConnector<C> {
         self.connector.discover(request)
     }
 
+    fn discovery_batch_size(&self) -> Option<usize> {
+        self.connector.discovery_batch_size()
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         if !self.enabled {
             return Err(PortError::new(DISABLED_ON_THIS_MACHINE.to_owned()));
