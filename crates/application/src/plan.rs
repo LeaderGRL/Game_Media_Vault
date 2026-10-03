@@ -63,7 +63,7 @@ pub fn plan_acquisition(
         // it.
         let mut refusal = None;
         for batch in planned_batches(request, connector)? {
-            refusal = as_served_by(&batch, connector)?.1;
+            refusal = as_served_by(&batch, connector, request)?.1;
             if refusal.is_some() {
                 break;
             }

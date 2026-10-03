@@ -1140,7 +1140,9 @@ fn exact_match_evidence(
         || is_missing_match_value(signal, release_value)
     {
         0
-    } else if candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase() {
+    } else if candidate_value.trim().to_lowercase() == release_value.trim().to_lowercase()
+        || (signal == MatchSignal::Region && regions_overlap(candidate_value, release_value))
+    {
         score
     } else {
         -score
@@ -1151,6 +1153,15 @@ fn exact_match_evidence(
         release_value: release_value.to_owned(),
         score_delta,
     }
+}
+
+/// Whether two regions share one, as `Europe` and a release of `USA, Europe` do.
+fn regions_overlap(a: &str, b: &str) -> bool {
+    a.split(',').map(str::trim).any(|region| {
+        b.split(',')
+            .map(str::trim)
+            .any(|other| other.eq_ignore_ascii_case(region))
+    })
 }
 
 fn is_missing_match_value(signal: MatchSignal, value: &str) -> bool {

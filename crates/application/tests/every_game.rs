@@ -288,8 +288,8 @@ fn every_game_kept_to_a_region_names_its_releases_and_the_worldwide_ones() {
             "Zelda (USA, Europe)"
         ])
     );
-    // Sources that tell regions apart still keep to the region's media.
-    assert_eq!(expanded.regions, ["europe"]);
+    // Sources that tell regions apart still keep to the region's media, and worldwide ones.
+    assert_eq!(expanded.regions, ["europe", "World"]);
 }
 
 #[test]
@@ -392,4 +392,47 @@ fn a_request_for_every_game_is_planned_as_its_run_would_start() {
     .unwrap();
 
     assert_eq!(plan.sources.len(), 1);
+}
+
+#[test]
+fn a_request_kept_to_a_region_keeps_worldwide_media_too() {
+    let releases = Releases::holding(vec![listed(
+        1,
+        "Super Mario Bros.",
+        "World",
+        "Super Mario Bros. (World)",
+    )]);
+    let mut european = every_game_of(&[NES]);
+    european.regions = vec!["Europe".to_owned()];
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), european).unwrap();
+
+    // Sources that keep to the request's regions keep to worldwide media, which the worldwide
+    // releases kept need, as well.
+    assert_eq!(expanded.regions, ["Europe", "World"]);
+}
+
+#[test]
+fn every_region_no_intro_names_implies_its_language() {
+    let releases = Releases::holding(vec![
+        listed(1, "Wiedzmin", "Poland", "Wiedzmin (Poland)"),
+        listed(2, "Lego", "Denmark", "Lego (Denmark)"),
+        listed(3, "Hra", "Czech", "Hra (Czech)"),
+        listed(4, "Peli", "Finland", "Peli (Finland)"),
+    ]);
+    let mut nordic_and_slavic = every_game_of(&[NES]);
+    nordic_and_slavic.languages = ["Pl", "Da", "Cs", "Fi"].map(str::to_owned).to_vec();
+
+    let expanded =
+        expand_every_game(&releases, &releases, &game_lists(), nordic_and_slavic).unwrap();
+
+    assert_eq!(
+        expanded.games,
+        bound(&[
+            "Wiedzmin (Poland)",
+            "Lego (Denmark)",
+            "Hra (Czech)",
+            "Peli (Finland)"
+        ])
+    );
 }

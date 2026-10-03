@@ -280,3 +280,21 @@ fn media_whose_region_conflicts_with_every_release_still_await_review() {
     assert_ne!(result.confidence, MatchConfidence::High);
     assert_eq!(result.auto_link_release_edition_id(), None);
 }
+
+#[test]
+fn a_candidate_of_one_region_of_a_release_of_several_matches_it() {
+    let european = AssetCandidate {
+        region: "Europe".to_owned(),
+        ..candidate()
+    };
+    let usa_and_europe = LibraryEntry {
+        region: "USA, Europe".to_owned(),
+        ..release()
+    };
+
+    let result =
+        match_asset_candidate_to_release(&european, &[usa_and_europe], matching_policy(80, 50));
+
+    assert_eq!(result.confidence, MatchConfidence::High);
+    assert_eq!(result.score, 100);
+}

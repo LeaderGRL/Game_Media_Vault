@@ -650,7 +650,7 @@ fn discover_source(
     first_game: usize,
 ) -> Result<(Vec<AcquisitionWorkItem>, Option<usize>), ApplicationError> {
     let batch = discovery_batch(request, connector, first_game)?;
-    let (request, refusal) = as_served_by(&batch.request, connector)?;
+    let (request, refusal) = as_served_by(&batch.request, connector, request)?;
     if let Some(reason) = refusal {
         return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
@@ -661,16 +661,18 @@ fn discover_source(
     Ok((work, (!batch.last).then_some(batch.games)))
 }
 
-/// `request` as `connector` is asked about it and discovers it, with why the connector refuses
-/// it, if it does: as it is, or without its regions when the connector cannot tell regions
-/// apart but every game the request names carries one of them in its name, as `Tetris (Europe)`
-/// or a worldwide `(World)` release does, which keeps the request to those regions already.
+/// `request`, a batch of `whole`, as `connector` is asked about it and discovers it, with why the
+/// connector refuses it, if it does: as it is, or without its regions when the connector cannot
+/// tell regions apart but every game `whole` names carries one of them in its name, as
+/// `Tetris (Europe)` or a worldwide `(World)` release does, which keeps the request to those
+/// regions already. Judging the whole request keeps every batch of a discovery served alike.
 pub(crate) fn as_served_by(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
+    whole: &AcquisitionRequest,
 ) -> Result<(AcquisitionRequest, Option<String>), ApplicationError> {
     let refusal = connector.unsupported_request_reason(request)?;
-    if refusal.is_none() || request.regions().is_empty() || !names_carry_regions(request) {
+    if refusal.is_none() || request.regions().is_empty() || !names_carry_regions(whole) {
         return Ok((request.clone(), refusal));
     }
     let mut draft = request.to_draft();
