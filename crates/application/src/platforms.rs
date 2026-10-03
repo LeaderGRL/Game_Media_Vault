@@ -52,8 +52,9 @@ const REGION_LANGUAGES: [(&str, &str); 22] = [
 /// releases. Requested regions keep the releases of those regions and the worldwide ones, and
 /// requested languages the releases whose name lists one of them, or whose region implies it
 /// when the name lists none; the expanded request keeps its regions, which Sources telling
-/// regions apart keep to, but no languages, which no Source tells apart. A request naming its games, or no platform, stays as it is, and a request that is
-/// invalid, or that planning would refuse, is refused before anything is fetched.
+/// regions apart keep to, but no languages, which no Source tells apart. A request naming its
+/// games, or no platform, stays as it is, and a request that is invalid, or that planning would
+/// refuse, is refused before anything is fetched.
 pub fn expand_every_game(
     catalog: &dyn CatalogPort,
     references: &dyn ReferenceCatalogRepositoryPort,
