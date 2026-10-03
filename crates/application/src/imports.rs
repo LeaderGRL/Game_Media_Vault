@@ -81,7 +81,8 @@ pub fn list_reference_review_items(
 }
 
 /// Decides that the record of the pending item `item_id` describes the candidate edition
-/// `release_edition_id`, whose edition then merges into it, and returns the items still pending.
+/// `release_edition_id`, which its own edition merges into, or which it moves to alone when its
+/// source linked it into another source's edition, and returns the items still pending.
 pub fn link_reference_review_item(
     reviews: &dyn ReferenceReviewRepositoryPort,
     item_id: i64,

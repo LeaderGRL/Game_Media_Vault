@@ -83,7 +83,7 @@ An uncertain match or conflicting decision that requires human confirmation befo
 _Avoid_: Error when uncertainty is expected
 
 **Reference Review Item**:
-A reference record whose evidence points at several Release Editions of other sources: its dumps, or without them its title. The record keeps its own edition until a human tells which candidate, if any, it describes, so no edition merges silently. It stays apart from the Review Items of Asset Candidates, since its subject is a reference record, identified by its source and `source_record`.
+A reference record whose evidence points at several Release Editions of other sources: its dumps, or without them its title. The record keeps its own edition until a human tells which candidate, if any, it describes, so no edition merges silently. A record its dumps linked to an edition becomes one too once another edition with the same dumps appears, and keeps its link meanwhile. It stays apart from the Review Items of Asset Candidates, since its subject is a reference record, identified by its source and `source_record`.
 _Avoid_: Duplicate when the editions may be distinct releases
 
 **Candidate Identity**:

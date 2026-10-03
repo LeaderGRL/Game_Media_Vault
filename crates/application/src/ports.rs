@@ -441,7 +441,8 @@ pub trait ReferenceReviewRepositoryPort {
     fn list_reference_review_items(&self) -> Result<Vec<ReferenceReviewItem>, PortError>;
 
     /// Decides that the record of the pending item `item_id` describes the candidate
-    /// `release_edition_id`: the record's edition merges into it.
+    /// `release_edition_id`: the record's own edition merges into it, or the record moves to it
+    /// alone when its source linked it into another source's edition.
     fn link_reference_review_item(
         &self,
         item_id: i64,

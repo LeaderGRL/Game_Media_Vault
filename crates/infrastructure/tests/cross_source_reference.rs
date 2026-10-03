@@ -648,8 +648,14 @@ fn dumps_pointing_at_an_edition_of_the_importing_source_forbid_a_title_link() {
 
     assert_ne!(second.release_edition_id, first.release_edition_id);
     assert!(links_of(&catalog, second.release_edition_id, "no-intro").is_empty());
-    // The only edition they point at is another release of that catalog: nothing is uncertain.
-    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+    // The only edition they point at is another release of that catalog: nothing is uncertain
+    // about the record, though the other catalog's checksum link now is.
+    let items = catalog.list_reference_review_items().unwrap();
+    assert!(
+        items
+            .iter()
+            .all(|item| item.source_id.as_str() != "no-intro")
+    );
 }
 
 #[test]
@@ -784,6 +790,140 @@ fn a_reimport_asks_again_about_a_record_kept_apart_once_a_new_candidate_appears(
         asked_again.candidates,
         [game_a, game_b, game_d.release_edition_id]
     );
+}
+
+#[test]
+fn an_import_making_a_checksum_link_ambiguous_asks_about_the_linked_record() {
+    let (_temp, catalog) = catalog();
+    let first = import(&catalog, &release("no-intro", "Game A", "aaaa"));
+    let linked = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    assert_eq!(linked.release_edition_id, first.release_edition_id);
+
+    // The first catalog lists another release of the very same dumps.
+    let second = import(&catalog, &release("no-intro", "Game B", "aaaa"));
+
+    let items = catalog.list_reference_review_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].source_id.as_str(), "mame-software-lists");
+    assert_eq!(items[0].release_edition_id, first.release_edition_id);
+    assert_eq!(items[0].candidates, [second.release_edition_id]);
+    assert_eq!(items[0].evidence, "sha1");
+    // The link stays until a human decides.
+    assert_eq!(
+        links_of(&catalog, first.release_edition_id, "mame-software-lists"),
+        ["linked_by=sha1"]
+    );
+}
+
+/// A catalog's release linked by checksum to the first of two releases of the same dumps that
+/// another catalog lists, which awaits review: the editions of the latter two, and the item id.
+fn ambiguous_checksum_link(catalog: &SqliteCatalog) -> (i64, i64, i64) {
+    let first = import(catalog, &release("no-intro", "Game A", "aaaa"));
+    import(catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    let second = import(catalog, &release("no-intro", "Game B", "aaaa"));
+    let item = catalog.list_reference_review_items().unwrap()[0].id;
+    (first.release_edition_id, second.release_edition_id, item)
+}
+
+#[test]
+fn linking_a_record_its_dumps_linked_moves_it_alone_to_the_chosen_edition() {
+    let (_temp, catalog) = catalog();
+    let (first, second, item) = ambiguous_checksum_link(&catalog);
+
+    let outcome = catalog.link_reference_review_item(item, second).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::Decided);
+    // The first edition stays with the catalog that founded it.
+    assert_eq!(catalog.list_library().unwrap().len(), 2);
+    assert!(identifiers_of(&catalog, first, "mame-software-lists").is_empty());
+    assert!(!identifiers_of(&catalog, first, "no-intro").is_empty());
+    // The record's claims join the chosen edition, with the evidence of the decision.
+    assert!(
+        identifiers_of(&catalog, second, "mame-software-lists")
+            .contains(&"source_record=Game C|Nintendo - Game Boy|World".to_owned())
+    );
+    assert_eq!(
+        links_of(&catalog, second, "mame-software-lists"),
+        ["linked_by=review"]
+    );
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+    // A later import of the record keeps the decision, though its dumps point at both editions.
+    let again = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    assert_eq!(again.release_edition_id, second);
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
+#[test]
+fn a_record_linked_by_review_moves_alone_once_asked_again() {
+    let (_temp, catalog) = catalog();
+    let (game_a, game_b, _, item) = reviewed_dumps(&catalog);
+    catalog.link_reference_review_item(item, game_b).unwrap();
+
+    // A third catalog lists the very same dumps.
+    let game_d = import(&catalog, &release("tosec", "Game D", "aaaa")).release_edition_id;
+
+    let items = catalog.list_reference_review_items().unwrap();
+    let asked_again = items.iter().find(|pending| pending.id == item).unwrap();
+    assert_eq!(asked_again.release_edition_id, game_b);
+    assert_eq!(asked_again.candidates, [game_a, game_d]);
+
+    let outcome = catalog.link_reference_review_item(item, game_d).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::Decided);
+    assert!(identifiers_of(&catalog, game_b, "mame-software-lists").is_empty());
+    assert!(!identifiers_of(&catalog, game_b, "no-intro").is_empty());
+    assert_eq!(
+        links_of(&catalog, game_d, "mame-software-lists"),
+        ["linked_by=review"]
+    );
+}
+
+#[test]
+fn keeping_a_record_its_dumps_linked_apart_keeps_its_link() {
+    let (_temp, catalog) = catalog();
+    let (first, _, item) = ambiguous_checksum_link(&catalog);
+
+    catalog.keep_reference_review_item_apart(item).unwrap();
+    import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+
+    assert_eq!(
+        links_of(&catalog, first, "mame-software-lists"),
+        ["linked_by=sha1"]
+    );
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
+#[test]
+fn an_import_offers_a_pending_item_the_edition_it_creates() {
+    let (_temp, catalog) = catalog();
+    let (game_a, game_b, _, item) = reviewed_dumps(&catalog);
+
+    let game_d = import(&catalog, &release("tosec", "Game D", "aaaa"));
+
+    let items = catalog.list_reference_review_items().unwrap();
+    let refreshed = items.iter().find(|pending| pending.id == item).unwrap();
+    assert_eq!(
+        refreshed.candidates,
+        [game_a, game_b, game_d.release_edition_id]
+    );
+}
+
+#[test]
+fn an_import_correcting_its_dumps_withdraws_the_candidate_they_offered() {
+    let (_temp, catalog) = catalog();
+    let (game_a, _, _, item) = reviewed_dumps(&catalog);
+
+    import(&catalog, &release("no-intro", "Game B", "bbbb"));
+
+    let items = catalog.list_reference_review_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, item);
+    assert_eq!(items[0].candidates, [game_a]);
+
+    // Once no edition shares the record's dumps, nothing is left to ask.
+    import(&catalog, &release("no-intro", "Game A", "cccc"));
+
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
 }
 
 #[test]
