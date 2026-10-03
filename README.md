@@ -22,7 +22,8 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
     screenshots, logos, artwork, flyers, and the marquees, cabinets, control panels and circuit
     boards of arcade games.
 
-  The Sources view describes what each Source acquires and the failures executions recorded.
+  The Sources view describes what each Source acquires and the failures executions recorded,
+  and enables or disables each Source on this machine.
 - **Reference catalogs**: No-Intro and Redump datafiles and MAME software lists import as Release
   Editions with their identifiers, so acquired media can be matched to known releases; releases
   several catalogs describe under the same title share one Release Edition.

@@ -60,6 +60,8 @@ export interface SourceDescription {
   source_id: string;
   asset_types: string[];
   direct_media_download: boolean;
+  /** Whether the Source takes part in acquisitions on this machine. */
+  enabled: boolean;
 }
 
 /** A failure of a Source an execution recorded. */
