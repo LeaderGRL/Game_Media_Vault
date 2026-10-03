@@ -24,6 +24,19 @@ pub enum ApplicationError {
     Validation(#[from] AcquisitionRequestValidationError),
     #[error("{0}")]
     InvalidMatchingPolicy(#[from] MatchingPolicyValidationError),
+    #[error("reference review item #{0} does not exist or was already decided")]
+    ReferenceReviewItemNotFound(i64),
+    #[error(
+        "release edition #{release_edition_id} is not one the record of reference review item #{item_id} may describe"
+    )]
+    NotAReferenceCandidate {
+        item_id: i64,
+        release_edition_id: i64,
+    },
+    #[error(
+        "the edition of reference review item #{0} already holds Assets, which merging does not move yet; keep it apart instead"
+    )]
+    ReferenceEditionHoldsAssets(i64),
     #[error("acquisition run #{0} does not exist")]
     RunNotFound(i64),
     #[error("acquisition run still has {queued_work} queued work item(s)")]
@@ -142,8 +155,10 @@ impl ApplicationError {
             | Self::SourceNeedsNoApiKey(_)
             | Self::Validation(_)
             | Self::InvalidMatchingPolicy(_)
+            | Self::NotAReferenceCandidate { .. }
             | Self::ReviewAcceptanceNotCompeting { .. } => ErrorKind::InvalidRequest,
-            Self::RunNotFound(_)
+            Self::ReferenceReviewItemNotFound(_)
+            | Self::RunNotFound(_)
             | Self::ReviewItemNotFound(_)
             | Self::ReleaseEditionMissing(_)
             | Self::SourceNotRegistered(_) => ErrorKind::NotFound,
@@ -158,6 +173,7 @@ impl ApplicationError {
             | Self::SourceDisabled { .. }
             | Self::UnsupportedDocumentVersion { .. }
             | Self::UnsupportedRequest(_)
+            | Self::ReferenceEditionHoldsAssets(_)
             | Self::UncoveredAssetTypes { .. }
             | Self::PreviewConnectorUnavailable { .. }
             | Self::ReviewPreviewTooLarge { .. } => ErrorKind::Unsupported,

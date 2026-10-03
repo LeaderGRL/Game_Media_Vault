@@ -15,11 +15,12 @@ use game_media_vault_application::{
     acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     clear_source_api_key, derive_assets, derive_packaging_models, describe_sources,
     draft_from_document, export_acquisition_request, import_local_box_front,
-    import_reference_catalog, list_acquisition_runs, list_library, list_reference_review_items,
-    list_review_items, load_acquisition_run, machine_connectors, pause_acquisition_run,
-    plan_acquisition, repair_vault, resolve_review_item, resume_acquisition_run, search_library,
-    set_source_api_key, set_source_enabled, start_acquisition_run_with_connectors,
-    summarize_source_failures, verify_vault,
+    import_reference_catalog, keep_reference_review_item_apart, link_reference_review_item,
+    list_acquisition_runs, list_library, list_reference_review_items, list_review_items,
+    load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
+    repair_vault, resolve_review_item, resume_acquisition_run, search_library, set_source_api_key,
+    set_source_enabled, start_acquisition_run_with_connectors, summarize_source_failures,
+    verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
@@ -382,6 +383,15 @@ enum ReferenceCommand {
 enum ReferenceReviewCommand {
     /// Lists the records awaiting a human, with the editions each may describe.
     List,
+    /// Decides that the record of an item describes one of its candidate editions, which its
+    /// own edition then merges into.
+    Link {
+        id: i64,
+        #[arg(long)]
+        edition: i64,
+    },
+    /// Decides that the record of an item describes none of its candidate editions.
+    KeepApart { id: i64 },
 }
 
 #[derive(Debug, Subcommand)]
@@ -786,15 +796,19 @@ where
             import_reference_datafile(&cli.vault, &source, file, max_games)
         }
         Command::Reference {
-            command:
-                ReferenceCommand::Review {
-                    command: ReferenceReviewCommand::List,
-                },
+            command: ReferenceCommand::Review { command },
         } => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
-            Ok(serde_json::to_string_pretty(&list_reference_review_items(
-                &catalog,
-            )?)?)
+            let items = match command {
+                ReferenceReviewCommand::List => list_reference_review_items(&catalog)?,
+                ReferenceReviewCommand::Link { id, edition } => {
+                    link_reference_review_item(&catalog, id, edition)?
+                }
+                ReferenceReviewCommand::KeepApart { id } => {
+                    keep_reference_review_item_apart(&catalog, id)?
+                }
+            };
+            Ok(serde_json::to_string_pretty(&items)?)
         }
         Command::Library => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;

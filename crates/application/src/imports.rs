@@ -9,7 +9,7 @@ use game_media_vault_domain::{
 
 use crate::{
     ApplicationError, CatalogPort, ObjectStorePort, PortError, ReferenceCatalogRepositoryPort,
-    ReferenceCatalogSourcePort, ReferenceReviewRepositoryPort,
+    ReferenceCatalogSourcePort, ReferenceReviewOutcome, ReferenceReviewRepositoryPort,
 };
 
 const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
@@ -78,6 +78,55 @@ pub fn list_reference_review_items(
     reviews: &dyn ReferenceReviewRepositoryPort,
 ) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
     Ok(reviews.list_reference_review_items()?)
+}
+
+/// Decides that the record of the pending item `item_id` describes the candidate edition
+/// `release_edition_id`, whose edition then merges into it, and returns the items still pending.
+pub fn link_reference_review_item(
+    reviews: &dyn ReferenceReviewRepositoryPort,
+    item_id: i64,
+    release_edition_id: i64,
+) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
+    decided(
+        reviews.link_reference_review_item(item_id, release_edition_id)?,
+        item_id,
+        release_edition_id,
+    )?;
+    list_reference_review_items(reviews)
+}
+
+/// Decides that the record of the pending item `item_id` describes none of its candidates, and
+/// returns the items still pending.
+pub fn keep_reference_review_item_apart(
+    reviews: &dyn ReferenceReviewRepositoryPort,
+    item_id: i64,
+) -> Result<Vec<ReferenceReviewItem>, ApplicationError> {
+    decided(
+        reviews.keep_reference_review_item_apart(item_id)?,
+        item_id,
+        0,
+    )?;
+    list_reference_review_items(reviews)
+}
+
+fn decided(
+    outcome: ReferenceReviewOutcome,
+    item_id: i64,
+    release_edition_id: i64,
+) -> Result<(), ApplicationError> {
+    match outcome {
+        ReferenceReviewOutcome::Decided => Ok(()),
+        ReferenceReviewOutcome::ItemNotPending => {
+            Err(ApplicationError::ReferenceReviewItemNotFound(item_id))
+        }
+        ReferenceReviewOutcome::NotACandidate => Err(ApplicationError::NotAReferenceCandidate {
+            item_id,
+            release_edition_id,
+        }),
+        ReferenceReviewOutcome::EditionHoldsAssets => {
+            Err(ApplicationError::ReferenceEditionHoldsAssets(item_id))
+        }
+    }
 }
 
 pub fn import_local_box_front(

@@ -439,6 +439,32 @@ pub trait ReferenceCatalogRepositoryPort {
 pub trait ReferenceReviewRepositoryPort {
     /// The pending items, oldest first.
     fn list_reference_review_items(&self) -> Result<Vec<ReferenceReviewItem>, PortError>;
+
+    /// Decides that the record of the pending item `item_id` describes the candidate
+    /// `release_edition_id`: the record's edition merges into it.
+    fn link_reference_review_item(
+        &self,
+        item_id: i64,
+        release_edition_id: i64,
+    ) -> Result<ReferenceReviewOutcome, PortError>;
+
+    /// Decides that the record of the pending item `item_id` describes none of its candidates.
+    fn keep_reference_review_item_apart(
+        &self,
+        item_id: i64,
+    ) -> Result<ReferenceReviewOutcome, PortError>;
+}
+
+/// What deciding a Reference Review Item did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceReviewOutcome {
+    Decided,
+    /// No pending item has this id.
+    ItemNotPending,
+    /// The edition is not one the record may describe, or now holds a record of its source.
+    NotACandidate,
+    /// The record's edition holds Assets, which merging does not move yet.
+    EditionHoldsAssets,
 }
 
 /// The settings of this machine, shared by every vault it opens.
