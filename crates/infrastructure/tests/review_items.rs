@@ -1198,3 +1198,24 @@ fn an_outranked_original_closes_the_undecided_item_and_requeues_its_work() {
     );
     assert_eq!(counts(&catalog, parked_run), (1, 0, 0));
 }
+
+#[test]
+fn keeping_the_best_two_links_an_original_only_one_retained_asset_outranks() {
+    let (_temp, catalog) = open_catalog();
+    let retained = retain_large_box_front(&catalog);
+
+    let outcome = catalog
+        .persist_candidate_asset(
+            start_run(&catalog),
+            IDENTITY,
+            PersistAsset {
+                existing_release_edition_id: Some(retained.release_edition_id),
+                ..box_front_record("small-bytes", 640, 900)
+            },
+            RetentionPolicy::KeepBest { per_type: 2 },
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, CandidateAssetOutcome::Linked(_)));
+    assert_eq!(library_asset_count(&catalog), 2);
+}

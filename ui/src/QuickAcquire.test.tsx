@@ -61,3 +61,36 @@ describe("assetTypeLabel", () => {
     expect(assetTypeLabel(ANY_ASSET_TYPE)).toBe("Every type");
   });
 });
+
+describe("QuickAcquire media per type", () => {
+  it("keeps the best media of each type up to the number asked for", () => {
+    const onDownload = vi.fn();
+    render(<QuickAcquire starting={false} onDownload={onDownload} />);
+    fireEvent.change(screen.getByLabelText("Platform"), {
+      target: { value: "Sega - Mega Drive - Genesis" },
+    });
+
+    fireEvent.change(screen.getByLabelText("Media per type (empty for all)"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
+
+    expect(onDownload.mock.calls[0][0].retention).toEqual({ keep_best: { per_type: 3 } });
+  });
+
+  it("refuses a number of media per type below one", () => {
+    const onDownload = vi.fn();
+    render(<QuickAcquire starting={false} onDownload={onDownload} />);
+    fireEvent.change(screen.getByLabelText("Platform"), {
+      target: { value: "Sega - Mega Drive - Genesis" },
+    });
+
+    fireEvent.change(screen.getByLabelText("Media per type (empty for all)"), {
+      target: { value: "0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
+
+    expect(onDownload).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Media per type must be a whole number");
+  });
+});

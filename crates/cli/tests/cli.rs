@@ -2566,3 +2566,56 @@ fn an_export_to_a_folder_within_the_vault_is_refused() {
     assert_eq!(error.exit_code(), 2, "{error}");
     assert!(!vault.join("copies").exists());
 }
+
+#[test]
+fn acquire_keeps_the_number_of_assets_of_each_type_asked_for() {
+    let temp = tempdir().unwrap();
+    let request = game_media_vault_cli::acquisition_request_from_args(cli_args(
+        &temp.path().join("vault"),
+        &[
+            "acquire",
+            "--auto-source",
+            "--platform",
+            "Nintendo - Nintendo Entertainment System",
+            "--asset-type",
+            "box-front",
+            "--keep-per-type",
+            "3",
+        ],
+    ))
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&request).unwrap()["retention"],
+        serde_json::json!({"keep_best": {"per_type": 3}})
+    );
+}
+
+#[test]
+fn a_request_document_misspelling_a_kept_number_is_an_invalid_request() {
+    let temp = tempdir().unwrap();
+    let document_path = temp.path().join("request.json");
+    // `per_typo` would otherwise be dropped, starting a run that keeps another number.
+    std::fs::write(
+        &document_path,
+        r#"{"format_version": 1, "request": {
+            "sources": {"mode": "explicit", "values": ["libretro-thumbnails"]},
+            "platforms": ["Nintendo - Nintendo Entertainment System"],
+            "games": {"mode": "explicit", "values": ["Super Mario Bros. (World)"]},
+            "regions": [], "languages": [], "asset_types": ["box_front"],
+            "quality": null,
+            "retention": {"keep_best": {"per_type": 2, "per_typo": 3}},
+            "limits": {}
+        }}"#,
+    )
+    .unwrap();
+
+    let error = run_in_vault(
+        &temp.path().join("vault"),
+        &["run", "start", document_path.to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(error.to_string().contains("per_typo"), "{error}");
+}

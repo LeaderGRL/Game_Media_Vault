@@ -284,6 +284,10 @@ struct AcquireArgs {
     quality: QualityArgs,
     #[arg(long, default_value = "keep-everything", value_parser = parse_retention_policy)]
     retention: RetentionPolicy,
+    /// Keeps, for each release and Asset Type, the N preferred originals (`keep_best`) instead
+    /// of following `--retention`.
+    #[arg(long, value_name = "N", conflicts_with = "retention")]
+    keep_per_type: Option<u32>,
     #[command(flatten)]
     limits: LimitArgs,
 }
@@ -310,7 +314,9 @@ impl AcquireArgs {
             languages: self.languages,
             asset_types: self.asset_types,
             quality: self.quality.into_domain(),
-            retention: self.retention,
+            retention: self.keep_per_type.map_or(self.retention, |per_type| {
+                RetentionPolicy::KeepBest { per_type }
+            }),
             limits: self.limits.into(),
         }
     }

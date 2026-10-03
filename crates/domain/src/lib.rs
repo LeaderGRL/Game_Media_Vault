@@ -138,10 +138,29 @@ pub enum AssetTypeSelector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+// Requests come from documents people write: an unknown key is a mistake, never a default.
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RetentionPolicy {
     KeepEverything,
     KeepBestPerType,
+    /// Keeps, for each Release Edition and Asset Type, the `per_type` preferred originals: a
+    /// new original is retained only while fewer retained ones rank above it. Keep Best Per
+    /// Type keeps one.
+    KeepBest {
+        per_type: u32,
+    },
+}
+
+impl RetentionPolicy {
+    /// How many preferred originals of each Release Edition and type the policy keeps, or
+    /// `None` when it keeps every one.
+    pub fn kept_per_type(self) -> Option<usize> {
+        match self {
+            Self::KeepEverything => None,
+            Self::KeepBestPerType => Some(1),
+            Self::KeepBest { per_type } => Some(per_type as usize),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -268,6 +287,8 @@ pub enum AcquisitionRequestValidationError {
     InvalidGameSelection,
     /// A request must allow at least one download at a time.
     NoConcurrentDownload,
+    /// A request keeping the best originals of each type must keep at least one.
+    NoKeptAsset,
 }
 
 impl fmt::Display for AcquisitionRequestValidationError {
@@ -287,6 +308,9 @@ impl fmt::Display for AcquisitionRequestValidationError {
             }
             Self::NoConcurrentDownload => formatter
                 .write_str("acquisition request must allow at least one concurrent download"),
+            Self::NoKeptAsset => {
+                formatter.write_str("acquisition request must keep at least one asset of each type")
+            }
         }
     }
 }
@@ -419,6 +443,9 @@ impl AcquisitionRequest {
         }
         if draft.limits.max_concurrent_downloads == Some(0) {
             return Err(AcquisitionRequestValidationError::NoConcurrentDownload);
+        }
+        if draft.retention.kept_per_type() == Some(0) {
+            return Err(AcquisitionRequestValidationError::NoKeptAsset);
         }
 
         let regions = non_blank_values(draft.regions);

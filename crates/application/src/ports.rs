@@ -174,8 +174,9 @@ pub trait ReviewRepositoryPort {
     /// other editions are removed, an undecided Review Item is closed as `AutoResolved`
     /// (completing the work parked on it), and the candidate's work in `run_id` is completed.
     ///
-    /// Under Keep Best Per Type, an original that a retained Asset of the same Release Edition
-    /// and type outranks is not linked: the candidate is settled as for a below-quality
+    /// Under a policy keeping the best originals of each type (Keep Best Per Type keeps one),
+    /// an original that as many retained Assets of the same Release Edition and type outrank as
+    /// the policy keeps is not linked: the candidate is settled as for a below-quality
     /// original (see `complete_candidate_below_quality`) and its work records why. The retained
     /// Assets are compared in the same transaction.
     ///

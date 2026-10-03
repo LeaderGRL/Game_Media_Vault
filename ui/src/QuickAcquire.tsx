@@ -5,6 +5,7 @@ import {
   AcquisitionRequestDraft,
   buildAcquisitionRequest,
   emptyAcquisitionForm,
+  keptPerTypeProblem,
 } from "./acquisition";
 
 /**
@@ -85,7 +86,7 @@ export const GAME_LIST_PLATFORMS = [
 
 interface QuickAcquireProps {
   starting: boolean;
-  /** Starts acquiring the request built from the platform chosen. */
+  /** Starts acquiring the request built from the platform and media per type chosen. */
   onDownload: (request: AcquisitionRequestDraft) => void;
 }
 
@@ -96,17 +97,26 @@ interface QuickAcquireProps {
  */
 export function QuickAcquire({ starting, onDownload }: QuickAcquireProps) {
   const [platform, setPlatform] = useState("");
+  const [perType, setPerType] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    onDownload(
-      buildAcquisitionRequest({
-        ...emptyAcquisitionForm(),
-        autoSources: true,
-        platforms: platform,
-        assetTypes: [ANY_ASSET_TYPE],
-      }),
-    );
+    // Empty keeps every medium; a number keeps the best that many of each type and game.
+    const form = {
+      ...emptyAcquisitionForm(),
+      autoSources: true,
+      platforms: platform,
+      assetTypes: [ANY_ASSET_TYPE],
+      ...(perType.trim() === ""
+        ? {}
+        : { retention: "keep_best" as const, keptPerType: perType }),
+    };
+    const invalid = perType.trim() === "" ? null : keptPerTypeProblem(perType, "Media per type");
+    setProblem(invalid);
+    if (invalid === null) {
+      onDownload(buildAcquisitionRequest(form));
+    }
   }
 
   return (
@@ -131,7 +141,21 @@ export function QuickAcquire({ starting, onDownload }: QuickAcquireProps) {
             ))}
           </datalist>
         </label>
+        <label>
+          Media per type (empty for all)
+          <input
+            inputMode="numeric"
+            value={perType}
+            placeholder="3"
+            onChange={(event) => setPerType(event.target.value)}
+          />
+        </label>
       </div>
+      {problem ? (
+        <p className="error-message" role="alert">
+          {problem}
+        </p>
+      ) : null}
       <button type="submit" disabled={starting || platform.trim() === ""}>
         {starting ? "Starting…" : "Download everything"}
       </button>

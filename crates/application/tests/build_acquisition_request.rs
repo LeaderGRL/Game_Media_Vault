@@ -498,3 +498,21 @@ fn rejects_a_request_allowing_no_concurrent_download() {
         AcquisitionRequestValidationError::NoConcurrentDownload
     );
 }
+
+#[test]
+fn rejects_a_request_keeping_no_asset_of_each_type() {
+    let error = build_acquisition_request(AcquisitionRequestInput {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Windows".to_owned()],
+        games: GameSelection::All,
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront],
+        quality: None,
+        retention: RetentionPolicy::KeepBest { per_type: 0 },
+        limits: AcquisitionLimits::default(),
+    })
+    .unwrap_err();
+
+    assert_eq!(error, AcquisitionRequestValidationError::NoKeptAsset);
+}

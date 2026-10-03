@@ -74,26 +74,38 @@ pub struct Outranked {
     pub reason: PreferenceReason,
 }
 
-/// The retained Asset that would stay preferred over `candidate`, a new original of the same
-/// type, with why; `None` when the candidate would become the Preferred Asset. A candidate whose
-/// bytes a retained Asset already holds is that Asset, so it is never outranked.
-pub fn outranked_by(candidate: &StoredObject, retained: &[LibraryAsset]) -> Option<Outranked> {
+/// The retained Asset that keeps `candidate`, a new original of the same type, out of the
+/// `kept` preferred originals of its type, with why: the last of the `kept` retained Assets that
+/// rank above it, the Preferred Asset when one is kept. `None` when fewer retained Assets rank
+/// above it. A candidate whose bytes a retained Asset already holds is that Asset, so it is
+/// never outranked.
+pub fn outranked_by(
+    candidate: &StoredObject,
+    retained: &[LibraryAsset],
+    kept: usize,
+) -> Option<Outranked> {
     if retained
         .iter()
         .any(|asset| asset.object_hash == candidate.hash)
     {
         return None;
     }
-    let preferred = retained.iter().map(Standing::of).min_by(rank)?;
     // A candidate is acquired after every retained Asset.
     let candidate = Standing {
         asset_id: i64::MAX,
         byte_len: candidate.byte_len,
         pixel_count: pixel_count(&candidate.media),
     };
-    (rank(&preferred, &candidate) == Ordering::Less).then(|| Outranked {
-        preferred_asset_id: preferred.asset_id,
-        reason: reason(&preferred, &candidate),
+    let mut above: Vec<Standing> = retained
+        .iter()
+        .map(Standing::of)
+        .filter(|standing| rank(standing, &candidate) == Ordering::Less)
+        .collect();
+    above.sort_by(rank);
+    let last_kept = above.get(kept.max(1) - 1)?;
+    Some(Outranked {
+        preferred_asset_id: last_kept.asset_id,
+        reason: reason(last_kept, &candidate),
     })
 }
 

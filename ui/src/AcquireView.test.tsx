@@ -290,3 +290,36 @@ describe("AcquireView", () => {
     }
   });
 });
+
+describe("AcquireView retention", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("keeps the number of assets of each type asked for", () => {
+    const onStart = vi.fn();
+    render(<AcquireView starting={false} onStart={onStart} />);
+
+    fireEvent.change(screen.getByLabelText("Retention policy"), {
+      target: { value: "keep_best" },
+    });
+    fireEvent.change(screen.getByLabelText("Assets kept per type"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(onStart.mock.calls[0][0].retention).toEqual({ keep_best: { per_type: 3 } });
+  });
+
+  it("refuses a number of assets kept per type below one", () => {
+    const onStart = vi.fn();
+    render(<AcquireView starting={false} onStart={onStart} />);
+
+    fireEvent.change(screen.getByLabelText("Retention policy"), {
+      target: { value: "keep_best" },
+    });
+    fireEvent.change(screen.getByLabelText("Assets kept per type"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+
+    expect(onStart).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Assets kept per type must be a whole number from 1",
+    );
+  });
+});

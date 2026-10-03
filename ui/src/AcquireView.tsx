@@ -6,11 +6,11 @@ import {
   AcquisitionPlan,
   AcquisitionRequestDraft,
   KNOWN_SOURCES,
-  RetentionPolicy,
+  RetentionChoice,
   assetTypeLabel,
   buildAcquisitionRequest,
   emptyAcquisitionForm,
-  pixelSizeProblem,
+  numberProblem,
   sourceLabel,
 } from "./acquisition";
 import {
@@ -74,7 +74,7 @@ export function AcquireView({
   }
 
   async function checkPlan() {
-    const problem = pixelSizeProblem(form);
+    const problem = numberProblem(form);
     setFormProblem(problem);
     if (problem !== null || onCheckPlan === undefined) {
       return;
@@ -168,7 +168,7 @@ export function AcquireView({
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    const problem = pixelSizeProblem(form);
+    const problem = numberProblem(form);
     setFormProblem(problem);
     if (problem === null) {
       onStart(buildAcquisitionRequest(form));
@@ -303,12 +303,23 @@ export function AcquireView({
           Retention policy
           <select
             value={form.retention}
-            onChange={(event) => update({ retention: event.target.value as RetentionPolicy })}
+            onChange={(event) => update({ retention: event.target.value as RetentionChoice })}
           >
             <option value="keep_everything">Keep everything</option>
             <option value="keep_best_per_type">Keep best per type</option>
+            <option value="keep_best">Keep the best N per type</option>
           </select>
         </label>
+        {form.retention === "keep_best" ? (
+          <label>
+            Assets kept per type
+            <input
+              inputMode="numeric"
+              value={form.keptPerType}
+              onChange={(event) => update({ keptPerType: event.target.value })}
+            />
+          </label>
+        ) : null}
       </div>
 
       <fieldset className="asset-types">

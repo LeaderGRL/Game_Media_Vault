@@ -255,7 +255,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         // The write lock is held from here on, so the compared Assets are the retained ones.
-        if retention == RetentionPolicy::KeepBestPerType
+        if let Some(kept) = retention.kept_per_type()
             && let Some(release_edition_id) = record.existing_release_edition_id
         {
             let candidate = StoredObject {
@@ -264,7 +264,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
                 media: record.media.clone(),
             };
             let retained = retained_assets(&transaction, release_edition_id, record.asset_type)?;
-            if let Some(outranked) = outranked_by(&candidate, &retained) {
+            if let Some(outranked) = outranked_by(&candidate, &retained, kept) {
                 let outranked_json = to_json(&outranked, "outranked original")?;
                 if !settle_unlinked(
                     &transaction,

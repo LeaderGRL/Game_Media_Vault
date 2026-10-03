@@ -108,9 +108,12 @@ function readForm(value: object): Partial<AcquisitionForm> {
     languages: text("languages"),
     assetTypes: list("assetTypes"),
     retention:
-      saved.retention === "keep_everything" || saved.retention === "keep_best_per_type"
+      saved.retention === "keep_everything" ||
+      saved.retention === "keep_best_per_type" ||
+      saved.retention === "keep_best"
         ? saved.retention
         : undefined,
+    keptPerType: text("keptPerType"),
     minWidth: text("minWidth"),
     minHeight: text("minHeight"),
   };
