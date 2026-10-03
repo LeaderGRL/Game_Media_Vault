@@ -455,6 +455,7 @@ pub enum AssetType {
     Manual,
     Screenshot,
     TitleScreen,
+    GameplayVideo,
     Logo,
     Icon,
     WallpaperArtwork,
@@ -478,7 +479,7 @@ impl AssetTypeSelector {
 
 impl AssetType {
     /// Every stored type, in taxonomy order.
-    pub const ALL: [AssetType; 18] = [
+    pub const ALL: [AssetType; 19] = [
         Self::BoxFront,
         Self::BoxBack,
         Self::Spine,
@@ -490,6 +491,7 @@ impl AssetType {
         Self::Manual,
         Self::Screenshot,
         Self::TitleScreen,
+        Self::GameplayVideo,
         Self::Logo,
         Self::Icon,
         Self::WallpaperArtwork,
@@ -513,6 +515,7 @@ impl AssetType {
             Self::Manual => AssetTypeSelector::Manual,
             Self::Screenshot => AssetTypeSelector::Screenshot,
             Self::TitleScreen => AssetTypeSelector::TitleScreen,
+            Self::GameplayVideo => AssetTypeSelector::GameplayVideo,
             Self::Logo => AssetTypeSelector::Logo,
             Self::Icon => AssetTypeSelector::Icon,
             Self::WallpaperArtwork => AssetTypeSelector::WallpaperArtwork,
@@ -535,6 +538,7 @@ impl AssetType {
             Self::Manual => AssetTypeSelector::Documentation,
             Self::Screenshot
             | Self::TitleScreen
+            | Self::GameplayVideo
             | Self::Logo
             | Self::Icon
             | Self::WallpaperArtwork => AssetTypeSelector::DigitalMedia,
@@ -559,6 +563,7 @@ impl AssetType {
             Self::Manual => "manual",
             Self::Screenshot => "screenshot",
             Self::TitleScreen => "title_screen",
+            Self::GameplayVideo => "gameplay_video",
             Self::Logo => "logo",
             Self::Icon => "icon",
             Self::WallpaperArtwork => "wallpaper_artwork",

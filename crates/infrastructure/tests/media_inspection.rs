@@ -296,3 +296,26 @@ fn a_gltf_binary_is_recorded_as_a_3d_model() {
         }
     );
 }
+
+#[test]
+fn mp4_and_webm_originals_are_recorded_as_videos() {
+    // An ISO base media file opens with its `ftyp` box, naming its brands.
+    let mut mp4 = vec![0, 0, 0, 0x18];
+    mp4.extend_from_slice(b"ftypisom");
+    mp4.extend_from_slice(&[0, 0, 2, 0]);
+    mp4.extend_from_slice(b"isommp41");
+    // A Matroska or WebM file opens with its EBML header.
+    let webm = [0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01];
+
+    for (bytes, media_type) in [(&mp4[..], "video/mp4"), (&webm[..], "video/webm")] {
+        assert_eq!(
+            stored_media(bytes),
+            MediaInfo {
+                media_type: media_type.to_owned(),
+                width: None,
+                height: None,
+                document: None,
+            }
+        );
+    }
+}

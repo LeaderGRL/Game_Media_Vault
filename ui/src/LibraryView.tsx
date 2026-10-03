@@ -376,11 +376,26 @@ interface AssetOriginalProps {
 }
 
 /**
- * The Library thumbnail of an image original, else the original itself, or a placeholder when
- * the vault cannot serve them or the view cannot decode them.
+ * The Library thumbnail of an image original, else the original itself, or a player for a video
+ * original, or a placeholder when the vault cannot serve them or the view cannot decode them.
  */
 function AssetOriginal({ asset, description, objectUrl }: AssetOriginalProps) {
   const [failedHashes, setFailedHashes] = useState<ReadonlySet<string>>(() => new Set());
+  if (PLAYABLE_VIDEO_TYPES.includes(asset.media_type)) {
+    if (failedHashes.has(asset.object_hash)) {
+      return <p className="asset-original unavailable">Preview unavailable</p>;
+    }
+    return (
+      <video
+        className="asset-original"
+        src={objectUrl(asset.object_hash)}
+        aria-label={description}
+        controls
+        preload="metadata"
+        onError={() => setFailedHashes((failed) => new Set(failed).add(asset.object_hash))}
+      />
+    );
+  }
   const thumbnail = asset.derived.find(
     (derived) =>
       derived.recipe.transform === "thumbnail" &&
@@ -564,6 +579,9 @@ function formatBytes(byteLength: number) {
  * from schema version 2) still have unknown media, so their file name decides until the vault
  * is verified again.
  */
+/** Video containers the webview plays itself. */
+const PLAYABLE_VIDEO_TYPES = ["video/mp4", "video/webm"];
+
 function isImageOriginal(asset: LibraryAsset) {
   const mediaType =
     asset.media_type === "application/octet-stream"

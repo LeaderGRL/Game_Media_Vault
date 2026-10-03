@@ -620,4 +620,33 @@ describe("LibraryView packaging models", () => {
     fireEvent.click(link);
     expect(openUrl).toHaveBeenCalledWith("https://rawg.io");
   });
+  it("plays a video original with the webview's own controls", () => {
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          {
+            ...entry,
+            assets: [
+              {
+                ...entry.assets[0],
+                asset_type: "gameplay_video",
+                object_hash: "video123",
+                media_type: "video/mp4",
+                width: null,
+                height: null,
+                original_filename: "gameplay.mp4",
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    const video = screen.getByLabelText("Gameplay Video of Metal Gear Solid");
+    expect(video.tagName).toBe("VIDEO");
+    expect(video).toHaveAttribute("src", objectUrl("video123"));
+    expect(video).toHaveAttribute("controls");
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
 });

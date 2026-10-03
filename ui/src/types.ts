@@ -11,6 +11,7 @@ export type AssetType =
   | "manual"
   | "screenshot"
   | "title_screen"
+  | "gameplay_video"
   | "logo"
   | "icon"
   | "wallpaper_artwork"

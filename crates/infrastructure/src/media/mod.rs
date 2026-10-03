@@ -45,6 +45,14 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
             };
         }
     }
+    if let Some(media_type) = video_media_type(header) {
+        return MediaInfo {
+            media_type: media_type.to_owned(),
+            width: None,
+            height: None,
+            document: None,
+        };
+    }
     let Ok(image_type) = imagesize::image_type(header) else {
         return MediaInfo::unknown();
     };
@@ -58,6 +66,28 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
         height: size.and_then(|size| u32::try_from(size.height).ok()),
         document: None,
     }
+}
+
+/// The media type of a video container the header opens: an ISO base media file whose `ftyp`
+/// box names no image brand, or a Matroska or WebM file.
+fn video_media_type(header: &[u8]) -> Option<&'static str> {
+    if header.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        // Players read WebM, the Matroska profile videos are published in, by this name.
+        return Some("video/webm");
+    }
+    let brand = header.get(8..12)?;
+    // HEIF and AVIF images share the container, and their brands say so.
+    let image_brands: [&[u8]; 8] = [
+        b"heic", b"heix", b"heim", b"heis", b"hevc", b"mif1", b"msf1", b"avif",
+    ];
+    if header.get(4..8) == Some(&b"ftyp"[..]) && !image_brands.contains(&brand) {
+        return Some(if brand == b"qt  " {
+            "video/quicktime"
+        } else {
+            "video/mp4"
+        });
+    }
+    None
 }
 
 fn image_media_type(image_type: ImageType) -> Option<&'static str> {
