@@ -1,7 +1,12 @@
 use std::{
     collections::HashMap,
     io::{Cursor, Read},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
+    time::Duration,
 };
 
 use game_media_vault_application::{ApiKey, ConnectorPort, CredentialStorePort, PortError};
@@ -217,7 +222,7 @@ fn candidate(asset_type: AssetType, media: &str, region: &str, label: &str) -> A
         "png"
     };
     AssetCandidate {
-        provider_candidate_id: Some(format!("57/1234/{media}")),
+        provider_candidate_id: Some(format!("{PLAYSTATION}/57/1234/{media}")),
         game_title: "Ridge Racer".to_owned(),
         platform: PLAYSTATION.to_owned(),
         region: region.to_owned(),
@@ -380,7 +385,10 @@ fn a_region_filter_keeps_the_media_of_the_requested_regions() {
         .collect();
     assert_eq!(
         found,
-        [("57/1234/box-2D(us)", "USA"), ("57/1234/ss(wor)", "World")]
+        [
+            ("Sony - PlayStation/57/1234/box-2D(us)", "USA"),
+            ("Sony - PlayStation/57/1234/ss(wor)", "World")
+        ]
     );
 }
 
@@ -519,4 +527,123 @@ fn only_locators_screenscraper_discovered_are_downloaded() {
 
     assert!(connector(&api, &DEVELOPER).download(&foreign).is_err());
     assert!(api.requested().is_empty());
+}
+
+#[test]
+fn each_arcade_platform_gets_its_own_candidates_from_one_search() {
+    // MAME and FBNeo emulate the arcade boards ScreenScraper files under one system.
+    let arcade = search()
+        .replace(r#""id":"57""#, r#""id":"75""#)
+        .replace("systemeid=57", "systemeid=75");
+    let url = "https://api.screenscraper.fr/api2/jeuRecherche.php?softname=game-media-vault&output=json&systemeid=75&recherche=Ridge+Racer";
+    let api = FixtureApi::answering(&[(url, &arcade)]);
+
+    let candidates = connector(&api, &DEVELOPER)
+        .discover(&request(|draft| {
+            draft.platforms = vec!["MAME".to_owned(), "FBNeo - Arcade Games".to_owned()];
+            draft.asset_types = vec![AssetTypeSelector::BoxFront];
+        }))
+        .unwrap();
+
+    let found: Vec<(&str, &str)> = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.platform.as_str(),
+                candidate.provider_candidate_id.as_deref().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("MAME", "MAME/75/1234/box-2D(us)"),
+            (
+                "FBNeo - Arcade Games",
+                "FBNeo - Arcade Games/75/1234/box-2D(us)"
+            ),
+        ]
+    );
+    assert_eq!(api.requested().len(), 1);
+}
+
+#[test]
+fn the_catalogs_own_platform_names_are_known() {
+    let api = FixtureApi::answering(&[]);
+    let connector = connector(&api, &DEVELOPER);
+
+    for platform in [
+        "The 3DO Company - 3DO",
+        "Nintendo - Nintendo Switch",
+        "Sony - PlayStation 4",
+        "Microsoft - Xbox One",
+    ] {
+        let reason = connector
+            .unsupported_request_reason(&request(|draft| {
+                draft.platforms = vec![platform.to_owned()];
+            }))
+            .unwrap();
+        assert_eq!(reason, None, "{platform}");
+    }
+}
+
+#[test]
+fn the_regions_of_the_countries_screenscraper_names_are_known() {
+    let api = FixtureApi::answering(&[]);
+    let connector = connector(&api, &DEVELOPER);
+
+    for region in ["Portugal", "Russia", "Poland", "Denmark", "pt"] {
+        let reason = connector
+            .unsupported_request_reason(&request(|draft| {
+                draft.regions = vec![region.to_owned()];
+            }))
+            .unwrap();
+        assert_eq!(reason, None, "{region}");
+    }
+}
+
+/// Counts the requests under way, and the most there ever were at once.
+#[derive(Default)]
+struct SlowApi {
+    under_way: AtomicUsize,
+    most: AtomicUsize,
+}
+
+impl HttpTransport for &SlowApi {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        panic!("ScreenScraper is never asked without credentials: {url}")
+    }
+
+    fn get_stream_with_query_keys(
+        &self,
+        _url: &str,
+        _keys: &[(&str, &ApiKey)],
+    ) -> Result<Box<dyn Read + Send>, PortError> {
+        let now = self.under_way.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(50));
+        self.under_way.fetch_sub(1, Ordering::SeqCst);
+        Ok(Box::new(Cursor::new(b"media".to_vec())))
+    }
+}
+
+#[test]
+fn the_requests_of_every_connector_go_one_at_a_time() {
+    let api = SlowApi::default();
+    // Each run builds connectors of its own.
+    let runs: Vec<ScreenScraperConnector<&SlowApi>> = (0..2)
+        .map(|_| {
+            ScreenScraperConnector::with_transport(&api, Arc::new(KeyStore::holding(&DEVELOPER)))
+        })
+        .collect();
+    let media = candidate(AssetType::BoxFront, "box-2D(us)", "USA", "box-2D (us)");
+
+    thread::scope(|scope| {
+        for run in &runs {
+            let media = &media;
+            scope.spawn(move || run.download(media).map(drop).unwrap());
+        }
+    });
+
+    assert_eq!(api.most.load(Ordering::SeqCst), 1);
 }

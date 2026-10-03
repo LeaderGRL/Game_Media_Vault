@@ -145,16 +145,17 @@ only the one named; an API key is stored under the Source's id, any other creden
      `--field dev-password`, `--field user-id` and `--field user-password`, pasting each and
      pressing Enter. The account is sent only once both its user name and password are stored.
 - **Limits:** an account may send one request at a time, and a daily quota of requests, which
-  free accounts keep low; the connector sends one request at a time, downloads included, and
-  holds each media whole before the next request leaves. A discovery takes one search per
-  requested game and platform, one more per game found without its media, and each media
+  free accounts keep low; the connector sends one request at a time, whatever runs send them,
+  downloads included, and holds each media whole before the next request leaves. A discovery
+  takes one search per requested game and ScreenScraper system, which serves each of its
+  platforms, one more per game found without its media, and each media
   downloaded one more. ScreenScraper refusing a request for too many at once (HTTP 429) is asked
   again later; a quota spent for the day (HTTP 430) fails until the next day. Without developer
   credentials it is left out of every plan, with the reason. It needs an explicit game selection,
   takes region filters it has a code for and refuses language filters. It serves the platforms
   it knows a ScreenScraper system for, by their catalog names: the Nintendo, Sega, Sony, NEC,
   SNK, Bandai and Atari consoles and handhelds, ColecoVision, Intellivision, Vectrex, 3DO, CD-i,
-  Xbox and Xbox 360, and `MAME` and `FBNeo - Arcade Games` as ScreenScraper's arcade system; a
+  Xbox, Xbox 360 and Xbox One, and `MAME` and `FBNeo - Arcade Games` as ScreenScraper's arcade system; a
   request naming another is refused. A game is acquired only when one of its ScreenScraper names
   is the requested title, regardless of case, punctuation and spacing.
 

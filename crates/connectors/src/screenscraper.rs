@@ -3,7 +3,7 @@
 //! user's own account, all sent as query parameters, to its media too.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{Cursor, Read},
     sync::{Arc, Mutex, PoisonError},
 };
@@ -134,10 +134,14 @@ const SYSTEMS: &[(&str, u64, Option<AssetType>)] = &[
     ("Coleco - ColecoVision", 48, CARTRIDGE),
     ("Mattel - Intellivision", 115, CARTRIDGE),
     ("GCE - Vectrex", 102, CARTRIDGE),
+    ("Sony - PlayStation 4", 60, DISC),
+    ("Nintendo - Nintendo Switch", 225, CARTRIDGE),
+    ("The 3DO Company - 3DO", 29, DISC),
     ("Panasonic - 3DO Interactive Multiplayer", 29, DISC),
     ("Philips - CD-i", 133, DISC),
     ("Microsoft - Xbox", 32, DISC),
     ("Microsoft - Xbox 360", 33, DISC),
+    ("Microsoft - Xbox One", 34, DISC),
     // MAME and FBNeo emulate arcade boards, which ScreenScraper files under one system.
     ("MAME", 75, None),
     ("FBNeo - Arcade Games", 75, None),
@@ -145,7 +149,7 @@ const SYSTEMS: &[(&str, u64, Option<AssetType>)] = &[
 
 /// The regions ScreenScraper's media name, by their code, with the catalog region each stands
 /// for. A media of another region, or of none, is recorded in no region.
-const REGIONS: [(&str, &str); 18] = [
+const REGIONS: &[(&str, &str)] = &[
     ("wor", "World"),
     ("us", "USA"),
     ("eu", "Europe"),
@@ -164,6 +168,22 @@ const REGIONS: [(&str, &str); 18] = [
     ("kr", "Korea"),
     ("cn", "China"),
     ("tw", "Taiwan"),
+    ("pt", "Portugal"),
+    ("ru", "Russia"),
+    ("pl", "Poland"),
+    ("dk", "Denmark"),
+    ("fi", "Finland"),
+    ("no", "Norway"),
+    ("gr", "Greece"),
+    ("hu", "Hungary"),
+    ("cz", "Czech"),
+    ("sk", "Slovakia"),
+    ("tr", "Turkey"),
+    ("il", "Israel"),
+    ("nz", "New Zealand"),
+    ("cl", "Chile"),
+    ("pe", "Peru"),
+    ("bg", "Bulgaria"),
 ];
 
 /// The scripts that serve media, one of which each locator names.
@@ -177,14 +197,17 @@ const MAX_MEDIA_BYTES: u64 = 512 * 1024 * 1024;
 /// that the one the request names is unchanged.
 const NO_MEDIA_REPLIES: [&[u8]; 4] = [b"NOMEDIA", b"CRCOK", b"MD5OK", b"SHA1OK"];
 
+/// Held through each request every ScreenScraper connector of the process sends, so that no two
+/// are ever under way at once, whichever run or vault sends them: every run reads the same
+/// account from this machine's credential store.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 /// Reads the credentials from this machine's credential store at each request, so credentials
 /// stored or cleared meanwhile take effect at once, and sends one request at a time, as a free
 /// account must.
 pub struct ScreenScraperConnector<T = ReqwestHttpTransport> {
     transport: T,
     credentials: Arc<dyn CredentialStorePort>,
-    /// Held through each request, so that no two are ever under way at once.
-    one_at_a_time: Mutex<()>,
 }
 
 impl ScreenScraperConnector<ReqwestHttpTransport> {
@@ -198,7 +221,6 @@ impl<T> ScreenScraperConnector<T> {
         Self {
             transport,
             credentials,
-            one_at_a_time: Mutex::new(()),
         }
     }
 
@@ -287,7 +309,7 @@ where
     }
 
     fn rate_limits(&self) -> Option<String> {
-        Some("Each account may send one request at a time, and a daily quota of requests that free accounts keep low; requests are sent one at a time. A discovery takes one search per requested game and platform, and one more per game found without its media; each media downloaded takes one more.".to_owned())
+        Some("Each account may send one request at a time, and a daily quota of requests that free accounts keep low; requests are sent one at a time, whatever runs send them. A discovery takes one search per requested game and ScreenScraper system, and one more per game found without its media; each media downloaded takes one more.".to_owned())
     }
 
     /// Checked without reaching ScreenScraper.
@@ -343,8 +365,9 @@ where
         Ok(None)
     }
 
-    /// Searches each requested game by name on its platform's system, keeping only the games
-    /// named exactly so, and lists their media of the requested kinds and regions.
+    /// Searches each requested game by name on its platform's system, once for every platform
+    /// of that system, keeping only the games named exactly so, and lists their media of the
+    /// requested kinds and regions.
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         if let Some(reason) = self.unsupported_request_reason(request)? {
             return Err(PortError::new(reason));
@@ -355,33 +378,20 @@ where
             .iter()
             .filter_map(|region| region_code(region))
             .collect();
+        // The media of the games each search found, read once for every platform of a system,
+        // as MAME and FBNeo share the arcade one.
+        let mut searched: HashMap<(u64, String), Vec<Value>> = HashMap::new();
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
         for (title, platform) in wanted_games(request) {
             let Some((system_id, support)) = system(&platform) else {
                 continue;
             };
-            let system_number = system_id.to_string();
-            let answer = match self.get(
-                "jeuRecherche.php",
-                &[("systemeid", &system_number), ("recherche", &title)],
-                &credentials,
-            ) {
-                Ok(answer) => answer,
-                // ScreenScraper answers a search it finds nothing for with HTTP 404.
-                Err(error) if error.is_unavailable() => continue,
-                Err(error) => return Err(error),
-            };
-            // A search without its list of games is no answer that none matched.
-            let games = answer
-                .pointer("/response/jeux")
-                .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    PortError::invalid_source_data(
-                        "ScreenScraper answered a game search without its games".to_owned(),
-                    )
-                })?;
-            let wanted = name_key(&title);
+            let search = (system_id, title.clone());
+            if !searched.contains_key(&search) {
+                let media = self.media_of_games_named(&title, system_id, &credentials)?;
+                searched.insert(search.clone(), media);
+            }
             let found = Found {
                 title: &title,
                 platform: &platform,
@@ -389,29 +399,11 @@ where
                 regions: &regions,
                 request,
             };
-            for game in games {
-                // A search that finds nothing lists one game without anything.
-                let Some(game_id) = game.get("id").and_then(number) else {
-                    continue;
-                };
-                if !is_named(game, &wanted)
-                    || game
-                        .pointer("/systeme/id")
-                        .and_then(number)
-                        .is_some_and(|listed| listed != system_id)
+            for media in &searched[&search] {
+                if let Some(candidate) = candidate(media, &found)
+                    && seen.insert(candidate.provider_candidate_id.clone())
                 {
-                    continue;
-                }
-                let media = match game.get("medias").and_then(Value::as_array) {
-                    Some(media) => media.clone(),
-                    None => self.media_of(game_id, &system_number, &credentials)?,
-                };
-                for media in &media {
-                    if let Some(candidate) = candidate(media, &found)
-                        && seen.insert(candidate.provider_candidate_id.clone())
-                    {
-                        candidates.push(candidate);
-                    }
+                    candidates.push(candidate);
                 }
             }
         }
@@ -438,10 +430,7 @@ where
         let mut media = Vec::new();
         {
             // The whole media arrives before the next request leaves.
-            let _turn = self
-                .one_at_a_time
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
             self.transport
                 .get_stream_with_query_keys(url.as_str(), &credentials.query())?
                 .take(MAX_MEDIA_BYTES + 1)
@@ -467,6 +456,56 @@ impl<T> ScreenScraperConnector<T>
 where
     T: HttpTransport,
 {
+    /// The media of the games ScreenScraper names exactly `title` on the system `system_id`.
+    fn media_of_games_named(
+        &self,
+        title: &str,
+        system_id: u64,
+        credentials: &Credentials,
+    ) -> Result<Vec<Value>, PortError> {
+        let system_number = system_id.to_string();
+        let answer = match self.get(
+            "jeuRecherche.php",
+            &[("systemeid", &system_number), ("recherche", title)],
+            credentials,
+        ) {
+            Ok(answer) => answer,
+            // ScreenScraper answers a search it finds nothing for with HTTP 404.
+            Err(error) if error.is_unavailable() => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        // A search without its list of games is no answer that none matched.
+        let games = answer
+            .pointer("/response/jeux")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                PortError::invalid_source_data(
+                    "ScreenScraper answered a game search without its games".to_owned(),
+                )
+            })?;
+        let wanted = name_key(title);
+        let mut media = Vec::new();
+        for game in games {
+            // A search that finds nothing lists one game without anything.
+            let Some(game_id) = game.get("id").and_then(number) else {
+                continue;
+            };
+            if !is_named(game, &wanted)
+                || game
+                    .pointer("/systeme/id")
+                    .and_then(number)
+                    .is_some_and(|listed| listed != system_id)
+            {
+                continue;
+            }
+            match game.get("medias").and_then(Value::as_array) {
+                Some(listed) => media.extend(listed.iter().cloned()),
+                None => media.extend(self.media_of(game_id, &system_number, credentials)?),
+            }
+        }
+        Ok(media)
+    }
+
     /// The media of the game `game_id`, for a search that listed it without them.
     fn media_of(
         &self,
@@ -504,10 +543,7 @@ where
             .extend_pairs([("softname", SOFTNAME), ("output", "json")])
             .extend_pairs(query);
         let body = {
-            let _turn = self
-                .one_at_a_time
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
             self.transport
                 .get_with_query_keys(url.as_str(), &credentials.query())?
         };
@@ -572,7 +608,8 @@ fn candidate(media: &Value, found: &Found<'_>) -> Option<AssetCandidate> {
         None => kind.to_owned(),
     };
     Some(AssetCandidate {
-        provider_candidate_id: Some(format!("{system_id}/{game_id}/{name}")),
+        // One media may serve several platforms of one system, each its own candidate.
+        provider_candidate_id: Some(format!("{}/{system_id}/{game_id}/{name}", found.platform)),
         game_title: found.title.to_owned(),
         platform: found.platform.to_owned(),
         region: region.to_owned(),
