@@ -647,3 +647,41 @@ fn the_requests_of_every_connector_go_one_at_a_time() {
 
     assert_eq!(api.most.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn gameplay_videos_are_found_and_downloaded_from_the_video_script() {
+    let video = r#"{"type":"video-normalized","parent":"jeu","url":"https://neoclone.screenscraper.fr/api2/mediaVideoJeu.php?devid=zq-dev&devpassword=zq-dev-password&softname=game-media-vault&ssid=&sspassword=&systemeid=57&jeuid=1234&media=video-normalized","crc":"0","md5":"0","sha1":"0","size":"1","format":"mp4"}"#;
+    let found = format!(
+        r#"{{"response":{{"jeux":[{{"id":"1234","noms":[{{"region":"ss","text":"Ridge Racer"}}],"systeme":{{"id":"57"}},"medias":[{video}]}}]}}}}"#
+    );
+    let api = FixtureApi::answering(&[(SEARCH_URL, &found)]);
+    let connector = connector(&api, &DEVELOPER);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.asset_types = vec![AssetTypeSelector::GameplayVideo];
+        }))
+        .unwrap();
+
+    assert!(
+        connector
+            .capabilities()
+            .asset_types
+            .contains(&AssetType::GameplayVideo)
+    );
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate.asset_type, AssetType::GameplayVideo);
+    assert_eq!(candidate.region, "Unknown");
+    assert_eq!(
+        candidate.source_url,
+        "https://api.screenscraper.fr/api2/mediaVideoJeu.php/57/1234/video-normalized"
+    );
+    assert_eq!(candidate.original_filename, "1234-video-normalized.mp4");
+
+    connector.download(candidate).unwrap();
+    assert_eq!(
+        api.requested().last().unwrap().0,
+        "https://api.screenscraper.fr/api2/mediaVideoJeu.php?softname=game-media-vault&systemeid=57&jeuid=1234&media=video-normalized"
+    );
+}
