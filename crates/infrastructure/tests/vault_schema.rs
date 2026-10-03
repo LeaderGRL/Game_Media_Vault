@@ -27,7 +27,7 @@ fn new_vault_records_its_application_id_and_schema_version() {
     SqliteCatalog::open(&path).unwrap();
 
     assert_eq!(pragma(&path, "application_id"), VAULT_APPLICATION_ID);
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
             source_location: "C:/covers/front.png".to_owned(),
         })
         .unwrap();
-    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets, Source failures, dump sets or the run work Source index.
+    // Rebuild the version 2 layout, which had no media, quality shortfall, outranked, planned Source or unavailable columns nor Derived Assets, Source failures, dump sets the run work Source index or reference review items.
     Connection::open(&path)
         .unwrap()
         .execute_batch(
@@ -151,13 +151,14 @@ fn version_2_catalogs_are_upgraded_to_the_current_layout() {
              DROP TABLE acquisition_source_failures;
              DROP TABLE reference_dump_sets;
              DROP INDEX idx_run_work_source;
+             DROP TABLE reference_review_items;
              PRAGMA user_version = 2;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
     let library = catalog.list_library().unwrap();
     assert_eq!(library[0].assets[0].media, MediaInfo::unknown());
 }
@@ -192,13 +193,14 @@ fn runs_from_version_6_plan_the_sources_their_request_selects() {
              DROP TABLE acquisition_source_failures;
              DROP TABLE reference_dump_sets;
              DROP INDEX idx_run_work_source;
+             DROP TABLE reference_review_items;
              PRAGMA user_version = 6;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
     assert_eq!(
         catalog.get_run(run.id).unwrap().unwrap().planned_sources,
         ["libretro-thumbnails"]
@@ -239,13 +241,14 @@ fn catalogs_from_version_8_gain_the_assertion_value_index() {
              DROP TABLE acquisition_source_failures;
              DROP TABLE reference_dump_sets;
              DROP INDEX idx_run_work_source;
+             DROP TABLE reference_review_items;
              PRAGMA user_version = 8;",
         )
         .unwrap();
 
     SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
     assert!(has_index(&path, "idx_release_assertion_value"));
 }
 
@@ -277,13 +280,14 @@ fn catalogs_from_version_9_gain_the_source_failure_log() {
             "DROP TABLE acquisition_source_failures;
              DROP TABLE reference_dump_sets;
              DROP INDEX idx_run_work_source;
+             DROP TABLE reference_review_items;
              PRAGMA user_version = 9;",
         )
         .unwrap();
 
     let catalog = SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
     catalog
         .record_source_failure(
             run.id,
@@ -305,13 +309,14 @@ fn catalogs_from_version_10_gain_the_reference_dump_sets() {
         .execute_batch(
             "DROP TABLE reference_dump_sets;
              DROP INDEX idx_run_work_source;
+             DROP TABLE reference_review_items;
              PRAGMA user_version = 10;",
         )
         .unwrap();
 
     SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
     assert!(has_index(&path, "idx_reference_dump_set"));
     assert!(has_index(&path, "idx_run_work_source"));
 }
@@ -335,12 +340,44 @@ fn catalogs_from_version_11_gain_the_run_work_source_index() {
         .unwrap()
         .execute_batch(
             "DROP INDEX idx_run_work_source;
+             DROP TABLE reference_review_items;
              PRAGMA user_version = 11;",
         )
         .unwrap();
 
     SqliteCatalog::open_existing(&path).unwrap();
 
-    assert_eq!(pragma(&path, "user_version"), 12);
+    assert_eq!(pragma(&path, "user_version"), 13);
     assert!(has_index(&path, "idx_run_work_source"));
+}
+
+fn has_table(path: &std::path::Path, name: &str) -> bool {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+
+#[test]
+fn catalogs_from_version_12_gain_the_reference_review_items() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite3");
+    SqliteCatalog::open(&path).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE reference_review_items;
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+
+    SqliteCatalog::open_existing(&path).unwrap();
+
+    assert_eq!(pragma(&path, "user_version"), 13);
+    assert!(has_table(&path, "reference_review_items"));
 }

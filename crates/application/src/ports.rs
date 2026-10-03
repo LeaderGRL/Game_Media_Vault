@@ -3,8 +3,9 @@ use std::{io::Read, path::Path};
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
     ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
-    Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, RetentionPolicy,
-    ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage, StoredObject,
+    Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReferenceReviewItem,
+    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure, SourceFailureStage,
+    StoredObject,
 };
 use thiserror::Error;
 
@@ -432,6 +433,12 @@ pub trait ReferenceCatalogRepositoryPort {
             .map(|record| self.persist_reference_release(record))
             .collect()
     }
+}
+
+/// The reference records awaiting a human to tell which Release Edition, if any, they describe.
+pub trait ReferenceReviewRepositoryPort {
+    /// The pending items, oldest first.
+    fn list_reference_review_items(&self) -> Result<Vec<ReferenceReviewItem>, PortError>;
 }
 
 /// The settings of this machine, shared by every vault it opens.

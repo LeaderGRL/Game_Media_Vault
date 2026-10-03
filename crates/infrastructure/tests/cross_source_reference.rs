@@ -1,4 +1,6 @@
-use game_media_vault_application::{CatalogPort, ReferenceCatalogRepositoryPort};
+use game_media_vault_application::{
+    CatalogPort, ReferenceCatalogRepositoryPort, ReferenceReviewRepositoryPort,
+};
 use game_media_vault_domain::{
     ImportedReleaseEdition, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
     SourceId,
@@ -156,6 +158,7 @@ fn the_same_release_from_two_sources_is_one_release_edition_carrying_both() {
         links_of(&catalog, mame.release_edition_id, "mame-software-lists"),
         ["linked_by=title"]
     );
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
 }
 
 #[test]
@@ -434,6 +437,15 @@ fn a_title_several_editions_share_links_none_of_them() {
     assert_ne!(third.release_edition_id, second.release_edition_id);
     assert!(links_of(&catalog, third.release_edition_id, "another-catalog").is_empty());
     assert_eq!(catalog.list_library().unwrap().len(), 3);
+    let items = catalog.list_reference_review_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].release_edition_id, third.release_edition_id);
+    assert_eq!(items[0].evidence, "title");
+    let mut candidates = items[0].candidates.clone();
+    candidates.sort_unstable();
+    let mut expected = vec![first.release_edition_id, second.release_edition_id];
+    expected.sort_unstable();
+    assert_eq!(candidates, expected);
 }
 
 fn release<'a>(source: &'a str, title: &'a str, sha1: &'a str) -> Release<'a> {
@@ -450,13 +462,23 @@ fn release<'a>(source: &'a str, title: &'a str, sha1: &'a str) -> Release<'a> {
 fn a_set_of_dumps_several_editions_share_links_none_of_them() {
     let (_temp, catalog) = catalog();
     // One catalog lists two releases of the very same dumps.
-    import(&catalog, &release("no-intro", "Game A", "aaaa"));
-    import(&catalog, &release("no-intro", "Game B", "aaaa"));
+    let game_a = import(&catalog, &release("no-intro", "Game A", "aaaa"));
+    let game_b = import(&catalog, &release("no-intro", "Game B", "aaaa"));
 
     let other = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
 
     assert_eq!(catalog.list_library().unwrap().len(), 3);
     assert!(links_of(&catalog, other.release_edition_id, "mame-software-lists").is_empty());
+    // A human tells which of them, if any, the record describes.
+    let items = catalog.list_reference_review_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].source_id.as_str(), "mame-software-lists");
+    assert_eq!(items[0].release_edition_id, other.release_edition_id);
+    assert_eq!(items[0].evidence, "sha1");
+    assert_eq!(
+        items[0].candidates,
+        [game_a.release_edition_id, game_b.release_edition_id]
+    );
 }
 
 #[test]
@@ -625,4 +647,6 @@ fn dumps_pointing_at_an_edition_of_the_importing_source_forbid_a_title_link() {
 
     assert_ne!(second.release_edition_id, first.release_edition_id);
     assert!(links_of(&catalog, second.release_edition_id, "no-intro").is_empty());
+    // The only edition they point at is another release of that catalog: nothing is uncertain.
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
 }

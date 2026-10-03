@@ -1,6 +1,9 @@
-use game_media_vault_application::{PortError, ReferenceCatalogRepositoryPort};
+use game_media_vault_application::{
+    PortError, ReferenceCatalogRepositoryPort, ReferenceReviewRepositoryPort,
+};
 use game_media_vault_domain::{
-    ImportedReleaseEdition, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
+    ImportedReleaseEdition, ReferenceReleaseRecord, ReferenceReviewItem, ReleaseAssertion,
+    ReleaseAssertionField, SourceId,
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -34,6 +37,53 @@ impl ReferenceCatalogRepositoryPort for SqliteCatalog {
         }
         transaction.commit().map_err(sql_error)?;
         Ok(imported)
+    }
+}
+
+impl ReferenceReviewRepositoryPort for SqliteCatalog {
+    fn list_reference_review_items(&self) -> Result<Vec<ReferenceReviewItem>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, source_id, source_record, release_edition_id, evidence, candidates_json
+                 FROM reference_review_items
+                 WHERE status = 'pending'
+                 ORDER BY id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .map(
+                |(id, source_id, source_record, release_edition_id, evidence, candidates_json)| {
+                    let candidates = serde_json::from_str(&candidates_json).map_err(|error| {
+                        PortError::new(format!(
+                            "catalog contains invalid review candidates: {error}"
+                        ))
+                    })?;
+                    Ok(ReferenceReviewItem {
+                        id,
+                        source_id: SourceId::from(source_id),
+                        source_record,
+                        release_edition_id,
+                        evidence,
+                        candidates,
+                    })
+                },
+            )
+            .collect()
     }
 }
 
@@ -119,9 +169,8 @@ fn persist_reference_release_in_transaction(
         region: &normalized_region,
         edition: &normalized_edition,
     };
-    if let Some((game_id, release_edition_id, evidence)) =
-        linked_release_edition(transaction, &source_id, &edition, dumps.as_deref())?
-    {
+    let evidence = linked_release_edition(transaction, &source_id, &edition, dumps.as_deref())?;
+    if let Evidence::Links(game_id, release_edition_id, evidence) = evidence {
         let link = link_assertion(identity, evidence.to_owned());
         persist_release_assertions(transaction, release_edition_id, &record.assertions)?;
         persist_release_assertions(transaction, release_edition_id, &[link])?;
@@ -230,6 +279,17 @@ fn persist_reference_release_in_transaction(
         release_edition_id,
         dumps.as_deref(),
     )?;
+    // The record keeps its own edition until a human tells which candidate, if any, it describes.
+    if let Evidence::Uncertain(candidates, evidence) = evidence {
+        raise_review_item(
+            transaction,
+            &source_id,
+            &source_record,
+            release_edition_id,
+            &candidates,
+            evidence,
+        )?;
+    }
 
     Ok(ImportedReleaseEdition {
         game_id,
@@ -246,6 +306,16 @@ fn link_assertion(identity: &ReleaseAssertion, evidence: String) -> ReleaseAsser
         qualifier: Some("linked_by".to_owned()),
         value: evidence,
     }
+}
+
+/// What the evidence of a record says about the editions of other sources.
+enum Evidence {
+    /// The one edition the record describes too: its Game, its id and the evidence.
+    Links(i64, i64, &'static str),
+    /// Several editions the record may describe, which a human tells apart, with the evidence.
+    Uncertain(Vec<i64>, &'static str),
+    /// No edition of another source.
+    Unlinked,
 }
 
 /// The normalized identity of the release edition a record describes.
@@ -269,7 +339,7 @@ fn linked_release_edition(
     source_id: &str,
     edition: &NormalizedEdition<'_>,
     dumps: Option<&str>,
-) -> Result<Option<(i64, i64, &'static str)>, PortError> {
+) -> Result<Evidence, PortError> {
     if let Some(dumps) = dumps {
         // Every edition the dumps point at counts, so that one already holding a record of the
         // importing source never makes another look like the only match.
@@ -308,11 +378,23 @@ fn linked_release_edition(
             [] => {}
             // An edition already holding a record of the importing source is another release, which
             // no title links either.
-            [(_, _, true)] => return Ok(None),
+            [(_, _, true)] => return Ok(Evidence::Unlinked),
             [(game_id, release_edition_id, false)] => {
-                return Ok(Some((*game_id, *release_edition_id, "sha1")));
+                return Ok(Evidence::Links(*game_id, *release_edition_id, "sha1"));
             }
-            _ => return Ok(None),
+            // Only the editions holding no record of the importing source may be the record's.
+            several => {
+                let candidates: Vec<i64> = several
+                    .iter()
+                    .filter(|(_, _, occupied)| !occupied)
+                    .map(|(_, release_edition_id, _)| *release_edition_id)
+                    .collect();
+                return Ok(if candidates.is_empty() {
+                    Evidence::Unlinked
+                } else {
+                    Evidence::Uncertain(candidates, "sha1")
+                });
+            }
         }
     }
     // Starting from the matching title assertions lets the assertion value index find them.
@@ -337,8 +419,15 @@ fn linked_release_edition(
         ],
     )?;
     Ok(match editions.as_slice() {
-        [(game_id, release_edition_id)] => Some((*game_id, *release_edition_id, "title")),
-        _ => None,
+        [] => Evidence::Unlinked,
+        [(game_id, release_edition_id)] => Evidence::Links(*game_id, *release_edition_id, "title"),
+        several => Evidence::Uncertain(
+            several
+                .iter()
+                .map(|(_, release_edition_id)| *release_edition_id)
+                .collect(),
+            "title",
+        ),
     })
 }
 
@@ -389,6 +478,38 @@ fn record_dump_set(
         ),
     }
     .map_err(sql_error)?;
+    Ok(())
+}
+
+/// Asks a human which of the `candidates` the record keeping `release_edition_id` describes,
+/// replacing what was asked before about that record.
+fn raise_review_item(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    source_record: &str,
+    release_edition_id: i64,
+    candidates: &[i64],
+    evidence: &str,
+) -> Result<(), PortError> {
+    let candidates_json = serde_json::to_string(candidates).map_err(|error| {
+        PortError::new(format!("failed to serialize review candidates: {error}"))
+    })?;
+    transaction
+        .execute(
+            "INSERT INTO reference_review_items (
+                source_id, source_record, release_edition_id, evidence, candidates_json, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending')
+             ON CONFLICT(source_id, source_record) DO UPDATE SET
+                release_edition_id = ?3, evidence = ?4, candidates_json = ?5, status = 'pending'",
+            params![
+                source_id,
+                source_record,
+                release_edition_id,
+                evidence,
+                candidates_json
+            ],
+        )
+        .map_err(sql_error)?;
     Ok(())
 }
 

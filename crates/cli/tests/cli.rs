@@ -1984,3 +1984,56 @@ fn an_empty_standard_input_stores_no_api_key() {
     assert!(error.to_string().contains("API key"), "{error}");
     assert!(credentials.0.lock().unwrap().is_empty());
 }
+
+#[test]
+fn reference_records_whose_dumps_point_at_several_editions_await_review() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let sha1 = "1111111111111111111111111111111111111111";
+    // One catalog lists two releases of the very same dump; another lists a third.
+    let no_intro = temp.path().join("no-intro.dat");
+    fs::write(
+        &no_intro,
+        format!(
+            r#"<datafile><header><name>Nintendo - Game Boy</name></header>
+  <game name="Game A (World)"><rom name="a.gb" size="1" sha1="{sha1}"/></game>
+  <game name="Game B (World)"><rom name="b.gb" size="1" sha1="{sha1}"/></game>
+</datafile>"#
+        ),
+    )
+    .unwrap();
+    let redump = temp.path().join("redump.dat");
+    fs::write(
+        &redump,
+        format!(
+            r#"<datafile><header><name>Nintendo - Game Boy</name></header>
+  <game name="Game C (World)"><rom name="c.gb" size="1" sha1="{sha1}"/></game>
+</datafile>"#
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| run_in_vault(&vault, args).unwrap();
+    run(&[
+        "import-no-intro",
+        "--file",
+        no_intro.to_str().unwrap(),
+        "--max-games",
+        "10",
+    ]);
+    run(&[
+        "import-redump",
+        "--file",
+        redump.to_str().unwrap(),
+        "--max-games",
+        "10",
+    ]);
+
+    let items: serde_json::Value =
+        serde_json::from_str(&run(&["reference", "review", "list"])).unwrap();
+
+    let items = items.as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["source_id"], "redump");
+    assert_eq!(items[0]["evidence"], "sha1");
+    assert_eq!(items[0]["candidates"].as_array().unwrap().len(), 2);
+}
