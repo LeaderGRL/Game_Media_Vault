@@ -85,6 +85,8 @@ export interface AcquisitionRun {
   outranked_work: number;
   /** Completed work whose media its Source no longer serves. */
   unavailable_work: number;
+  /** Completed work settled without keeping its candidate, rejected or dismissed by matching. */
+  dismissed_work?: number;
   /** How far the discovery of each planned Source went, in plan order. */
   discoveries?: SourceDiscovery[];
 }

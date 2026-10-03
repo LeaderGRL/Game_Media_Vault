@@ -12,8 +12,10 @@ export interface RunProgress {
   sources: number;
   /** Media found so far, settled or not. */
   found: number;
-  /** Media found and settled: kept, not found, skipped or matched. */
+  /** Media found and settled: kept, not found, skipped or rejected. */
   settled: number;
+  /** Media found that wait to be downloaded. */
+  toDownload: number;
   /** Media kept in the vault. */
   acquired: number;
   /** Media a Source listed but no longer serves. */
@@ -22,7 +24,10 @@ export interface RunProgress {
   toReview: number;
   /** Media below the quality asked for, or outranked by better ones kept. */
   skipped: number;
-  /** Share of the media found that is settled, from 0 to 1. */
+  /** Candidates a human rejected, or matching dismissed as no game of the vault. */
+  rejected: number;
+  /** Share of the media to download that is settled, from 0 to 1; media awaiting a decision
+   * are no downloads left. */
   downloaded: number;
 }
 
@@ -61,6 +66,8 @@ export function runProgress(run: AcquisitionRun): RunProgress {
       : shares.reduce((sum, share) => sum + share, 0) / shares.length;
   const found = run.queued_work + run.awaiting_review_work + run.completed_work;
   const skipped = run.below_quality_work + run.outranked_work;
+  const rejected = run.dismissed_work ?? 0;
+  const downloadable = run.queued_work + run.completed_work;
   return {
     searched,
     searching: searched < 1 && run.status !== "cancelled" && !finished,
@@ -68,11 +75,13 @@ export function runProgress(run: AcquisitionRun): RunProgress {
     sources: shares.length,
     found,
     settled: run.completed_work,
-    acquired: Math.max(run.completed_work - run.unavailable_work - skipped, 0),
+    toDownload: run.queued_work,
+    acquired: Math.max(run.completed_work - run.unavailable_work - skipped - rejected, 0),
     notFound: run.unavailable_work,
     toReview: run.awaiting_review_work,
     skipped,
-    downloaded: found === 0 ? 0 : run.completed_work / found,
+    rejected,
+    downloaded: downloadable === 0 ? (found === 0 ? 0 : 1) : run.completed_work / downloadable,
   };
 }
 

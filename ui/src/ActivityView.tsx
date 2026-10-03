@@ -164,14 +164,15 @@ export function ActivityView({
               <ProgressBar
                 label="Downloads"
                 value={progress.downloaded}
-                detail={`${progress.settled} of ${progress.found} media found`}
+                detail={`${progress.settled} of ${progress.settled + progress.toDownload} done`}
               />
               <div className="run-stats">
                 <Stat value={progress.acquired} label="acquired" />
-                <Stat value={progress.found - progress.settled} label="to download" />
+                <Stat value={progress.toDownload} label="to download" />
                 <Stat value={progress.toReview} label="to review" />
                 <Stat value={progress.notFound} label="not found" />
                 {progress.skipped > 0 ? <Stat value={progress.skipped} label="skipped" /> : null}
+                {progress.rejected > 0 ? <Stat value={progress.rejected} label="rejected" /> : null}
               </div>
             </article>
           );

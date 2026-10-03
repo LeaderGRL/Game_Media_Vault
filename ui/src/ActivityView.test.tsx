@@ -87,6 +87,7 @@ describe("ActivityView", () => {
   it("shows how far a download searched and downloaded, with its counts", () => {
     view();
 
+    // 18 of the 38 media to download are done; the 2 awaiting a decision are not downloads.
     const card = screen.getByRole("article", { name: /Super Nintendo Entertainment System/ });
     expect(within(card).getByText("Downloading")).toBeInTheDocument();
     expect(within(card).getByRole("progressbar", { name: "Search" })).toHaveAttribute(
@@ -95,7 +96,7 @@ describe("ActivityView", () => {
     );
     expect(within(card).getByRole("progressbar", { name: "Downloads" })).toHaveAttribute(
       "aria-valuenow",
-      "45",
+      "47",
     );
     expect(within(card).getByText("15")).toBeInTheDocument();
     expect(within(card).getByText("acquired")).toBeInTheDocument();

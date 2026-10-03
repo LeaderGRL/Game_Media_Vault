@@ -2249,7 +2249,7 @@ describe("App acquisition", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 
     expect(await screen.findByText("download failed")).toBeInTheDocument();
-    expect(await screen.findByText("1 of 1 media found")).toBeInTheDocument();
+    expect(await screen.findByText("1 of 1 done")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Library (1)" })).toBeInTheDocument();
   });
 
@@ -2634,7 +2634,7 @@ describe("App acquisition", () => {
         vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
       });
 
-      expect(await screen.findByText("3 of 3 media found")).toBeInTheDocument();
+      expect(await screen.findByText("3 of 3 done")).toBeInTheDocument();
       expect(invokeMock).toHaveBeenCalledWith("get_acquisition_run", { run_id: 1 });
     } finally {
       vi.useRealTimers();
