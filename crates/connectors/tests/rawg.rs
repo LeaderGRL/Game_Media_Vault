@@ -201,7 +201,7 @@ fn discovery_keeps_the_games_named_exactly_so_on_the_requested_platform() {
         [
             candidate(
                 AssetType::WallpaperArtwork,
-                "games/7/background",
+                "Sony - PlayStation 4/games/7/background",
                 "background",
                 "https://media.rawg.io/media/games/594/celeste.jpg",
                 PS4,
@@ -209,7 +209,7 @@ fn discovery_keeps_the_games_named_exactly_so_on_the_requested_platform() {
             // Images RAWG's media server does not serve are left out.
             candidate(
                 AssetType::Screenshot,
-                "screenshots/101",
+                "Sony - PlayStation 4/screenshots/101",
                 "screenshot",
                 "https://media.rawg.io/media/screenshots/a1/shot-1.jpg",
                 PS4,
@@ -241,6 +241,11 @@ fn a_platform_rawg_words_otherwise_is_known_by_alias_and_searched_once() {
         .map(|candidate| candidate.platform.as_str())
         .collect();
     assert_eq!(platforms, ["Sega - Mega Drive - Genesis", PS4]);
+    // Each platform gets a candidate of its own, which candidate identity tells apart by its id.
+    assert_ne!(
+        candidates[0].provider_candidate_id,
+        candidates[1].provider_candidate_id
+    );
     assert_eq!(api.requested().len(), 1);
 }
 
@@ -264,7 +269,7 @@ fn media_are_downloaded_from_rawg_without_the_key() {
     connector(&api, Some("zq-key"))
         .download(&candidate(
             AssetType::Screenshot,
-            "screenshots/101",
+            "Sony - PlayStation 4/screenshots/101",
             "screenshot",
             url,
             PS4,

@@ -171,7 +171,7 @@ where
                 {
                     images.push((
                         AssetType::WallpaperArtwork,
-                        format!("games/{id}/background"),
+                        format!("{platform}/games/{id}/background"),
                         "background",
                         location,
                     ));
@@ -192,7 +192,7 @@ where
                         };
                         images.push((
                             AssetType::Screenshot,
-                            format!("screenshots/{shot}"),
+                            format!("{platform}/screenshots/{shot}"),
                             "screenshot",
                             location,
                         ));
@@ -202,8 +202,10 @@ where
                     let Some((source_url, original_filename)) = media_location(location) else {
                         continue;
                     };
-                    // One image, such as a background, applies to every requested platform.
-                    if !seen.insert((image_id.clone(), platform.clone())) {
+                    // One image, such as a background, applies to every requested platform, each
+                    // its own candidate: its id names the platform, which candidate identity
+                    // otherwise lacks.
+                    if !seen.insert(image_id.clone()) {
                         continue;
                     }
                     candidates.push(AssetCandidate {
