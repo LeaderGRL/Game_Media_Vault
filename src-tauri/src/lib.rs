@@ -95,13 +95,28 @@ fn vault_identity(canonical: &Path) -> String {
 #[derive(Debug, Default)]
 pub struct VaultSession {
     root: Mutex<Option<PathBuf>>,
+    /// The folder a vault named without a full path is kept in.
+    named_vaults: Option<PathBuf>,
 }
 
 impl VaultSession {
+    /// A session that keeps a vault named without a full path, such as `Game Media Vault`, in
+    /// `folder`: the desktop has no working directory such a path could mean to its user.
+    pub fn keeping_named_vaults_in(folder: Option<PathBuf>) -> Self {
+        Self {
+            root: Mutex::default(),
+            named_vaults: folder,
+        }
+    }
+
     /// Opens an existing vault, or initializes one when `create` is set, and returns its
     /// identity: the canonical form of its path, which every spelling of that path shares. A
     /// failed open closes the previous vault so commands cannot silently keep acting on it.
     pub fn open(&self, vault_root: &Path, create: bool) -> Result<String, CommandError> {
+        let vault_root = &match &self.named_vaults {
+            Some(folder) if vault_root.is_relative() => folder.join(vault_root),
+            _ => vault_root.to_path_buf(),
+        };
         let mut root = self.lock();
         *root = None;
         let catalog_path = vault_root.join("catalog.sqlite3");
@@ -1070,7 +1085,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Lets the user pick the folders of a vault and of an export.
         .plugin(tauri_plugin_dialog::init())
-        .manage(VaultSession::default())
+        // A vault named without a full path is kept in the user's Documents.
+        .manage(VaultSession::keeping_named_vaults_in(dirs::document_dir()))
         .register_asynchronous_uri_scheme_protocol(
             OBJECT_PROTOCOL,
             |context, request, responder| {

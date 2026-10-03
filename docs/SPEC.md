@@ -537,6 +537,10 @@ Primary navigation:
 - `Sources`;
 - `Settings`.
 
+### Vault
+
+The desktop opens one vault at a time, named by its folder: typed, or picked with the system's own folder dialog (« Choose vault folder… »), which opens it at once. « Open vault » creates the vault when the folder holds none, so a first launch needs no other step; a name alone, such as the `Game Media Vault` offered on a first launch, is a folder in the user's Documents, since the desktop has no working directory a relative path could mean. The app remembers the vault opened last and opens it again when it starts, without creating it anew: a vault gone since is reported.
+
 ### Acquire
 
 A guided but compact request builder with hierarchical multi-select controls for Sources, Platforms, Asset Types, Regions, and Languages. Presets can populate these selections but all resulting values remain editable.

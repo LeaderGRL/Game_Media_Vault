@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { open as pickFolder } from "@tauri-apps/plugin-dialog";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
@@ -58,6 +59,12 @@ const SOURCE_FAILURES_SHOWN = 3;
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
 
+/** The vault opened last, which the app opens again when it starts. */
+const VAULT_ROOT_KEY = "game-media-vault.vault-root";
+
+/** The vault offered on a first launch: a name alone, kept in the user's Documents. */
+const DEFAULT_VAULT = "Game Media Vault";
+
 export function App() {
   const activeVaultRoot = useRef<string | null>(null);
   // The identity the backend resolved for each spelling of a vault path the user loaded.
@@ -78,7 +85,7 @@ export function App() {
   // Executions keep running in the backend while another vault is loaded, so loading their
   // vault again shows them executing instead of offering to start them a second time.
   const executionsByVault = useRef(new Map<string | null, Set<number>>());
-  const [vaultRoot, setVaultRoot] = useState(".game-media-vault");
+  const [vaultRoot, setVaultRoot] = useState(() => rememberedVault() ?? DEFAULT_VAULT);
   const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   // Searches use the filters of the latest search, including those that refresh the Library.
@@ -275,8 +282,11 @@ export function App() {
     }
   }
 
-  async function loadVault(create: boolean) {
-    const requestedVaultRoot = vaultRoot;
+  /**
+   * Opens the vault at `requestedVaultRoot`, the one typed by default; with `create`, a folder
+   * holding no vault gets a new one.
+   */
+  async function loadVault(create: boolean, requestedVaultRoot = vaultRoot) {
     // Vault-scoped state is keyed by the identity the backend resolves for the vault, shared by
     // every spelling of its path; the identity this spelling resolved to before stands in until
     // the backend answers.
@@ -319,6 +329,7 @@ export function App() {
         return;
       }
       vaultIdentities.current.set(requestedVaultRoot, identity);
+      remember(requestedVaultRoot);
       if (identity !== vaultKey) {
         vaultKey = identity;
         activeVaultRoot.current = identity;
@@ -371,7 +382,7 @@ export function App() {
 
   async function resolveReviewItem(reviewItemId: number, decision: ReviewDecision) {
     if (loadedVaultRoot === null) {
-      setError("Load a vault before resolving review items.");
+      setError("Open a vault before resolving review items.");
       return;
     }
     setResolvingIds((current) => {
@@ -808,6 +819,23 @@ export function App() {
     }
   }
 
+  /** Opens the folder picked with the desktop's own dialog as the vault. */
+  async function chooseVaultFolder() {
+    const picked = await pickFolder({ directory: true, title: "Choose your vault folder" });
+    if (typeof picked === "string") {
+      setVaultRoot(picked);
+      await loadVault(true, picked);
+    }
+  }
+
+  // The vault opened last opens again; one gone since is reported rather than created anew.
+  useEffect(() => {
+    const remembered = rememberedVault();
+    if (remembered !== null) {
+      void loadVault(false, remembered);
+    }
+  }, []);
+
   // One shared poll follows every executing run of the vault they were started in.
   useEffect(() => {
     if (executingRunIds.size === 0) {
@@ -825,7 +853,7 @@ export function App() {
 
   async function startRun(request: AcquisitionRequestDraft) {
     if (loadedVaultRoot === null) {
-      setError("Load a vault before starting an acquisition.");
+      setError("Open a vault before starting an acquisition.");
       return;
     }
     const startingVaultRoot = loadedVaultRoot;
@@ -947,7 +975,7 @@ export function App() {
   const loadReviewPreview = useCallback(
     async (reviewItemId: number): Promise<ArrayBuffer> => {
       if (loadedVaultRoot === null) {
-        throw new Error("Load a vault before loading review previews.");
+        throw new Error("Open a vault before loading review previews.");
       }
       const previewVaultRoot = loadedVaultRoot;
       const preview = await invoke<ArrayBuffer>("load_review_preview", {
@@ -977,10 +1005,10 @@ export function App() {
         className="vault-picker"
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
-          void loadVault(false);
+          void loadVault(true);
         }}
       >
-        <label htmlFor="vault-root">Vault path</label>
+        <label htmlFor="vault-root">Vault folder</label>
         <div className="vault-controls">
           <input
             id="vault-root"
@@ -988,18 +1016,17 @@ export function App() {
             onChange={(event) => setVaultRoot(event.target.value)}
             spellCheck={false}
           />
-          <button type="submit" disabled={loading || vaultRoot.trim().length === 0}>
-            {loading ? "Loading…" : "Load vault"}
+          <button type="button" disabled={loading} onClick={() => void chooseVaultFolder()}>
+            Choose vault folder…
           </button>
-          <button
-            type="button"
-            disabled={loading || vaultRoot.trim().length === 0}
-            onClick={() => void loadVault(true)}
-          >
-            Create vault
+          <button type="submit" disabled={loading || vaultRoot.trim().length === 0}>
+            {loading ? "Opening…" : "Open vault"}
           </button>
         </div>
-        <p className="hint">Use the same vault path passed to the CLI with --vault.</p>
+        <p className="hint">
+          Where your media are kept. A name alone is a folder in your Documents; a folder without
+          a vault gets a new one. The app opens it again next time.
+        </p>
       </form>
 
       {error ? <p className="error-message">{error}</p> : null}
@@ -1199,4 +1226,21 @@ function describeThumbnailRendering(summary: DerivationSummary) {
     );
   }
   return parts.join("; ") + ".";
+}
+
+/** The vault opened last, or none on a first launch or in a webview that keeps no storage. */
+function rememberedVault(): string | null {
+  try {
+    return localStorage.getItem(VAULT_ROOT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function remember(vaultRoot: string) {
+  try {
+    localStorage.setItem(VAULT_ROOT_KEY, vaultRoot);
+  } catch {
+    // A webview that keeps no storage simply opens the default vault next time.
+  }
 }
