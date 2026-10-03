@@ -330,6 +330,12 @@ pub trait ConnectorPort: Send + Sync {
     fn disabled_reason(&self) -> Option<String> {
         None
     }
+
+    /// What the Source is known to limit, such as a monthly allowance of requests or the pace it
+    /// is read at, in words, or `None` when nothing is known.
+    fn rate_limits(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A borrowed connector serves as the connector it borrows.
@@ -364,6 +370,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
     fn disabled_reason(&self) -> Option<String> {
         (**self).disabled_reason()
     }
+
+    fn rate_limits(&self) -> Option<String> {
+        (**self).rate_limits()
+    }
 }
 
 /// A boxed connector serves as the connector it holds.
@@ -397,6 +407,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
 
     fn disabled_reason(&self) -> Option<String> {
         (**self).disabled_reason()
+    }
+
+    fn rate_limits(&self) -> Option<String> {
+        (**self).rate_limits()
     }
 }
 

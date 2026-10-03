@@ -1077,6 +1077,8 @@ pub struct FakeConnector {
     pub asset_types: Vec<AssetType>,
     /// Whether the Source needs an API key.
     pub needs_api_key: bool,
+    /// What the Source is known to limit, in words.
+    pub rate_limits: Option<&'static str>,
 }
 
 impl FakeConnector {
@@ -1094,6 +1096,7 @@ impl FakeConnector {
             plan_check_fails: false,
             asset_types: vec![AssetType::BoxFront],
             needs_api_key: false,
+            rate_limits: None,
         }
     }
 }
@@ -1105,6 +1108,10 @@ impl ConnectorPort for FakeConnector {
 
     fn needs_api_key(&self) -> bool {
         self.needs_api_key
+    }
+
+    fn rate_limits(&self) -> Option<String> {
+        self.rate_limits.map(str::to_owned)
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {

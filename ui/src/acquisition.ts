@@ -70,6 +70,8 @@ export interface SourceDescription {
   enabled: boolean;
   /** Whether this machine stores the credential the Source needs, never the credential. */
   credential: CredentialState;
+  /** What the Source is known to limit, in words, when anything is known. */
+  rate_limits: string | null;
 }
 
 /** A failure of a Source an execution recorded. */

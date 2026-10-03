@@ -364,3 +364,14 @@ fn a_list_without_games_is_invalid_source_data() {
 
     assert!(error.is_invalid_source_data(), "{}", error.message());
 }
+
+#[test]
+fn describes_the_pace_it_reads_the_site_at() {
+    let site = Website::with(&[]);
+
+    let limits = PsxDataCenterConnector::with_transport(&site)
+        .rate_limits()
+        .unwrap();
+
+    assert!(limits.contains("a second"), "{limits}");
+}

@@ -291,6 +291,10 @@ where
         }
     }
 
+    fn rate_limits(&self) -> Option<String> {
+        Some("Its dataset is downloaded at most once per republication, which LaunchBox does daily, and kept for the whole machine.".to_owned())
+    }
+
     /// Checked against the platforms this connector knows, so planning never downloads the
     /// dataset.
     fn unsupported_request_reason(

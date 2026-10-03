@@ -123,6 +123,12 @@ export function SourcesView({
                   ? "Downloads media directly"
                   : "Cannot download media directly"}
               </dd>
+              {source.rate_limits ? (
+                <>
+                  <dt>Limits</dt>
+                  <dd>{source.rate_limits}</dd>
+                </>
+              ) : null}
               {failures !== null ? (
                 <>
                   <dt>Recent failures</dt>

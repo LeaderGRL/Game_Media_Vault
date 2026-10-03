@@ -27,6 +27,8 @@ pub struct SourceDescription {
     pub direct_media_download: bool,
     pub enabled: bool,
     pub credential: CredentialState,
+    /// What the Source is known to limit, in words, when anything is known.
+    pub rate_limits: Option<String>,
 }
 
 /// Describes the registered `connectors` in registry order, from the capabilities planning
@@ -58,6 +60,7 @@ pub fn describe_sources(
                     .iter()
                     .any(|disabled| disabled == connector.source_id()),
                 credential,
+                rate_limits: connector.rate_limits(),
             }
         })
         .collect())
@@ -224,6 +227,10 @@ impl<C: ConnectorPort> ConnectorPort for MachineConnector<C> {
             return Some(DISABLED_ON_THIS_MACHINE.to_owned());
         }
         self.connector.disabled_reason()
+    }
+
+    fn rate_limits(&self) -> Option<String> {
+        self.connector.rate_limits()
     }
 }
 
