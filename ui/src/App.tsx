@@ -1,6 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AcquireView } from "./AcquireView";
 import type {
@@ -10,17 +10,22 @@ import type {
   SourceDescription,
   SourceFailureSummary,
 } from "./acquisition";
+import { ActivityView, type PreparingDownload } from "./ActivityView";
+import { consoleName } from "./catalog";
+import { Dialog } from "./controls";
+import { DownloadView } from "./DownloadView";
+import { Icon } from "./icons";
 import { LIBRARY_THUMBNAIL_EDGE, LibraryView } from "./LibraryView";
-import { QuickAcquire } from "./QuickAcquire";
 import { ReviewView } from "./ReviewView";
-import { RunsView } from "./RunsView";
 import { SourcesView } from "./SourcesView";
 import { ReferenceImportForm } from "./ReferenceImportForm";
 import { ReferenceReviewView } from "./ReferenceReviewView";
+import { AppShell, Page, VaultForm, type View, Welcome } from "./Shell";
 import { NO_LIBRARY_FILTERS, errorMessage } from "./types";
 import type {
   DerivationSummary,
   ExportSummary,
+  LatestMedium,
   LibraryEntry,
   LibraryFilters,
   LibraryPage,
@@ -32,9 +37,8 @@ import type {
   ReviewItem,
 } from "./types";
 
-type View = "library" | "review" | "acquire" | "runs" | "sources";
-
 type RunAction = "pause" | "resume" | "cancel";
+
 
 /** Default thresholds used by desktop executions (SPEC §10 keeps them configurable). */
 const MATCHING_POLICY = { high_confidence_threshold: 80, medium_confidence_threshold: 50 };
@@ -59,6 +63,9 @@ const SOURCE_FAILURES_SHOWN = 3;
 
 /** How often run counts are refreshed while a run executes. */
 export const RUN_PROGRESS_REFRESH_MS = 3000;
+
+/** The media the Activity view shows as just arrived. */
+const LATEST_MEDIA_SHOWN = 12;
 
 /** The vault opened last, which the app opens again when it starts. */
 const VAULT_ROOT_KEY = "game-media-vault.vault-root";
@@ -117,7 +124,6 @@ export function App() {
   const [runs, setRuns] = useState<AcquisitionRun[]>([]);
   const [busyRunIds, setBusyRunIds] = useState<Set<number>>(() => new Set());
   const [executingRunIds, setExecutingRunIds] = useState<Set<number>>(() => new Set());
-  const [startingRun, setStartingRun] = useState(false);
   // Vaults whose thumbnails are rendering: the backend keeps rendering a vault while another is
   // loaded, so loading it again shows its rendering instead of offering to start another.
   const renderingThumbnailVaults = useRef(new Set<string>());
@@ -142,9 +148,34 @@ export function App() {
   const [sourceFailures, setSourceFailures] = useState<SourceFailureSummary[] | null>(null);
   const sourceFailuresRequest = useRef(0);
   const [error, setError] = useState<string | null>(null);
-  const releaseCountLabel = `${libraryTotal} ${libraryTotal === 1 ? "release" : "releases"}`;
+  // The vault the app shows, as typed, from the moment it is asked for: until one is, or while
+  // none could be opened yet, the welcome screen shows.
+  const [shownVault, setShownVault] = useState<string | null>(null);
+  const vaultEverOpened = useRef(false);
+  const [changingVault, setChangingVault] = useState(false);
+  // Platforms whose games have media, which the Library's console filter offers.
+  const [libraryPlatforms, setLibraryPlatforms] = useState<string[]>([]);
+  // Whether the shown results extend past their first page, which a live refresh would drop.
+  const libraryPaged = useRef(false);
+  // Whether media arrived since the shown Library results were read.
+  const [newMedia, setNewMedia] = useState(false);
+  const [latestMedia, setLatestMedia] = useState<LatestMedium[]>([]);
+  // The newest Asset the app saw, so a poll tells when new media arrived: none when the vault
+  // held none, unset before the first read.
+  const newestAssetSeen = useRef<number | null | undefined>(undefined);
+  // Downloads chosen in the Download view start one after another, each run fetching its game
+  // list first; their starts chain here.
+  const startChain = useRef<Promise<void>>(Promise.resolve());
+  const preparingKey = useRef(0);
+  const [preparing, setPreparing] = useState<PreparingDownload[]>([]);
+  // Runs waiting to execute, by vault: each vault executes one run at a time, so Sources are
+  // never asked for two downloads at once.
+  const waitingRuns = useRef(new Map<string, number[]>());
+  const drainingVaults = useRef(new Set<string>());
+  const [waitingRunIds, setWaitingRunIds] = useState<Set<number>>(() => new Set());
+  // Whether a poll is reading the latest media; a slow read is never doubled by the next poll.
+  const followingMedia = useRef(false);
   const reviewCount = reviewItems.length + referenceReviewItems.length;
-  const reviewCountLabel = `${reviewCount} ${reviewCount === 1 ? "review" : "reviews"}`;
 
   /**
    * Searches a page of the Library with `filters`: the first one, or the one after `after`
@@ -163,7 +194,12 @@ export function App() {
         platforms: filters.platforms,
         regions: filters.regions,
         sources: filters.sources,
-        asset_types: filters.assetTypes,
+        // Games without media show only when asked: a vault holds every game of each console
+        // downloaded, most of them without media for a while.
+        asset_types:
+          filters.assetTypes.length > 0 || filters.includeWithoutMedia
+            ? filters.assetTypes
+            : ["any"],
         statuses: filters.statuses,
         after,
         as_of: asOf,
@@ -178,6 +214,11 @@ export function App() {
     setLibraryTotal(page.total);
     setLibraryNextAfter(page.next_after);
     setLibraryAsOf(page.as_of);
+    libraryPaged.current = false;
+    setNewMedia(false);
+    if (page.platforms_with_media !== undefined) {
+      setLibraryPlatforms(page.platforms_with_media);
+    }
   }
 
   /**
@@ -267,6 +308,7 @@ export function App() {
     try {
       const page = await searchLibrary(libraryFiltersRef.current, libraryNextAfter, libraryAsOf);
       if (pageRequestRef.current === request) {
+        libraryPaged.current = true;
         setEntries((current) => [...current, ...page.releases]);
         setLibraryTotal(page.total);
         setLibraryNextAfter(page.next_after);
@@ -300,6 +342,7 @@ export function App() {
     reviewRefreshRequestGeneration.current += 1;
     setLoading(true);
     setError(null);
+    setShownVault(requestedVaultRoot);
     supersedeLibraryRequests();
     showLibraryPage(EMPTY_LIBRARY_PAGE);
     setThumbnailStatus(null);
@@ -320,6 +363,11 @@ export function App() {
     setRuns([]);
     setBusyRunIds(new Set());
     setExecutingRunIds(new Set(executionsByVault.current.get(vaultKey)));
+    setWaitingRunIds(new Set(waitingRuns.current.get(vaultKey)));
+    // Downloads still preparing belong to the vault they were chosen in, which stops them.
+    setPreparing([]);
+    setLatestMedia([]);
+    newestAssetSeen.current = undefined;
     try {
       // The backend keeps the opened vault; later commands never send a path.
       const identity = await invoke<string>("open_vault", {
@@ -338,8 +386,13 @@ export function App() {
         setBuildingModels(buildingModelVaults.current.has(identity));
         setImportingReference(importingReferenceVaults.current.has(identity));
         setExecutingRunIds(new Set(executionsByVault.current.get(identity)));
+        setWaitingRunIds(new Set(waitingRuns.current.get(identity)));
       }
       openedVaultRoot.current = vaultKey;
+      vaultEverOpened.current = true;
+      setChangingVault(false);
+      // Runs left waiting while another vault was open execute again.
+      void drainExecutions(vaultKey);
       // A refresh started after this search, such as one after a rendering, shows newer data.
       const libraryGeneration = supersedeLibraryRequests();
       const [library, reviews] = await Promise.all([
@@ -361,8 +414,8 @@ export function App() {
         setReviewItems(reviews);
       }
       setLoadedVaultRoot(vaultKey);
-      if (activeViewRef.current === "runs") {
-        await refreshRuns(vaultKey);
+      if (activeViewRef.current === "activity") {
+        await Promise.all([refreshRuns(vaultKey), refreshLatestMedia(vaultKey)]);
       }
     } catch (reason) {
       if (
@@ -370,6 +423,10 @@ export function App() {
         loadGeneration === vaultLoadRequestGeneration.current
       ) {
         setError(errorMessage(reason));
+        // A first vault that cannot be opened leaves the welcome screen to try another.
+        if (!vaultEverOpened.current) {
+          setShownVault(null);
+        }
       }
     } finally {
       if (
@@ -526,6 +583,20 @@ export function App() {
     }
   }
 
+  /** Shows `view`, reading what it shows that may have changed since. */
+  function navigate(view: View) {
+    if (view === "activity") {
+      void showActivity();
+    } else if (view === "download") {
+      showView("download");
+      void readSources();
+    } else if (view === "sources") {
+      void showSources();
+    } else {
+      showView(view);
+    }
+  }
+
   function showView(view: View) {
     activeViewRef.current = view;
     setActiveView(view);
@@ -550,6 +621,56 @@ export function App() {
     const listed = await invoke<AcquisitionRun[]>("list_acquisition_runs");
     if (activeVaultRoot.current === expectedVaultRoot && generation === runListGeneration.current) {
       setRuns(listed);
+    }
+  }
+
+  /**
+   * Reads the media the opened vault `expectedVaultRoot` retained last, and tells whether newer
+   * media arrived since the previous read.
+   */
+  async function refreshLatestMedia(expectedVaultRoot: string | null) {
+    if (expectedVaultRoot === null || openedVaultRoot.current !== expectedVaultRoot) {
+      return false;
+    }
+    const latest = await invoke<LatestMedium[]>("latest_media", { limit: LATEST_MEDIA_SHOWN });
+    if (activeVaultRoot.current !== expectedVaultRoot) {
+      return false;
+    }
+    setLatestMedia(latest);
+    const newest = latest.at(0)?.asset.asset_id ?? null;
+    const previous = newestAssetSeen.current;
+    newestAssetSeen.current = newest;
+    return previous !== undefined && newest !== null && (previous === null || newest > previous);
+  }
+
+  /**
+   * Shows the media executions retained since the last poll: in the Activity view, and in the
+   * Library, at once while it shows a first page alone, else behind its banner, so the results
+   * someone pages through or searches never change under them.
+   */
+  async function followArrivingMedia(expectedVaultRoot: string | null) {
+    if (followingMedia.current) {
+      return;
+    }
+    followingMedia.current = true;
+    try {
+      const arrived = await refreshLatestMedia(expectedVaultRoot);
+      if (!arrived || activeVaultRoot.current !== expectedVaultRoot) {
+        return;
+      }
+      if (
+        libraryPaged.current ||
+        pendingSearchRef.current !== null ||
+        pageRequestRef.current !== null
+      ) {
+        setNewMedia(true);
+        return;
+      }
+      await refreshVaultData(expectedVaultRoot);
+    } catch {
+      // The next poll, or the refresh once the execution ends, shows them.
+    } finally {
+      followingMedia.current = false;
     }
   }
 
@@ -745,8 +866,15 @@ export function App() {
   async function showSources() {
     showView("sources");
     void readSourceFailures();
-    // Machine settings change outside this view, as from the CLI, so every visit reads the
-    // Sources again; the current list stays shown meanwhile.
+    await readSources();
+  }
+
+  /**
+   * Reads the registered Sources, which the Sources and Download views show. Machine settings
+   * change outside the app, as from the CLI, so every visit reads them again; the current list
+   * stays shown meanwhile.
+   */
+  async function readSources() {
     sourcesRequest.current += 1;
     const request = sourcesRequest.current;
     setSourcesError(null);
@@ -817,11 +945,11 @@ export function App() {
     }
   }
 
-  async function showRuns() {
-    showView("runs");
+  async function showActivity() {
+    showView("activity");
     const listingLoadGeneration = vaultLoadRequestGeneration.current;
     try {
-      await refreshRuns(loadedVaultRoot);
+      await Promise.all([refreshRuns(loadedVaultRoot), refreshLatestMedia(loadedVaultRoot)]);
     } catch (reason) {
       // A vault loaded meanwhile reports its own failures.
       if (vaultLoadRequestGeneration.current === listingLoadGeneration) {
@@ -858,40 +986,65 @@ export function App() {
       refreshExecutingRuns(runIds, pollingVaultRoot).catch(() => {
         // The next poll or the final refresh after the execution reports persistent failures.
       });
+      void followArrivingMedia(pollingVaultRoot);
     }, RUN_PROGRESS_REFRESH_MS);
     return () => clearInterval(timer);
   }, [executingRunIds]);
 
-  /** Starts a run of `request`, and with `execute` executes it at once. */
-  async function startRun(request: AcquisitionRequestDraft, execute = false) {
+  /**
+   * Starts a download of each request, one after another, then executes them in turn; the
+   * Activity view follows them meanwhile. Each start fetches the game list of its consoles
+   * first, which takes a moment.
+   */
+  function startDownloads(requests: AcquisitionRequestDraft[]) {
     if (loadedVaultRoot === null) {
-      setError("Open a vault before starting an acquisition.");
+      setError("Open a vault before downloading.");
       return;
     }
     const startingVaultRoot = loadedVaultRoot;
-    setStartingRun(true);
+    const downloads = requests.map((request) => {
+      preparingKey.current += 1;
+      return { request, preparing: { key: preparingKey.current, title: requestTitle(request) } };
+    });
+    setPreparing((current) => [...current, ...downloads.map((download) => download.preparing)]);
     setError(null);
+    void showActivity();
+    for (const download of downloads) {
+      startChain.current = startChain.current.then(() =>
+        startDownload(startingVaultRoot, download.request, download.preparing),
+      );
+    }
+  }
+
+  /** Starts the run of one download chosen in `startingVaultRoot`, then queues its execution. */
+  async function startDownload(
+    startingVaultRoot: string,
+    request: AcquisitionRequestDraft,
+    download: PreparingDownload,
+  ) {
+    const settle = () =>
+      setPreparing((current) => current.filter((item) => item.key !== download.key));
+    // Another vault opened meanwhile: its runs are not this download's.
+    if (openedVaultRoot.current !== startingVaultRoot) {
+      return;
+    }
     let started: AcquisitionRun;
     try {
       started = await invoke<AcquisitionRun>("start_acquisition_run", { request });
     } catch (reason) {
       if (activeVaultRoot.current === startingVaultRoot) {
-        setError(errorMessage(reason));
+        settle();
+        setError(`${download.title}: ${errorMessage(reason)}`);
       }
       return;
-    } finally {
-      setStartingRun(false);
     }
     if (activeVaultRoot.current !== startingVaultRoot) {
       return;
     }
+    settle();
     // The run is persisted from here on: show it even if the list refresh fails.
     setRuns((current) => [...current.filter((run) => run.id !== started.id), started]);
-    showView("runs");
-    if (execute) {
-      // Its progress shows in the Runs view, which follows executing runs.
-      void executeRun(started.id);
-    }
+    queueExecution(startingVaultRoot, started.id);
     try {
       await refreshRuns(startingVaultRoot);
     } catch (reason) {
@@ -900,6 +1053,57 @@ export function App() {
           `Run #${started.id} started, but the run list could not be refreshed: ${errorMessage(reason)}`,
         );
       }
+    }
+  }
+
+  /** Shows the runs of `vaultRoot` waiting to execute, when that vault is the active one. */
+  function showWaiting(vaultRoot: string) {
+    if (activeVaultRoot.current === vaultRoot) {
+      setWaitingRunIds(new Set(waitingRuns.current.get(vaultRoot)));
+    }
+  }
+
+  /** Executes run `runId` of `vaultRoot` once the runs queued before it executed. */
+  function queueExecution(vaultRoot: string, runId: number) {
+    const queue = waitingRuns.current.get(vaultRoot) ?? [];
+    if (!queue.includes(runId) && !executionsByVault.current.get(vaultRoot)?.has(runId)) {
+      waitingRuns.current.set(vaultRoot, [...queue, runId]);
+      showWaiting(vaultRoot);
+    }
+    void drainExecutions(vaultRoot);
+  }
+
+  /** Forgets that run `runId` of `vaultRoot` waits to execute, as once it is paused. */
+  function dequeueExecution(vaultRoot: string, runId: number) {
+    const queue = waitingRuns.current.get(vaultRoot) ?? [];
+    waitingRuns.current.set(
+      vaultRoot,
+      queue.filter((queued) => queued !== runId),
+    );
+    showWaiting(vaultRoot);
+  }
+
+  /**
+   * Executes the waiting runs of `vaultRoot` one after another while it is the open vault: run
+   * ids name other runs in another vault, so its runs wait until it opens again.
+   */
+  async function drainExecutions(vaultRoot: string) {
+    if (drainingVaults.current.has(vaultRoot)) {
+      return;
+    }
+    drainingVaults.current.add(vaultRoot);
+    try {
+      for (;;) {
+        const [next, ...rest] = waitingRuns.current.get(vaultRoot) ?? [];
+        if (next === undefined || openedVaultRoot.current !== vaultRoot) {
+          return;
+        }
+        waitingRuns.current.set(vaultRoot, rest);
+        showWaiting(vaultRoot);
+        await executeRun(next, vaultRoot);
+      }
+    } finally {
+      drainingVaults.current.delete(vaultRoot);
     }
   }
 
@@ -917,12 +1121,14 @@ export function App() {
     }
   }
 
-  async function executeRun(runId: number) {
-    const actingVaultRoot = loadedVaultRoot;
+  /**
+   * Executes run `runId` of `actingVaultRoot`, then shows what it persisted; the next waiting run
+   * executes as soon as this one ends, without waiting for that refresh.
+   */
+  async function executeRun(runId: number, actingVaultRoot: string | null) {
     // While executing, the shared poll follows the run's counts; the library and Review Items
-    // are refreshed once it ends.
+    // are refreshed once it ends. A failure of an earlier execution stays shown meanwhile.
     trackExecution(actingVaultRoot, runId, true);
-    setError(null);
     let executionError: string | null = null;
     try {
       await invoke<AcquisitionRun>("execute_acquisition_run", {
@@ -937,7 +1143,14 @@ export function App() {
     } finally {
       trackExecution(actingVaultRoot, runId, false);
     }
-    // Executions persist imports, Review Items and progress as they go, even when they fail.
+    void showExecuted(actingVaultRoot, executionError);
+  }
+
+  /**
+   * Shows what an execution persisted as it went: imports, Review Items and progress, even when
+   * it failed with `executionError`.
+   */
+  async function showExecuted(actingVaultRoot: string | null, executionError: string | null) {
     try {
       await Promise.all([refreshVaultData(actingVaultRoot), refreshRuns(actingVaultRoot)]);
     } catch (reason) {
@@ -968,6 +1181,14 @@ export function App() {
       }
       // The transition is persisted from here on: show it even if the list refresh fails.
       setRuns((current) => current.map((run) => (run.id === updated.id ? updated : run)));
+      if (actingVaultRoot !== null) {
+        // A paused or cancelled run no longer waits to execute; a resumed one downloads again.
+        if (action === "resume") {
+          queueExecution(actingVaultRoot, runId);
+        } else {
+          dequeueExecution(actingVaultRoot, runId);
+        }
+      }
       try {
         await refreshRuns(actingVaultRoot);
       } catch (reason) {
@@ -1005,122 +1226,120 @@ export function App() {
     [loadedVaultRoot],
   );
 
+  const vaultForm = (
+    <VaultForm
+      vaultRoot={vaultRoot}
+      loading={loading}
+      onChange={setVaultRoot}
+      onOpen={() => void loadVault(true)}
+      onChoose={() => void chooseVaultFolder()}
+    />
+  );
+
+  if (shownVault === null) {
+    return <Welcome error={error}>{vaultForm}</Welcome>;
+  }
+
+  const vaultReady = loadedVaultRoot !== null;
+  const activeDownloads = executingRunIds.size + waitingRunIds.size + preparing.length;
+
   return (
-    <main className="shell">
-      <header className="topbar">
-        <div>
-          <h1>Game Media Vault</h1>
-          <p>Local preservation library</p>
-        </div>
-        <span className="asset-count">
-          {releaseCountLabel} · {reviewCountLabel}
-        </span>
-      </header>
-
-      <form
-        className="vault-picker"
-        onSubmit={(event: FormEvent) => {
-          event.preventDefault();
-          void loadVault(true);
-        }}
-      >
-        <label htmlFor="vault-root">Vault folder</label>
-        <div className="vault-controls">
-          <input
-            id="vault-root"
-            value={vaultRoot}
-            onChange={(event) => setVaultRoot(event.target.value)}
-            spellCheck={false}
-          />
-          <button type="button" disabled={loading} onClick={() => void chooseVaultFolder()}>
-            Choose vault folder…
-          </button>
-          <button type="submit" disabled={loading || vaultRoot.trim().length === 0}>
-            {loading ? "Opening…" : "Open vault"}
+    <AppShell
+      view={activeView}
+      onNavigate={navigate}
+      libraryCount={libraryTotal}
+      reviewCount={reviewCount}
+      activeDownloads={activeDownloads}
+      vaultRoot={shownVault}
+      opening={loading}
+      onChangeVault={() => setChangingVault(true)}
+    >
+      {error && !changingVault ? (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            className="ghost icon-button"
+            aria-label="Dismiss"
+            onClick={() => setError(null)}
+          >
+            <Icon name="close" size={16} />
           </button>
         </div>
-        <p className="hint">
-          Where your media are kept. A name alone is a folder in your Documents; a folder without
-          a vault gets a new one. The app opens it again next time.
-        </p>
-      </form>
-
-      {error ? <p className="error-message">{error}</p> : null}
-      <nav className="view-tabs" aria-label="Vault views">
-        <button
-          type="button"
-          className={activeView === "library" ? "active" : ""}
-          onClick={() => showView("library")}
-        >
-          Library ({libraryTotal})
-        </button>
-        <button
-          type="button"
-          className={activeView === "review" ? "active" : ""}
-          onClick={() => showView("review")}
-        >
-          Review ({reviewCount})
-        </button>
-        <button
-          type="button"
-          className={activeView === "acquire" ? "active" : ""}
-          onClick={() => showView("acquire")}
-        >
-          Acquire
-        </button>
-        <button
-          type="button"
-          className={activeView === "runs" ? "active" : ""}
-          onClick={() => void showRuns()}
-        >
-          Runs
-        </button>
-        <button
-          type="button"
-          className={activeView === "sources" ? "active" : ""}
-          onClick={() => void showSources()}
-        >
-          Sources
-        </button>
-      </nav>
+      ) : null}
 
       {activeView === "library" ? (
-        <>
-          {loadedVaultRoot === null ? null : (
-            <ReferenceImportForm
-              importing={importingReference}
-              status={referenceImportStatus}
-              onImport={(input) => void importReferenceCatalog(input)}
-            />
-          )}
-        <LibraryView
-          entries={entries}
-          objectUrl={originalObjectUrl}
-          filters={libraryFilters}
-          filtersRevision={libraryFiltersRevision}
-          onSearch={
-            loadedVaultRoot === null ? undefined : (filters) => void applyLibraryFilters(filters)
-          }
-          canLoadMore={libraryNextAfter !== null}
-          loadingMore={loadingMore}
-          searching={searchingLibrary}
-          onLoadMore={() => void loadMoreReleases()}
-          onExport={loadedVaultRoot === null ? undefined : exportLibrary}
-          onRenderThumbnails={
-            loadedVaultRoot === null ? undefined : () => void renderThumbnails()
-          }
-          renderingThumbnails={renderingThumbnails}
-          thumbnailStatus={thumbnailStatus}
-          onBuildPackagingModels={
-            loadedVaultRoot === null ? undefined : () => void buildPackagingModels()
-          }
-          buildingPackagingModels={buildingModels}
-          packagingModelStatus={modelStatus}
-        />
-        </>
+        <Page title="Library" subtitle="Every game of your vault, with the media it holds.">
+          <LibraryView
+            entries={entries}
+            total={libraryTotal}
+            objectUrl={originalObjectUrl}
+            filters={libraryFilters}
+            filtersRevision={libraryFiltersRevision}
+            platforms={libraryPlatforms}
+            onSearch={vaultReady ? (filters) => void applyLibraryFilters(filters) : undefined}
+            canLoadMore={libraryNextAfter !== null}
+            loadingMore={loadingMore}
+            searching={searchingLibrary}
+            onLoadMore={() => void loadMoreReleases()}
+            onExport={vaultReady ? exportLibrary : undefined}
+            onDownload={() => navigate("download")}
+            newMedia={newMedia}
+            onRefresh={
+              loadedVaultRoot === null
+                ? undefined
+                : () =>
+                    showChangedLibrary(loadedVaultRoot).catch((reason) =>
+                      setError(errorMessage(reason)),
+                    )
+            }
+          />
+        </Page>
       ) : null}
+
+      {activeView === "download" ? (
+        <Page
+          title="Download"
+          subtitle="Pick consoles and what to collect: the app finds their games and every medium."
+        >
+          <DownloadView
+            sources={sources}
+            onStart={startDownloads}
+            advanced={
+              <AcquireView
+                starting={false}
+                onStart={(request) => startDownloads([request])}
+                onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
+              />
+            }
+          />
+        </Page>
+      ) : null}
+
+      {activeView === "activity" ? (
+        <Page title="Activity" subtitle="Downloads under way and done, as media arrive.">
+          <ActivityView
+            runs={runs}
+            preparing={preparing}
+            executingRunIds={executingRunIds}
+            waitingRunIds={waitingRunIds}
+            busyRunIds={busyRunIds}
+            latest={latestMedia}
+            objectUrl={originalObjectUrl}
+            onContinue={(runId) => {
+              if (loadedVaultRoot !== null) {
+                queueExecution(loadedVaultRoot, runId);
+              }
+            }}
+            onPause={(runId) => void applyRunAction(runId, "pause")}
+            onResume={(runId) => void applyRunAction(runId, "resume")}
+            onCancel={(runId) => void applyRunAction(runId, "cancel")}
+          />
+        </Page>
+      ) : null}
+
       {activeView === "review" ? (
-        <>
+        <Page title="Review" subtitle="Media the app was unsure about: confirm or reject them.">
           {referenceReviewItems.length > 0 ? (
             <ReferenceReviewView
               items={referenceReviewItems}
@@ -1150,47 +1369,100 @@ export function App() {
               onLoadPreview={loadReviewPreview}
             />
           ) : null}
-        </>
+        </Page>
       ) : null}
-      {activeView === "acquire" ? (
-        <>
-          <QuickAcquire
-            starting={startingRun}
-            onDownload={(request) => void startRun(request, true)}
-          />
-          <details className="custom-request">
-            <summary>Custom request: some games, Sources, regions or Asset Types</summary>
-            <AcquireView
-              starting={startingRun}
-              onStart={(request) => void startRun(request)}
-              onCheckPlan={(request) => invoke<AcquisitionPlan>("plan_acquisition", { request })}
-            />
-          </details>
-        </>
-      ) : null}
+
       {activeView === "sources" ? (
-        <SourcesView
-          sources={sources}
-          error={sourcesError}
-          failures={sourceFailures}
-          onSetEnabled={setSourceEnabled}
-          onSetApiKey={setSourceCredential}
-          onClearApiKey={clearSourceCredential}
-        />
+        <Page
+          title="Sources"
+          subtitle="Where media come from. Some need a free key, stored on this machine only."
+        >
+          <SourcesView
+            sources={sources}
+            error={sourcesError}
+            failures={sourceFailures}
+            onSetEnabled={setSourceEnabled}
+            onSetApiKey={setSourceCredential}
+            onClearApiKey={clearSourceCredential}
+          />
+        </Page>
       ) : null}
-      {activeView === "runs" ? (
-        <RunsView
-          runs={runs}
-          busyRunIds={busyRunIds}
-          executingRunIds={executingRunIds}
-          onExecute={(runId) => void executeRun(runId)}
-          onPause={(runId) => void applyRunAction(runId, "pause")}
-          onResume={(runId) => void applyRunAction(runId, "resume")}
-          onCancel={(runId) => void applyRunAction(runId, "cancel")}
-        />
+
+      {activeView === "settings" ? (
+        <Page title="Settings" subtitle="The vault and the tools that tidy its library.">
+          <section className="card settings-section" aria-label="Vault">
+            <h2>Vault</h2>
+            <p className="hint vault-path">{shownVault}</p>
+            <button type="button" onClick={() => setChangingVault(true)}>
+              <Icon name="folder" size={18} />
+              Change vault…
+            </button>
+          </section>
+          <section className="card settings-section" aria-label="Library tools">
+            <h2>Library tools</h2>
+            <div className="tool-row">
+              <div>
+                <strong>Thumbnails</strong>
+                <p className="hint">Small copies of the images, which make the library faster.</p>
+                {thumbnailStatus ? <p className="tool-status">{thumbnailStatus}</p> : null}
+              </div>
+              <button
+                type="button"
+                disabled={!vaultReady || renderingThumbnails}
+                onClick={() => void renderThumbnails()}
+              >
+                {renderingThumbnails ? "Rendering thumbnails…" : "Render thumbnails"}
+              </button>
+            </div>
+            <div className="tool-row">
+              <div>
+                <strong>3D boxes</strong>
+                <p className="hint">
+                  Boxes built from the front, back and spine scans of complete games.
+                </p>
+                {modelStatus ? <p className="tool-status">{modelStatus}</p> : null}
+              </div>
+              <button
+                type="button"
+                disabled={!vaultReady || buildingModels}
+                onClick={() => void buildPackagingModels()}
+              >
+                {buildingModels ? "Building 3D boxes…" : "Build 3D boxes"}
+              </button>
+            </div>
+          </section>
+          <section className="card settings-section" aria-label="Reference catalogs">
+            <h2>Reference catalogs</h2>
+            <p className="hint">
+              Import a No-Intro, Redump or MAME list to name and check your games precisely.
+            </p>
+            {vaultReady ? (
+              <ReferenceImportForm
+                importing={importingReference}
+                status={referenceImportStatus}
+                onImport={(input) => void importReferenceCatalog(input)}
+              />
+            ) : null}
+          </section>
+        </Page>
       ) : null}
-    </main>
+
+      {changingVault ? (
+        <Dialog title="Open a vault" onClose={() => setChangingVault(false)}>
+          {vaultForm}
+          {error ? <p className="error-message">{error}</p> : null}
+        </Dialog>
+      ) : null}
+    </AppShell>
   );
+}
+
+
+/** What a download is of, as the Activity view names it: its consoles, else its games. */
+function requestTitle(request: AcquisitionRequestDraft) {
+  return request.platforms.length > 0
+    ? request.platforms.map(consoleName).join(" + ")
+    : "Chosen games";
 }
 
 function withoutRun(runIds: Set<number>, runId: number) {
