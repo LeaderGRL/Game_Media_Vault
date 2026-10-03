@@ -208,25 +208,26 @@ impl RunRepositoryPort for SqliteCatalog {
         Ok(true)
     }
 
-    fn discovered_batches(&self, run_id: i64, source_id: &str) -> Result<usize, PortError> {
-        let batches: Option<i64> = self
+    fn discovered_games(&self, run_id: i64, source_id: &str) -> Result<usize, PortError> {
+        let games: Option<i64> = self
             .connect()?
             .query_row(
-                "SELECT batches FROM acquisition_run_discovery_batches
+                "SELECT games FROM acquisition_run_discovery_batches
                  WHERE run_id = ?1 AND source_id = ?2",
                 params![run_id, source_id],
                 |row| row.get(0),
             )
             .optional()
             .map_err(sql_error)?;
-        Ok(batches.map_or(0, |batches| batches as usize))
+        Ok(games.map_or(0, |games| games as usize))
     }
 
     fn record_discovery_batch(
         &self,
         run_id: i64,
         source_id: &str,
-        batch: usize,
+        first_game: usize,
+        games: usize,
         work: &[AcquisitionWorkItem],
     ) -> Result<bool, PortError> {
         let mut connection = self.connect()?;
@@ -236,19 +237,20 @@ impl RunRepositoryPort for SqliteCatalog {
         if !accepts_discovery(&transaction, run_id)? {
             return Ok(false);
         }
-        // Advancing the count only from the batch it names, under the write lock, records each
+        // Advancing the count only from the game it starts at, under the write lock, records each
         // batch once and in order when executions of the same run race.
-        let advanced = if batch == 0 {
+        let recorded = (first_game + games) as i64;
+        let advanced = if first_game == 0 {
             transaction.execute(
-                "INSERT OR IGNORE INTO acquisition_run_discovery_batches (run_id, source_id, batches)
-                 VALUES (?1, ?2, 1)",
-                params![run_id, source_id],
+                "INSERT OR IGNORE INTO acquisition_run_discovery_batches (run_id, source_id, games)
+                 VALUES (?1, ?2, ?3)",
+                params![run_id, source_id, recorded],
             )
         } else {
             transaction.execute(
-                "UPDATE acquisition_run_discovery_batches SET batches = batches + 1
-                 WHERE run_id = ?1 AND source_id = ?2 AND batches = ?3",
-                params![run_id, source_id, batch as i64],
+                "UPDATE acquisition_run_discovery_batches SET games = ?4
+                 WHERE run_id = ?1 AND source_id = ?2 AND games = ?3",
+                params![run_id, source_id, first_game as i64, recorded],
             )
         }
         .map_err(sql_error)?;
@@ -306,7 +308,11 @@ impl RunRepositoryPort for SqliteCatalog {
             return Ok(Vec::new());
         }
         let sources: Vec<String> = transaction
-            .prepare("SELECT source_id FROM acquisition_run_discoveries WHERE run_id = ?1")
+            // A discovery still in batches has queued work too.
+            .prepare(
+                "SELECT source_id FROM acquisition_run_discoveries WHERE run_id = ?1
+                 UNION SELECT source_id FROM acquisition_run_discovery_batches WHERE run_id = ?1",
+            )
             .map_err(sql_error)?
             .query_map(params![run_id], |row| row.get(0))
             .map_err(sql_error)?

@@ -241,20 +241,22 @@ pub trait RunRepositoryPort: Send + Sync {
     /// Whether `source_id` already recorded its discovered work for the run.
     fn has_discovered(&self, run_id: i64, source_id: &str) -> Result<bool, PortError>;
 
-    /// How many batches of the discovery of `source_id` the run recorded, while that discovery
-    /// is not complete.
-    fn discovered_batches(&self, run_id: i64, source_id: &str) -> Result<usize, PortError>;
+    /// How many of the requested games, in request order, the batches of the discovery of
+    /// `source_id` recorded, while that discovery is not complete.
+    fn discovered_games(&self, run_id: i64, source_id: &str) -> Result<usize, PortError>;
 
-    /// Queues the work of batch `batch` of the discovery of `source_id`, counting from zero,
-    /// and records the batch, atomically, leaving the discovery incomplete; its last batch is
-    /// recorded by `record_discovery`. A batch other than the next one is ignored, as is work
-    /// whose key the run already recorded. Returns `false`, recording nothing, when the run was
-    /// cancelled or completed meanwhile.
+    /// Queues the work of a batch of the discovery of `source_id` covering `games` requested
+    /// games from game `first_game`, counting from zero, and records them, atomically, leaving
+    /// the discovery incomplete; its last batch is recorded by `record_discovery`. A batch
+    /// starting anywhere but after the games already recorded is ignored, as is work whose key
+    /// the run already recorded. The work of a discovery still in batches is queued like any.
+    /// Returns `false`, recording nothing, when the run was cancelled or completed meanwhile.
     fn record_discovery_batch(
         &self,
         run_id: i64,
         source_id: &str,
-        batch: usize,
+        first_game: usize,
+        games: usize,
         work: &[AcquisitionWorkItem],
     ) -> Result<bool, PortError>;
 

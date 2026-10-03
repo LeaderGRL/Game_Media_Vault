@@ -118,14 +118,14 @@ where
         Ok(None)
     }
 
-    /// Looks each requested game up by name, keeping only the game SteamGridDB names exactly
-    /// so, then lists its media of the requested types, best voted first.
     /// Games are looked up one by one, so a request for many is discovered a batch at a time,
     /// each recorded as it completes.
     fn discovery_batch_size(&self) -> Option<usize> {
         Some(DISCOVERY_BATCH)
     }
 
+    /// Looks each requested game up by name, keeping only the game SteamGridDB names exactly
+    /// so, then lists its media of the requested types, best voted first.
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         if let Some(reason) = self.unsupported_request_reason(request)? {
             return Err(PortError::new(reason));

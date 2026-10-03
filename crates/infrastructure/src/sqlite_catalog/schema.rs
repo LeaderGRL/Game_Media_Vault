@@ -33,20 +33,20 @@ const MIGRATIONS: &[Migration] = &[
     add_run_discovery_batches,
 ];
 
-/// Version 15 records how many batches of games the discovery of each Source of a run recorded,
-/// so an execution resumes with the next one. New catalogs create the same table.
+/// Version 15 records how many of the requested games the batches of the discovery of each
+/// Source of a run recorded, so an execution resumes with the next game. New catalogs create the same table.
 fn add_run_discovery_batches(transaction: &Transaction<'_>) -> Result<(), PortError> {
     transaction
         .execute_batch(RUN_DISCOVERY_BATCHES_TABLE)
         .map_err(sql_error)
 }
 
-/// The batches recorded of each discovery not complete yet.
+/// The requested games the batches of each discovery not complete yet recorded.
 const RUN_DISCOVERY_BATCHES_TABLE: &str = "
     CREATE TABLE acquisition_run_discovery_batches (
         run_id INTEGER NOT NULL REFERENCES acquisition_runs(id),
         source_id TEXT NOT NULL,
-        batches INTEGER NOT NULL CHECK(batches > 0),
+        games INTEGER NOT NULL CHECK(games > 0),
         PRIMARY KEY(run_id, source_id)
     );
 ";

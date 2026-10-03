@@ -4,7 +4,7 @@ use std::io::{Cursor, Read};
 
 use game_media_vault_application::{
     ApplicationError, ConnectorPort, DownloadLimits, PortError, acquire_run_with_connectors,
-    start_acquisition_run_with_connectors,
+    resume_acquisition_run, start_acquisition_run_with_connectors,
 };
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus, AssetCandidate, AssetType,
@@ -23,6 +23,10 @@ struct PerGameSource {
     lookups: Shared<Vec<Vec<String>>>,
     /// The discovery, counting from one, that fails as a spent quota does, if any.
     quota_spent_at: Shared<Option<usize>>,
+    /// Media downloaded so far.
+    downloads: Shared<usize>,
+    /// How many media were downloaded when each discovery started.
+    downloads_at_lookups: Shared<Vec<usize>>,
 }
 
 impl PerGameSource {
@@ -32,6 +36,8 @@ impl PerGameSource {
             batch,
             lookups: Shared::new(Vec::new()),
             quota_spent_at: Shared::new(None),
+            downloads: Shared::new(0),
+            downloads_at_lookups: Shared::new(Vec::new()),
         }
     }
 
@@ -63,18 +69,21 @@ impl ConnectorPort for PerGameSource {
         Some(self.batch)
     }
 
-    /// Refuses more games than one discovery looks up, as a Source protecting its quota does.
+    /// Refuses more lookups than one discovery makes, as a Source protecting its quota does: one
+    /// per requested game and platform.
     fn unsupported_request_reason(
         &self,
         request: &AcquisitionRequest,
     ) -> Result<Option<String>, PortError> {
-        Ok((games_of(request).len() > self.batch)
-            .then(|| format!("more than {} games at once", self.batch)))
+        let lookups = games_of(request).len() * request.platforms().len();
+        Ok((lookups > self.batch).then(|| format!("more than {} lookups at once", self.batch)))
     }
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         let games = games_of(request);
         self.lookups.borrow_mut().push(games.clone());
+        let downloads = *self.downloads.borrow();
+        self.downloads_at_lookups.borrow_mut().push(downloads);
         if *self.quota_spent_at.borrow() == Some(self.lookups.borrow().len()) {
             return Err(PortError::new("the daily quota is spent".to_owned()));
         }
@@ -89,6 +98,7 @@ impl ConnectorPort for PerGameSource {
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        *self.downloads.borrow_mut() += 1;
         Ok(Box::new(Cursor::new(
             candidate.source_url.clone().into_bytes(),
         )))
@@ -212,4 +222,43 @@ fn a_source_whose_quota_is_spent_leaves_the_others_discovering_every_batch() {
     assert_eq!(other.lookups().len(), 3);
     assert_eq!(vault.run(run_id).completed_work, 5);
     assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Running);
+}
+
+#[test]
+fn a_batch_counts_a_lookup_for_each_platform_a_game_is_looked_up_on() {
+    let vault = vault_knowing_every_game();
+    let source = PerGameSource::new("per-game", 2);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&source];
+    let mut two_platforms = draft(&["per-game"]);
+    two_platforms
+        .platforms
+        .push("Nintendo - Super Nintendo Entertainment System".to_owned());
+    let run_id = start_acquisition_run_with_connectors(&vault, two_platforms, &connectors)
+        .unwrap()
+        .id;
+
+    execute(&vault, &[&source], run_id).unwrap();
+
+    // Two lookups a batch: one game on each of the two platforms.
+    assert_eq!(source.lookups().len(), GAMES.len());
+    assert!(source.lookups().iter().all(|games| games.len() == 1));
+}
+
+#[test]
+fn the_work_of_a_recorded_batch_is_executed_before_the_next_batch_is_discovered() {
+    let vault = vault_knowing_every_game();
+    let source = PerGameSource::new("per-game", 2);
+    let run_id = start(&vault, &[&source]);
+    // A pause lands while the first batch is discovered: it is recorded, not executed.
+    *vault.status_before_next_discovery.borrow_mut() = Some(AcquisitionRunStatus::Paused);
+    execute(&vault, &[&source], run_id).unwrap();
+    assert_eq!(source.lookups().len(), 1);
+    assert_eq!(*source.downloads.borrow(), 0);
+
+    resume_acquisition_run(&vault, run_id).unwrap();
+    execute(&vault, &[&source], run_id).unwrap();
+
+    // Each batch is looked up once the media of the previous one are downloaded.
+    assert_eq!(*source.downloads_at_lookups.borrow(), [0, 2, 4]);
+    assert_eq!(vault.run(run_id).status, AcquisitionRunStatus::Completed);
 }

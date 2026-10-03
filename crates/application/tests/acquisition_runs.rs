@@ -72,7 +72,7 @@ impl RunRepositoryPort for RecordingRunRepository {
         Ok(false)
     }
 
-    fn discovered_batches(&self, _run_id: i64, _source_id: &str) -> Result<usize, PortError> {
+    fn discovered_games(&self, _run_id: i64, _source_id: &str) -> Result<usize, PortError> {
         Ok(0)
     }
 
@@ -80,7 +80,8 @@ impl RunRepositoryPort for RecordingRunRepository {
         &self,
         _run_id: i64,
         _source_id: &str,
-        _batch: usize,
+        _first_game: usize,
+        _games: usize,
         _work: &[AcquisitionWorkItem],
     ) -> Result<bool, PortError> {
         Ok(true)
@@ -287,7 +288,7 @@ impl RunRepositoryPort for RacingRunRepository {
         Ok(false)
     }
 
-    fn discovered_batches(&self, _run_id: i64, _source_id: &str) -> Result<usize, PortError> {
+    fn discovered_games(&self, _run_id: i64, _source_id: &str) -> Result<usize, PortError> {
         Ok(0)
     }
 
@@ -295,7 +296,8 @@ impl RunRepositoryPort for RacingRunRepository {
         &self,
         _run_id: i64,
         _source_id: &str,
-        _batch: usize,
+        _first_game: usize,
+        _games: usize,
         _work: &[AcquisitionWorkItem],
     ) -> Result<bool, PortError> {
         Ok(true)

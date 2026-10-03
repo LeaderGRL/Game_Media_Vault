@@ -404,17 +404,22 @@ where
                 });
                 continue;
             }
-            let batch = runs.discovered_batches(run_id, source_id)?;
+            let first_game = runs.discovered_games(run_id, source_id)?;
+            // The work of the batches already recorded is executed before the next batch is
+            // looked up, so a quota goes to one batch at a time, across executions too.
+            if first_game > 0 && has_queued_work(runs, run, source_id)? {
+                continue;
+            }
             let discovered = planned_connector(&run.request, source_id, connectors).and_then(
                 |(connector, asset_types)| {
-                    discover_source(&run.request, connector, &asset_types, batch)
+                    discover_source(&run.request, connector, &asset_types, first_game)
                 },
             );
             // A cancellation or completion that won the race while discovering stops quietly.
             let recorded = match discovered {
-                Ok((work, true)) => runs.record_discovery(run_id, source_id, &work)?,
-                Ok((work, false)) => {
-                    runs.record_discovery_batch(run_id, source_id, batch, &work)?
+                Ok((work, None)) => runs.record_discovery(run_id, source_id, &work)?,
+                Ok((work, Some(games))) => {
+                    runs.record_discovery_batch(run_id, source_id, first_game, games, &work)?
                 }
                 Err(error) => {
                     runs.record_source_failure(
@@ -617,45 +622,85 @@ pub fn start_acquisition_run_with_connectors(
     Ok(runs.create_run(request, planned_sources)?)
 }
 
-/// Discovers the work of batch `batch` of one Source, counting from zero, once its connector
-/// accepts that batch, which may consult the Source, and tells whether it was the last. Only
-/// Sources not yet discovered need it: a persisted snapshot executes without them.
+/// Whether `source_id` has work queued in `run`, which executes before the Source is asked
+/// about more games.
+fn has_queued_work(
+    runs: &dyn RunRepositoryPort,
+    run: &AcquisitionRun,
+    source_id: &str,
+) -> Result<bool, ApplicationError> {
+    let others: Vec<String> = run
+        .planned_sources
+        .iter()
+        .filter(|planned| planned.as_str() != source_id)
+        .cloned()
+        .collect();
+    Ok(runs.next_queued_work(run.id, &others)?.is_some())
+}
+
+/// Discovers the work of the batch of one Source that starts at game `first_game` of the
+/// request, once its connector accepts that batch, which may consult the Source. Tells how many
+/// games the batch covered, or `None` when it was the last. Only Sources not yet discovered need
+/// it: a persisted snapshot executes without them.
 fn discover_source(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
     asset_types: &[AssetType],
-    batch: usize,
-) -> Result<(Vec<AcquisitionWorkItem>, bool), ApplicationError> {
-    let (request, last) = discovery_batch(request, connector, batch)?;
-    if let Some(reason) = connector.unsupported_request_reason(&request)? {
+    first_game: usize,
+) -> Result<(Vec<AcquisitionWorkItem>, Option<usize>), ApplicationError> {
+    let batch = discovery_batch(request, connector, first_game)?;
+    if let Some(reason) = connector.unsupported_request_reason(&batch.request)? {
         return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
             reason,
         });
     }
-    Ok((discover_work(&request, connector, asset_types)?, last))
+    let work = discover_work(&batch.request, connector, asset_types)?;
+    Ok((work, (!batch.last).then_some(batch.games)))
 }
 
-/// The part of `request` batch `batch` of the discovery of `connector` looks up, counting from
-/// zero, and whether it is the last: the whole request, as its only batch, unless the connector
-/// looks games up a few at a time and the request names more.
+/// The games of a request one discovery of a Source looks up.
+pub(crate) struct DiscoveryBatch {
+    pub(crate) request: AcquisitionRequest,
+    /// How many games of the request it covers.
+    pub(crate) games: usize,
+    /// Whether it covers the request's last game.
+    pub(crate) last: bool,
+}
+
+/// The batch of the discovery of `connector` that starts at game `first_game` of `request`: the
+/// whole request, as its only batch, unless the connector looks games up a few at a time and the
+/// request names more. A game named without its platform is looked up on every requested
+/// platform, each lookup counting toward the batch.
 pub(crate) fn discovery_batch(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
-    batch: usize,
-) -> Result<(AcquisitionRequest, bool), ApplicationError> {
-    let size = connector.discovery_batch_size().unwrap_or(0);
-    let count = match request.games() {
-        GameSelection::All => 0,
-        GameSelection::Explicit(games) => games.len(),
-        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => games.len(),
+    first_game: usize,
+) -> Result<DiscoveryBatch, ApplicationError> {
+    let whole = |games| DiscoveryBatch {
+        request: request.clone(),
+        games,
+        last: true,
     };
-    if size == 0 || count <= size {
-        return Ok((request.clone(), true));
-    }
-    // A batch past the last stands for the last.
-    let start = (batch * size).min((count - 1) / size * size);
+    let (count, lookups_per_game) = match request.games() {
+        GameSelection::All => return Ok(whole(0)),
+        GameSelection::Explicit(games) => (games.len(), request.platforms().len().max(1)),
+        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => (games.len(), 1),
+    };
+    let Some(lookups) = connector.discovery_batch_size().filter(|size| *size > 0) else {
+        return Ok(whole(count));
+    };
+    let size = (lookups / lookups_per_game).max(1);
+    // Games past the last stand for the last batch.
+    let start = if first_game < count {
+        first_game
+    } else {
+        count.saturating_sub(size)
+    };
     let end = (start + size).min(count);
+    if start == 0 && end == count {
+        return Ok(whole(count));
+    }
     let games = match request.games() {
         GameSelection::Explicit(games) => GameSelection::Explicit(games[start..end].to_vec()),
         GameSelection::PlatformBound(games) => {
@@ -666,7 +711,11 @@ pub(crate) fn discovery_batch(
     };
     let mut draft = request.to_draft();
     draft.games = games;
-    Ok((build_acquisition_request(draft)?, end == count))
+    Ok(DiscoveryBatch {
+        request: build_acquisition_request(draft)?,
+        games: end - start,
+        last: end == count,
+    })
 }
 
 fn discover_work(

@@ -174,15 +174,15 @@ where
         Ok(None)
     }
 
-    /// Looks each requested game up by name on the TheGamesDB platforms its platform names,
-    /// keeping only the games named exactly so, then lists their media of the requested kinds
-    /// in one paged request.
     /// Games are looked up one by one, so a request for many is discovered a batch at a time,
     /// each recorded as it completes.
     fn discovery_batch_size(&self) -> Option<usize> {
         Some(MAX_REQUESTED_GAMES)
     }
 
+    /// Looks each requested game up by name on the TheGamesDB platforms its platform names,
+    /// keeping only the games named exactly so, then lists their media of the requested kinds
+    /// in one paged request.
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         if let Some(reason) = self.unsupported_request_reason(request)? {
             return Err(PortError::new(reason));

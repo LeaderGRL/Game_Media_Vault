@@ -56,7 +56,9 @@ pub fn plan_acquisition(
     let mut sources = Vec::new();
     for (connector, asset_types) in capable {
         // A Source looking games up a few at a time is asked about its first batch.
-        match connector.unsupported_request_reason(&discovery_batch(request, connector, 0)?.0)? {
+        match connector
+            .unsupported_request_reason(&discovery_batch(request, connector, 0)?.request)?
+        {
             Some(reason) => excluded.push(excluded_source(connector, reason)),
             None => sources.push(PlannedSource {
                 source_id: connector.source_id().to_owned(),
