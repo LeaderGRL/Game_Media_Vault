@@ -107,6 +107,34 @@ from standard input (ADR 0005).
   request does, regardless of case, punctuation and spacing, on one of those platforms.
 
 
+### PSX DataCenter (`psx-datacenter`)
+
+- **Provides:** high-resolution scans of PlayStation box fronts and backs (Box Front, Box Back)
+  and screenshots. The side, and an edition other than the standard one, `GH` for Greatest Hits
+  or `P` for Platinum, is kept as the source label (`front: GH`), and the edition as the
+  candidate's; a scan of an edition the site names otherwise is left out rather than taken for
+  the standard one. Inlays and advertisements have no Asset Type yet and are not acquired. Every
+  candidate is recorded on `Sony - PlayStation`, and with the region of the list it came from:
+  scans and screenshots another region's directory holds are left out.
+- **Reached at:** the public website `psxdatacenter.com`: the list of each region it is asked
+  for (`ulist.html` for NTSC-U, `plist.html` for PAL, `jlist.html` for NTSC-J), then the page of
+  each requested game found in it, then the images, all on that site only. It is read as a
+  well-behaved client: only as its robots.txt allows `game-media-vault`, read once per site, and
+  at least a second, or the site's longer `Crawl-delay`, between two requests, one pace for the
+  whole process. Each request is sent once, following no redirect: a failure defers the work to
+  a later execution instead of asking again at once. A site asking for more than 30 seconds
+  between requests is left alone.
+- **Configuration:** none.
+- **Limits:** it covers only `Sony - PlayStation` (also named `PlayStation`, `PSX` or `PS1`), and
+  refuses a request naming any other platform, which it would leave unserved. It needs an
+  explicit game selection, since reading every game's page would take hours at that pace.
+  Regions narrow the lists read: `USA` and `North America` read NTSC-U; `Europe`, `PAL`,
+  `Australia` and `United Kingdom` read PAL; `Japan` reads NTSC-J. Any other region, and
+  language filters, are refused. A game is acquired only when exactly one row of a list names
+  it as the request does, regardless of case, punctuation, spacing and the number of discs the
+  list adds: several rows sharing a title are releases its title alone cannot tell apart. A
+  list without any game, as during an outage, fails the discovery as invalid source data.
+
 ## Reference catalogs
 
 These read files the user downloads and passes to an `import-*` command; they contact no
