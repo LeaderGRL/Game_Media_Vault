@@ -1,7 +1,7 @@
 use std::{
     io::{Cursor, Read},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
 use game_media_vault_application::{MediaTransformPort, PortError};
@@ -16,6 +16,14 @@ pub const PDFIUM_DIRECTORY_VARIABLE: &str = "GAME_MEDIA_VAULT_PDFIUM";
 
 /// The pdfium library this machine provides, bound once for the whole process.
 static MACHINE_PDFIUM: OnceLock<Option<Arc<Pdfium>>> = OnceLock::new();
+
+/// Serializes every call into pdfium, whose C library is not thread-safe: binding it, each
+/// load, render and release of a document, and destroying it.
+static PDFIUM_CALLS: Mutex<()> = Mutex::new(());
+
+fn pdfium_calls() -> MutexGuard<'static, ()> {
+    PDFIUM_CALLS.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Renders PDF originals through the pdfium library: a thumbnail is the first page drawn to fit
 /// the longest edge. The library is loaded only from explicit directories, never through the
@@ -61,9 +69,18 @@ impl PdfiumRenderer {
 }
 
 fn bind(directory: &Path) -> Option<Arc<Pdfium>> {
+    let _serialized = pdfium_calls();
     Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(directory))
         .ok()
         .map(|bindings| Arc::new(Pdfium::new(bindings)))
+}
+
+impl Drop for PdfiumRenderer {
+    fn drop(&mut self) {
+        // Destroying the library, when this renderer holds its last reference, calls pdfium too.
+        let _serialized = pdfium_calls();
+        self.pdfium.take();
+    }
 }
 
 impl MediaTransformPort for PdfiumRenderer {
@@ -87,6 +104,8 @@ impl MediaTransformPort for PdfiumRenderer {
             ));
         };
         let bytes = read_original(original, self.max_original_bytes)?;
+        // Held until the page and the document are released, which are pdfium calls too.
+        let _serialized = pdfium_calls();
         let document = pdfium
             .load_pdf_from_byte_slice(&bytes, None)
             .map_err(|error| PortError::new(format!("cannot open the PDF: {error}")))?;
