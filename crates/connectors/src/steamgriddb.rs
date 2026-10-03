@@ -19,7 +19,8 @@ pub const STEAMGRIDDB_SOURCE_ID: &str = "steamgriddb";
 const API: &str = "https://www.steamgriddb.com/api/v2";
 
 /// The media SteamGridDB serves, by the API collection that lists a game's media of that kind.
-/// Grids, its library capsules, have no Asset Type yet.
+/// Grids, its library capsules, are left out: they are fan-made launcher covers rather than scans
+/// of packaging (#158).
 const MEDIA: [(AssetType, &str); 3] = [
     (AssetType::Logo, "logos"),
     (AssetType::Icon, "icons"),

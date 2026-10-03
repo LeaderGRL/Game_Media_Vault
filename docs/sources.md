@@ -56,8 +56,9 @@ from standard input (ADR 0005).
 
 - **Provides:** community logos (Logo), icons (Icon) and heroes, its wide background artwork
   (Wallpaper / Artwork), best voted first. The collection and style each comes from, such as
-  `logos: official`, is kept as its source label. Grids, its library capsules, have no Asset
-  Type yet and are not acquired.
+  `logos: official`, is kept as its source label. Grids, its library capsules, are not
+  acquired: they are fan-made launcher covers rather than scans of packaging, and the maintainer
+  chose to leave them out (#158).
 - **Reached at:** the API at `www.steamgriddb.com/api/v2`, which finds each requested game by
   name and lists its media, and `cdn2.steamgriddb.com` for the images, downloaded without the key.
 - **Configuration:** an API key from the user's own SteamGridDB account, kept in this machine's
