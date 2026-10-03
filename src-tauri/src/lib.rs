@@ -805,7 +805,11 @@ pub const OBJECT_PROTOCOL: &str = "gmv-object";
 
 /// Answers `gmv-object` requests: the path must be a BLAKE3 object hash of the open vault, so
 /// the webview can only read original objects and Derived Assets, never arbitrary files.
-pub fn object_response(session: &VaultSession, path: &str) -> http::Response<Vec<u8>> {
+pub fn object_response(
+    session: &VaultSession,
+    path: &str,
+    range: Option<&str>,
+) -> http::Response<Vec<u8>> {
     let hash = path.trim_start_matches('/');
     let is_object_hash = hash.len() == 64
         && hash
@@ -819,31 +823,173 @@ pub fn object_response(session: &VaultSession, path: &str) -> http::Response<Vec
     };
     let store = ContentAddressedStore::new(vault_root);
     // Derived Assets are content-addressed too, apart from the originals.
-    let bytes = match std::fs::read(store.object_path(hash)) {
+    let file = match std::fs::File::open(store.object_path(hash)) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::read(store.derived_path(hash))
+            std::fs::File::open(store.derived_path(hash))
         }
-        read => read,
+        opened => opened,
     };
-    match bytes {
-        Ok(bytes) => http::Response::builder()
-            .status(http::StatusCode::OK)
-            .header(http::header::CONTENT_TYPE, inspect_media(&bytes).media_type)
-            // Objects are immutable: the same hash always serves the same bytes.
-            .header(
-                http::header::CACHE_CONTROL,
-                "private, max-age=31536000, immutable",
-            )
-            // Unknown bytes stay opaque instead of being sniffed into renderable documents.
-            .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-            .body(bytes)
-            .unwrap_or_else(|_| {
-                plain_response(http::StatusCode::INTERNAL_SERVER_ERROR, "invalid response")
-            }),
+    let mut file = match file {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            plain_response(http::StatusCode::NOT_FOUND, "object not found")
+            return plain_response(http::StatusCode::NOT_FOUND, "object not found");
+        }
+        Err(_) => {
+            return plain_response(http::StatusCode::INTERNAL_SERVER_ERROR, "object unreadable");
+        }
+    };
+    match object_part(&mut file, range) {
+        Ok(Some(part)) => {
+            let mut response = http::Response::builder()
+                .status(if part.partial {
+                    http::StatusCode::PARTIAL_CONTENT
+                } else {
+                    http::StatusCode::OK
+                })
+                .header(http::header::CONTENT_TYPE, part.media_type)
+                // Players seek through media by asking for the bytes they need.
+                .header(http::header::ACCEPT_RANGES, "bytes")
+                // Objects are immutable: the same hash always serves the same bytes.
+                .header(
+                    http::header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable",
+                )
+                // Unknown bytes stay opaque instead of being sniffed into renderable documents.
+                .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+            if part.partial {
+                response = response.header(
+                    http::header::CONTENT_RANGE,
+                    format!(
+                        "bytes {}-{}/{}",
+                        part.first,
+                        part.first + part.bytes.len() as u64 - 1,
+                        part.length
+                    ),
+                );
+            }
+            response.body(part.bytes).unwrap_or_else(|_| {
+                plain_response(http::StatusCode::INTERNAL_SERVER_ERROR, "invalid response")
+            })
+        }
+        Ok(None) => {
+            let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let mut response = plain_response(
+                http::StatusCode::RANGE_NOT_SATISFIABLE,
+                "range not satisfiable",
+            );
+            if let Ok(value) = http::HeaderValue::from_str(&format!("bytes */{length}")) {
+                response
+                    .headers_mut()
+                    .insert(http::header::CONTENT_RANGE, value);
+            }
+            response
         }
         Err(_) => plain_response(http::StatusCode::INTERNAL_SERVER_ERROR, "object unreadable"),
+    }
+}
+
+/// The bytes of an object a response serves, and what describes them.
+struct ObjectPart {
+    media_type: String,
+    /// Whether they are part of the object, which a range asked for.
+    partial: bool,
+    first: u64,
+    length: u64,
+    bytes: Vec<u8>,
+}
+
+/// Bytes read from the start of an object to name its media type, as storing reads them.
+const MEDIA_TYPE_PREFIX: u64 = 256 * 1024;
+
+/// The most bytes one ranged response holds. A player asks for the rest of a video and reads it
+/// a part at a time, so a large one is never held in memory whole.
+const MAX_RANGE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The part of `file` the `range` header asks for, or all of it, reading only those bytes; none
+/// when the range starts past its end.
+fn object_part(
+    file: &mut std::fs::File,
+    range: Option<&str>,
+) -> std::io::Result<Option<ObjectPart>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let length = file.metadata()?.len();
+    let mut prefix = Vec::new();
+    (&mut *file)
+        .take(MEDIA_TYPE_PREFIX)
+        .read_to_end(&mut prefix)?;
+    let media_type = inspect_media(&prefix).media_type;
+    let (partial, first, last) = match range.map(|range| requested_range(range, length)) {
+        None | Some(RequestedRange::Whole) => (false, 0, length),
+        Some(RequestedRange::Unsatisfiable) => return Ok(None),
+        Some(RequestedRange::Part { first, last }) => {
+            (true, first, (last + 1).min(first + MAX_RANGE_BYTES))
+        }
+    };
+    file.seek(SeekFrom::Start(first))?;
+    let mut bytes = Vec::new();
+    (&mut *file).take(last - first).read_to_end(&mut bytes)?;
+    Ok(Some(ObjectPart {
+        media_type,
+        partial,
+        first,
+        length,
+        bytes,
+    }))
+}
+
+/// What a `Range` header asks of an object.
+enum RequestedRange {
+    /// The whole object: a header it cannot read, or one asking for several ranges.
+    Whole,
+    /// The bytes from `first` to `last`, both included.
+    Part { first: u64, last: u64 },
+    /// A range that starts past the object's end.
+    Unsatisfiable,
+}
+
+/// What a `Range` header asks of an object of `length` bytes: one range of bytes, a suffix of
+/// them, or, when it cannot read the header, the whole object.
+fn requested_range(header: &str, length: u64) -> RequestedRange {
+    let Some(ranges) = header.trim().strip_prefix("bytes=") else {
+        return RequestedRange::Whole;
+    };
+    let Some((first, last)) = ranges.split_once('-') else {
+        return RequestedRange::Whole;
+    };
+    let (first, last) = (first.trim(), last.trim());
+    if ranges.contains(',') {
+        return RequestedRange::Whole;
+    }
+    if first.is_empty() {
+        // The last bytes of the object.
+        return match last.parse::<u64>() {
+            Ok(0) => RequestedRange::Unsatisfiable,
+            Ok(_) if length == 0 => RequestedRange::Unsatisfiable,
+            Ok(suffix) => RequestedRange::Part {
+                first: length.saturating_sub(suffix),
+                last: length - 1,
+            },
+            Err(_) => RequestedRange::Whole,
+        };
+    }
+    let Ok(first) = first.parse::<u64>() else {
+        return RequestedRange::Whole;
+    };
+    let last = if last.is_empty() {
+        None
+    } else {
+        match last.parse::<u64>() {
+            Ok(last) if last >= first => Some(last),
+            _ => return RequestedRange::Whole,
+        }
+    };
+    if first >= length {
+        return RequestedRange::Unsatisfiable;
+    }
+    RequestedRange::Part {
+        first,
+        last: last.map_or(length - 1, |last| last.min(length - 1)),
     }
 }
 
@@ -864,9 +1010,18 @@ pub fn run() {
             |context, request, responder| {
                 let app = context.app_handle().clone();
                 let path = request.uri().path().to_owned();
+                let range = request
+                    .headers()
+                    .get(http::header::RANGE)
+                    .and_then(|range| range.to_str().ok())
+                    .map(str::to_owned);
                 // Reading originals must not block the webview's event loop.
                 tauri::async_runtime::spawn_blocking(move || {
-                    responder.respond(object_response(&app.state::<VaultSession>(), &path));
+                    responder.respond(object_response(
+                        &app.state::<VaultSession>(),
+                        &path,
+                        range.as_deref(),
+                    ));
                 });
             },
         )

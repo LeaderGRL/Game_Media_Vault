@@ -65,7 +65,7 @@ const CREDENTIALS: [CredentialField; 4] = [DEV_ID, DEV_PASSWORD, USER_ID, USER_P
 
 /// The media ScreenScraper serves that have an Asset Type, by their type. Its scan of the
 /// cartridge or disc, `support-2D`, has the Asset Type of what the platform's games come on.
-const MEDIA: [(&str, AssetType); 11] = [
+const MEDIA: [(&str, AssetType); 13] = [
     ("box-2D", AssetType::BoxFront),
     ("box-2D-back", AssetType::BoxBack),
     ("box-2D-side", AssetType::Spine),
@@ -73,6 +73,8 @@ const MEDIA: [(&str, AssetType); 11] = [
     ("manuel", AssetType::Manual),
     ("ss", AssetType::Screenshot),
     ("sstitle", AssetType::TitleScreen),
+    ("video", AssetType::GameplayVideo),
+    ("video-normalized", AssetType::GameplayVideo),
     ("wheel", AssetType::Logo),
     ("wheel-hd", AssetType::Logo),
     ("fanart", AssetType::WallpaperArtwork),
@@ -187,10 +189,10 @@ const REGIONS: &[(&str, &str)] = &[
 ];
 
 /// The scripts that serve media, one of which each locator names.
-const MEDIA_SCRIPTS: [&str; 2] = ["mediaJeu.php", "mediaManuelJeu.php"];
+const MEDIA_SCRIPTS: [&str; 3] = ["mediaJeu.php", "mediaManuelJeu.php", "mediaVideoJeu.php"];
 
 /// The largest media ScreenScraper is trusted to serve, which keeps a misbehaving answer from
-/// filling memory; scanned manuals are the largest.
+/// filling memory; scanned manuals and videos are the largest.
 const MAX_MEDIA_BYTES: u64 = 512 * 1024 * 1024;
 
 /// What ScreenScraper answers a media request with instead of the media: that it has none, or
@@ -300,6 +302,7 @@ where
                 AssetType::Manual,
                 AssetType::Screenshot,
                 AssetType::TitleScreen,
+                AssetType::GameplayVideo,
                 AssetType::Logo,
                 AssetType::WallpaperArtwork,
                 AssetType::Flyer,

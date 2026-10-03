@@ -53,3 +53,25 @@ fn the_webview_fetches_vault_objects_and_nothing_beyond_the_shell() {
         ]
     );
 }
+
+#[test]
+fn the_webview_plays_media_from_vault_objects_alone() {
+    let config = tauri_config();
+    for policy in ["csp", "devCsp"] {
+        let csp = config["app"]["security"][policy].as_str().unwrap();
+        let media_src: Vec<&str> = csp
+            .split(';')
+            .map(str::trim)
+            .find_map(|directive| directive.strip_prefix("media-src "))
+            .unwrap_or_else(|| panic!("{policy} must restrict media-src"))
+            .split_whitespace()
+            .collect();
+
+        // Gameplay videos play from the object protocol, and from nowhere else.
+        assert_eq!(
+            media_src,
+            ["'self'", "gmv-object:", "http://gmv-object.localhost"],
+            "{policy}"
+        );
+    }
+}

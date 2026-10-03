@@ -45,6 +45,16 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
             };
         }
     }
+    // Videos go first: the image detection takes every ISO base media file for HEIF, while
+    // the video one leaves files naming a HEIF or AVIF brand to it.
+    if let Some(media_type) = video_media_type(header) {
+        return MediaInfo {
+            media_type: media_type.to_owned(),
+            width: None,
+            height: None,
+            document: None,
+        };
+    }
     let Ok(image_type) = imagesize::image_type(header) else {
         return MediaInfo::unknown();
     };
@@ -58,6 +68,55 @@ fn inspect_header(header: &[u8]) -> MediaInfo {
         height: size.and_then(|size| u32::try_from(size.height).ok()),
         document: None,
     }
+}
+
+/// The brands of HEIF and AVIF images and image sequences, which share their container with
+/// videos.
+const IMAGE_BRANDS: [&[u8]; 12] = [
+    b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"msf1",
+    b"avif", b"avis",
+];
+
+/// The media type of a video container the header opens: an ISO base media file whose `ftyp`
+/// box names no image brand among its major and compatible brands, or a Matroska or WebM file.
+fn video_media_type(header: &[u8]) -> Option<&'static str> {
+    if header.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        // Players read WebM, the Matroska profile videos are published in, by this name.
+        return Some("video/webm");
+    }
+    if header.get(4..8) != Some(&b"ftyp"[..]) {
+        return None;
+    }
+    let size = u32::from_be_bytes(header.get(0..4)?.try_into().ok()?);
+    // A size of one puts the box's 64-bit size after its type, and its brands after that.
+    let (brands_start, box_end) = if size == 1 {
+        let large = u64::from_be_bytes(header.get(8..16)?.try_into().ok()?);
+        (16, usize::try_from(large).ok()?)
+    } else {
+        (8, usize::try_from(size).ok()?)
+    };
+    let major = header.get(brands_start..brands_start + 4)?;
+    // The minor version follows the major brand, then the compatible brands to the box's end.
+    let compatible = header
+        .get(brands_start + 8..box_end.min(header.len()))
+        .unwrap_or_default();
+    if std::iter::once(major)
+        .chain(
+            compatible
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|brand| brand.as_slice()),
+        )
+        .any(|brand| IMAGE_BRANDS.contains(&brand))
+    {
+        return None;
+    }
+    Some(if major == b"qt  " {
+        "video/quicktime"
+    } else {
+        "video/mp4"
+    })
 }
 
 fn image_media_type(image_type: ImageType) -> Option<&'static str> {

@@ -21,7 +21,7 @@ fn open_vault_with_object() -> (TempDir, VaultSession, String) {
 fn serves_an_original_object_of_the_open_vault() {
     let (_temp, session, hash) = open_vault_with_object();
 
-    let response = object_response(&session, &format!("/{hash}"));
+    let response = object_response(&session, &format!("/{hash}"), None);
 
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-type"], "image/png");
@@ -53,7 +53,7 @@ fn labels_objects_with_the_media_type_of_their_signature() {
     ] {
         let stored = store.store_original(&mut &bytes[..]).unwrap();
 
-        let response = object_response(&session, &format!("/{}", stored.hash));
+        let response = object_response(&session, &format!("/{}", stored.hash), None);
 
         assert_eq!(response.headers()["content-type"], media_type);
     }
@@ -64,7 +64,11 @@ fn refuses_paths_that_are_not_object_hashes() {
     let (_temp, session, _hash) = open_vault_with_object();
 
     for path in ["/../catalog.sqlite3", "/ABC", "/", "/objects/aa/bb/x"] {
-        assert_eq!(object_response(&session, path).status(), 400, "{path}");
+        assert_eq!(
+            object_response(&session, path, None).status(),
+            400,
+            "{path}"
+        );
     }
 }
 
@@ -73,9 +77,9 @@ fn reports_missing_objects_and_closed_vaults() {
     let (_temp, session, _hash) = open_vault_with_object();
     let unknown = format!("/{}", "0".repeat(64));
 
-    assert_eq!(object_response(&session, &unknown).status(), 404);
+    assert_eq!(object_response(&session, &unknown, None).status(), 404);
     assert_eq!(
-        object_response(&VaultSession::default(), &unknown).status(),
+        object_response(&VaultSession::default(), &unknown, None).status(),
         409
     );
 }
@@ -90,9 +94,85 @@ fn serves_derived_assets_by_their_hash_too() {
     )
     .unwrap();
 
-    let response = object_response(&session, &format!("/{}", derived.hash));
+    let response = object_response(&session, &format!("/{}", derived.hash), None);
 
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-type"], "image/png");
     assert_eq!(response.body().as_slice(), thumbnail);
+}
+
+#[test]
+fn serves_the_byte_range_a_player_asks_for() {
+    let (_temp, session, hash) = open_vault_with_object();
+    let path = format!("/{hash}");
+    let length = PNG_BYTES.len();
+
+    let whole = object_response(&session, &path, None);
+    assert_eq!(whole.headers()["accept-ranges"], "bytes");
+
+    for (range, first, last) in [
+        ("bytes=4-9", 4, 9),
+        ("bytes=10-", 10, length - 1),
+        ("bytes=-5", length - 5, length - 1),
+        ("bytes=4-9999", 4, length - 1),
+    ] {
+        let response = object_response(&session, &path, Some(range));
+
+        assert_eq!(response.status(), 206, "{range}");
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes {first}-{last}/{length}").as_str(),
+            "{range}"
+        );
+        assert_eq!(response.headers()["content-type"], "image/png");
+        assert_eq!(response.body().as_slice(), &PNG_BYTES[first..=last]);
+    }
+}
+
+#[test]
+fn refuses_a_range_past_the_end_and_ignores_one_it_cannot_read() {
+    let (_temp, session, hash) = open_vault_with_object();
+    let path = format!("/{hash}");
+
+    let past = object_response(&session, &path, Some("bytes=9999-"));
+    assert_eq!(past.status(), 416);
+    assert_eq!(
+        past.headers()["content-range"],
+        format!("bytes */{}", PNG_BYTES.len()).as_str()
+    );
+
+    for range in ["bytes=0-1,4-5", "items=0-1", "bytes=9-4", "bytes=x-"] {
+        let whole = object_response(&session, &path, Some(range));
+
+        assert_eq!(whole.status(), 200, "{range}");
+        assert_eq!(whole.body().as_slice(), PNG_BYTES, "{range}");
+    }
+}
+
+#[test]
+fn answers_an_open_range_of_a_large_object_a_part_at_a_time() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    let mut video = vec![0, 0, 0, 0x18];
+    video.extend_from_slice(b"ftypisommp41");
+    video.resize(5 * 1024 * 1024, 7);
+    let stored = ContentAddressedStore::new(&vault)
+        .store_original(&mut video.as_slice())
+        .unwrap();
+    let session = VaultSession::default();
+    session.open(&vault, false).unwrap();
+
+    let response = object_response(&session, &format!("/{}", stored.hash), Some("bytes=0-"));
+
+    // A player asks for the rest of the media and reads it a part at a time, so a large one is
+    // never held in memory whole.
+    let part = 4 * 1024 * 1024;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-type"], "video/mp4");
+    assert_eq!(
+        response.headers()["content-range"],
+        format!("bytes 0-{}/{}", part - 1, video.len()).as_str()
+    );
+    assert_eq!(response.body().as_slice(), &video[..part]);
 }

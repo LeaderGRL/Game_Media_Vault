@@ -296,3 +296,50 @@ fn a_gltf_binary_is_recorded_as_a_3d_model() {
         }
     );
 }
+
+#[test]
+fn mp4_and_webm_originals_are_recorded_as_videos() {
+    // An ISO base media file opens with its `ftyp` box, naming its brands.
+    let mut mp4 = vec![0, 0, 0, 0x18];
+    mp4.extend_from_slice(b"ftypisom");
+    mp4.extend_from_slice(&[0, 0, 2, 0]);
+    mp4.extend_from_slice(b"isommp41");
+    // A Matroska or WebM file opens with its EBML header.
+    let webm = [0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01];
+
+    for (bytes, media_type) in [(&mp4[..], "video/mp4"), (&webm[..], "video/webm")] {
+        assert_eq!(
+            stored_media(bytes),
+            MediaInfo {
+                media_type: media_type.to_owned(),
+                width: None,
+                height: None,
+                document: None,
+            }
+        );
+    }
+}
+
+#[test]
+fn image_sequences_and_extended_type_boxes_are_no_videos() {
+    // An AVIF image sequence names its own brand.
+    let mut sequence = vec![0, 0, 0, 0x18];
+    sequence.extend_from_slice(b"ftypavis");
+    sequence.extend_from_slice(&[0, 0, 0, 0]);
+    sequence.extend_from_slice(b"avismif1");
+    // A type box of extended size puts its brand after the 64-bit size.
+    let mut extended = vec![0, 0, 0, 1];
+    extended.extend_from_slice(b"ftyp");
+    extended.extend_from_slice(&28_u64.to_be_bytes());
+    extended.extend_from_slice(b"avif");
+    extended.extend_from_slice(&[0, 0, 0, 0]);
+    extended.extend_from_slice(b"mif1");
+
+    for bytes in [sequence, extended] {
+        assert!(
+            !stored_media(&bytes).media_type.starts_with("video/"),
+            "{:?}",
+            stored_media(&bytes)
+        );
+    }
+}

@@ -540,6 +540,46 @@ fn imports_a_local_manual_unchanged() {
     assert!(asset["document"].is_null());
 }
 
+#[test]
+fn imports_a_local_gameplay_video_unchanged() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("gameplay.mp4");
+    let mut bytes = vec![0, 0, 0, 0x18];
+    bytes.extend_from_slice(b"ftypisom");
+    bytes.extend_from_slice(&[0, 0, 2, 0]);
+    bytes.extend_from_slice(b"isommp41");
+    fs::write(&source, &bytes).unwrap();
+
+    let imported = run_in_vault(
+        &vault,
+        &[
+            "import-asset",
+            "--asset-type",
+            "gameplay_video",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    assert!(imported.contains("Imported Gameplay Video"), "{imported}");
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let asset = &library[0]["assets"][0];
+    assert_eq!(asset["asset_type"], "gameplay_video");
+    assert_eq!(asset["media_type"], "video/mp4");
+    assert_eq!(asset["byte_len"], bytes.len());
+}
+
 /// A PDF of `pages` blank pages whose Info dictionary names `title`, with a correct cross-reference
 /// table.
 fn pdf(title: &str, pages: usize) -> Vec<u8> {

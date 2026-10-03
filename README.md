@@ -25,8 +25,8 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   - **TheGamesDB**: box fronts and backs, screenshots, title screens, clear logos and fan art,
     with the user's own API key.
   - **ScreenScraper**: regional box scans, spines and 3D boxes, cartridge and disc scans,
-    manuals, screenshots, title screens, logos, fan art and flyers, with developer credentials
-    and, optionally, the user's own account.
+    manuals, screenshots, title screens, gameplay videos, logos, fan art and flyers, with
+    developer credentials and, optionally, the user's own account.
   - **RAWG**: screenshots and background art of modern and retro games, with the user's own API
     key.
   - **PSX DataCenter**: high-resolution PlayStation cover scans and screenshots, read from its

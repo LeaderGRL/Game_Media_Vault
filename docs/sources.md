@@ -114,12 +114,13 @@ only the one named; an API key is stored under the Source's id, any other creden
 
 - **Provides:** box fronts, backs and spines (Box Front, Box Back, Spine), 3D boxes (Box 3D
   Render), scans of the cartridge or disc (Cartridge Front or Disc, by what the platform's games
-  come on), manuals as PDF (Manual), screenshots, title screens, wheels (Logo), fan art
-  (Wallpaper / Artwork) and arcade flyers (Flyer). The media type and region code, such as
+  come on), manuals as PDF (Manual), screenshots, title screens, gameplay videos as MP4, both
+  the original `video` and the `video-normalized` encoding (Gameplay Video), wheels (Logo), fan
+  art (Wallpaper / Artwork) and arcade flyers (Flyer). The media type and region code, such as
   `box-2D (us)`, is kept as its source label, and the region it stands for (`us` as USA, `eu` as
   Europe, `jp` as Japan, `wor` as World, a country by its own) as the candidate's; a media of no
-  region, or of one ScreenScraper alone names, is recorded in no region. Mixes, videos and other
-  composites have no Asset Type and are not acquired.
+  region, or of one ScreenScraper alone names, is recorded in no region. Mixes and other composites
+  have no Asset Type and are not acquired.
 - **Reached at:** the API at `api.screenscraper.fr`, which searches each requested game by name
   on the ScreenScraper system of its platform, describes a game found without its media, and
   serves the media themselves. Every request goes to that API, whatever server a media's own
