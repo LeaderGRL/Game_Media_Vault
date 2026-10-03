@@ -40,13 +40,11 @@ pub(crate) fn wanted_games(request: &AcquisitionRequest) -> Vec<(String, String)
     wanted
 }
 
-/// A name compared regardless of case, punctuation and spacing.
+/// A name compared regardless of case, punctuation and spacing, so that `Spider-Man`,
+/// `Spider Man` and `spiderman` are one name.
 pub(crate) fn name_key(name: &str) -> String {
     name.chars()
-        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
+        .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
 }

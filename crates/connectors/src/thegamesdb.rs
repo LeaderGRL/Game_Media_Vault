@@ -37,6 +37,30 @@ const MEDIA: [(AssetType, &str, Option<&str>); 6] = [
 /// monthly allowance.
 const MAX_IMAGE_PAGES: u32 = 10;
 
+/// The most pages of a game search one requested game reads.
+const MAX_SEARCH_PAGES: u32 = 5;
+
+/// The platforms TheGamesDB names with other words than the No-Intro and Redump catalogs do: each
+/// catalog name with the TheGamesDB names it stands for.
+const PLATFORM_ALIASES: [(&str, &[&str]); 10] = [
+    (
+        "Nintendo - Super Nintendo Entertainment System",
+        &["Super Nintendo (SNES)"],
+    ),
+    (
+        "Sega - Mega Drive - Genesis",
+        &["Sega Genesis", "Sega Mega Drive"],
+    ),
+    ("Sega - Mega-CD - Sega CD", &["Sega CD"]),
+    ("Sega - Master System - Mark III", &["Sega Master System"]),
+    ("NEC - PC Engine - TurboGrafx-16", &["TurboGrafx 16"]),
+    ("Sony - PlayStation Portable", &["Sony PSP"]),
+    ("Bandai - WonderSwan", &["WonderSwan"]),
+    ("Bandai - WonderSwan Color", &["WonderSwan Color"]),
+    ("SNK - Neo Geo Pocket", &["Neo Geo Pocket"]),
+    ("SNK - Neo Geo Pocket Color", &["Neo Geo Pocket Color"]),
+];
+
 /// A platform TheGamesDB lists: its id and the words naming it.
 type ListedPlatform = (u64, BTreeSet<String>);
 
@@ -156,30 +180,37 @@ where
                 continue;
             }
             let ids: Vec<String> = platform_ids.iter().map(u64::to_string).collect();
-            let answer = self.get(
-                "v1.1/Games/ByGameName",
-                &[("name", &title), ("filter[platform]", &ids.join(","))],
-                &key,
-            )?;
+            let ids = ids.join(",");
             let wanted = name_key(&title);
-            for game in answer
-                .pointer("/data/games")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let (Some(id), Some(name), Some(on)) = (
-                    game.get("id").and_then(Value::as_u64),
-                    game.get("game_title").and_then(Value::as_str),
-                    game.get("platform").and_then(Value::as_u64),
-                ) else {
-                    continue;
-                };
-                if name_key(name) == wanted
-                    && platform_ids.contains(&on)
-                    && !games.iter().any(|(found, ..)| *found == id)
+            for page in 1..=MAX_SEARCH_PAGES {
+                let page_number = page.to_string();
+                let mut query = vec![("name", title.as_str()), ("filter[platform]", &ids)];
+                if page > 1 {
+                    query.push(("page", &page_number));
+                }
+                let answer = self.get("v1.1/Games/ByGameName", &query, &key)?;
+                for game in answer
+                    .pointer("/data/games")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
                 {
-                    games.push((id, title.clone(), platform.clone()));
+                    let (Some(id), Some(name), Some(on)) = (
+                        game.get("id").and_then(Value::as_u64),
+                        game.get("game_title").and_then(Value::as_str),
+                        game.get("platform").and_then(Value::as_u64),
+                    ) else {
+                        continue;
+                    };
+                    if name_key(name) == wanted
+                        && platform_ids.contains(&on)
+                        && !games.iter().any(|(found, ..)| *found == id)
+                    {
+                        games.push((id, title.clone(), platform.clone()));
+                    }
+                }
+                if !has_next_page(&answer) {
+                    break;
                 }
             }
         }
@@ -226,12 +257,7 @@ where
                     }
                 }
             }
-            // The next page's address carries the key, so only whether there is one counts.
-            if answer
-                .pointer("/pages/next")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            {
+            if !has_next_page(&answer) {
                 break;
             }
         }
@@ -250,9 +276,10 @@ impl<T> TheGamesDbConnector<T>
 where
     T: HttpTransport,
 {
-    /// The ids of the TheGamesDB platforms `platform` names: those named by the same words,
-    /// otherwise those whose every word, at least two, it names, as `Sega Genesis` and
-    /// `Sega Mega Drive` for `Sega - Mega Drive - Genesis`.
+    /// The ids of the TheGamesDB platforms `platform` names: those named by the same words, or
+    /// those its alias stands for, as `Sega Genesis` and `Sega Mega Drive` for
+    /// `Sega - Mega Drive - Genesis`. A qualifier of the requested name, such as `(Digital)`,
+    /// counts, so a digital platform is never taken for the physical one.
     fn platforms_named(&self, platform: &str, key: &ApiKey) -> Result<Vec<u64>, PortError> {
         let mut platforms = self
             .platforms
@@ -274,26 +301,29 @@ where
                     .filter_map(|listed| {
                         Some((
                             listed.get("id")?.as_u64()?,
-                            platform_words(listed.get("name")?.as_str()?),
+                            listed_platform_words(listed.get("name")?.as_str()?),
                         ))
                     })
                     .collect(),
             );
         }
         let listed = platforms.as_deref().unwrap_or_default();
-        let wanted = platform_words(platform);
+        let requested = requested_platform_words(platform);
+        let wanted: Vec<BTreeSet<String>> = match PLATFORM_ALIASES
+            .iter()
+            .find(|(catalog, _)| requested_platform_words(catalog) == requested)
+        {
+            Some((_, names)) => names
+                .iter()
+                .map(|name| listed_platform_words(name))
+                .collect(),
+            None => vec![requested],
+        };
         let mut same: Vec<u64> = listed
             .iter()
-            .filter(|(_, words)| *words == wanted)
+            .filter(|(_, words)| wanted.contains(words))
             .map(|(id, _)| *id)
             .collect();
-        if same.is_empty() {
-            same = listed
-                .iter()
-                .filter(|(_, words)| words.len() >= 2 && words.is_subset(&wanted))
-                .map(|(id, _)| *id)
-                .collect();
-        }
         same.sort_unstable();
         Ok(same)
     }
@@ -324,6 +354,15 @@ where
         }
         Ok(answer)
     }
+}
+
+/// Whether a paged answer has a next page. Its address carries the key, so only whether there
+/// is one counts.
+fn has_next_page(answer: &Value) -> bool {
+    answer
+        .pointer("/pages/next")
+        .and_then(Value::as_str)
+        .is_some_and(|next| !next.is_empty())
 }
 
 /// The candidate an image of the API describes, when it is of a requested kind and has a
@@ -370,16 +409,28 @@ fn candidate(
     })
 }
 
-/// The words naming a platform, regardless of case, punctuation, a maker named twice and the
-/// abbreviations in parentheses TheGamesDB adds, such as `(NES)`.
-fn platform_words(name: &str) -> BTreeSet<String> {
+/// The words of a platform TheGamesDB lists, without the abbreviation in parentheses it adds,
+/// such as `(NES)`.
+fn listed_platform_words(name: &str) -> BTreeSet<String> {
+    platform_words(name, false)
+}
+
+/// The words of a requested platform, its qualifiers in parentheses, such as `(Digital)`,
+/// among them.
+fn requested_platform_words(name: &str) -> BTreeSet<String> {
+    platform_words(name, true)
+}
+
+/// The words naming a platform, regardless of case, punctuation and a maker named twice, with
+/// or without its words in parentheses.
+fn platform_words(name: &str, parenthesized: bool) -> BTreeSet<String> {
     let mut words = BTreeSet::new();
     let mut word = String::new();
     let mut depth = 0_usize;
     for character in name.chars().chain([' ']) {
         match character {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
+            '(' if !parenthesized => depth += 1,
+            ')' if !parenthesized => depth = depth.saturating_sub(1),
             _ if depth == 0 && character.is_alphanumeric() => {
                 word.extend(character.to_lowercase());
             }

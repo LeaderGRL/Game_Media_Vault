@@ -93,15 +93,18 @@ from standard input (ADR 0005).
      **Store key**. Or run `game-media-vault source key set thegamesdb`, paste the key and press
      Enter.
 - **Limits:** a key has a monthly allowance of requests. A discovery takes one request for the
-  platform list, one per requested game and platform, and at most ten pages of images for all
+  platform list, up to five pages of search per requested game and platform, and at most ten pages of images for all
   the games found. Without a stored key it is left out of every plan, with the reason. It needs
   an explicit game selection and refuses region and language filters. A platform is served when
   TheGamesDB names it with the same words, regardless of case, punctuation and the abbreviation
   it adds, such as `Nintendo Entertainment System (NES)` for
-  `Nintendo - Nintendo Entertainment System`. Otherwise every TheGamesDB platform whose words,
-  at least two, the requested name holds serves it, as `Sega Genesis` and `Sega Mega Drive` for
+  `Nintendo - Nintendo Entertainment System`. A qualifier of the requested name, such as
+  `(Digital)`, counts, so a digital platform is never taken for the physical one. A few catalog
+  names TheGamesDB words otherwise are known by alias, such as `Super Nintendo (SNES)` for
+  `Nintendo - Super Nintendo Entertainment System`, and `Sega Genesis` with `Sega Mega Drive` for
   `Sega - Mega Drive - Genesis`. A game is acquired only when TheGamesDB names it exactly as the
-  request does, on one of those platforms.
+  request does, regardless of case, punctuation and spacing, on one of those platforms.
+
 
 ## Reference catalogs
 

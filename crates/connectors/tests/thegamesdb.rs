@@ -107,7 +107,10 @@ fn request(change: impl FnOnce(&mut AcquisitionRequestDraft)) -> AcquisitionRequ
 const PLATFORMS: &str = r#"{"code":200,"status":"Success","remaining_monthly_allowance":100,"extra_allowance":0,"data":{"count":3,"platforms":{
   "7":{"id":7,"name":"Nintendo Entertainment System (NES)","alias":"nintendo-entertainment-system-nes"},
   "4":{"id":4,"name":"Nintendo Game Boy","alias":"nintendo-gameboy"},
-  "10":{"id":10,"name":"Sony Playstation","alias":"sony-playstation"}
+  "10":{"id":10,"name":"Sony Playstation","alias":"sony-playstation"},
+  "6":{"id":6,"name":"Super Nintendo (SNES)","alias":"super-nintendo-snes"},
+  "18":{"id":18,"name":"Sega Genesis","alias":"sega-genesis"},
+  "36":{"id":36,"name":"Sega Mega Drive","alias":"sega-mega-drive"}
 }}}"#;
 
 const SEARCH: &str = r#"{"code":200,"status":"Success","remaining_monthly_allowance":99,"extra_allowance":0,
@@ -360,5 +363,95 @@ fn an_answer_saying_it_failed_fails_the_discovery() {
         error.message().contains("monthly allowance"),
         "{}",
         error.message()
+    );
+}
+
+#[test]
+fn a_platform_qualified_as_digital_is_not_taken_for_the_physical_one() {
+    let api = FixtureApi::answering(&[(PLATFORMS_URL, PLATFORMS)]);
+
+    let candidates = connector(&api, Some("key"))
+        .discover(&request(|draft| {
+            draft.platforms = vec![format!("{NES} (Digital)")];
+        }))
+        .unwrap();
+
+    assert!(candidates.is_empty());
+    assert_eq!(api.requested().len(), 1);
+}
+
+#[test]
+fn platforms_it_names_otherwise_are_known_by_their_catalog_names() {
+    for (platform, ids) in [
+        ("Nintendo - Super Nintendo Entertainment System", "6"),
+        ("Sega - Mega Drive - Genesis", "18%2C36"),
+    ] {
+        let api = FixtureApi::answering(&[(PLATFORMS_URL, PLATFORMS)]);
+
+        // The fixture answers no search: which platforms the search names is what counts.
+        let _unanswered = connector(&api, Some("key")).discover(&request(|draft| {
+            draft.platforms = vec![platform.to_owned()]
+        }));
+
+        let searched = &api.requested()[1].0;
+        assert!(
+            searched.ends_with(&format!("filter%5Bplatform%5D={ids}")),
+            "{platform}: {searched}"
+        );
+    }
+}
+
+#[test]
+fn titles_differing_only_in_punctuation_name_one_game() {
+    let search = r#"{"code":200,"status":"Success","pages":{"next":null},
+      "data":{"count":1,"games":[{"id":50,"game_title":"Spider Man","platform":7}]}}"#;
+    let api = FixtureApi::answering(&[
+        (PLATFORMS_URL, PLATFORMS),
+        (
+            "https://api.thegamesdb.net/v1.1/Games/ByGameName?name=Spider-Man&filter%5Bplatform%5D=7",
+            search,
+        ),
+        (
+            &format!("{API}/v1/Games/Images?games_id=50&filter%5Btype%5D=boxart"),
+            &images("null").replace(r#""2":["#, r#""50":["#),
+        ),
+    ]);
+
+    let candidates = connector(&api, Some("key"))
+        .discover(&request(|draft| {
+            draft.games = GameSelection::Explicit(vec!["Spider-Man".to_owned()]);
+        }))
+        .unwrap();
+
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.game_title == "Spider-Man")
+    );
+}
+
+#[test]
+fn follows_the_pages_of_a_game_search() {
+    let first = r#"{"code":200,"status":"Success","pages":{"next":"https://api.thegamesdb.net/v1.1/Games/ByGameName?apikey=SECRET&page=2"},
+      "data":{"count":1,"games":[{"id":140,"game_title":"Super Mario Bros. 3","platform":7}]}}"#;
+    let second = r#"{"code":200,"status":"Success","pages":{"next":null},
+      "data":{"count":1,"games":[{"id":2,"game_title":"Super Mario Bros.","platform":7}]}}"#;
+    let api = FixtureApi::answering(&[
+        (PLATFORMS_URL, PLATFORMS),
+        (SEARCH_URL, first),
+        (&format!("{SEARCH_URL}&page=2"), second),
+        (&images_url("boxart"), &images("null")),
+    ]);
+
+    let candidates = connector(&api, Some("key"))
+        .discover(&request(|_| {}))
+        .unwrap();
+
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        api.requested()
+            .iter()
+            .all(|(url, _)| !url.contains("SECRET"))
     );
 }
