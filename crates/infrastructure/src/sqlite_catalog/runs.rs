@@ -62,6 +62,7 @@ impl RunRepositoryPort for SqliteCatalog {
             below_quality_work: 0,
             outranked_work: 0,
             unavailable_work: 0,
+            dismissed_work: 0,
             discoveries: planned_sources_discoveries(&planned_sources_of_new_run),
         })
     }
@@ -358,7 +359,11 @@ impl RunRepositoryPort for SqliteCatalog {
     }
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
-        complete_queued_work(&self.connect()?, run_id, work_key, None)
+        complete_queued_work(&self.connect()?, run_id, work_key, None, false)
+    }
+
+    fn dismiss_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        complete_queued_work(&self.connect()?, run_id, work_key, None, true)
     }
 
     fn complete_unavailable_work(
@@ -367,7 +372,7 @@ impl RunRepositoryPort for SqliteCatalog {
         work_key: &str,
         reason: &str,
     ) -> Result<(), PortError> {
-        complete_queued_work(&self.connect()?, run_id, work_key, Some(reason))
+        complete_queued_work(&self.connect()?, run_id, work_key, Some(reason), false)
     }
 
     fn record_source_failure(
@@ -451,12 +456,14 @@ fn complete_queued_work(
     run_id: i64,
     work_key: &str,
     unavailable_reason: Option<&str>,
+    dismissed: bool,
 ) -> Result<(), PortError> {
     connection
         .execute(
-            "UPDATE acquisition_run_work SET state = 'done', unavailable_reason = ?3
+            "UPDATE acquisition_run_work
+                 SET state = 'done', unavailable_reason = ?3, dismissed = ?4
                  WHERE run_id = ?1 AND work_key = ?2 AND state = 'queued'",
-            params![run_id, work_key, unavailable_reason],
+            params![run_id, work_key, unavailable_reason, dismissed],
         )
         .map_err(sql_error)?;
     let exists: bool = connection
@@ -486,15 +493,16 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
                     COUNT(work.id) FILTER (WHERE work.state = 'done'),
                     COUNT(work.id) FILTER (WHERE work.quality_shortfalls_json IS NOT NULL),
                     COUNT(work.id) FILTER (WHERE work.outranked_json IS NOT NULL),
-                    COUNT(work.id) FILTER (WHERE work.unavailable_reason IS NOT NULL)
+                    COUNT(work.id) FILTER (WHERE work.unavailable_reason IS NOT NULL),
+                    COUNT(work.id) FILTER (WHERE work.dismissed = 1)
              FROM acquisition_runs AS run
              LEFT JOIN acquisition_run_work AS work ON work.run_id = run.id
              WHERE run.id = ?1
              GROUP BY run.id",
             params![run_id],
             |row| {
-                // Queued, parked, done, below-quality and outranked work.
-                let mut counts = [0_i64; 6];
+                // Queued, parked, done, below-quality, outranked, unavailable and dismissed work.
+                let mut counts = [0_i64; 7];
                 for (index, count) in counts.iter_mut().enumerate() {
                     *count = row.get(4 + index)?;
                 }
@@ -514,7 +522,15 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         request_schema_version,
         status,
         planned_sources_json,
-        [queued, parked, done, below_quality, outranked, unavailable],
+        [
+            queued,
+            parked,
+            done,
+            below_quality,
+            outranked,
+            unavailable,
+            dismissed,
+        ],
     )) = row
     else {
         return Ok(None);
@@ -544,6 +560,7 @@ fn load_run(connection: &Connection, run_id: i64) -> Result<Option<AcquisitionRu
         below_quality_work: count(below_quality),
         outranked_work: count(outranked),
         unavailable_work: count(unavailable),
+        dismissed_work: count(dismissed),
         discoveries,
     }))
 }

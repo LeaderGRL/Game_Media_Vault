@@ -273,6 +273,9 @@ pub struct AcquisitionRun {
     pub outranked_work: u64,
     /// Completed work whose media its Source no longer serves.
     pub unavailable_work: u64,
+    /// Completed work settled without keeping its candidate: a human rejected it, or matching
+    /// dismissed it as no release of the vault.
+    pub dismissed_work: u64,
     /// How far the discovery of each planned Source went, in plan order.
     pub discoveries: Vec<SourceDiscovery>,
 }

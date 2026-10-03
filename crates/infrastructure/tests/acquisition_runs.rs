@@ -856,3 +856,30 @@ fn a_run_says_how_far_the_discovery_of_each_planned_source_went() {
         ]
     );
 }
+
+#[test]
+fn a_run_counts_the_work_it_settled_without_keeping_its_candidate() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    let run = start_acquisition_run(&catalog, request()).unwrap();
+    catalog
+        .record_discovery(
+            run.id,
+            SOURCE_ID,
+            &[work("rejected"), work("unmatched"), work("settled")],
+        )
+        .unwrap();
+
+    // A human rejected one candidate and matching dismissed another; the third settled as usual.
+    catalog.dismiss_work(run.id, "rejected").unwrap();
+    assert!(
+        catalog
+            .supersede_candidate_review(run.id, "unmatched")
+            .unwrap()
+    );
+    catalog.complete_work(run.id, "settled").unwrap();
+
+    let loaded = load_acquisition_run(&catalog, run.id).unwrap();
+    assert_eq!(loaded.completed_work, 3);
+    assert_eq!(loaded.dismissed_work, 2);
+}

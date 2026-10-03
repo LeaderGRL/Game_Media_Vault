@@ -268,7 +268,7 @@ Suggested behavior:
 
 Releases of one Game that nothing a candidate records tells apart, such as the USA and European releases of a game for a map that records neither region nor edition, tie for the best score; such a tie, among releases of one Game alone, is no ambiguity a human must settle. The release that stands for the game takes the candidate, with the confidence its score gives: a release the request names first (`Metroid (Europe)` when the request names it, compared regardless of case), then the standard edition, then the release of the first of World, USA, Europe and Japan, then the lowest id. A tie among releases of several Games, or a candidate whose region or edition conflicts with the best release, still becomes a Review Item.
 
-Human decisions are persisted and can become future matching evidence.
+Human decisions are persisted and can become future matching evidence. Work whose candidate a human rejected, or that matching dismissed at low confidence, completes without an Asset and counts on its run as dismissed (`dismissed_work`), apart from the media the run acquired.
 
 ## 11. Coverage
 

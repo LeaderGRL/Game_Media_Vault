@@ -173,7 +173,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
                             params![review_status_to_str(ReviewStatus::Superseded), item.id],
                         )
                         .map_err(sql_error)?;
-                    complete_parked_work(&transaction, item.id)?;
+                    complete_parked_work(&transaction, item.id, true)?;
                 }
                 ReviewStatus::Superseded => {}
             }
@@ -184,7 +184,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
             &transaction,
             run_id,
             candidate_identity,
-            WorkOutcome::Settled,
+            WorkOutcome::Dismissed,
         )?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
@@ -234,7 +234,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
                 )?;
             }
             ReviewDecision::Reject => {
-                complete_parked_work(&transaction, review_item_id)?;
+                complete_parked_work(&transaction, review_item_id, true)?;
                 detach_candidate_links(&transaction, &decided.candidate_identity, None)?;
             }
             ReviewDecision::Defer => {}
@@ -366,7 +366,7 @@ fn auto_resolve_candidate_review(
         (ReviewStatus::Pending | ReviewStatus::Deferred, _) => {
             set_status_if_undecided(transaction, item.id, ReviewStatus::AutoResolved, None)?;
             match parked_work {
-                ParkedWork::Complete => complete_parked_work(transaction, item.id)?,
+                ParkedWork::Complete => complete_parked_work(transaction, item.id, false)?,
                 ParkedWork::Requeue => requeue_parked_work(transaction, item.id)?,
             }
         }
@@ -386,8 +386,10 @@ fn auto_resolve_candidate_review(
 
 /// How completed work ended, recorded so its candidate stays explainable.
 enum WorkOutcome<'a> {
-    /// Linked, dismissed or settled by a decision: nothing more to record.
+    /// Linked or settled by a decision: nothing more to record.
     Settled,
+    /// Settled without keeping the candidate, which matching dismissed.
+    Dismissed,
     /// The original fell short of the quality requirements, as these JSON shortfalls say.
     BelowQuality(&'a str),
     /// A retained Asset outranks the original under Keep Best Per Type, as this JSON says.
@@ -484,21 +486,23 @@ fn complete_run_work(
     outcome: WorkOutcome<'_>,
 ) -> Result<(), PortError> {
     let (quality_shortfalls_json, outranked_json) = match outcome {
-        WorkOutcome::Settled => (None, None),
+        WorkOutcome::Settled | WorkOutcome::Dismissed => (None, None),
         WorkOutcome::BelowQuality(shortfalls) => (Some(shortfalls), None),
         WorkOutcome::Outranked(outranked) => (None, Some(outranked)),
     };
+    let dismissed = matches!(outcome, WorkOutcome::Dismissed);
     transaction
         .execute(
             "UPDATE acquisition_run_work
              SET state = 'done', review_item_id = NULL,
-                 quality_shortfalls_json = ?3, outranked_json = ?4
+                 quality_shortfalls_json = ?3, outranked_json = ?4, dismissed = ?5
              WHERE run_id = ?1 AND work_key = ?2",
             params![
                 run_id,
                 candidate_identity,
                 quality_shortfalls_json,
-                outranked_json
+                outranked_json,
+                dismissed
             ],
         )
         .map_err(sql_error)?;
@@ -524,12 +528,13 @@ fn set_status_if_undecided(
 fn complete_parked_work(
     transaction: &Transaction<'_>,
     review_item_id: i64,
+    dismissed: bool,
 ) -> Result<(), PortError> {
     transaction
         .execute(
-            "UPDATE acquisition_run_work SET state = 'done', review_item_id = NULL
+            "UPDATE acquisition_run_work SET state = 'done', review_item_id = NULL, dismissed = ?2
              WHERE review_item_id = ?1",
-            params![review_item_id],
+            params![review_item_id, dismissed],
         )
         .map_err(sql_error)?;
     Ok(())

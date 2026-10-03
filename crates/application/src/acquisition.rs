@@ -983,7 +983,7 @@ impl Acquisition<'_> {
                     self.source_failed.set(true);
                     return Err(error);
                 }
-                self.runs.complete_work(self.run_id, &work.key)?;
+                self.runs.dismiss_work(self.run_id, &work.key)?;
                 return Ok(Step::Done(None));
             }
             Route::Matched(candidate_match) => candidate_match,

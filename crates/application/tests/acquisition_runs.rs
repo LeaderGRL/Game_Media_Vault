@@ -45,6 +45,7 @@ impl RunRepositoryPort for RecordingRunRepository {
             below_quality_work: 0,
             outranked_work: 0,
             unavailable_work: 0,
+            dismissed_work: 0,
             discoveries: Vec::new(),
         })
     }
@@ -252,6 +253,7 @@ impl RacingRunRepository {
             below_quality_work: 0,
             outranked_work: 0,
             unavailable_work: 0,
+            dismissed_work: 0,
             discoveries: Vec::new(),
         }
     }

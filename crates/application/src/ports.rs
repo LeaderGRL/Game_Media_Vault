@@ -312,6 +312,12 @@ pub trait RunRepositoryPort: Send + Sync {
 
     fn complete_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError>;
 
+    /// Completes `work_key` without keeping its candidate, which a human rejected. A repository
+    /// that does not count dismissed work apart completes it as any other.
+    fn dismiss_work(&self, run_id: i64, work_key: &str) -> Result<(), PortError> {
+        self.complete_work(run_id, work_key)
+    }
+
     /// Completes `work_key` as unavailable: its Source no longer serves the candidate media, so
     /// retrying cannot help. `reason` says why.
     fn complete_unavailable_work(
