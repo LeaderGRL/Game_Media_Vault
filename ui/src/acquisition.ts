@@ -2,7 +2,29 @@
 
 export type SourceSelection = { mode: "auto" } | { mode: "explicit"; values: string[] };
 
-export type GameSelection = { mode: "all" } | { mode: "explicit"; values: string[] };
+/** A game named with the platform it is looked up on. */
+export interface PlatformBoundGame {
+  game: string;
+  platform: string;
+}
+
+export type GameSelection =
+  | { mode: "all" }
+  | { mode: "explicit"; values: string[] }
+  | { mode: "platform_bound"; values: PlatformBoundGame[] }
+  | { mode: "query_result"; values: PlatformBoundGame[] };
+
+/**
+ * Limits of a request. For a request for every game, `max_games` and `games_percent` keep that
+ * many, or that share, of each platform's games.
+ */
+export interface AcquisitionLimits {
+  max_games?: number | null;
+  games_percent?: number | null;
+  max_downloads?: number | null;
+  max_concurrent_downloads?: number | null;
+  max_bytes?: number | null;
+}
 
 export type RetentionPolicy =
   | "keep_everything"
@@ -27,7 +49,7 @@ export interface AcquisitionRequestDraft {
   asset_types: string[];
   quality: QualityRequirementsDraft | null;
   retention: RetentionPolicy;
-  limits: Record<string, never>;
+  limits: AcquisitionLimits;
 }
 
 /** Which Sources a request would contact and what each acquires (Rust `AcquisitionPlan`). */
@@ -40,9 +62,19 @@ export interface AcquisitionPlan {
 
 export type AcquisitionRunStatus = "running" | "paused" | "cancelled" | "completed";
 
+/** How far the discovery of one planned Source of a run went (Rust `SourceDiscovery`). */
+export interface SourceDiscovery {
+  source_id: string;
+  complete: boolean;
+  /** Requested games its batches recorded while it is not complete. */
+  discovered_games: number;
+}
+
 export interface AcquisitionRun {
   id: number;
   request: AcquisitionRequestDraft;
+  /** The Sources the run's plan kept, in plan order. */
+  planned_sources?: string[];
   status: AcquisitionRunStatus;
   queued_work: number;
   awaiting_review_work: number;
@@ -53,6 +85,8 @@ export interface AcquisitionRun {
   outranked_work: number;
   /** Completed work whose media its Source no longer serves. */
   unavailable_work: number;
+  /** How far the discovery of each planned Source went, in plan order. */
+  discoveries?: SourceDiscovery[];
 }
 
 /** Sources the desktop app can currently execute. */
