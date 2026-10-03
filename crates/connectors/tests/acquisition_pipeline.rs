@@ -10,6 +10,7 @@ use game_media_vault_application::{
 };
 use game_media_vault_connectors::{
     HttpTransport, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector, LibretroThumbnailsConnector,
+    VgMapsConnector,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRunStatus,
@@ -386,5 +387,110 @@ fn one_auto_run_acquires_from_both_sources_with_distinct_provenance() {
     assert_eq!(
         catalog.get_run(run.id).unwrap().unwrap().status,
         AcquisitionRunStatus::Completed
+    );
+}
+
+const VGMAPS_MAP_BYTES: &[u8] = b"vgmaps end-to-end map fixture";
+
+/// Serves a VGMaps atlas of NES games holding one map of Super Mario Bros., and that map.
+struct VgMapsFixtureTransport;
+
+impl HttpTransport for VgMapsFixtureTransport {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        if url != "https://www.vgmaps.com/Atlas/NES/index.htm" {
+            return Ok(Box::new(Cursor::new(VGMAPS_MAP_BYTES.to_vec())));
+        }
+        Ok(Box::new(Cursor::new(
+            br#"<HTML><BODY><table><tr><TD><TABLE><TR><TD COLSPAN=8><a NAME="SuperMarioBros"></a></TD></TR><TR><TD COLSPAN=4>Super Mario Bros. Maps</TD><TD COLSPAN=4>&copy; 1985 Nintendo</TD></TR><TR><TD>World 1</TD><TD><a href="SuperMarioBros-World1-1.png">1-1</a></TD></TR></TABLE></TD></tr></table></BODY></HTML>"#
+                .to_vec(),
+        )))
+    }
+}
+
+#[test]
+fn one_auto_run_combines_three_provider_families() {
+    let temp = tempdir().unwrap();
+    let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
+    catalog
+        .persist_reference_release(ReferenceReleaseRecord {
+            game_title: "Super Mario Bros.".to_owned(),
+            platform: "Nintendo - Nintendo Entertainment System".to_owned(),
+            region: "World".to_owned(),
+            revision: None,
+            edition_name: "Standard".to_owned(),
+            assertions: vec![ReleaseAssertion {
+                source_id: SourceId::from("fixture-reference"),
+                source_location: "fixture://reference".to_owned(),
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("source_record".to_owned()),
+                value: "fixture:super-mario-bros-world".to_owned(),
+            }],
+        })
+        .unwrap();
+    let object_store = ContentAddressedStore::new(temp.path().join("objects"));
+    // A thumbnail repository, a downloadable dataset and a public website read politely.
+    let libretro = LibretroThumbnailsConnector::with_transport(FixtureTransport {
+        requested_urls: Arc::new(Mutex::new(Vec::new())),
+    });
+    let launchbox = LaunchBoxGamesDbConnector::with_transport(LaunchBoxFixtureTransport);
+    let vgmaps = VgMapsConnector::with_transport(VgMapsFixtureTransport);
+    let connectors: [&dyn ConnectorPort; 3] = [&libretro, &launchbox, &vgmaps];
+    let draft = AcquisitionRequestDraft {
+        sources: SourceSelection::Auto,
+        platforms: vec!["Nintendo - Nintendo Entertainment System".to_owned()],
+        games: GameSelection::Explicit(vec!["Super Mario Bros. (World)".to_owned()]),
+        regions: Vec::new(),
+        languages: Vec::new(),
+        asset_types: vec![AssetTypeSelector::BoxFront, AssetTypeSelector::Map],
+        quality: None,
+        retention: RetentionPolicy::KeepEverything,
+        limits: AcquisitionLimits::default(),
+    };
+
+    let run = start_acquisition_run_with_connectors(&catalog, draft, &connectors).unwrap();
+    acquire_run_with_connectors(
+        &catalog,
+        &catalog,
+        &catalog,
+        &object_store,
+        &connectors,
+        run.id,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+        DownloadLimits::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        run.planned_sources,
+        ["libretro-thumbnails", "launchbox-games-db", "vgmaps"]
+    );
+    assert_eq!(
+        catalog.get_run(run.id).unwrap().unwrap().status,
+        AcquisitionRunStatus::Completed
+    );
+    // Each Source's media keep their own provenance, whatever release they were matched to.
+    let mut acquired: Vec<(AssetType, String)> = catalog
+        .list_library()
+        .unwrap()
+        .iter()
+        .flat_map(|entry| entry.assets.iter())
+        .map(|asset| {
+            (
+                asset.asset_type,
+                asset.provenance[0].source_id.as_str().to_owned(),
+            )
+        })
+        .collect();
+    acquired.sort_by_key(|(asset_type, source_id)| (asset_type.as_str(), source_id.clone()));
+    assert_eq!(
+        acquired,
+        [
+            (AssetType::BoxFront, "launchbox-games-db".to_owned()),
+            (AssetType::BoxFront, "libretro-thumbnails".to_owned()),
+            (AssetType::Map, "vgmaps".to_owned()),
+        ]
     );
 }
