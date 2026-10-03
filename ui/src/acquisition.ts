@@ -319,12 +319,15 @@ function qualityRequirements(form: AcquisitionForm): QualityRequirementsDraft | 
   return Object.keys(quality).length > 0 ? quality : null;
 }
 
-const ASSET_TYPE_LABELS = new Map(
-  ASSET_TYPE_FAMILIES.flatMap((family) => [family, ...family.types]).map((option) => [
-    option.value,
-    option.label,
-  ]),
-);
+/** Every Asset Type the planned Sources acquire, which a Source left out narrows. */
+export const ANY_ASSET_TYPE = "any";
+
+const ASSET_TYPE_LABELS = new Map([
+  [ANY_ASSET_TYPE, "Every type"],
+  ...ASSET_TYPE_FAMILIES.flatMap((family) => [family, ...family.types]).map(
+    (option): [string, string] => [option.value, option.label],
+  ),
+]);
 
 /** The name of an Asset Type or family, as the Acquire view labels it. */
 export function assetTypeLabel(value: string): string {

@@ -123,3 +123,17 @@ fn vaults_whose_paths_are_not_unicode_keep_distinct_identities() {
     assert_ne!(first, second);
     assert!(first.starts_with('"'), "{first}");
 }
+
+#[test]
+fn a_vault_named_without_a_full_path_is_kept_in_the_folder_the_session_names() {
+    let temp = tempdir().unwrap();
+    let session = VaultSession::keeping_named_vaults_in(Some(temp.path().to_path_buf()));
+
+    session
+        .open(std::path::Path::new("Game Media Vault"), true)
+        .unwrap();
+
+    let vault = temp.path().join("Game Media Vault");
+    assert!(vault.join("catalog.sqlite3").is_file());
+    assert_eq!(session.root().unwrap(), vault);
+}

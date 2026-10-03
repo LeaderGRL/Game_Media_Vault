@@ -1635,6 +1635,7 @@ dependencies = [
 name = "game-media-vault-tauri"
 version = "0.1.0"
 dependencies = [
+ "dirs 6.0.0",
  "game-media-vault-application",
  "game-media-vault-connectors",
  "game-media-vault-domain",

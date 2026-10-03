@@ -12,6 +12,7 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+dirs.workspace = true
 game-media-vault-application.workspace = true
 game-media-vault-connectors.workspace = true
 game-media-vault-domain.workspace = true

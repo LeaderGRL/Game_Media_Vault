@@ -72,6 +72,9 @@ impl GameSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssetTypeSelector {
+    /// Every type the planned Sources acquire, whichever they are: a request for everything,
+    /// which a Source left out of the plan narrows instead of refusing.
+    Any,
     Packaging,
     PhysicalMedia,
     Documentation,
@@ -378,7 +381,7 @@ impl AcquisitionRequest {
     pub fn requests_asset_type(&self, asset_type: AssetType) -> bool {
         self.asset_types
             .iter()
-            .any(|selector| *selector == asset_type.selector() || *selector == asset_type.family())
+            .any(|selector| selector.selects(asset_type))
     }
 
     /// Whether `supported` covers every Asset Type the request selects.
@@ -467,10 +470,19 @@ pub enum AssetType {
 }
 
 impl AssetTypeSelector {
+    /// Whether this selector selects `asset_type`: as its type, its family or any type.
+    pub fn selects(self, asset_type: AssetType) -> bool {
+        self == Self::Any || self == asset_type.selector() || self == asset_type.family()
+    }
+
     /// Whether `supported` includes every Asset Type this selector selects. A family is covered
     /// only when all of its types are, and families still select types the catalog cannot
     /// represent yet, so none is covered.
+    /// Any type is covered by whatever type is supported.
     pub fn is_covered_by(self, supported: &[AssetType]) -> bool {
+        if self == Self::Any {
+            return !supported.is_empty();
+        }
         AssetType::ALL
             .into_iter()
             .find(|asset_type| asset_type.selector() == self)

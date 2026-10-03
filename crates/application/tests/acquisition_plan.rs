@@ -342,3 +342,53 @@ fn a_source_selected_twice_is_planned_and_consulted_once() {
     assert_eq!(plan.sources.len(), 1);
     assert_eq!(libretro.consultations.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn any_type_is_every_type_the_planned_sources_acquire() {
+    let libretro = connector("libretro-thumbnails", vec![AssetType::BoxFront]);
+    let refusing = StubConnector {
+        refusal: Some("needs an API key"),
+        ..connector("keyed-source", vec![AssetType::Manual])
+    };
+    let snaps = connector("snap-source", vec![AssetType::Screenshot, AssetType::Map]);
+    let connectors: Vec<&dyn ConnectorPort> = vec![&libretro, &refusing, &snaps];
+
+    let plan = plan_acquisition(
+        &request(SourceSelection::Auto, vec![AssetTypeSelector::Any]),
+        &connectors,
+    )
+    .unwrap();
+
+    // A Source left out takes its types with it, rather than refusing the whole request.
+    assert_eq!(
+        plan.sources,
+        [
+            PlannedSource {
+                source_id: "libretro-thumbnails".to_owned(),
+                asset_types: vec![AssetType::BoxFront],
+            },
+            PlannedSource {
+                source_id: "snap-source".to_owned(),
+                asset_types: vec![AssetType::Screenshot, AssetType::Map],
+            },
+        ]
+    );
+    assert_eq!(plan.excluded.len(), 1);
+}
+
+#[test]
+fn any_type_is_refused_when_no_source_is_planned() {
+    let refusing = StubConnector {
+        refusal: Some("needs an API key"),
+        ..connector("keyed-source", vec![AssetType::Manual])
+    };
+    let connectors: Vec<&dyn ConnectorPort> = vec![&refusing];
+
+    let error = plan_acquisition(
+        &request(SourceSelection::Auto, vec![AssetTypeSelector::Any]),
+        &connectors,
+    )
+    .unwrap_err();
+
+    assert_eq!(uncovered(error).0, vec![AssetTypeSelector::Any]);
+}

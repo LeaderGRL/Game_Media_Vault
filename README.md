@@ -104,6 +104,18 @@ Desktop app in development mode (from `ui/`):
 npm run tauri -- dev
 ```
 
+In the app:
+
+1. **Open vault**: the vault is created in `Documents/Game Media Vault` unless you choose another
+   folder, and opens again next time.
+2. **Acquire**: pick a platform and press **Download everything**. Every game of the platform is
+   collected, with every kind of media every Source has; the Runs view shows the progress.
+3. **Library**: browse what arrived, and **Export to folder** to get readable copies, as
+   `<platform>/<game>/<Asset Type>/<file>`.
+
+Sources that need an API key (SteamGridDB, TheGamesDB, ScreenScraper, RAWG) take part once you
+store yours in the Sources view.
+
 Command-line interface, with a vault in `./my-vault`:
 
 ```bash

@@ -184,9 +184,10 @@ fn matches(query: &LibraryQuery, release: &LibraryRelease, needing_review: &BTre
                 .any(|assertion| assertion.source_id.as_str() == source)
         })
         && any_or_all(&query.asset_types, |selector| {
-            entry.assets.iter().any(|asset| {
-                asset.asset_type.selector() == *selector || asset.asset_type.family() == *selector
-            })
+            entry
+                .assets
+                .iter()
+                .any(|asset| selector.selects(asset.asset_type))
         })
         && any_or_all(&query.statuses, |status| match status {
             LibraryStatus::Complete => release
