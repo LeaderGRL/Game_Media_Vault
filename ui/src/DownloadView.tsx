@@ -73,7 +73,20 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
   const [chosenSources, setChosenSources] = useState<string[]>([]);
 
   const groups = useMemo(() => consolesByMaker(CONSOLES, query), [query]);
-  const offered = useMemo(() => mediaOffer(sources), [sources]);
+  // The Sources taking part: every usable one, or those ticked.
+  const taking = useMemo(
+    () =>
+      (sources ?? []).filter(
+        (source) => usable(source) && (everySource || chosenSources.includes(source.source_id)),
+      ),
+    [sources, everySource, chosenSources],
+  );
+  const offered = useMemo(() => mediaOffer(sources, taking), [sources, taking]);
+  const available = new Set(
+    offered.flatMap((family) =>
+      family.types.filter((type) => type.available).map((type) => type.value),
+    ),
+  );
 
   function toggle(values: string[], value: string) {
     return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -96,7 +109,10 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         : {};
   const retention: RetentionPolicy =
     keep === "all" ? "keep_everything" : { keep_best: { per_type: Number(keep) } };
-  const assetTypes = everyMedia ? [ANY_ASSET_TYPE] : mediaTypes;
+  // Types no Source taking part acquires stay out of the request, which planning would refuse.
+  const assetTypes = everyMedia
+    ? [ANY_ASSET_TYPE]
+    : mediaTypes.filter((type) => available.has(type));
   const ready =
     consoles.length > 0 && assetTypes.length > 0 && (everySource || chosenSources.length > 0);
 
@@ -306,12 +322,12 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
                       <input
                         type="checkbox"
                         disabled={!type.available}
-                        checked={mediaTypes.includes(type.value)}
+                        checked={type.available && mediaTypes.includes(type.value)}
                         onChange={() => setMediaTypes((current) => toggle(current, type.value))}
                       />
                       {type.label}
                     </label>
-                    {type.available ? null : <span className="choice-note">Needs a key</span>}
+                    {type.note ? <span className="choice-note">{type.note}</span> : null}
                   </div>
                 ))}
               </div>
@@ -434,29 +450,34 @@ interface OfferedType {
   value: string;
   label: string;
   available: boolean;
+  /** Why no Source taking part acquires it, when none does. */
+  note: string | null;
 }
 
 /**
  * The media types some registered Source acquires, by family, each marked available when a
  * Source taking part on this machine acquires it; every type before the Sources are read.
  */
-function mediaOffer(sources: SourceDescription[] | null) {
+function mediaOffer(sources: SourceDescription[] | null, taking: SourceDescription[]) {
+  const acquiring = (among: SourceDescription[], type: string) =>
+    among.some((source) => source.asset_types.includes(type));
   return ASSET_TYPE_FAMILIES.map((family) => ({
     value: family.value,
     label: family.label,
     types: family.types
-      .filter(
-        (type) =>
-          sources === null || sources.some((source) => source.asset_types.includes(type.value)),
-      )
-      .map(
-        (type): OfferedType => ({
+      .filter((type) => sources === null || acquiring(sources, type.value))
+      .map((type): OfferedType => {
+        const available = sources === null || acquiring(taking, type.value);
+        return {
           value: type.value,
           label: type.label,
-          available:
-            sources === null ||
-            sources.some((source) => usable(source) && source.asset_types.includes(type.value)),
-        }),
-      ),
+          available,
+          note: available
+            ? null
+            : acquiring((sources ?? []).filter(usable), type.value)
+              ? "Not from these Sources"
+              : "Needs a key",
+        };
+      }),
   })).filter((family) => family.types.length > 0);
 }

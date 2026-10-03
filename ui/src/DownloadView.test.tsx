@@ -163,4 +163,26 @@ describe("DownloadView", () => {
 
     expect(onStart.mock.calls[0][0][0].regions).toEqual(["Poland"]);
   });
+
+  it("offers only the media the Sources ticked acquire", () => {
+    const onStart = vi.fn();
+    const launchbox = source({ source_id: "launchbox-games-db", asset_types: ["box_front", "manual"] });
+    render(<DownloadView sources={[source({}), launchbox]} onStart={onStart} />);
+    fireEvent.click(screen.getByLabelText("Super Nintendo Entertainment System"));
+    fireEvent.click(screen.getByLabelText("Every kind of media"));
+    fireEvent.click(screen.getByLabelText("Box Front"));
+    fireEvent.click(screen.getByLabelText("Manual"));
+
+    fireEvent.click(screen.getByLabelText("Use every available Source"));
+    fireEvent.click(screen.getByLabelText("Libretro Thumbnails"));
+
+    // Only LaunchBox acquires manuals, so the request keeps to the types Libretro acquires.
+    expect(screen.getByLabelText("Manual")).toBeDisabled();
+    expect(screen.getByLabelText("Manual")).not.toBeChecked();
+    start();
+    expect(onStart.mock.calls[0][0][0]).toMatchObject({
+      sources: { mode: "explicit", values: ["libretro-thumbnails"] },
+      asset_types: ["box_front"],
+    });
+  });
 });
