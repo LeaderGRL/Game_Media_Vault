@@ -21,17 +21,34 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   - **LaunchBox Games Database**: box fronts, backs, spines and 3D renders, cartridges, discs,
     screenshots, logos, artwork, flyers, and the marquees, cabinets, control panels and circuit
     boards of arcade games.
+  - **SteamGridDB**: community logos, icons and heroes, with the user's own API key.
+  - **TheGamesDB**: box fronts and backs, screenshots, title screens, clear logos and fan art,
+    with the user's own API key.
+  - **PSX DataCenter**: high-resolution PlayStation cover scans and screenshots, read from its
+    public website as a well-behaved client that honors robots.txt and leaves time between
+    requests.
 
-  The Sources view describes what each Source acquires and the failures executions recorded,
-  and enables or disables each Source on this machine.
+  API keys stay in the operating system's credential store, never in a vault
+  ([ADR 0005](docs/adr/0005-keep-source-api-keys-in-the-os-credential-store.md)). The Sources
+  view describes what each Source acquires, what it is known to limit and the failures
+  executions recorded, stores or forgets API keys, and enables or disables each Source on this
+  machine. [`docs/sources.md`](docs/sources.md) explains how to get each key.
 - **Reference catalogs**: No-Intro and Redump datafiles and MAME software lists import as Release
   Editions with their identifiers, so acquired media can be matched to known releases; releases
-  several catalogs describe under the same title share one Release Edition.
+  several catalogs describe with the same dumps, or else the same title, share one Release
+  Edition. A record whose evidence points at several editions becomes a Reference Review Item,
+  decided in the desktop Review view or with `reference review`, and later imports ask again
+  when the evidence changes.
 - **Matching and Review**: each candidate is scored against the Library; confident matches link
   automatically, uncertain ones become Review Items to accept, reject or defer.
 - **Library**: canonical values derived from every Source's claims, the Preferred Asset of each
   type, coverage of the packaging profiles, search with combinable filters and stable pages.
+- **Manuals and documents**: local files of any stored Asset Type, manuals included, import
+  unchanged; a PDF original records its page count, title and author, and the Library shows
+  them.
 - **Derived Assets**: reproducible PNG thumbnails rendered from originals without touching them,
+  the first page of a PDF included once the machine provides pdfium
+  ([ADR 0006](docs/adr/0006-render-pdf-previews-with-pdfium-from-explicit-directories.md)),
   and 3D models (glTF binary) of complete cardboard boxes built from their front, back and spine
   scans, which the desktop previews in 3D.
 - **Vault integrity**: verification rehashes every stored object against the catalog and reports
@@ -47,8 +64,8 @@ planned next.
 | --- | --- |
 | `crates/domain` | Domain model: requests, releases, assets, matching, coverage |
 | `crates/application` | Use cases and the ports they depend on |
-| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, and the No-Intro, Redump and MAME software list reference catalogs |
-| `crates/infrastructure` | SQLite catalog, content-addressed object store, image transforms |
+| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, SteamGridDB, TheGamesDB, PSX DataCenter, and the No-Intro, Redump and MAME software list reference catalogs |
+| `crates/infrastructure` | SQLite catalog, content-addressed object store, image and PDF transforms, credential store |
 | `crates/cli` | The `game-media-vault` command-line interface |
 | `src-tauri` | The Tauri desktop shell |
 | `ui` | The desktop frontend (React, Vite, Vitest) |
@@ -89,9 +106,10 @@ cargo run -p game-media-vault-cli -- --vault my-vault run execute 1
 ```
 
 `cargo run -p game-media-vault-cli -- --help` lists every command: `acquire` and `plan`, `run`
-(list, show, start, execute, pause, resume, cancel, export), `review`, `source`, the
-`import-*` commands for local box fronts and reference catalogs, `library` and `search`,
-`derive-thumbnails` and `derive-packaging-models`, and `verify` and `repair`.
+(list, show, start, execute, pause, resume, cancel, export), `review` and `reference review`,
+`source` (with `source key set` for API keys), the `import-*` commands for local media and
+reference catalogs, `library` and `search`, `derive-thumbnails` and `derive-packaging-models`,
+and `verify` and `repair`.
 
 ## Tests
 
