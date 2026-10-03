@@ -302,6 +302,19 @@ pub fn keep_reference_review_item_apart_in_vault(
     )?)
 }
 
+/// Builds the connectors of a registry, one per Source. The async helpers call it on their
+/// blocking worker: a connector's HTTP client must never be built on an async runtime worker,
+/// where debug builds of reqwest panic, leaving the command's promise unsettled.
+pub trait ConnectorRegistry:
+    FnOnce() -> Result<Vec<Box<dyn ConnectorPort>>, CommandError> + Send + 'static
+{
+}
+
+impl<F> ConnectorRegistry for F where
+    F: FnOnce() -> Result<Vec<Box<dyn ConnectorPort>>, CommandError> + Send + 'static
+{
+}
+
 /// The connectors of a registry, one per Source, as the use cases take them.
 fn registry_refs(registry: &[Box<dyn ConnectorPort>]) -> Vec<&dyn ConnectorPort> {
     registry
@@ -453,9 +466,10 @@ pub fn load_review_preview_in_vault(
 pub async fn load_review_preview_in_vault_async(
     vault_root: PathBuf,
     review_item_id: i64,
-    registry: Vec<Box<dyn ConnectorPort>>,
+    registry: impl ConnectorRegistry,
 ) -> Result<Vec<u8>, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
+        let registry = registry()?;
         load_review_preview_in_vault(&vault_root, review_item_id, &registry_refs(&registry))
     })
     .await
@@ -549,7 +563,7 @@ async fn load_review_preview(
 ) -> Result<Response, CommandError> {
     // Raw bytes reach the webview as an ArrayBuffer instead of a JSON number array.
     let bytes =
-        load_review_preview_in_vault_async(session.root()?, review_item_id, machine_connectors()?)
+        load_review_preview_in_vault_async(session.root()?, review_item_id, machine_connectors)
             .await?;
     Ok(Response::new(bytes))
 }
@@ -654,16 +668,19 @@ pub fn plan_acquisition_in_vault_with(
 pub async fn plan_acquisition_async(
     vault_root: Option<PathBuf>,
     request: AcquisitionRequestInput,
-    registry: Vec<Box<dyn ConnectorPort>>,
+    registry: impl ConnectorRegistry,
 ) -> Result<AcquisitionPlan, CommandError> {
-    tauri::async_runtime::spawn_blocking(move || match vault_root {
-        Some(vault_root) => plan_acquisition_in_vault_with(
-            &vault_root,
-            request,
-            &registry_refs(&registry),
-            &LibretroDatabase::new(),
-        ),
-        None => plan_acquisition_with_connectors(request, &registry_refs(&registry)),
+    tauri::async_runtime::spawn_blocking(move || {
+        let registry = registry()?;
+        match vault_root {
+            Some(vault_root) => plan_acquisition_in_vault_with(
+                &vault_root,
+                request,
+                &registry_refs(&registry),
+                &LibretroDatabase::new(),
+            ),
+            None => plan_acquisition_with_connectors(request, &registry_refs(&registry)),
+        }
     })
     .await
     .map_err(|error| CommandError::worker_failed("acquisition planning", error))?
@@ -732,9 +749,10 @@ pub async fn import_reference_catalog_in_vault_async(
 pub async fn start_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     request: AcquisitionRequestInput,
-    registry: Vec<Box<dyn ConnectorPort>>,
+    registry: impl ConnectorRegistry,
 ) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
+        let registry = registry()?;
         start_acquisition_run_in_vault(&vault_root, request, &registry_refs(&registry))
     })
     .await
@@ -765,10 +783,11 @@ pub fn execute_acquisition_run_in_vault(
 pub async fn execute_acquisition_run_in_vault_async(
     vault_root: PathBuf,
     run_id: i64,
-    registry: Vec<Box<dyn ConnectorPort>>,
+    registry: impl ConnectorRegistry,
     matching_policy: MatchingPolicy,
 ) -> Result<AcquisitionRun, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
+        let registry = registry()?;
         execute_acquisition_run_in_vault(
             &vault_root,
             run_id,
@@ -833,7 +852,7 @@ async fn plan_acquisition(
     session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionPlan, CommandError> {
-    plan_acquisition_async(session.root().ok(), request, machine_connectors()?).await
+    plan_acquisition_async(session.root().ok(), request, machine_connectors).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -850,7 +869,7 @@ async fn start_acquisition_run(
     session: State<'_, VaultSession>,
     request: AcquisitionRequestInput,
 ) -> Result<AcquisitionRun, CommandError> {
-    start_acquisition_run_in_vault_async(session.root()?, request, machine_connectors()?).await
+    start_acquisition_run_in_vault_async(session.root()?, request, machine_connectors).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -862,7 +881,7 @@ async fn execute_acquisition_run(
     execute_acquisition_run_in_vault_async(
         session.root()?,
         run_id,
-        machine_connectors()?,
+        machine_connectors,
         matching_policy,
     )
     .await
