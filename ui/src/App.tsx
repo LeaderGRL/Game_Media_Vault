@@ -1152,7 +1152,12 @@ export function App() {
    */
   async function showExecuted(actingVaultRoot: string | null, executionError: string | null) {
     try {
-      await Promise.all([refreshVaultData(actingVaultRoot), refreshRuns(actingVaultRoot)]);
+      // An execution shorter than a progress poll shows its media here first.
+      await Promise.all([
+        refreshVaultData(actingVaultRoot),
+        refreshRuns(actingVaultRoot),
+        refreshLatestMedia(actingVaultRoot),
+      ]);
     } catch (reason) {
       if (activeVaultRoot.current === actingVaultRoot) {
         // Why the execution stopped matters more than the failed refresh after it.
