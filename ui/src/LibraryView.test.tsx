@@ -98,7 +98,7 @@ describe("LibraryView", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("filters by console, region, media and status picked from lists", () => {
+  it("filters by console, region, Source, media and status picked from lists", () => {
     const onSearch = library();
 
     fireEvent.click(screen.getByRole("button", { name: "Consoles" }));
@@ -110,6 +110,8 @@ describe("LibraryView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Regions" }));
     fireEvent.click(screen.getByLabelText("Europe"));
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    fireEvent.click(screen.getByLabelText("No-Intro"));
     fireEvent.click(screen.getByRole("button", { name: "Media" }));
     fireEvent.click(screen.getByLabelText("Manual"));
     fireEvent.click(screen.getByRole("button", { name: "Status" }));
@@ -119,6 +121,7 @@ describe("LibraryView", () => {
       ...NO_LIBRARY_FILTERS,
       platforms: ["Nintendo - Game Boy"],
       regions: ["Europe"],
+      sources: ["no-intro"],
       assetTypes: ["manual"],
       statuses: ["needs_review"],
     });

@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 
-import { ASSET_TYPE_FAMILIES, assetTypeLabel } from "./acquisition";
+import { ASSET_TYPE_FAMILIES, KNOWN_SOURCES, assetTypeLabel } from "./acquisition";
 import { REGIONS, consoleName } from "./catalog";
 import { Dialog, FilterMenu } from "./controls";
 import { ExportPanel } from "./ExportPanel";
@@ -49,6 +49,16 @@ const STATUS_OPTIONS: { value: LibraryStatus; label: string }[] = [
   { value: "complete", label: "Complete" },
   { value: "partial", label: "Partial" },
   { value: "needs_review", label: "Needs review" },
+];
+
+/** The Sources a release's media or records can come from: media Sources, reference catalogs
+ * and local imports. */
+const SOURCE_OPTIONS = [
+  ...KNOWN_SOURCES,
+  { value: "no-intro", label: "No-Intro" },
+  { value: "redump", label: "Redump" },
+  { value: "mame-software-lists", label: "MAME software lists" },
+  { value: "local_import", label: "Local import" },
 ];
 
 const MEDIA_OPTIONS = ASSET_TYPE_FAMILIES.flatMap((family) =>
@@ -121,6 +131,12 @@ export function LibraryView({
           options={REGIONS}
           selected={draft.regions}
           onChange={(selected) => search({ regions: selected })}
+        />
+        <FilterMenu
+          label="Source"
+          options={SOURCE_OPTIONS}
+          selected={draft.sources}
+          onChange={(selected) => search({ sources: selected })}
         />
         <FilterMenu
           label="Media"
