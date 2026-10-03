@@ -16,13 +16,43 @@ use crate::{
 /// `Super Mario Bros. (World)`.
 const DATAFILE_SOURCES: [&str; 2] = ["no-intro", "redump"];
 
+/// The language No-Intro and Redump leave implied by a release's region when its name gives
+/// none, by region.
+const REGION_LANGUAGES: [(&str, &str); 22] = [
+    ("Asia", "En"),
+    ("Australia", "En"),
+    ("Brazil", "Pt"),
+    ("Canada", "En"),
+    ("China", "Zh"),
+    ("Europe", "En"),
+    ("France", "Fr"),
+    ("Germany", "De"),
+    ("Hong Kong", "Zh"),
+    ("Italy", "It"),
+    ("Japan", "Ja"),
+    ("Korea", "Ko"),
+    ("Netherlands", "Nl"),
+    ("Portugal", "Pt"),
+    ("Russia", "Ru"),
+    ("Spain", "Es"),
+    ("Sweden", "Sv"),
+    ("Taiwan", "Zh"),
+    ("UK", "En"),
+    ("USA", "En"),
+    ("United Kingdom", "En"),
+    ("World", "En"),
+];
+
 /// Expands a request for every game of its platforms into the games the vault's releases of
 /// those platforms name, so that Sources which look games up one by one serve it too. The game
 /// list of a platform the vault holds no release of is fetched and imported first; when no list
 /// is known for one, the request stays one for every game, which Sources reading whole platforms
 /// serve. A platform is the vault's regardless of case and punctuation, as game lists are found,
 /// and the expanded request names it as the vault does, which is how media are matched to its
-/// releases. A request naming its games, or no platform, stays as it is, and a request that is
+/// releases. Requested regions keep the releases of those regions and the worldwide ones, and
+/// requested languages the releases whose name lists one of them, or whose region implies it
+/// when the name lists none; the expanded request keeps its regions, which Sources telling
+/// regions apart keep to, but no languages, which no Source tells apart. A request naming its games, or no platform, stays as it is, and a request that is
 /// invalid, or that planning would refuse, is refused before anything is fetched.
 pub fn expand_every_game(
     catalog: &dyn CatalogPort,
@@ -54,10 +84,11 @@ pub fn expand_every_game(
     let mut platforms: Vec<String> = Vec::new();
     let mut games: Vec<PlatformBoundGameSelector> = Vec::new();
     for requested in &input.platforms {
-        for release in releases
-            .iter()
-            .filter(|release| same_platform(&release.platform, requested))
-        {
+        for release in releases.iter().filter(|release| {
+            same_platform(&release.platform, requested)
+                && in_regions(release, &input.regions)
+                && speaks(release, &input.languages)
+        }) {
             if !platforms.contains(&release.platform) {
                 platforms.push(release.platform.clone());
             }
@@ -76,7 +107,74 @@ pub fn expand_every_game(
     }
     input.platforms = platforms;
     input.games = GameSelection::PlatformBound(games);
+    input.languages.clear();
     Ok(input)
+}
+
+/// Whether `release` is of one of `regions`, any when none is named: a release of several
+/// regions, such as `USA, Europe`, is of each, and a worldwide one of every region.
+fn in_regions(release: &LibraryEntry, regions: &[String]) -> bool {
+    regions.is_empty()
+        || release.region.split(',').map(str::trim).any(|region| {
+            region.eq_ignore_ascii_case("World")
+                || regions
+                    .iter()
+                    .any(|wanted| wanted.trim().eq_ignore_ascii_case(region))
+        })
+}
+
+/// Whether `release` speaks one of `languages`, any when none is named: the languages its name
+/// lists, such as `(En,Fr,De)`, or else the one its region implies.
+fn speaks(release: &LibraryEntry, languages: &[String]) -> bool {
+    if languages.is_empty() {
+        return true;
+    }
+    let name = release_name(release);
+    let listed: Vec<String> = trailing_tags(&name)
+        .into_iter()
+        .find(|tag| tag.split(',').all(|part| is_language_code(part.trim())))
+        .map(|tag| tag.split(',').map(|part| part.trim().to_owned()).collect())
+        .unwrap_or_else(|| {
+            release
+                .region
+                .split(',')
+                .filter_map(|region| {
+                    REGION_LANGUAGES
+                        .iter()
+                        .find(|(known, _)| known.eq_ignore_ascii_case(region.trim()))
+                        .map(|(_, language)| (*language).to_owned())
+                })
+                .collect()
+        });
+    listed.iter().any(|spoken| {
+        languages
+            .iter()
+            .any(|wanted| wanted.trim().eq_ignore_ascii_case(spoken))
+    })
+}
+
+/// The parenthesized tags ending `name`, in order, such as `Europe` and `En,Fr,De` for
+/// `Asterix (Europe) (En,Fr,De)`.
+fn trailing_tags(name: &str) -> Vec<&str> {
+    let mut rest = name.trim_end();
+    let mut tags = Vec::new();
+    while let Some(inner) = rest.strip_suffix(')') {
+        let Some(open) = inner.rfind(" (") else {
+            break;
+        };
+        tags.push(&inner[open + 2..]);
+        rest = inner[..open].trim_end();
+    }
+    tags.reverse();
+    tags
+}
+
+/// Whether `code` is a language code as No-Intro writes it, such as `En` or `Zh`.
+fn is_language_code(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    matches!(bytes.len(), 2 | 3)
+        && bytes[0].is_ascii_uppercase()
+        && bytes[1..].iter().all(u8::is_ascii_lowercase)
 }
 
 /// The keys of the releases a request names game by game, as `release_key` gives them; none

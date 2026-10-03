@@ -258,3 +258,56 @@ fn an_unsupported_limit_is_refused_before_any_game_list_is_fetched() {
     );
     assert!(lists.asked.borrow().is_empty());
 }
+
+/// A release a No-Intro datafile names `raw_name`, of `region`.
+fn listed(id: i64, title: &str, region: &str, raw_name: &str) -> LibraryEntry {
+    let mut release = entry(id, title, NES, region, "Standard");
+    release.assertions.push(source_record(raw_name));
+    release
+}
+
+#[test]
+fn every_game_kept_to_a_region_names_its_releases_and_the_worldwide_ones() {
+    let releases = Releases::holding(vec![
+        listed(1, "Super Mario Bros.", "World", "Super Mario Bros. (World)"),
+        listed(2, "Tetris", "USA", "Tetris (USA)"),
+        listed(3, "Tetris", "Europe", "Tetris (Europe)"),
+        listed(4, "Zelda", "USA, Europe", "Zelda (USA, Europe)"),
+    ]);
+    let mut european = every_game_of(&[NES]);
+    european.regions = vec!["europe".to_owned()];
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), european).unwrap();
+
+    assert_eq!(
+        expanded.games,
+        bound(&[
+            "Super Mario Bros. (World)",
+            "Tetris (Europe)",
+            "Zelda (USA, Europe)"
+        ])
+    );
+    // Sources that tell regions apart still keep to the region's media.
+    assert_eq!(expanded.regions, ["europe"]);
+}
+
+#[test]
+fn every_game_kept_to_a_language_names_the_releases_whose_name_or_region_speaks_it() {
+    let releases = Releases::holding(vec![
+        listed(1, "Asterix", "Europe", "Asterix (Europe) (En,Fr,De)"),
+        listed(2, "Tintin", "France", "Tintin (France)"),
+        listed(3, "Tetris", "USA", "Tetris (USA)"),
+        listed(4, "Mario", "Japan", "Mario (Japan)"),
+    ]);
+    let mut french = every_game_of(&[NES]);
+    french.languages = vec!["fr".to_owned()];
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), french).unwrap();
+
+    assert_eq!(
+        expanded.games,
+        bound(&["Asterix (Europe) (En,Fr,De)", "Tintin (France)"])
+    );
+    // No Source tells languages apart: the games named are the language's.
+    assert!(expanded.languages.is_empty());
+}
