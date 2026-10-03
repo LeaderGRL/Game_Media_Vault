@@ -155,7 +155,7 @@ fn speaks(release: &LibraryEntry, languages: &[String]) -> bool {
 
 /// The parenthesized tags ending `name`, in order, such as `Europe` and `En,Fr,De` for
 /// `Asterix (Europe) (En,Fr,De)`.
-fn trailing_tags(name: &str) -> Vec<&str> {
+pub(crate) fn trailing_tags(name: &str) -> Vec<&str> {
     let mut rest = name.trim_end();
     let mut tags = Vec::new();
     while let Some(inner) = rest.strip_suffix(')') {
