@@ -298,3 +298,85 @@ fn a_candidate_of_one_region_of_a_release_of_several_matches_it() {
     assert_eq!(result.confidence, MatchConfidence::High);
     assert_eq!(result.score, 100);
 }
+
+#[test]
+fn a_country_agrees_with_the_region_holding_it_less_than_with_itself() {
+    let german = AssetCandidate {
+        region: "Germany".to_owned(),
+        edition_name: "Unspecified".to_owned(),
+        ..candidate()
+    };
+    let european = LibraryEntry {
+        region: "Europe".to_owned(),
+        release_edition_id: 21,
+        ..release()
+    };
+    let japanese = LibraryEntry {
+        region: "Japan".to_owned(),
+        release_edition_id: 22,
+        ..release()
+    };
+
+    // A German box is the European release's, not the Japanese one's.
+    let result = match_asset_candidate_to_release(
+        &german,
+        &[japanese, european.clone()],
+        matching_policy(80, 50),
+    );
+    assert_eq!(result.release_edition_id, Some(21));
+    assert_eq!(result.confidence, MatchConfidence::High);
+    let region = result
+        .evidence
+        .iter()
+        .find(|evidence| evidence.signal == MatchSignal::Region)
+        .unwrap();
+    assert_eq!(region.score_delta, 10);
+
+    // A release of that very country takes it before the region's.
+    let german_release = LibraryEntry {
+        region: "Germany".to_owned(),
+        release_edition_id: 23,
+        ..release()
+    };
+    let result = match_asset_candidate_to_release(
+        &german,
+        &[european, german_release],
+        matching_policy(80, 50),
+    );
+    assert_eq!(result.release_edition_id, Some(23));
+}
+
+#[test]
+fn a_worldwide_box_agrees_with_every_region_and_a_canadian_one_with_usa() {
+    let european = LibraryEntry {
+        region: "Europe".to_owned(),
+        ..release()
+    };
+    for (region, release) in [("World", european), ("Canada", release())] {
+        let candidate = AssetCandidate {
+            region: region.to_owned(),
+            ..candidate()
+        };
+
+        let result =
+            match_asset_candidate_to_release(&candidate, &[release], matching_policy(80, 50));
+
+        assert_eq!(result.confidence, MatchConfidence::High, "{region}");
+    }
+}
+
+#[test]
+fn two_countries_of_one_region_still_conflict() {
+    let german = AssetCandidate {
+        region: "Germany".to_owned(),
+        ..candidate()
+    };
+    let french = LibraryEntry {
+        region: "France".to_owned(),
+        ..release()
+    };
+
+    let result = match_asset_candidate_to_release(&german, &[french], matching_policy(80, 50));
+
+    assert_ne!(result.confidence, MatchConfidence::High);
+}
