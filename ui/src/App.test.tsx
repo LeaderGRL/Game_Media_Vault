@@ -2638,6 +2638,48 @@ describe("App Library requests", () => {
     });
   });
 
+  it("keeps a toggle's outcome when an older read of the Sources answers after it", async () => {
+    const launchbox = {
+      source_id: "launchbox-games-db",
+      asset_types: ["box_front"],
+      direct_media_download: true,
+      enabled: true,
+    };
+    // The second read of the Sources answers only once the test lets it.
+    let reads = 0;
+    let answerLateRead: (sources: unknown) => void = () => {};
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_sources") {
+        reads += 1;
+        return reads === 1
+          ? Promise.resolve([launchbox])
+          : new Promise((resolve) => {
+              answerLateRead = resolve;
+            });
+      }
+      if (command === "set_source_enabled") {
+        return Promise.resolve([{ ...launchbox, enabled: false }]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await screen.findByRole("checkbox", { name: "Enabled on this machine" });
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() => expect(reads).toBe(2));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled on this machine" }));
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked(),
+    );
+    answerLateRead([launchbox]);
+
+    // The read started before the toggle, so its older state is dropped.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked();
+  });
+
   it("reads the Sources again each time the view is shown", async () => {
     // Another process, such as the CLI, disables the Source between the two visits.
     let enabled = true;

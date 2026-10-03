@@ -650,6 +650,8 @@ export function App() {
 
   /** Enables or disables a Source on this machine, for every vault, and shows the outcome. */
   async function setSourceEnabled(sourceId: string, enabled: boolean) {
+    // A read of the Sources started before this change would show their older state.
+    sourcesRequest.current += 1;
     const described = await invoke<SourceDescription[]>("set_source_enabled", {
       source_id: sourceId,
       enabled,
