@@ -262,3 +262,38 @@ fn rules_past_the_first_half_mebibyte_of_robots_txt_are_ignored() {
         "game a"
     );
 }
+
+/// Answers every page at once, but `https://slow.example/robots.txt` only after a while.
+struct SlowRobots;
+
+impl HttpTransport for SlowRobots {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        if url == "https://slow.example/robots.txt" {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        if url.ends_with("/robots.txt") {
+            return Err(PortError::unavailable(format!("no {url}")));
+        }
+        Ok(Box::new(Cursor::new(b"page".to_vec())))
+    }
+}
+
+#[test]
+fn a_site_slow_to_answer_its_robots_txt_never_holds_back_another_site() {
+    let polite = std::sync::Arc::new(PoliteTransport::with_delay(SlowRobots, Duration::ZERO));
+    let slow = {
+        let polite = std::sync::Arc::clone(&polite);
+        std::thread::spawn(move || read(&*polite, "https://slow.example/a.html").unwrap())
+    };
+    std::thread::sleep(Duration::from_millis(50));
+
+    let started = Instant::now();
+    read(&*polite, "https://fast.example/a.html").unwrap();
+
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "{:?}",
+        started.elapsed()
+    );
+    slow.join().unwrap();
+}

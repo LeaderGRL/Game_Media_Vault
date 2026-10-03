@@ -33,15 +33,21 @@ const MAX_ROBOTS_BYTES: u64 = 512 * 1024;
 /// keep one pace per site.
 pub struct SiteManners {
     delay: Duration,
-    sites: Mutex<HashMap<String, Site>>,
+    sites: Mutex<HashMap<String, Arc<Site>>>,
 }
 
 struct Site {
+    /// What the site asks, read from its robots.txt by the first request to it, which the
+    /// other requests to it wait for, and only they.
+    asked: OnceLock<Asked>,
+    /// When the next request to the site may leave.
+    next: Mutex<Instant>,
+}
+
+struct Asked {
     /// Its rules, none when it has no robots.txt, or why the site is left alone.
     rules: Result<Option<Robot>, String>,
     delay: Duration,
-    /// When the next request to the site may leave.
-    next: Instant,
 }
 
 impl SiteManners {
@@ -64,26 +70,39 @@ impl SiteManners {
         let location = Url::parse(url)
             .map_err(|error| PortError::new(format!("{url} is not a URL: {error}")))?;
         let origin = location.origin().ascii_serialization();
-        let wait = {
+        let site = {
             let mut sites = self.sites.lock().unwrap_or_else(PoisonError::into_inner);
-            let site = sites
-                .entry(origin.clone())
-                .or_insert_with(|| self.visit(&origin, transport));
-            match &site.rules {
-                Err(reason) => {
-                    return Err(PortError::new(format!("{origin} is left alone: {reason}")));
-                }
-                // The site does not want it: asking again cannot help.
-                Ok(Some(robot)) if !robot.allowed(url) => {
-                    return Err(PortError::unavailable(format!(
-                        "the robots.txt of {origin} disallows {url}"
-                    )));
-                }
-                Ok(_) => {}
+            Arc::clone(sites.entry(origin.clone()).or_insert_with(|| {
+                Arc::new(Site {
+                    asked: OnceLock::new(),
+                    next: Mutex::new(Instant::now()),
+                })
+            }))
+        };
+        let asked = site.asked.get_or_init(|| {
+            let asked = self.visit(&origin, transport);
+            // Reading robots.txt was a request too.
+            *site.next.lock().unwrap_or_else(PoisonError::into_inner) =
+                Instant::now() + asked.delay;
+            asked
+        });
+        match &asked.rules {
+            Err(reason) => {
+                return Err(PortError::new(format!("{origin} is left alone: {reason}")));
             }
+            // The site does not want it: asking again cannot help.
+            Ok(Some(robot)) if !robot.allowed(url) => {
+                return Err(PortError::unavailable(format!(
+                    "the robots.txt of {origin} disallows {url}"
+                )));
+            }
+            Ok(_) => {}
+        }
+        let wait = {
+            let mut next = site.next.lock().unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();
-            let turn = site.next.max(now);
-            site.next = turn + site.delay;
+            let turn = (*next).max(now);
+            *next = turn + asked.delay;
             turn - now
         };
         thread::sleep(wait);
@@ -92,7 +111,7 @@ impl SiteManners {
 
     /// What `origin` asks of this application: its rules and the pause between requests, which is
     /// the longer of these manners' and its `Crawl-delay`.
-    fn visit(&self, origin: &str, transport: &dyn HttpTransport) -> Site {
+    fn visit(&self, origin: &str, transport: &dyn HttpTransport) -> Asked {
         let mut rules = read_rules(origin, transport);
         let mut delay = self.delay;
         let asked = rules
@@ -113,12 +132,7 @@ impl SiteManners {
             }
             _ => {}
         }
-        Site {
-            rules,
-            delay,
-            // Reading robots.txt was a request too.
-            next: Instant::now() + delay,
-        }
+        Asked { rules, delay }
     }
 }
 
