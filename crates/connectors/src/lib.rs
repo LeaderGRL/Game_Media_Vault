@@ -20,12 +20,15 @@ mod mame;
 mod naming;
 mod resume;
 mod retry;
+mod selection;
 mod steamgriddb;
+mod thegamesdb;
 mod xml;
 
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use retry::RetryPolicy;
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
+pub use thegamesdb::{THEGAMESDB_SOURCE_ID, TheGamesDbConnector};
 
 pub use launchbox::{
     DatasetCache, LAUNCHBOX_GAMES_DB_SOURCE_ID, LAUNCHBOX_METADATA_URL, LaunchBoxGamesDbConnector,
@@ -60,7 +63,8 @@ pub fn registered_connectors(
     vec![
         Box::new(LibretroThumbnailsConnector::new()),
         Box::new(LaunchBoxGamesDbConnector::new()),
-        Box::new(SteamGridDbConnector::new(credentials)),
+        Box::new(SteamGridDbConnector::new(Arc::clone(&credentials))),
+        Box::new(TheGamesDbConnector::new(credentials)),
     ]
 }
 

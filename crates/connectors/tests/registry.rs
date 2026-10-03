@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use game_media_vault_connectors::{
     LAUNCHBOX_GAMES_DB_SOURCE_ID, LIBRETRO_THUMBNAILS_SOURCE_ID, STEAMGRIDDB_SOURCE_ID,
-    registered_connectors,
+    THEGAMESDB_SOURCE_ID, registered_connectors,
 };
 use game_media_vault_infrastructure::NoCredentials;
 
@@ -18,7 +18,8 @@ fn every_implemented_source_is_registered_once() {
         [
             LIBRETRO_THUMBNAILS_SOURCE_ID,
             LAUNCHBOX_GAMES_DB_SOURCE_ID,
-            STEAMGRIDDB_SOURCE_ID
+            STEAMGRIDDB_SOURCE_ID,
+            THEGAMESDB_SOURCE_ID,
         ]
     );
 }

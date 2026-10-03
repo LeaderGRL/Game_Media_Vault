@@ -54,6 +54,7 @@ export const KNOWN_SOURCES = [
   { value: "libretro-thumbnails", label: "Libretro Thumbnails" },
   { value: "launchbox-games-db", label: "LaunchBox Games Database" },
   { value: "steamgriddb", label: "SteamGridDB" },
+  { value: "thegamesdb", label: "TheGamesDB" },
 ];
 
 /** Whether a Source has the credential it needs on this machine. */
