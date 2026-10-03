@@ -2696,6 +2696,7 @@ describe("App Library requests", () => {
                 source_id: "launchbox-games-db",
                 asset_types: ["box_front", "logo"],
                 direct_media_download: true,
+                credential_fields: [],
               },
             ]
           : [],
@@ -2717,6 +2718,7 @@ describe("App Library requests", () => {
       source_id: "launchbox-games-db",
       asset_types: ["box_front"],
       direct_media_download: true,
+      credential_fields: [],
       enabled: true,
     };
     invokeMock.mockImplementation((command: string) =>
@@ -2748,6 +2750,7 @@ describe("App Library requests", () => {
       source_id: "launchbox-games-db",
       asset_types: ["box_front"],
       direct_media_download: true,
+      credential_fields: [],
       enabled: true,
     };
     // The second read of the Sources answers only once the test lets it.
@@ -2792,6 +2795,7 @@ describe("App Library requests", () => {
       direct_media_download: true,
       enabled: true,
       credential: "missing",
+      credential_fields: [{ id: "api-key", label: "API key", optional: false, state: "missing" }],
       rate_limits: null,
     };
     invokeMock.mockImplementation((command: string) =>
@@ -2799,7 +2803,13 @@ describe("App Library requests", () => {
         command === "list_sources"
           ? [steamgriddb]
           : command === "set_source_api_key"
-            ? [{ ...steamgriddb, credential: "stored" }]
+            ? [
+                {
+                  ...steamgriddb,
+                  credential: "stored",
+                  credential_fields: [{ ...steamgriddb.credential_fields[0], state: "stored" }],
+                },
+              ]
             : [],
       ),
     );
@@ -2814,6 +2824,7 @@ describe("App Library requests", () => {
     expect(await screen.findByText("Stored in this machine's credential store")).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("set_source_api_key", {
       source_id: "steamgriddb",
+      field: "api-key",
       key: "user-key-123",
     });
   });
@@ -2829,6 +2840,7 @@ describe("App Library requests", () => {
                 source_id: "launchbox-games-db",
                 asset_types: ["box_front"],
                 direct_media_download: true,
+                credential_fields: [],
                 enabled,
               },
             ]
@@ -2857,7 +2869,12 @@ describe("App Library requests", () => {
         return failing
           ? Promise.reject({ kind: "external", message: "registry unavailable" })
           : Promise.resolve([
-              { source_id: "libretro-thumbnails", asset_types: [], direct_media_download: true },
+              {
+                source_id: "libretro-thumbnails",
+                asset_types: [],
+                direct_media_download: true,
+                credential_fields: [],
+              },
             ]);
       }
       return Promise.resolve([]);
@@ -2886,7 +2903,12 @@ describe("App Library requests", () => {
               failFirstRead = reject;
             })
           : Promise.resolve([
-              { source_id: "libretro-thumbnails", asset_types: [], direct_media_download: true },
+              {
+                source_id: "libretro-thumbnails",
+                asset_types: [],
+                direct_media_download: true,
+                credential_fields: [],
+              },
             ]);
       }
       return Promise.resolve([]);
@@ -2906,7 +2928,12 @@ describe("App Library requests", () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_sources") {
         return Promise.resolve([
-          { source_id: "libretro-thumbnails", asset_types: ["box_front"], direct_media_download: true },
+          {
+            source_id: "libretro-thumbnails",
+            asset_types: ["box_front"],
+            direct_media_download: true,
+            credential_fields: [],
+          },
         ]);
       }
       if (command === "list_source_failures") {
@@ -2945,7 +2972,14 @@ describe("App Library requests", () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(
         command === "list_sources"
-          ? [{ source_id: "libretro-thumbnails", asset_types: [], direct_media_download: true }]
+          ? [
+              {
+                source_id: "libretro-thumbnails",
+                asset_types: [],
+                direct_media_download: true,
+                credential_fields: [],
+              },
+            ]
           : [],
       ),
     );

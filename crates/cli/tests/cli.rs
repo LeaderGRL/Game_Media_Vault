@@ -8,7 +8,7 @@ use std::{
 
 use game_media_vault_application::{
     AcquisitionRequestValidationError, ApiKey, ApplicationError, CatalogPort, ConnectorPort,
-    CredentialStorePort, Machine, ObjectStorePort, ParkedReview, PortError,
+    CredentialField, CredentialStorePort, Machine, ObjectStorePort, ParkedReview, PortError,
     ReferenceCatalogRepositoryPort, ReviewRepositoryPort, RunRepositoryPort, candidate_identity,
 };
 use game_media_vault_cli::CliError;
@@ -1771,6 +1771,7 @@ fn source_list_describes_the_registered_sources_without_a_vault() {
             "direct_media_download": true,
             "enabled": true,
             "credential": "not_needed",
+            "credential_fields": [],
             "rate_limits": null,
         }])
     );
@@ -2125,7 +2126,7 @@ fn an_empty_standard_input_stores_no_api_key() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("API key"), "{error}");
+    assert!(error.to_string().contains("cannot be blank"), "{error}");
     assert!(credentials.0.lock().unwrap().is_empty());
 }
 
@@ -2259,4 +2260,95 @@ fn a_reference_review_item_is_decided_from_the_command_line() {
     assert_eq!(remaining, serde_json::json!([]));
     let library: serde_json::Value = serde_json::from_str(&run(&["library"]).unwrap()).unwrap();
     assert_eq!(library.as_array().unwrap().len(), 2);
+}
+
+/// A Source that needs an account, an identifier and a password, and is never reached.
+struct AccountConnector;
+
+impl ConnectorPort for AccountConnector {
+    fn source_id(&self) -> &'static str {
+        "account-source"
+    }
+
+    fn credential_fields(&self) -> &'static [CredentialField] {
+        &[
+            CredentialField {
+                id: "dev-id",
+                label: "Developer id",
+                optional: false,
+                single_word: true,
+            },
+            CredentialField {
+                id: "dev-password",
+                label: "Developer password",
+                optional: false,
+                single_word: false,
+            },
+        ]
+    }
+
+    fn capabilities(&self) -> ConnectorCapabilities {
+        ConnectorCapabilities {
+            asset_types: vec![AssetType::Logo],
+            direct_media_download: true,
+        }
+    }
+
+    fn discover(&self, _request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
+        Ok(Vec::new())
+    }
+
+    fn download(&self, _candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
+        Err(PortError::new("never reached".to_owned()))
+    }
+}
+
+#[test]
+fn each_credential_of_a_source_is_stored_by_name() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+    let credentials = MemoryCredentials::default();
+    let run = |args: &[&str], input: &[u8]| {
+        game_media_vault_cli::run_on_machine(
+            cli_args(&vault, args),
+            &[&AccountConnector],
+            Machine {
+                settings: &settings,
+                credentials: &credentials,
+            },
+            &mut Cursor::new(input.to_vec()),
+        )
+    };
+
+    let unnamed = run(&["source", "key", "set", "account-source"], b"s3cret\n").unwrap_err();
+    let stored = run(
+        &[
+            "source",
+            "key",
+            "set",
+            "account-source",
+            "--field",
+            "dev-password",
+        ],
+        b"s3cret\n",
+    )
+    .unwrap();
+
+    assert!(
+        unnamed.to_string().contains("dev-id, dev-password"),
+        "{unnamed}"
+    );
+    assert!(!stored.contains("s3cret"), "{stored}");
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored[0]["credential"], "missing");
+    assert_eq!(stored[0]["credential_fields"][1]["id"], "dev-password");
+    assert_eq!(stored[0]["credential_fields"][1]["state"], "stored");
+    let kept = credentials
+        .0
+        .lock()
+        .unwrap()
+        .get("account-source/dev-password")
+        .cloned();
+    assert_eq!(kept.as_deref(), Some("s3cret"));
 }

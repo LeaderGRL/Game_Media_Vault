@@ -9,7 +9,7 @@ use game_media_vault_domain::{
 };
 use thiserror::Error;
 
-use crate::ApiKey;
+use crate::{API_KEY_FIELD, ApiKey, CredentialField};
 
 /// Failure of a port adapter: storage, network or another environmental failure, or a Source
 /// that answered with data breaking the connector contract.
@@ -309,6 +309,16 @@ pub trait ConnectorPort: Send + Sync {
         false
     }
 
+    /// The credentials the Source asks for, which the connector reads from this machine's
+    /// credential store: its API key when it needs one, none otherwise.
+    fn credential_fields(&self) -> &'static [CredentialField] {
+        if self.needs_api_key() {
+            &[API_KEY_FIELD]
+        } else {
+            &[]
+        }
+    }
+
     fn capabilities(&self) -> ConnectorCapabilities;
 
     /// Why this connector cannot execute `request` beyond its declared capabilities (for
@@ -348,6 +358,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
         (**self).needs_api_key()
     }
 
+    fn credential_fields(&self) -> &'static [CredentialField] {
+        (**self).credential_fields()
+    }
+
     fn capabilities(&self) -> ConnectorCapabilities {
         (**self).capabilities()
     }
@@ -384,6 +398,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
 
     fn needs_api_key(&self) -> bool {
         (**self).needs_api_key()
+    }
+
+    fn credential_fields(&self) -> &'static [CredentialField] {
+        (**self).credential_fields()
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {

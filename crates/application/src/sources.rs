@@ -6,8 +6,8 @@ use game_media_vault_domain::{
 use serde::Serialize;
 
 use crate::{
-    ApiKey, ApplicationError, ConnectorPort, CredentialState, CredentialStorePort,
-    MachineSettingsPort, PortError, RunRepositoryPort,
+    ApiKey, ApplicationError, ConnectorPort, CredentialField, CredentialFieldState,
+    CredentialState, CredentialStorePort, MachineSettingsPort, PortError, RunRepositoryPort,
 };
 
 /// What this machine keeps for every vault it opens: its settings and its credentials.
@@ -27,6 +27,8 @@ pub struct SourceDescription {
     pub direct_media_download: bool,
     pub enabled: bool,
     pub credential: CredentialState,
+    /// Each credential the Source asks for, and whether this machine stores it.
+    pub credential_fields: Vec<CredentialFieldState>,
     /// What the Source is known to limit, in words, when anything is known.
     pub rate_limits: Option<String>,
 }
@@ -43,14 +45,37 @@ pub fn describe_sources(
         .map(|connector| {
             let capabilities = connector.capabilities();
             // A store that cannot be read leaves every other Source described.
-            let credential = if !connector.needs_api_key() {
+            let credential_fields: Vec<CredentialFieldState> = connector
+                .credential_fields()
+                .iter()
+                .map(|field| CredentialFieldState {
+                    id: field.id.to_owned(),
+                    label: field.label.to_owned(),
+                    optional: field.optional,
+                    state: match machine
+                        .credentials
+                        .api_key(&field.stored_as(connector.source_id()))
+                    {
+                        Ok(Some(_)) => CredentialState::Stored,
+                        Ok(None) => CredentialState::Missing,
+                        Err(_) => CredentialState::Unreadable,
+                    },
+                })
+                .collect();
+            let credential = if credential_fields.is_empty() {
                 CredentialState::NotNeeded
+            } else if credential_fields
+                .iter()
+                .any(|field| field.state == CredentialState::Unreadable)
+            {
+                CredentialState::Unreadable
+            } else if credential_fields
+                .iter()
+                .any(|field| !field.optional && field.state == CredentialState::Missing)
+            {
+                CredentialState::Missing
             } else {
-                match machine.credentials.api_key(connector.source_id()) {
-                    Ok(Some(_)) => CredentialState::Stored,
-                    Ok(None) => CredentialState::Missing,
-                    Err(_) => CredentialState::Unreadable,
-                }
+                CredentialState::Stored
             };
             SourceDescription {
                 source_id: connector.source_id().to_owned(),
@@ -60,6 +85,7 @@ pub fn describe_sources(
                     .iter()
                     .any(|disabled| disabled == connector.source_id()),
                 credential,
+                credential_fields,
                 rate_limits: connector.rate_limits(),
             }
         })
@@ -99,11 +125,58 @@ pub fn set_source_api_key(
     source_id: &str,
     key: &ApiKey,
 ) -> Result<Vec<SourceDescription>, ApplicationError> {
-    if !registered(connectors, source_id)?.needs_api_key() {
+    set_source_credential(machine, connectors, source_id, None, key)
+}
+
+/// Stores, in this machine's credential store, the credential `field` of the registered Source
+/// `source_id`, or its one credential when no field is named, and describes the registered
+/// `connectors` as they are now.
+pub fn set_source_credential(
+    machine: Machine<'_>,
+    connectors: &[&dyn ConnectorPort],
+    source_id: &str,
+    field: Option<&str>,
+    value: &ApiKey,
+) -> Result<Vec<SourceDescription>, ApplicationError> {
+    let fields = registered(connectors, source_id)?.credential_fields();
+    if fields.is_empty() {
         return Err(ApplicationError::SourceNeedsNoApiKey(source_id.to_owned()));
     }
-    machine.credentials.set_api_key(source_id, key)?;
+    let field = match field {
+        Some(name) => named_field(source_id, fields, name)?,
+        None => match fields {
+            [only] => only,
+            several => {
+                return Err(ApplicationError::CredentialFieldRequired {
+                    source_id: source_id.to_owned(),
+                    fields: several.iter().map(|field| field.id.to_owned()).collect(),
+                });
+            }
+        },
+    };
+    if field.single_word && value.expose().contains(char::is_whitespace) {
+        return Err(ApplicationError::CredentialNotOneWord(
+            field.label.to_owned(),
+        ));
+    }
+    machine
+        .credentials
+        .set_api_key(&field.stored_as(source_id), value)?;
     describe_sources(connectors, machine)
+}
+
+/// The credential named `name` among the `fields` of the Source `source_id`.
+fn named_field<'a>(
+    source_id: &str,
+    fields: &'a [CredentialField],
+    name: &str,
+) -> Result<&'a CredentialField, ApplicationError> {
+    fields.iter().find(|field| field.id == name).ok_or_else(|| {
+        ApplicationError::UnknownCredentialField {
+            source_id: source_id.to_owned(),
+            field: name.to_owned(),
+        }
+    })
 }
 
 /// Forgets the API key this machine stores for the registered Source `source_id`, and
@@ -113,8 +186,39 @@ pub fn clear_source_api_key(
     connectors: &[&dyn ConnectorPort],
     source_id: &str,
 ) -> Result<Vec<SourceDescription>, ApplicationError> {
-    registered(connectors, source_id)?;
-    machine.credentials.clear_api_key(source_id)?;
+    clear_source_credential(machine, connectors, source_id, None)
+}
+
+/// Forgets the credential `field` this machine stores for the registered Source `source_id`, or
+/// every credential of it when no field is named, and describes the registered `connectors` as
+/// they are now.
+pub fn clear_source_credential(
+    machine: Machine<'_>,
+    connectors: &[&dyn ConnectorPort],
+    source_id: &str,
+    field: Option<&str>,
+) -> Result<Vec<SourceDescription>, ApplicationError> {
+    let fields = registered(connectors, source_id)?.credential_fields();
+    match field {
+        Some(name) => machine
+            .credentials
+            .clear_api_key(&named_field(source_id, fields, name)?.stored_as(source_id))?,
+        None => {
+            for field in fields {
+                machine
+                    .credentials
+                    .clear_api_key(&field.stored_as(source_id))?;
+            }
+            // A key an earlier version stored under the Source's own name, when the Source
+            // asked for one, goes too.
+            if !fields
+                .iter()
+                .any(|field| field.stored_as(source_id) == source_id)
+            {
+                machine.credentials.clear_api_key(source_id)?;
+            }
+        }
+    }
     describe_sources(connectors, machine)
 }
 
@@ -192,6 +296,10 @@ impl<C: ConnectorPort> ConnectorPort for MachineConnector<C> {
 
     fn needs_api_key(&self) -> bool {
         self.connector.needs_api_key()
+    }
+
+    fn credential_fields(&self) -> &'static [CredentialField] {
+        self.connector.credential_fields()
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {

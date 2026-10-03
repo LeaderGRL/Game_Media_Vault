@@ -13,7 +13,8 @@ use game_media_vault_application::{
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
-    clear_source_api_key as clear_source_api_key_use_case, derive_assets as derive_assets_use_case,
+    clear_source_credential as clear_source_credential_use_case,
+    derive_assets as derive_assets_use_case,
     derive_packaging_models as derive_packaging_models_use_case, describe_sources,
     import_reference_catalog as import_reference_catalog_use_case,
     keep_reference_review_item_apart as keep_reference_review_item_apart_use_case,
@@ -27,7 +28,8 @@ use game_media_vault_application::{
     plan_acquisition as plan_acquisition_use_case,
     resolve_review_item as resolve_review_item_use_case,
     resume_acquisition_run as resume_acquisition_run_use_case,
-    search_library as search_library_use_case, set_source_api_key as set_source_api_key_use_case,
+    search_library as search_library_use_case,
+    set_source_credential as set_source_credential_use_case,
     set_source_enabled as set_source_enabled_use_case, start_acquisition_run_with_connectors,
     summarize_source_failures, verify_vault as verify_vault_use_case,
 };
@@ -330,29 +332,35 @@ pub fn set_source_enabled_on_machine(
     )?)
 }
 
-/// Stores on this `machine` the API key a registered Source needs, for every vault.
-pub fn set_source_api_key_on_machine(
+/// Stores on this `machine`, for every vault, the credential `field` a registered Source asks
+/// for, or its API key when no field is named.
+pub fn set_source_credential_on_machine(
     machine: Machine<'_>,
     source_id: &str,
+    field: Option<&str>,
     key: &str,
 ) -> Result<Vec<SourceDescription>, CommandError> {
-    Ok(set_source_api_key_use_case(
+    Ok(set_source_credential_use_case(
         machine,
         &registry_refs(&machine_registry_of_sources()),
         source_id,
+        field,
         &ApiKey::new(key)?,
     )?)
 }
 
-/// Forgets the API key this `machine` stores for a registered Source.
-pub fn clear_source_api_key_on_machine(
+/// Forgets the credential `field` this `machine` stores for a registered Source, or all of its
+/// credentials when no field is named.
+pub fn clear_source_credential_on_machine(
     machine: Machine<'_>,
     source_id: &str,
+    field: Option<&str>,
 ) -> Result<Vec<SourceDescription>, CommandError> {
-    Ok(clear_source_api_key_use_case(
+    Ok(clear_source_credential_use_case(
         machine,
         &registry_refs(&machine_registry_of_sources()),
         source_id,
+        field,
     )?)
 }
 
@@ -382,14 +390,22 @@ fn set_source_enabled(
 #[tauri::command(rename_all = "snake_case")]
 fn set_source_api_key(
     source_id: String,
+    field: Option<String>,
     key: String,
 ) -> Result<Vec<SourceDescription>, CommandError> {
-    on_this_machine(|machine| set_source_api_key_on_machine(machine, &source_id, &key))
+    on_this_machine(|machine| {
+        set_source_credential_on_machine(machine, &source_id, field.as_deref(), &key)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn clear_source_api_key(source_id: String) -> Result<Vec<SourceDescription>, CommandError> {
-    on_this_machine(|machine| clear_source_api_key_on_machine(machine, &source_id))
+fn clear_source_api_key(
+    source_id: String,
+    field: Option<String>,
+) -> Result<Vec<SourceDescription>, CommandError> {
+    on_this_machine(|machine| {
+        clear_source_credential_on_machine(machine, &source_id, field.as_deref())
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]

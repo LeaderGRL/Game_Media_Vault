@@ -8,9 +8,9 @@ use std::{
 };
 
 use game_media_vault_application::{
-    ApiKey, CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort,
-    MachineSettingsPort, ObjectStorePort, ParkedReview, PortError, ReviewDecisionOutcome,
-    ReviewRepositoryPort, RunRepositoryPort,
+    API_KEY_FIELD, ApiKey, CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialField,
+    CredentialStorePort, MachineSettingsPort, ObjectStorePort, ParkedReview, PortError,
+    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
@@ -1079,6 +1079,8 @@ pub struct FakeConnector {
     pub needs_api_key: bool,
     /// What the Source is known to limit, in words.
     pub rate_limits: Option<&'static str>,
+    /// The credentials the Source asks for, when not just an API key or none.
+    pub credential_fields: Option<&'static [CredentialField]>,
 }
 
 impl FakeConnector {
@@ -1097,6 +1099,7 @@ impl FakeConnector {
             asset_types: vec![AssetType::BoxFront],
             needs_api_key: false,
             rate_limits: None,
+            credential_fields: None,
         }
     }
 }
@@ -1112,6 +1115,14 @@ impl ConnectorPort for FakeConnector {
 
     fn rate_limits(&self) -> Option<String> {
         self.rate_limits.map(str::to_owned)
+    }
+
+    fn credential_fields(&self) -> &'static [CredentialField] {
+        match self.credential_fields {
+            Some(fields) => fields,
+            None if self.needs_api_key => &[API_KEY_FIELD],
+            None => &[],
+        }
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {

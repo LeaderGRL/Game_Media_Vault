@@ -62,14 +62,26 @@ export const KNOWN_SOURCES = [
 export type CredentialState = "not_needed" | "missing" | "stored" | "unreadable";
 
 /** A registered Source as planning knows it. */
+/** One credential a Source asks for, and whether this machine stores it, never its value. */
+export interface CredentialFieldState {
+  /** Its stable name, such as `api-key`. */
+  id: string;
+  label: string;
+  /** Whether the Source works without it. */
+  optional: boolean;
+  state: Exclude<CredentialState, "not_needed">;
+}
+
 export interface SourceDescription {
   source_id: string;
   asset_types: string[];
   direct_media_download: boolean;
   /** Whether the Source takes part in acquisitions on this machine. */
   enabled: boolean;
-  /** Whether this machine stores the credential the Source needs, never the credential. */
+  /** Whether this machine stores the credentials the Source needs, never the credentials. */
   credential: CredentialState;
+  /** Each credential the Source asks for, and whether this machine stores it. */
+  credential_fields: CredentialFieldState[];
   /** What the Source is known to limit, in words, when anything is known. */
   rate_limits: string | null;
 }

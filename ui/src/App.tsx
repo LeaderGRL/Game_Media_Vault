@@ -746,19 +746,23 @@ export function App() {
     setSources(described);
   }
 
-  /** Stores on this machine the API key a Source needs, for every vault, never showing it. */
-  async function setSourceApiKey(sourceId: string, key: string) {
+  /** Stores on this machine one credential a Source needs, for every vault, never showing it. */
+  async function setSourceCredential(sourceId: string, field: string, key: string) {
     sourcesRequest.current += 1;
     setSources(
-      await invoke<SourceDescription[]>("set_source_api_key", { source_id: sourceId, key }),
+      await invoke<SourceDescription[]>("set_source_api_key", {
+        source_id: sourceId,
+        field,
+        key,
+      }),
     );
   }
 
-  /** Forgets the API key this machine stores for a Source. */
-  async function clearSourceApiKey(sourceId: string) {
+  /** Forgets one credential this machine stores for a Source. */
+  async function clearSourceCredential(sourceId: string, field: string) {
     sourcesRequest.current += 1;
     setSources(
-      await invoke<SourceDescription[]>("clear_source_api_key", { source_id: sourceId }),
+      await invoke<SourceDescription[]>("clear_source_api_key", { source_id: sourceId, field }),
     );
   }
 
@@ -1111,8 +1115,8 @@ export function App() {
           error={sourcesError}
           failures={sourceFailures}
           onSetEnabled={setSourceEnabled}
-          onSetApiKey={setSourceApiKey}
-          onClearApiKey={clearSourceApiKey}
+          onSetApiKey={setSourceCredential}
+          onClearApiKey={clearSourceCredential}
         />
       ) : null}
       {activeView === "runs" ? (

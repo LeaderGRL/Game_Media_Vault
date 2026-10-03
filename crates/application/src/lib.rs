@@ -19,7 +19,9 @@ mod verify;
 pub use acquisition::{
     DownloadLimits, acquire_run_with_connectors, start_acquisition_run_with_connectors,
 };
-pub use credentials::{ApiKey, CredentialState};
+pub use credentials::{
+    API_KEY_FIELD, ApiKey, CredentialField, CredentialFieldState, CredentialState,
+};
 pub use derived::{
     DerivationFailure, DerivationSummary, DerivativeRepositoryPort, DerivedStorePort,
     MediaTransformPort, OriginalObject, derive_assets,
@@ -68,8 +70,9 @@ pub use runs::{
 };
 pub use sources::{
     Machine, MachineConnector, MachineConnectors, SourceDescription, SourceFailureSummary,
-    clear_source_api_key, describe_sources, machine_connectors, machine_registry,
-    set_source_api_key, set_source_enabled, summarize_source_failures,
+    clear_source_api_key, clear_source_credential, describe_sources, machine_connectors,
+    machine_registry, set_source_api_key, set_source_credential, set_source_enabled,
+    summarize_source_failures,
 };
 pub use verify::{
     CorruptObject, ObjectArea, ObjectCheck, RecordedDerivative, RepairActions, RepairSummary,

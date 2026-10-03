@@ -75,8 +75,20 @@ pub enum ApplicationError {
     SourceDisabled { source_id: String, reason: String },
     #[error("source {0} needs no API key")]
     SourceNeedsNoApiKey(String),
-    #[error("an API key must be a single word without whitespace")]
-    InvalidApiKey,
+    #[error("a credential cannot be blank or hold control characters")]
+    InvalidCredential,
+    #[error("the {0} must be a single word without whitespace")]
+    CredentialNotOneWord(String),
+    #[error(
+        "source {source_id} asks for several credentials, so name the one given: {}",
+        fields.join(", ")
+    )]
+    CredentialFieldRequired {
+        source_id: String,
+        fields: Vec<String>,
+    },
+    #[error("source {source_id} asks for no credential named {field}")]
+    UnknownCredentialField { source_id: String, field: String },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
     #[error("the engine cannot execute this acquisition request yet: {0}")]
@@ -151,8 +163,11 @@ impl ApplicationError {
             | Self::InvalidReferenceImportLimit
             | Self::InvalidThumbnailEdge
             | Self::NoRepairAction
-            | Self::InvalidApiKey
+            | Self::InvalidCredential
+            | Self::CredentialNotOneWord(_)
             | Self::SourceNeedsNoApiKey(_)
+            | Self::CredentialFieldRequired { .. }
+            | Self::UnknownCredentialField { .. }
             | Self::Validation(_)
             | Self::InvalidMatchingPolicy(_)
             | Self::NotAReferenceCandidate { .. }
