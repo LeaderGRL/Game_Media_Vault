@@ -65,8 +65,9 @@ from standard input (ADR 0005).
   1. Sign in at `https://www.steamgriddb.com` (it signs in through a Steam account).
   2. Open the API page of the preferences, `https://www.steamgriddb.com/profile/preferences/api`,
      and generate a key.
-  3. Run `game-media-vault source key set steamgriddb`, paste the key and press Enter. The key is
-     read from standard input, so the shell never keeps it in its history.
+  3. In the desktop Sources view, paste the key in SteamGridDB's API key field and choose
+     **Store key**. Or run `game-media-vault source key set steamgriddb`, paste the key and press
+     Enter: the key is read from standard input, so the shell never keeps it in its history.
 - **Limits:** without a stored key it is left out of every plan, with the reason. It needs an
   explicit game selection, since it lists no platform's games, and refuses region and language
   filters. A game is acquired only when SteamGridDB names it exactly as the request does,

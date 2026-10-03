@@ -2680,6 +2680,38 @@ describe("App Library requests", () => {
     expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked();
   });
 
+  it("stores the API key of a Source from the Sources view", async () => {
+    const steamgriddb = {
+      source_id: "steamgriddb",
+      asset_types: ["logo"],
+      direct_media_download: true,
+      enabled: true,
+      credential: "missing",
+    };
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_sources"
+          ? [steamgriddb]
+          : command === "set_source_api_key"
+            ? [{ ...steamgriddb, credential: "stored" }]
+            : [],
+      ),
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+
+    fireEvent.change(await screen.findByLabelText("API key for SteamGridDB"), {
+      target: { value: "user-key-123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Store key" }));
+
+    expect(await screen.findByText("Stored in this machine's credential store")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("set_source_api_key", {
+      source_id: "steamgriddb",
+      key: "user-key-123",
+    });
+  });
+
   it("reads the Sources again each time the view is shown", async () => {
     // Another process, such as the CLI, disables the Source between the two visits.
     let enabled = true;

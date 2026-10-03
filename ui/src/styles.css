@@ -715,6 +715,22 @@ select:focus {
   margin: 0;
 }
 
+.source dd p {
+  margin: 0;
+}
+
+.api-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.api-key input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
 .source-failures {
   margin: 4px 0 0;
   padding-left: 18px;

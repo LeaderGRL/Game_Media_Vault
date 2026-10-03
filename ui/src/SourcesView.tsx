@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import {
+  CredentialState,
   SourceDescription,
   SourceFailure,
   SourceFailureSummary,
@@ -18,6 +19,10 @@ interface SourcesViewProps {
   failures?: SourceFailureSummary[] | null;
   /** Enables or disables a Source on this machine; without it, the state is only shown. */
   onSetEnabled?: (sourceId: string, enabled: boolean) => Promise<void>;
+  /** Stores the API key of a Source on this machine; without it, no key is asked for. */
+  onSetApiKey?: (sourceId: string, key: string) => Promise<void>;
+  /** Forgets the API key this machine stores for a Source. */
+  onClearApiKey?: (sourceId: string) => Promise<void>;
 }
 
 /** The registered Sources, described from the capabilities planning uses. */
@@ -26,23 +31,31 @@ export function SourcesView({
   error = null,
   failures = null,
   onSetEnabled,
+  onSetApiKey,
+  onClearApiKey,
 }: SourcesViewProps) {
   // The Source whose state is changing, one at a time, and why the last change failed.
   const [changing, setChanging] = useState<string | null>(null);
   const [changeError, setChangeError] = useState<string | null>(null);
 
-  async function setEnabled(sourceId: string, enabled: boolean) {
-    if (onSetEnabled === undefined) {
-      return;
-    }
+  /** Makes one change to a Source, and says whether it succeeded. */
+  async function change(sourceId: string, action: () => Promise<void>): Promise<boolean> {
     setChanging(sourceId);
     setChangeError(null);
     try {
-      await onSetEnabled(sourceId, enabled);
+      await action();
+      return true;
     } catch (reason) {
       setChangeError(errorMessage(reason));
+      return false;
     } finally {
       setChanging(null);
+    }
+  }
+
+  async function setEnabled(sourceId: string, enabled: boolean) {
+    if (onSetEnabled !== undefined) {
+      await change(sourceId, () => onSetEnabled(sourceId, enabled));
     }
   }
 
@@ -85,6 +98,23 @@ export function SourcesView({
                   <p className="hint">Takes no part in acquisitions on this machine</p>
                 )}
               </dd>
+              {source.credential === "not_needed" ? null : (
+                <ApiKeyField
+                  name={name}
+                  credential={source.credential}
+                  busy={changing !== null}
+                  onStore={
+                    onSetApiKey === undefined
+                      ? undefined
+                      : (key) => change(source.source_id, () => onSetApiKey(source.source_id, key))
+                  }
+                  onForget={
+                    onClearApiKey === undefined
+                      ? undefined
+                      : () => change(source.source_id, () => onClearApiKey(source.source_id))
+                  }
+                />
+              )}
               <dt>Acquires</dt>
               <dd>{source.asset_types.map(assetTypeLabel).join(", ")}</dd>
               <dt>Acquisition method</dt>
@@ -120,6 +150,68 @@ export function SourcesView({
         );
       })}
     </div>
+  );
+}
+
+const CREDENTIAL_STATES: Record<Exclude<CredentialState, "not_needed">, string> = {
+  missing: "Needs an API key, which this machine does not store",
+  stored: "Stored in this machine's credential store",
+  unreadable: "This machine's credential store could not be read",
+};
+
+interface ApiKeyFieldProps {
+  name: string;
+  credential: Exclude<CredentialState, "not_needed">;
+  busy: boolean;
+  /** Stores the key typed in, and says whether it did. */
+  onStore?: (key: string) => Promise<boolean>;
+  onForget?: () => Promise<boolean>;
+}
+
+/** Whether this machine stores the API key a Source needs, never the key itself. */
+function ApiKeyField({ name, credential, busy, onStore, onForget }: ApiKeyFieldProps) {
+  const [key, setKey] = useState("");
+
+  async function store() {
+    if (onStore !== undefined && (await onStore(key))) {
+      // A key that failed to store stays for another try.
+      setKey("");
+    }
+  }
+
+  return (
+    <>
+      <dt>API key</dt>
+      <dd>
+        <p>{CREDENTIAL_STATES[credential]}</p>
+        {onStore === undefined ? null : (
+          <form
+            className="api-key"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void store();
+            }}
+          >
+            <input
+              type="password"
+              autoComplete="off"
+              aria-label={`API key for ${name}`}
+              value={key}
+              disabled={busy}
+              onChange={(event) => setKey(event.target.value)}
+            />
+            <button type="submit" disabled={busy || key.trim() === ""}>
+              Store key
+            </button>
+            {credential === "stored" && onForget !== undefined ? (
+              <button type="button" disabled={busy} onClick={() => void onForget()}>
+                Forget key
+              </button>
+            ) : null}
+          </form>
+        )}
+      </dd>
+    </>
   );
 }
 
