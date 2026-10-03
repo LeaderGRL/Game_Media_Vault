@@ -13,12 +13,12 @@ use game_media_vault_application::{
     ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PortError,
     ReferenceCatalogSourcePort, RepairActions, RepairSummary, VaultReport,
     acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
-    clear_source_api_key, derive_assets, derive_packaging_models, describe_sources,
+    clear_source_credential, derive_assets, derive_packaging_models, describe_sources,
     draft_from_document, export_acquisition_request, import_local_asset, import_reference_catalog,
     keep_reference_review_item_apart, link_reference_review_item, list_acquisition_runs,
     list_library, list_reference_review_items, list_review_items, load_acquisition_run,
     machine_connectors, pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
-    resume_acquisition_run, search_library, set_source_api_key, set_source_enabled,
+    resume_acquisition_run, search_library, set_source_credential, set_source_enabled,
     start_acquisition_run_with_connectors, summarize_source_failures, verify_vault,
 };
 use game_media_vault_connectors::{
@@ -379,11 +379,20 @@ enum SourceCommand {
 
 #[derive(Debug, Subcommand)]
 enum KeyCommand {
-    /// Stores the API key of a Source, read from the first line of standard input so that
-    /// shells never keep it in their history.
-    Set { source_id: String },
-    /// Forgets the API key of a Source.
-    Clear { source_id: String },
+    /// Stores the API key of a Source, or the credential `--field` names for a Source that asks
+    /// for several, read from the first line of standard input so that shells never keep it in
+    /// their history.
+    Set {
+        source_id: String,
+        #[arg(long)]
+        field: Option<String>,
+    },
+    /// Forgets the credentials of a Source, or only the one `--field` names.
+    Clear {
+        source_id: String,
+        #[arg(long)]
+        field: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -676,21 +685,28 @@ where
         Command::Source {
             command:
                 SourceCommand::Key {
-                    command: KeyCommand::Set { source_id },
+                    command: KeyCommand::Set { source_id, field },
                 },
         } => {
             let key = read_api_key(input)?;
-            Ok(serde_json::to_string_pretty(&set_source_api_key(
-                machine, registered, &source_id, &key,
+            Ok(serde_json::to_string_pretty(&set_source_credential(
+                machine,
+                registered,
+                &source_id,
+                field.as_deref(),
+                &key,
             )?)?)
         }
         Command::Source {
             command:
                 SourceCommand::Key {
-                    command: KeyCommand::Clear { source_id },
+                    command: KeyCommand::Clear { source_id, field },
                 },
-        } => Ok(serde_json::to_string_pretty(&clear_source_api_key(
-            machine, registered, &source_id,
+        } => Ok(serde_json::to_string_pretty(&clear_source_credential(
+            machine,
+            registered,
+            &source_id,
+            field.as_deref(),
         )?)?),
         Command::Source {
             command: SourceCommand::Failures { latest },

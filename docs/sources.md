@@ -1,9 +1,9 @@
 # Sources
 
 What each implemented Source provides, where it is reached, and what it needs to be configured.
-No implemented Source needs an account, an API key or any other secret. Sources that will need
-one keep it in protected storage, never in the catalog, exported requests, logs or provenance
-(SPEC §24).
+Some Sources need an API key, or the identifiers of an account, that the user gets from the
+Source itself. Each is kept in protected storage, never in the catalog, exported requests, logs
+or provenance (SPEC §24).
 
 Every HTTP request identifies itself as `game-media-vault/0.1`. It retries transient failures
 (connection failures, timeouts, HTTP 429 and 5xx) up to four attempts in all, with a jittered
@@ -17,7 +17,10 @@ These Sources are registered connectors; `game-media-vault source list` describe
 `game-media-vault source disable <source>` keeps one out of every acquisition on this machine
 until `source enable <source>`. A Source that needs an API key reads it from this machine's
 secure credential store, where `game-media-vault source key set <source>` stores the key it reads
-from standard input (ADR 0005).
+from standard input (ADR 0005). A Source that asks for several credentials takes `--field <name>`
+to say which one is given, and `source key clear <source>` forgets them all, or with `--field`
+only the one named; an API key is stored under the Source's id, any other credential under
+`<source>/<field>`.
 
 ### Libretro Thumbnails (`libretro-thumbnails`)
 

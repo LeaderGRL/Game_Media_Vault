@@ -128,9 +128,10 @@ fn the_desktop_gives_no_api_key_to_a_source_that_needs_none() {
     let temp = tempfile::tempdir().unwrap();
     let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
 
-    let error = game_media_vault_tauri::set_source_api_key_on_machine(
+    let error = game_media_vault_tauri::set_source_credential_on_machine(
         machine(&settings),
         "libretro-thumbnails",
+        None,
         "zq-test-secret",
     )
     .unwrap_err();
@@ -141,4 +142,22 @@ fn the_desktop_gives_no_api_key_to_a_source_that_needs_none() {
         "{}",
         error.message
     );
+}
+
+#[test]
+fn the_desktop_gives_a_source_no_credential_it_does_not_ask_for() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = MachineSettingsFile::at(temp.path().join("settings.json"));
+
+    let error = game_media_vault_tauri::set_source_credential_on_machine(
+        machine(&settings),
+        "steamgriddb",
+        Some("dev-password"),
+        "zq-test-secret",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, "invalid_request");
+    assert!(error.message.contains("dev-password"), "{}", error.message);
+    assert!(!error.message.contains("zq-test-secret"));
 }

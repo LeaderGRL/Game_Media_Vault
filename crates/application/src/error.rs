@@ -77,6 +77,16 @@ pub enum ApplicationError {
     SourceNeedsNoApiKey(String),
     #[error("an API key must be a single word without whitespace")]
     InvalidApiKey,
+    #[error(
+        "source {source_id} asks for several credentials, so name the one given: {}",
+        fields.join(", ")
+    )]
+    CredentialFieldRequired {
+        source_id: String,
+        fields: Vec<String>,
+    },
+    #[error("source {source_id} asks for no credential named {field}")]
+    UnknownCredentialField { source_id: String, field: String },
     #[error("connector {source_id} cannot execute this acquisition plan: {reason}")]
     UnsupportedConnectorPlan { source_id: String, reason: String },
     #[error("the engine cannot execute this acquisition request yet: {0}")]
@@ -153,6 +163,8 @@ impl ApplicationError {
             | Self::NoRepairAction
             | Self::InvalidApiKey
             | Self::SourceNeedsNoApiKey(_)
+            | Self::CredentialFieldRequired { .. }
+            | Self::UnknownCredentialField { .. }
             | Self::Validation(_)
             | Self::InvalidMatchingPolicy(_)
             | Self::NotAReferenceCandidate { .. }

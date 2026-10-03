@@ -15,6 +15,7 @@ describe("SourcesView", () => {
             enabled: true,
             credential: "not_needed",
             rate_limits: null,
+            credential_fields: [],
           },
           {
             source_id: "index-only",
@@ -23,6 +24,7 @@ describe("SourcesView", () => {
             enabled: true,
             credential: "not_needed",
             rate_limits: null,
+            credential_fields: [],
           },
         ]}
       />,
@@ -47,6 +49,7 @@ describe("SourcesView", () => {
             enabled: true,
             credential: "not_needed",
             rate_limits: "Each API key has a monthly allowance of requests.",
+            credential_fields: [],
           },
           {
             source_id: "libretro-thumbnails",
@@ -55,6 +58,7 @@ describe("SourcesView", () => {
             enabled: true,
             credential: "not_needed",
             rate_limits: null,
+            credential_fields: [],
           },
         ]}
       />,
@@ -90,6 +94,7 @@ describe("SourcesView", () => {
     enabled: true,
     credential: "not_needed" as const,
     rate_limits: null,
+    credential_fields: [],
   };
   const launchbox = {
     source_id: "launchbox-games-db",
@@ -98,6 +103,7 @@ describe("SourcesView", () => {
     enabled: true,
     credential: "not_needed" as const,
     rate_limits: null,
+    credential_fields: [],
   };
 
   it("summarizes the failures the loaded vault recorded for each Source", () => {
@@ -178,12 +184,18 @@ describe("SourcesView", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("settings are read-only");
   });
 
+  /** The one credential of a Source that needs an API key, as this machine stores it or not. */
+  const apiKey = (state: "missing" | "stored" | "unreadable") => [
+    { id: "api-key", label: "API key", optional: false, state },
+  ];
+
   const steamgriddb = {
     source_id: "steamgriddb",
     asset_types: ["logo", "icon", "wallpaper_artwork"],
     direct_media_download: true,
     enabled: true,
     credential: "missing" as const,
+    credential_fields: apiKey("missing"),
     rate_limits: null,
   };
 
@@ -193,16 +205,30 @@ describe("SourcesView", () => {
         sources={[
           libretro,
           steamgriddb,
-          { ...steamgriddb, source_id: "stored-source", credential: "stored" },
-          { ...steamgriddb, source_id: "unreadable-source", credential: "unreadable" },
+          {
+            ...steamgriddb,
+            source_id: "stored-source",
+            credential: "stored",
+            credential_fields: apiKey("stored"),
+          },
+          {
+            ...steamgriddb,
+            source_id: "unreadable-source",
+            credential: "unreadable",
+            credential_fields: apiKey("unreadable"),
+          },
         ]}
       />,
     );
 
     const keyed = screen.getByRole("region", { name: "SteamGridDB" });
-    expect(within(keyed).getByText("Needs an API key, which this machine does not store")).toBeInTheDocument();
+    expect(
+      within(keyed).getByText("Needs an API key, which this machine does not store"),
+    ).toBeInTheDocument();
     const stored = screen.getByRole("region", { name: "stored-source" });
-    expect(within(stored).getByText("Stored in this machine's credential store")).toBeInTheDocument();
+    expect(
+      within(stored).getByText("Stored in this machine's credential store"),
+    ).toBeInTheDocument();
     const unreadable = screen.getByRole("region", { name: "unreadable-source" });
     expect(
       within(unreadable).getByText("This machine's credential store could not be read"),
@@ -215,10 +241,10 @@ describe("SourcesView", () => {
 
   it("stores a key typed in, never showing it, and forgets a stored one", async () => {
     const onSetApiKey = vi
-      .fn<(sourceId: string, key: string) => Promise<void>>()
+      .fn<(sourceId: string, field: string, key: string) => Promise<void>>()
       .mockResolvedValue(undefined);
     const onClearApiKey = vi
-      .fn<(sourceId: string) => Promise<void>>()
+      .fn<(sourceId: string, field: string) => Promise<void>>()
       .mockResolvedValue(undefined);
     const { rerender } = render(
       <SourcesView
@@ -234,23 +260,23 @@ describe("SourcesView", () => {
     fireEvent.change(field, { target: { value: "user-key-123" } });
     fireEvent.click(screen.getByRole("button", { name: "Store key" }));
 
-    expect(onSetApiKey).toHaveBeenCalledWith("steamgriddb", "user-key-123");
+    expect(onSetApiKey).toHaveBeenCalledWith("steamgriddb", "api-key", "user-key-123");
     await vi.waitFor(() => expect(field).toHaveValue(""));
     rerender(
       <SourcesView
-        sources={[{ ...steamgriddb, credential: "stored" }]}
+        sources={[{ ...steamgriddb, credential: "stored", credential_fields: apiKey("stored") }]}
         onSetApiKey={onSetApiKey}
         onClearApiKey={onClearApiKey}
       />,
     );
     expect(screen.queryByText("user-key-123")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Forget key" }));
-    expect(onClearApiKey).toHaveBeenCalledWith("steamgriddb");
+    expect(onClearApiKey).toHaveBeenCalledWith("steamgriddb", "api-key");
   });
 
   it("keeps a key it failed to store for another try, and says why", async () => {
     const onSetApiKey = vi
-      .fn<(sourceId: string, key: string) => Promise<void>>()
+      .fn<(sourceId: string, field: string, key: string) => Promise<void>>()
       .mockRejectedValue(new Error("the credential store is locked"));
     render(<SourcesView sources={[steamgriddb]} onSetApiKey={onSetApiKey} />);
     const field = screen.getByLabelText("API key for SteamGridDB");
@@ -260,5 +286,35 @@ describe("SourcesView", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("the credential store is locked");
     expect(field).toHaveValue("user-key-123");
+  });
+  it("asks for each credential of a Source that needs several, by name", () => {
+    const onSetApiKey = vi
+      .fn<(sourceId: string, field: string, key: string) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    render(
+      <SourcesView
+        sources={[
+          {
+            ...steamgriddb,
+            source_id: "account-source",
+            credential_fields: [
+              { id: "dev-id", label: "Developer id", optional: false, state: "stored" },
+              { id: "user-password", label: "Account password", optional: true, state: "missing" },
+            ],
+          },
+        ]}
+        onSetApiKey={onSetApiKey}
+      />,
+    );
+
+    const source = screen.getByRole("region", { name: "account-source" });
+    expect(within(source).getByText("Developer id")).toBeInTheDocument();
+    expect(within(source).getByText("Optional; this machine stores none")).toBeInTheDocument();
+    fireEvent.change(within(source).getByLabelText("Account password for account-source"), {
+      target: { value: "pass word" },
+    });
+    fireEvent.click(within(source).getAllByRole("button", { name: "Store key" })[1]);
+
+    expect(onSetApiKey).toHaveBeenCalledWith("account-source", "user-password", "pass word");
   });
 });
