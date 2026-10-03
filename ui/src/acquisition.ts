@@ -324,10 +324,15 @@ export function numberProblem(form: AcquisitionForm): string | null {
   if (problem !== null || form.retention !== "keep_best") {
     return problem;
   }
-  const kept = form.keptPerType.trim();
+  return keptPerTypeProblem(form.keptPerType, "Assets kept per type");
+}
+
+/** Why `text`, the field `label` names, cannot say how many Assets of each type to keep. */
+export function keptPerTypeProblem(text: string, label: string): string | null {
+  const kept = text.trim();
   return /^\d+$/.test(kept) && Number(kept) >= 1 && Number(kept) <= MAX_PIXEL_SIZE
     ? null
-    : `Assets kept per type must be a whole number from 1 up to ${MAX_PIXEL_SIZE}.`;
+    : `${label} must be a whole number from 1 up to ${MAX_PIXEL_SIZE}.`;
 }
 
 function qualityRequirements(form: AcquisitionForm): QualityRequirementsDraft | null {
