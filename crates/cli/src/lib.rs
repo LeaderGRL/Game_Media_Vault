@@ -5,15 +5,16 @@ use std::{
     sync::Arc,
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApiKey, ApplicationError, ConnectorPort,
     DEFAULT_LIBRARY_PAGE_SIZE, DownloadLimits, ErrorKind, ImportLocalAssetRequest,
-    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PlatformCatalogSourcePort,
-    PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort, RepairActions, RepairSummary,
-    VaultReport, acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
-    clear_source_credential, derive_assets, derive_packaging_models, describe_sources,
+    ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PendingReviewDecision,
+    PlatformCatalogSourcePort, PortError, ReferenceCatalogRead, ReferenceCatalogSourcePort,
+    RepairActions, RepairSummary, VaultReport, acquire_run_with_connectors,
+    build_acquisition_request, cancel_acquisition_run, clear_source_credential,
+    decide_pending_reviews, derive_assets, derive_packaging_models, describe_sources,
     draft_from_document, expand_every_game, export_acquisition_request, export_library,
     import_local_asset, import_reference_catalog, keep_reference_review_item_apart,
     link_reference_review_item, list_acquisition_runs, list_library, list_reference_review_items,
@@ -457,6 +458,23 @@ enum ReviewCommand {
     Defer {
         id: i64,
     },
+    /// Decides every Review Item awaiting a decision at once and prints how many it decided
+    /// and how many it left.
+    DecidePending {
+        decision: PendingDecision,
+        #[arg(long, default_value_t = 80)]
+        match_high_threshold: u8,
+        #[arg(long, default_value_t = 50)]
+        match_medium_threshold: u8,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PendingDecision {
+    /// Accepts each item's best match among the releases it competed for, leaving the items
+    /// whose best match ties releases of several Games.
+    AcceptBestMatches,
+    RejectAll,
 }
 
 #[derive(Debug, Args)]
@@ -821,6 +839,24 @@ where
                 ReviewCommand::Defer { id } => Ok(serde_json::to_string_pretty(
                     &resolve_review_item(&catalog, id, ReviewDecision::Defer)?,
                 )?),
+                ReviewCommand::DecidePending {
+                    decision,
+                    match_high_threshold,
+                    match_medium_threshold,
+                } => Ok(serde_json::to_string_pretty(&decide_pending_reviews(
+                    &catalog,
+                    &catalog,
+                    match decision {
+                        PendingDecision::AcceptBestMatches => {
+                            PendingReviewDecision::AcceptBestMatches
+                        }
+                        PendingDecision::RejectAll => PendingReviewDecision::RejectAll,
+                    },
+                    MatchingPolicy {
+                        high_confidence_threshold: match_high_threshold,
+                        medium_confidence_threshold: match_medium_threshold,
+                    },
+                )?)?),
             }
         }
         Command::ImportBoxFront {

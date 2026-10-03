@@ -1,10 +1,147 @@
-use std::io::Read;
+use std::{collections::HashMap, io::Read};
 
-use game_media_vault_domain::{ReviewDecision, ReviewItem};
+use game_media_vault_domain::{
+    LibraryEntry, MatchingPolicy, ReviewDecision, ReviewItem, ValidatedMatchingPolicy,
+    match_asset_candidate_to_release_preferring, review_matches_for_asset_candidate,
+};
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApplicationError, ConnectorPort, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
+    ApplicationError, CatalogPort, ConnectorPort, PortError, ReviewDecisionOutcome,
+    ReviewRepositoryPort,
 };
+
+/// Decisions recorded together when deciding every pending Review Item.
+const DECISION_BATCH: usize = 250;
+
+/// A page of the Review Items awaiting a decision, pending or deferred, in the order they were
+/// opened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewPage {
+    pub items: Vec<ReviewItem>,
+    /// How many items await a decision in all.
+    pub undecided: usize,
+    /// How many undecided items come before the page.
+    pub offset: usize,
+}
+
+/// The page of `limit` undecided Review Items after the first `offset` of them.
+pub fn review_page(
+    reviews: &dyn ReviewRepositoryPort,
+    offset: usize,
+    limit: usize,
+) -> Result<ReviewPage, ApplicationError> {
+    let undecided: Vec<ReviewItem> = reviews
+        .list_review_items()?
+        .into_iter()
+        .filter(|item| item.status.is_undecided())
+        .collect();
+    Ok(ReviewPage {
+        undecided: undecided.len(),
+        offset,
+        items: undecided.into_iter().skip(offset).take(limit).collect(),
+    })
+}
+
+/// A decision taken on every Review Item awaiting one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingReviewDecision {
+    /// Accepts, for each item, the release its candidate matches best among those it competed
+    /// for, as the matcher scores them now.
+    AcceptBestMatches,
+    RejectAll,
+}
+
+/// What deciding every Review Item awaiting a decision did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PendingReviewSummary {
+    pub decided: usize,
+    /// Items left awaiting a decision: those whose best match ties releases of several Games,
+    /// and those decided or closed meanwhile.
+    pub left: usize,
+}
+
+/// Decides every Review Item awaiting a decision as `decision` says, each as a human deciding it
+/// alone would: an accepted candidate's parked work is requeued, a rejected one's is settled.
+pub fn decide_pending_reviews(
+    reviews: &dyn ReviewRepositoryPort,
+    catalog: &dyn CatalogPort,
+    decision: PendingReviewDecision,
+    matching_policy: MatchingPolicy,
+) -> Result<PendingReviewSummary, ApplicationError> {
+    let matching_policy = matching_policy.validate()?;
+    let releases: HashMap<i64, LibraryEntry> = match decision {
+        PendingReviewDecision::AcceptBestMatches => catalog
+            .list_library()?
+            .into_iter()
+            .map(|release| (release.release_edition_id, release))
+            .collect(),
+        PendingReviewDecision::RejectAll => HashMap::new(),
+    };
+    let mut summary = PendingReviewSummary {
+        decided: 0,
+        left: 0,
+    };
+    let mut decisions = Vec::new();
+    for item in reviews.list_review_items()? {
+        if !item.status.is_undecided() {
+            continue;
+        }
+        let chosen = match decision {
+            PendingReviewDecision::RejectAll => Some(ReviewDecision::Reject),
+            PendingReviewDecision::AcceptBestMatches => {
+                best_competing_release(&item, &releases, matching_policy)
+                    .map(|release_edition_id| ReviewDecision::Accept { release_edition_id })
+            }
+        };
+        match chosen {
+            Some(chosen) => decisions.push((item.id, chosen)),
+            None => summary.left += 1,
+        }
+    }
+    // Batches keep each transaction short, so executions are not held off for long.
+    for batch in decisions.chunks(DECISION_BATCH) {
+        for outcome in reviews.decide_review_items(batch)? {
+            if matches!(outcome, ReviewDecisionOutcome::Recorded(_)) {
+                summary.decided += 1;
+            } else {
+                summary.left += 1;
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// The release among those `item` competed for that its candidate matches best now, unless the
+/// best score ties releases of several Games.
+fn best_competing_release(
+    item: &ReviewItem,
+    releases: &HashMap<i64, LibraryEntry>,
+    matching_policy: ValidatedMatchingPolicy,
+) -> Option<i64> {
+    let competing: Vec<LibraryEntry> = item
+        .competing_matches
+        .iter()
+        .filter_map(|candidate| releases.get(&candidate.release_edition_id).cloned())
+        .collect();
+    let scored = review_matches_for_asset_candidate(&item.candidate, &competing, matching_policy);
+    let best = scored.first()?;
+    if scored
+        .iter()
+        .take_while(|candidate| candidate.score == best.score)
+        .any(|candidate| candidate.game_id != best.game_id)
+    {
+        return None;
+    }
+    match_asset_candidate_to_release_preferring(
+        &item.candidate,
+        &competing,
+        matching_policy,
+        &|_| false,
+    )
+    .release_edition_id
+}
 
 /// Largest candidate media loaded into memory for a Review preview.
 pub const MAX_REVIEW_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;

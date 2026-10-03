@@ -2658,3 +2658,20 @@ fn plan_names_the_games_of_the_platforms_list_as_acquire_does() {
         serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
     assert_eq!(library[0]["game_title"], "Super Mario Bros.");
 }
+
+#[test]
+fn review_decide_pending_rejects_every_review_at_once() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    seed_review_item(&vault);
+
+    let summary: serde_json::Value = serde_json::from_str(
+        &run_in_vault(&vault, &["review", "decide-pending", "reject-all"]).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(summary, serde_json::json!({ "decided": 1, "left": 0 }));
+    let listed: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["review", "list"]).unwrap()).unwrap();
+    assert_eq!(listed[0]["status"], "rejected");
+}

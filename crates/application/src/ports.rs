@@ -195,6 +195,20 @@ pub trait ReviewRepositoryPort {
         decision: ReviewDecision,
     ) -> Result<ReviewDecisionOutcome, PortError>;
 
+    /// Records each of `decisions` as `decide_review_item` does, in order, answering their
+    /// outcomes; a repository may record them all in one transaction.
+    fn decide_review_items(
+        &self,
+        decisions: &[(i64, ReviewDecision)],
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
+        decisions
+            .iter()
+            .map(|(review_item_id, decision)| {
+                self.decide_review_item(*review_item_id, decision.clone())
+            })
+            .collect()
+    }
+
     /// Persists an Asset acquired for the candidate with this identity, in one transaction that
     /// keeps the candidate linked to a single Release Edition: links of the same candidate to
     /// other editions are removed, an undecided Review Item is closed as `AutoResolved`

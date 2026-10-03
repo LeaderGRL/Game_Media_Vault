@@ -224,52 +224,34 @@ impl ReviewRepositoryPort for SqliteCatalog {
         review_item_id: i64,
         decision: ReviewDecision,
     ) -> Result<ReviewDecisionOutcome, PortError> {
-        let decision_json = to_json(&decision, "review decision")?;
-        let status = match decision {
-            ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
-            ReviewDecision::Reject => ReviewStatus::Rejected,
-            ReviewDecision::Defer => ReviewStatus::Deferred,
-        };
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        // The write lock is held from here on, so the checked state is the decided state.
-        let Some(current) = select_review_item(&transaction, "id = ?1", params![review_item_id])?
-        else {
-            return Ok(ReviewDecisionOutcome::NotFound);
-        };
-        if !current.status.is_undecided() {
-            return Ok(ReviewDecisionOutcome::NotUndecided(current.status));
+        let outcome = decide_in_transaction(&transaction, review_item_id, decision)?;
+        // An outcome that records nothing changes nothing either.
+        if matches!(outcome, ReviewDecisionOutcome::Recorded(_)) {
+            transaction.commit().map_err(sql_error)?;
         }
-        if let ReviewDecision::Accept { release_edition_id } = decision
-            && !current
-                .competing_matches
-                .iter()
-                .any(|candidate| candidate.release_edition_id == release_edition_id)
-        {
-            return Ok(ReviewDecisionOutcome::NotCompeting);
-        }
-        set_status_if_undecided(&transaction, review_item_id, status, Some(&decision_json))?;
-        let decided = select_review_item(&transaction, "id = ?1", params![review_item_id])?
-            .ok_or_else(|| PortError::new(format!("review item #{review_item_id} disappeared")))?;
-        match decision {
-            ReviewDecision::Accept { release_edition_id } => {
-                requeue_parked_work(&transaction, review_item_id)?;
-                detach_candidate_links(
-                    &transaction,
-                    &decided.candidate_identity,
-                    Some(release_edition_id),
-                )?;
-            }
-            ReviewDecision::Reject => {
-                complete_parked_work(&transaction, review_item_id, true)?;
-                detach_candidate_links(&transaction, &decided.candidate_identity, None)?;
-            }
-            ReviewDecision::Defer => {}
-        }
+        Ok(outcome)
+    }
+
+    fn decide_review_items(
+        &self,
+        decisions: &[(i64, ReviewDecision)],
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let outcomes = decisions
+            .iter()
+            .map(|(review_item_id, decision)| {
+                decide_in_transaction(&transaction, *review_item_id, decision.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().map_err(sql_error)?;
-        Ok(ReviewDecisionOutcome::Recorded(Box::new(decided)))
+        Ok(outcomes)
     }
 
     fn persist_candidate_asset(
@@ -423,6 +405,55 @@ enum WorkOutcome<'a> {
     BelowQuality(&'a str),
     /// A retained Asset outranks the original under Keep Best Per Type, as this JSON says.
     Outranked(&'a str),
+}
+
+/// Records `decision` on Review Item `review_item_id` within `transaction`, which holds the
+/// write lock, so the checked state is the decided state. An outcome other than `Recorded`
+/// writes nothing.
+fn decide_in_transaction(
+    transaction: &Transaction<'_>,
+    review_item_id: i64,
+    decision: ReviewDecision,
+) -> Result<ReviewDecisionOutcome, PortError> {
+    let decision_json = to_json(&decision, "review decision")?;
+    let status = match decision {
+        ReviewDecision::Accept { .. } => ReviewStatus::Accepted,
+        ReviewDecision::Reject => ReviewStatus::Rejected,
+        ReviewDecision::Defer => ReviewStatus::Deferred,
+    };
+    let Some(current) = select_review_item(transaction, "id = ?1", params![review_item_id])? else {
+        return Ok(ReviewDecisionOutcome::NotFound);
+    };
+    if !current.status.is_undecided() {
+        return Ok(ReviewDecisionOutcome::NotUndecided(current.status));
+    }
+    if let ReviewDecision::Accept { release_edition_id } = decision
+        && !current
+            .competing_matches
+            .iter()
+            .any(|candidate| candidate.release_edition_id == release_edition_id)
+    {
+        return Ok(ReviewDecisionOutcome::NotCompeting);
+    }
+    set_status_if_undecided(transaction, review_item_id, status, Some(&decision_json))?;
+    let decided = select_review_item(transaction, "id = ?1", params![review_item_id])?
+        .ok_or_else(|| PortError::new(format!("review item #{review_item_id} disappeared")))?;
+    match decision {
+        ReviewDecision::Accept { release_edition_id } => {
+            requeue_parked_work(transaction, review_item_id)?;
+            detach_candidate_links(
+                transaction,
+                &decided.candidate_identity,
+                Some(release_edition_id),
+            )?;
+        }
+        ReviewDecision::Reject => {
+            complete_parked_work(transaction, review_item_id, true)?;
+            detach_candidate_links(transaction, &decided.candidate_identity, None)?;
+        }
+        ReviewDecision::Defer => {}
+    }
+    Ok(ReviewDecisionOutcome::Recorded(Box::new(decided)))
 }
 
 /// Settles a candidate matched to `release_edition_id` without linking its original: its

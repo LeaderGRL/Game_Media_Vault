@@ -65,8 +65,9 @@ pub use ports::{
     ReferenceReviewRepositoryPort, ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{
-    MAX_REVIEW_PREVIEW_BYTES, ReviewPreview, list_review_items, load_review_preview,
-    resolve_review_item,
+    MAX_REVIEW_PREVIEW_BYTES, PendingReviewDecision, PendingReviewSummary, ReviewPage,
+    ReviewPreview, decide_pending_reviews, list_review_items, load_review_preview,
+    resolve_review_item, review_page,
 };
 pub use runs::{
     build_acquisition_request, cancel_acquisition_run, complete_acquisition_run,
