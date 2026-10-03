@@ -710,3 +710,21 @@ fn a_keyed_download_streams_its_media_and_never_shows_its_keys() {
     assert!(!moved.message().contains("zq-test-key"));
     assert_eq!(requests.lock().unwrap().len(), 3);
 }
+
+#[test]
+fn a_transport_following_no_redirect_still_retries() {
+    let (url, served) = serve(vec!["HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK"]);
+    let transport = ReqwestHttpTransport::following_no_redirect(FAST_RETRIES);
+
+    assert_eq!(fetch(&transport, &url).unwrap(), "media");
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+
+    let (url, requests) = serve_raw(vec![
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0\r\n\r\n"
+            .to_vec(),
+    ]);
+    let error = transport.get_stream(&url).err().unwrap();
+
+    assert!(error.message().contains("302"), "{}", error.message());
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}

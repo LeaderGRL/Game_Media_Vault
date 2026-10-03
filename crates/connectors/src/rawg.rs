@@ -15,7 +15,7 @@ use serde_json::Value;
 use url::Url;
 
 use crate::{
-    HttpTransport, ReqwestHttpTransport,
+    HttpTransport, ReqwestHttpTransport, RetryPolicy,
     selection::{name_key, wanted_games},
 };
 
@@ -44,7 +44,7 @@ const PLATFORM_ALIASES: [(&str, &[&str]); 8] = [
 
 /// Reads the API key from this machine's credential store at each discovery, so a key stored or
 /// cleared meanwhile takes effect at once. Images are downloaded from RAWG's media server,
-/// without the key.
+/// without the key, following no redirect elsewhere.
 pub struct RawgConnector<T = ReqwestHttpTransport> {
     transport: T,
     credentials: Arc<dyn CredentialStorePort>,
@@ -52,7 +52,11 @@ pub struct RawgConnector<T = ReqwestHttpTransport> {
 
 impl RawgConnector<ReqwestHttpTransport> {
     pub fn new(credentials: Arc<dyn CredentialStorePort>) -> Self {
-        Self::with_transport(ReqwestHttpTransport::default(), credentials)
+        // A redirect could take a download away from RAWG's media server.
+        Self::with_transport(
+            ReqwestHttpTransport::following_no_redirect(RetryPolicy::default()),
+            credentials,
+        )
     }
 }
 

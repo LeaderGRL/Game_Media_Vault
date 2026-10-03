@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { attributionOf } from "./acquisition";
+import { ExternalLink } from "./ExternalLink";
 import { previewMediaType } from "./types";
 import type { ReviewDecision, ReviewItem } from "./types";
 
@@ -50,6 +52,7 @@ export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: Re
                 {item.candidate.source_id}
                 {item.candidate.source_asset_label ? ` · ${item.candidate.source_asset_label}` : ""}
               </strong>
+              <SourceAttribution sourceId={item.candidate.source_id} />
               <code>{item.candidate.source_url}</code>
             </div>
 
@@ -263,4 +266,17 @@ function formatSignal(signal: string) {
 
 function formatDelta(delta: number) {
   return delta >= 0 ? `+${delta}` : String(delta);
+}
+
+/** The link back to a Source whose terms ask for one, beside the data it provided. */
+function SourceAttribution({ sourceId }: { sourceId: string }) {
+  const attribution = attributionOf(sourceId);
+  if (attribution === undefined) {
+    return null;
+  }
+  return (
+    <span>
+      via <ExternalLink href={attribution.url}>{attribution.name}</ExternalLink>
+    </span>
+  );
 }

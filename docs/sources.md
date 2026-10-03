@@ -166,14 +166,15 @@ only the one named; an API key is stored under the Source's id, any other creden
   every requested platform RAWG lists the game on.
 - **Reached at:** the API at `api.rawg.io`, which searches each requested title once, whatever
   the platforms, and lists with each game it finds the platforms it is on, its background image
-  and screenshots; and `media.rawg.io` for the images, downloaded without the key. An image
+  and screenshots; and `media.rawg.io` for the images, downloaded without the key and following no redirect. An image
   another server serves is left out.
 - **Configuration:** an API key from the user's own RAWG account, kept in this machine's
   credential store (ADR 0005). The API takes the key as a query parameter, which the connector
   adds only to its searches: errors name the request without it, and the request follows no
   redirect. RAWG's free plan is meant for personal and non-commercial projects, and asks for an
-  active link to RAWG wherever its data shows: the desktop Sources view and the provenance of
-  its media in the Library link to `https://rawg.io`, opened in the system browser. To get one:
+  active link to RAWG wherever its data shows: the desktop Sources view, the provenance of
+  its media in the Library and the evidence of its candidates in Review link to
+  `https://rawg.io`, opened in the system browser. To get one:
   1. Create a free account and sign in at `https://rawg.io`.
   2. Open `https://rawg.io/apidocs` and choose **Get API Key**. Fill in the form, naming Game
      Media Vault and its repository (`https://github.com/LeaderGRL/Game_Media_Vault`) as the

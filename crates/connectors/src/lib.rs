@@ -208,6 +208,15 @@ impl ReqwestHttpTransport {
     /// could lead to another site's pages. Every request it sends is then one its caller, such as
     /// `PoliteTransport`, admitted.
     pub fn for_public_sites() -> Self {
+        Self::following_no_redirect(RetryPolicy {
+            max_attempts: 1,
+            ..RetryPolicy::default()
+        })
+    }
+
+    /// A transport that follows no redirect, which could lead to another server than the one a
+    /// connector trusts its media from, while retrying transient failures as `retry` allows.
+    pub fn following_no_redirect(retry: RetryPolicy) -> Self {
         let client = Client::builder()
             .user_agent("game-media-vault/0.1")
             .redirect(reqwest::redirect::Policy::none())
@@ -216,10 +225,7 @@ impl ReqwestHttpTransport {
         Self {
             client: client.clone(),
             keyed_client: client,
-            retry: RetryPolicy {
-                max_attempts: 1,
-                ..RetryPolicy::default()
-            },
+            retry,
         }
     }
 
