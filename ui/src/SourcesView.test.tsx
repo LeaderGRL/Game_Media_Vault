@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { SourcesView } from "./SourcesView";
 
+// Links open in the system browser, through the opener plugin the tests stand in for.
+const { openUrl } = vi.hoisted(() => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl }));
+
 describe("SourcesView", () => {
   it("describes each Source with what planning knows of it", () => {
     render(
@@ -316,5 +320,18 @@ describe("SourcesView", () => {
     fireEvent.click(within(source).getAllByRole("button", { name: "Store key" })[1]);
 
     expect(onSetApiKey).toHaveBeenCalledWith("account-source", "user-password", "pass word");
+  });
+  it("links RAWG's own site, as its terms ask", () => {
+    render(
+      <SourcesView
+        sources={[{ ...steamgriddb, source_id: "rawg", asset_types: ["screenshot"] }]}
+      />,
+    );
+
+    const source = screen.getByRole("region", { name: "RAWG" });
+    const link = within(source).getByRole("link", { name: "RAWG" });
+    expect(link).toHaveAttribute("href", "https://rawg.io");
+    fireEvent.click(link);
+    expect(openUrl).toHaveBeenCalledWith("https://rawg.io");
   });
 });

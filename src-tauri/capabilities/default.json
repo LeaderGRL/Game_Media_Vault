@@ -2,5 +2,11 @@
   "identifier": "default",
   "description": "Default desktop capability for Game Media Vault",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://rawg.io" }, { "url": "https://rawg.io/*" }]
+    }
+  ]
 }

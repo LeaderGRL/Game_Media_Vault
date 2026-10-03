@@ -7,6 +7,9 @@ import type { AssetType, LibraryEntry } from "./types";
 // The 3D scene needs WebGL, which jsdom lacks; the tests drive it instead.
 const { showModel } = vi.hoisted(() => ({ showModel: vi.fn() }));
 vi.mock("./modelScene", () => ({ showModel }));
+// Links open in the system browser, through the opener plugin the tests stand in for.
+const { openUrl } = vi.hoisted(() => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl }));
 
 const entry: LibraryEntry = {
   game_id: 1,
@@ -587,5 +590,34 @@ describe("LibraryView packaging models", () => {
     expect(screen.getByText("3D box not built yet")).toBeInTheDocument();
     expect(screen.getByText("No 3D template for jewel case packaging yet")).toBeInTheDocument();
     expect(showModel).not.toHaveBeenCalled();
+  });
+  it("links RAWG's own site beside the media it provided, as its terms ask", () => {
+    render(
+      <LibraryView
+        objectUrl={objectUrl}
+        entries={[
+          {
+            ...entry,
+            assets: [
+              {
+                ...entry.assets[0],
+                provenance: [
+                  {
+                    source_id: "rawg",
+                    source_asset_label: "screenshot",
+                    source_location: "https://media.rawg.io/media/screenshots/a1/shot-1.jpg",
+                  },
+                ],
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "RAWG" });
+    expect(link).toHaveAttribute("href", "https://rawg.io");
+    fireEvent.click(link);
+    expect(openUrl).toHaveBeenCalledWith("https://rawg.io");
   });
 });

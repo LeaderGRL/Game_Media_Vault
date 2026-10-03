@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 
-import { ASSET_TYPE_FAMILIES, assetTypeLabel } from "./acquisition";
+import { ASSET_TYPE_FAMILIES, assetTypeLabel, attributionOf } from "./acquisition";
+import { ExternalLink } from "./ExternalLink";
 import { PackagingModelPreview } from "./PackagingModelPreview";
 import {
   filenameMediaType,
@@ -307,12 +308,21 @@ function LibraryResults({ entries, objectUrl, filtered }: LibraryResultsProps) {
 
                   <div className="provenance">
                     <span className="detail-label">Provenance</span>
-                    {asset.provenance.map((source, index) => (
-                      <code key={source.source_id + ":" + source.source_location + ":" + index}>
-                        {source.source_id}
-                        {source.source_asset_label ? " · " + source.source_asset_label : ""}: {source.source_location}
-                      </code>
-                    ))}
+                    {asset.provenance.map((source, index) => {
+                      const attribution = attributionOf(source.source_id);
+                      return (
+                        <code key={source.source_id + ":" + source.source_location + ":" + index}>
+                          {source.source_id}
+                          {source.source_asset_label ? " · " + source.source_asset_label : ""}: {source.source_location}
+                          {attribution ? (
+                            <>
+                              {" · via "}
+                              <ExternalLink href={attribution.url}>{attribution.name}</ExternalLink>
+                            </>
+                          ) : null}
+                        </code>
+                      );
+                    })}
                   </div>
                 </div>
               ))

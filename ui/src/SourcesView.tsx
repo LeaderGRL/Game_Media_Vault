@@ -6,8 +6,10 @@ import {
   SourceFailure,
   SourceFailureSummary,
   assetTypeLabel,
+  attributionOf,
   sourceLabel,
 } from "./acquisition";
+import { ExternalLink } from "./ExternalLink";
 import { errorMessage } from "./types";
 
 interface SourcesViewProps {
@@ -79,6 +81,7 @@ export function SourcesView({
       {sources.map((source) => {
         const name = sourceLabel(source.source_id);
         const summary = failures?.find((failure) => failure.source_id === source.source_id);
+        const attribution = attributionOf(source.source_id);
         return (
           <section className="source" aria-label={name} key={source.source_id}>
             <h2>{name}</h2>
@@ -128,6 +131,15 @@ export function SourcesView({
                   ? "Downloads media directly"
                   : "Cannot download media directly"}
               </dd>
+              {attribution ? (
+                <>
+                  <dt>Attribution</dt>
+                  <dd>
+                    Data and images from{" "}
+                    <ExternalLink href={attribution.url}>{attribution.name}</ExternalLink>
+                  </dd>
+                </>
+              ) : null}
               {source.rate_limits ? (
                 <>
                   <dt>Limits</dt>
