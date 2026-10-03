@@ -2037,3 +2037,67 @@ fn reference_records_whose_dumps_point_at_several_editions_await_review() {
     assert_eq!(items[0]["evidence"], "sha1");
     assert_eq!(items[0]["candidates"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn a_reference_review_item_is_decided_from_the_command_line() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let sha1 = "1111111111111111111111111111111111111111";
+    let datafile = |name: &str, games: &[&str]| {
+        let path = temp.path().join(name);
+        let entries: String = games
+            .iter()
+            .map(|game| format!(r#"<game name="{game} (World)"><rom name="{game}.gb" size="1" sha1="{sha1}"/></game>"#))
+            .collect();
+        fs::write(
+            &path,
+            format!(
+                "<datafile><header><name>Nintendo - Game Boy</name></header>{entries}</datafile>"
+            ),
+        )
+        .unwrap();
+        path
+    };
+    let no_intro = datafile("no-intro.dat", &["Game A", "Game B"]);
+    let redump = datafile("redump.dat", &["Game C"]);
+    let run = |args: &[&str]| run_in_vault(&vault, args);
+    run(&[
+        "import-no-intro",
+        "--file",
+        no_intro.to_str().unwrap(),
+        "--max-games",
+        "10",
+    ])
+    .unwrap();
+    run(&[
+        "import-redump",
+        "--file",
+        redump.to_str().unwrap(),
+        "--max-games",
+        "10",
+    ])
+    .unwrap();
+    let items: serde_json::Value =
+        serde_json::from_str(&run(&["reference", "review", "list"]).unwrap()).unwrap();
+    let id = items[0]["id"].to_string();
+    let candidate = items[0]["candidates"][0].to_string();
+
+    let refused = run(&[
+        "reference",
+        "review",
+        "link",
+        "999",
+        "--edition",
+        &candidate,
+    ])
+    .unwrap_err();
+    let remaining: serde_json::Value = serde_json::from_str(
+        &run(&["reference", "review", "link", &id, "--edition", &candidate]).unwrap(),
+    )
+    .unwrap();
+
+    assert!(refused.to_string().contains("999"), "{refused}");
+    assert_eq!(remaining, serde_json::json!([]));
+    let library: serde_json::Value = serde_json::from_str(&run(&["library"]).unwrap()).unwrap();
+    assert_eq!(library.as_array().unwrap().len(), 2);
+}

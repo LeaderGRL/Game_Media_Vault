@@ -1,9 +1,10 @@
 use game_media_vault_application::{
-    CatalogPort, ReferenceCatalogRepositoryPort, ReferenceReviewRepositoryPort,
+    CatalogPort, ReferenceCatalogRepositoryPort, ReferenceReviewOutcome,
+    ReferenceReviewRepositoryPort,
 };
 use game_media_vault_domain::{
-    ImportedReleaseEdition, ReferenceReleaseRecord, ReleaseAssertion, ReleaseAssertionField,
-    SourceId,
+    AssetType, ImportedReleaseEdition, MediaInfo, PersistAsset, ReferenceReleaseRecord,
+    ReleaseAssertion, ReleaseAssertionField, SourceId,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
 use tempfile::{TempDir, tempdir};
@@ -649,4 +650,144 @@ fn dumps_pointing_at_an_edition_of_the_importing_source_forbid_a_title_link() {
     assert!(links_of(&catalog, second.release_edition_id, "no-intro").is_empty());
     // The only edition they point at is another release of that catalog: nothing is uncertain.
     assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
+/// Two releases of one catalog with the very same dumps, and a third catalog's record of those
+/// dumps, which awaits review: the editions of the first two, the third's, and its item id.
+fn reviewed_dumps(catalog: &SqliteCatalog) -> (i64, i64, i64, i64) {
+    let game_a = import(catalog, &release("no-intro", "Game A", "aaaa"));
+    let game_b = import(catalog, &release("no-intro", "Game B", "aaaa"));
+    let other = import(catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    let item = catalog.list_reference_review_items().unwrap()[0].id;
+    (
+        game_a.release_edition_id,
+        game_b.release_edition_id,
+        other.release_edition_id,
+        item,
+    )
+}
+
+#[test]
+fn linking_a_reviewed_record_merges_its_edition_into_the_chosen_one() {
+    let (_temp, catalog) = catalog();
+    let (_, game_b, other, item) = reviewed_dumps(&catalog);
+
+    let outcome = catalog.link_reference_review_item(item, game_b).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::Decided);
+    // The record's claims join the chosen edition, with the evidence of the decision.
+    assert_eq!(
+        links_of(&catalog, game_b, "mame-software-lists"),
+        ["linked_by=review"]
+    );
+    // Its own edition, emptied, is gone, and nothing awaits review anymore.
+    let library = catalog.list_library().unwrap();
+    assert_eq!(library.len(), 2);
+    assert!(
+        library
+            .iter()
+            .all(|entry| entry.release_edition_id != other)
+    );
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+    // A later import of the record keeps the decision.
+    let again = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    assert_eq!(again.release_edition_id, game_b);
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
+#[test]
+fn keeping_a_reviewed_record_apart_leaves_every_edition_as_it_is() {
+    let (_temp, catalog) = catalog();
+    let (_, _, other, item) = reviewed_dumps(&catalog);
+
+    let outcome = catalog.keep_reference_review_item_apart(item).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::Decided);
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
+    assert!(links_of(&catalog, other, "mame-software-lists").is_empty());
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+    // A later import of the record keeps the decision.
+    let again = import(&catalog, &release("mame-software-lists", "Game C", "aaaa"));
+    assert_eq!(again.release_edition_id, other);
+    assert!(catalog.list_reference_review_items().unwrap().is_empty());
+}
+
+#[test]
+fn a_reviewed_record_links_only_to_one_of_its_candidates() {
+    let (_temp, catalog) = catalog();
+    let (game_a, _, other, item) = reviewed_dumps(&catalog);
+
+    assert_eq!(
+        catalog.link_reference_review_item(item, other).unwrap(),
+        ReferenceReviewOutcome::NotACandidate
+    );
+    assert_eq!(
+        catalog
+            .link_reference_review_item(item + 1, game_a)
+            .unwrap(),
+        ReferenceReviewOutcome::ItemNotPending
+    );
+    assert_eq!(catalog.list_reference_review_items().unwrap().len(), 1);
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
+}
+
+#[test]
+fn a_reviewed_record_never_joins_two_releases_of_another_source() {
+    let (_temp, catalog) = catalog();
+    let (_, game_b, other, item) = reviewed_dumps(&catalog);
+    // A third catalog without dumps links its releases by title: one to the reviewed record's
+    // edition, another to the candidate.
+    let untested = |title| Release {
+        sha1: None,
+        ..release("tosec", title, "")
+    };
+    let linked_to_record = import(&catalog, &untested("Game C"));
+    let linked_to_candidate = import(&catalog, &untested("Game B"));
+    assert_eq!(linked_to_record.release_edition_id, other);
+    assert_eq!(linked_to_candidate.release_edition_id, game_b);
+
+    let outcome = catalog.link_reference_review_item(item, game_b).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::NotACandidate);
+    assert_eq!(catalog.list_reference_review_items().unwrap().len(), 1);
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
+}
+
+#[test]
+fn an_edition_already_holding_assets_is_not_merged_yet() {
+    let (_temp, catalog) = catalog();
+    let (game_a, _, other, item) = reviewed_dumps(&catalog);
+    let game_c = catalog
+        .list_library()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.release_edition_id == other)
+        .unwrap()
+        .game_id;
+    // An acquisition attached an Asset to the record's edition meanwhile.
+    catalog
+        .persist_asset(PersistAsset {
+            existing_game_id: Some(game_c),
+            existing_release_edition_id: Some(other),
+            match_decision: None,
+            game_title: "Game C".to_owned(),
+            platform: GAME_BOY.to_owned(),
+            region: "World".to_owned(),
+            edition_name: "Standard".to_owned(),
+            asset_type: AssetType::BoxFront,
+            object_hash: "ab".repeat(32),
+            byte_len: 1,
+            media: MediaInfo::unknown(),
+            original_filename: "front.png".to_owned(),
+            source_id: SourceId::from("local_import"),
+            source_asset_label: None,
+            source_location: "C:/media/front.png".to_owned(),
+        })
+        .unwrap();
+
+    let outcome = catalog.link_reference_review_item(item, game_a).unwrap();
+
+    assert_eq!(outcome, ReferenceReviewOutcome::EditionHoldsAssets);
+    assert_eq!(catalog.list_reference_review_items().unwrap().len(), 1);
+    assert_eq!(catalog.list_library().unwrap().len(), 3);
 }

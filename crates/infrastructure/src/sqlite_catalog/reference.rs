@@ -1,5 +1,6 @@
 use game_media_vault_application::{
-    PortError, ReferenceCatalogRepositoryPort, ReferenceReviewRepositoryPort,
+    PortError, ReferenceCatalogRepositoryPort, ReferenceReviewOutcome,
+    ReferenceReviewRepositoryPort,
 };
 use game_media_vault_domain::{
     ImportedReleaseEdition, ReferenceReleaseRecord, ReferenceReviewItem, ReleaseAssertion,
@@ -84,6 +85,172 @@ impl ReferenceReviewRepositoryPort for SqliteCatalog {
                 },
             )
             .collect()
+    }
+
+    fn link_reference_review_item(
+        &self,
+        item_id: i64,
+        release_edition_id: i64,
+    ) -> Result<ReferenceReviewOutcome, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let Some(item) = pending_review_item(&transaction, item_id)? else {
+            return Ok(ReferenceReviewOutcome::ItemNotPending);
+        };
+        let source_id = item.source_id.as_str();
+        let merged = item.release_edition_id;
+        // Two editions holding records of one source, the item's or any linked since, are two
+        // releases of it.
+        if !item.candidates.contains(&release_edition_id)
+            || share_a_source_of_record(&transaction, merged, release_edition_id)?
+        {
+            return Ok(ReferenceReviewOutcome::NotACandidate);
+        }
+        let holds_assets: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM assets WHERE release_edition_id = ?1)",
+                params![merged],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if holds_assets {
+            return Ok(ReferenceReviewOutcome::EditionHoldsAssets);
+        }
+        let identity = transaction
+            .query_row(
+                "SELECT source_location FROM release_assertions
+                 WHERE release_edition_id = ?1 AND source_id = ?2
+                   AND field = 'identifier' AND qualifier = 'source_record' AND value = ?3",
+                params![merged, source_id, item.source_record],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        // The claims made of the merged edition, the record's and any linked since, join the
+        // chosen one, with the evidence of the decision.
+        transaction
+            .execute(
+                "UPDATE OR IGNORE release_assertions SET release_edition_id = ?2
+                 WHERE release_edition_id = ?1",
+                params![merged, release_edition_id],
+            )
+            .map_err(sql_error)?;
+        // What stays behind repeats a claim the chosen edition already carries.
+        transaction
+            .execute(
+                "DELETE FROM release_assertions WHERE release_edition_id = ?1",
+                params![merged],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "UPDATE reference_dump_sets SET release_edition_id = ?2
+                 WHERE release_edition_id = ?1",
+                params![merged, release_edition_id],
+            )
+            .map_err(sql_error)?;
+        if let Some(source_location) = identity {
+            let link = ReleaseAssertion {
+                source_id: item.source_id.clone(),
+                source_location,
+                field: ReleaseAssertionField::Identifier,
+                qualifier: Some("linked_by".to_owned()),
+                value: "review".to_owned(),
+            };
+            persist_release_assertions(&transaction, release_edition_id, &[link])?;
+        }
+        // Other records that may describe the merged edition may describe the chosen one now.
+        let others: Vec<(i64, String)> = transaction
+            .prepare(
+                "SELECT id, candidates_json FROM reference_review_items
+                 WHERE status = 'pending' AND id != ?1",
+            )
+            .map_err(sql_error)?
+            .query_map(params![item_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(sql_error)?;
+        for (other_id, candidates_json) in others {
+            let mut candidates: Vec<i64> =
+                serde_json::from_str(&candidates_json).map_err(|error| {
+                    PortError::new(format!(
+                        "catalog contains invalid review candidates: {error}"
+                    ))
+                })?;
+            if !candidates.contains(&merged) {
+                continue;
+            }
+            candidates.retain(|candidate| *candidate != merged);
+            if !candidates.contains(&release_edition_id) {
+                candidates.push(release_edition_id);
+            }
+            let candidates_json = serde_json::to_string(&candidates).map_err(|error| {
+                PortError::new(format!("failed to serialize review candidates: {error}"))
+            })?;
+            transaction
+                .execute(
+                    "UPDATE reference_review_items SET candidates_json = ?2 WHERE id = ?1",
+                    params![other_id, candidates_json],
+                )
+                .map_err(sql_error)?;
+        }
+        transaction
+            .execute(
+                "UPDATE reference_review_items SET status = 'linked' WHERE id = ?1",
+                params![item_id],
+            )
+            .map_err(sql_error)?;
+        // The emptied edition goes, and its Game when it has no other edition.
+        let game_id: i64 = transaction
+            .query_row(
+                "SELECT game_id FROM release_editions WHERE id = ?1",
+                params![merged],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "UPDATE reference_review_items SET release_edition_id = ?2
+                 WHERE release_edition_id = ?1",
+                params![merged, release_edition_id],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM release_editions WHERE id = ?1",
+                params![merged],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM games WHERE id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM release_editions WHERE game_id = ?1)",
+                params![game_id],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(ReferenceReviewOutcome::Decided)
+    }
+
+    fn keep_reference_review_item_apart(
+        &self,
+        item_id: i64,
+    ) -> Result<ReferenceReviewOutcome, PortError> {
+        let decided = self
+            .connect()?
+            .execute(
+                "UPDATE reference_review_items SET status = 'kept_apart'
+                 WHERE id = ?1 AND status = 'pending'",
+                params![item_id],
+            )
+            .map_err(sql_error)?;
+        Ok(if decided == 0 {
+            ReferenceReviewOutcome::ItemNotPending
+        } else {
+            ReferenceReviewOutcome::Decided
+        })
     }
 }
 
@@ -511,6 +678,70 @@ fn raise_review_item(
         )
         .map_err(sql_error)?;
     Ok(())
+}
+
+/// The pending Reference Review Item `item_id`, if there is one.
+fn pending_review_item(
+    transaction: &Transaction<'_>,
+    item_id: i64,
+) -> Result<Option<ReferenceReviewItem>, PortError> {
+    let row = transaction
+        .query_row(
+            "SELECT source_id, source_record, release_edition_id, evidence, candidates_json
+             FROM reference_review_items
+             WHERE id = ?1 AND status = 'pending'",
+            params![item_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sql_error)?;
+    row.map(
+        |(source_id, source_record, release_edition_id, evidence, candidates_json)| {
+            let candidates = serde_json::from_str(&candidates_json).map_err(|error| {
+                PortError::new(format!(
+                    "catalog contains invalid review candidates: {error}"
+                ))
+            })?;
+            Ok(ReferenceReviewItem {
+                id: item_id,
+                source_id: SourceId::from(source_id),
+                source_record,
+                release_edition_id,
+                evidence,
+                candidates,
+            })
+        },
+    )
+    .transpose()
+}
+
+/// Whether some source holds a record on both editions.
+fn share_a_source_of_record(
+    transaction: &Transaction<'_>,
+    first: i64,
+    second: i64,
+) -> Result<bool, PortError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM release_assertions AS one
+                 JOIN release_assertions AS other ON other.source_id = one.source_id
+                 WHERE one.release_edition_id = ?1 AND other.release_edition_id = ?2
+                   AND one.field = 'identifier' AND one.qualifier = 'source_record'
+                   AND other.field = 'identifier' AND other.qualifier = 'source_record'
+             )",
+            params![first, second],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
 }
 
 fn editions_where(
