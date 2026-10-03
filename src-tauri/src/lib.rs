@@ -539,8 +539,6 @@ async fn load_review_preview(
     Ok(Response::new(bytes))
 }
 
-/// Starts a run only if the registered `connectors`, which the desktop executes it with, can
-/// plan it.
 /// Copies every original of the vault at `vault_root`, or of its releases of `platforms` when
 /// some are named, to the folder `destination` names as `<platform>/<game>/<Asset Type>/<file>`.
 /// The folder must be a full path outside the vault, which only stores originals by hash.
@@ -554,23 +552,16 @@ pub fn export_library_from_vault(
         kind: ErrorKind::InvalidRequest.as_str(),
         message: message.to_owned(),
     };
+    // The desktop has no working directory a relative path could mean.
     if !destination.is_absolute() {
         return Err(refused("choose a full folder path to export to"));
     }
-    let vault = fs::canonicalize(vault_root).map_err(|error| CommandError {
-        kind: ErrorKind::External.as_str(),
-        message: format!("failed to resolve vault path: {error}"),
-    })?;
-    if lies_within(destination, &vault) {
-        return Err(refused(
-            "choose a folder outside the vault, which stores originals by hash",
-        ));
-    }
+    let folder = ExportFolder::outside_vault(destination, vault_root)?;
     let catalog = open_existing_catalog(vault_root)?;
     Ok(export_library_use_case(
         &catalog,
         &ContentAddressedStore::new(vault_root),
-        &ExportFolder::new(destination),
+        &folder,
         platforms,
     )?)
 }
@@ -588,27 +579,8 @@ pub async fn export_library_from_vault_async(
     .map_err(|error| CommandError::worker_failed("export", error))?
 }
 
-/// Whether `path`, which may not exist yet, lies within the canonical `root` once the part of it
-/// that exists is made canonical.
-fn lies_within(path: &Path, root: &Path) -> bool {
-    let mut existing = path.to_path_buf();
-    let mut missing = Vec::new();
-    while !existing.exists() {
-        let Some(name) = existing.file_name().map(std::ffi::OsStr::to_os_string) else {
-            break;
-        };
-        missing.push(name);
-        existing.pop();
-    }
-    let Ok(mut canonical) = fs::canonicalize(&existing) else {
-        return false;
-    };
-    for name in missing.iter().rev() {
-        canonical.push(name);
-    }
-    canonical.starts_with(root)
-}
-
+/// Starts a run only if the registered `connectors`, which the desktop executes it with, can
+/// plan it.
 pub fn start_acquisition_run_in_vault(
     vault_root: &Path,
     request: AcquisitionRequestInput,

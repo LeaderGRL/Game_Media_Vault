@@ -2548,3 +2548,21 @@ fn the_library_exports_to_a_folder_people_browse() {
         b"\x89PNG\r\n\x1a\nfront"
     );
 }
+
+#[test]
+fn an_export_to_a_folder_within_the_vault_is_refused() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+
+    let error = run_in_vault(
+        &vault,
+        &["export", "--to", vault.join("copies").to_str().unwrap()],
+    )
+    .unwrap_err();
+
+    // The vault stays as it was: an export only ever copies out of it.
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(!vault.join("copies").exists());
+}

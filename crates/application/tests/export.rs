@@ -216,7 +216,7 @@ fn names_windows_cannot_hold_are_made_safe_and_clashing_ones_told_apart() {
     assert_eq!(
         folder.paths(),
         [
-            format!("{NES}/Bust-A-Move- Puzzle- (USA)/Box Front/_CON.png"),
+            format!("{NES}/Bust-A-Move- Puzzle- (USA)/Box Front/_CON (dddd4444).png"),
             format!("{NES}/Bust-A-Move- Puzzle- (USA)/Box Front/_con (eeee5555).png"),
         ]
     );
@@ -253,4 +253,146 @@ fn an_export_again_leaves_the_files_already_there_and_keeps_to_the_platforms_nam
         }
     );
     assert!(folder.paths().iter().all(|path| path.starts_with(NES)));
+}
+
+#[test]
+fn clashing_names_do_not_depend_on_the_order_the_vault_lists_originals_in() {
+    let clashing = |assets: Vec<LibraryAsset>| release(4, "Tetris", NES, "USA", assets);
+    let first = asset(1, AssetType::BoxFront, "1111aaaa", "a.png", "image/png");
+    let second = asset(2, AssetType::BoxFront, "2222bbbb", "a.png", "image/png");
+    let listed_one_way = Folder::default();
+    let listed_the_other = Folder::default();
+
+    export_library(
+        &Library(vec![clashing(vec![first.clone(), second.clone()])]),
+        &Originals,
+        &listed_one_way,
+        &[],
+    )
+    .unwrap();
+    export_library(
+        &Library(vec![clashing(vec![second, first])]),
+        &Originals,
+        &listed_the_other,
+        &[],
+    )
+    .unwrap();
+
+    // Each original keeps one name, so a later export never takes one for the other.
+    assert_eq!(
+        *listed_one_way.files.borrow(),
+        *listed_the_other.files.borrow()
+    );
+    assert_eq!(
+        listed_one_way.paths(),
+        [
+            format!("{NES}/Tetris (USA)/Box Front/a (1111aaaa).png"),
+            format!("{NES}/Tetris (USA)/Box Front/a (2222bbbb).png"),
+        ]
+    );
+}
+
+#[test]
+fn names_spelled_with_composed_or_decomposed_accents_clash() {
+    let folder = Folder::default();
+    let pokemon = release(
+        5,
+        "Pokemon",
+        NES,
+        "Japan",
+        vec![
+            asset(
+                1,
+                AssetType::BoxFront,
+                "3333cccc",
+                "Pok\u{e9}mon.png",
+                "image/png",
+            ),
+            asset(
+                2,
+                AssetType::BoxFront,
+                "4444dddd",
+                "Poke\u{301}mon.png",
+                "image/png",
+            ),
+        ],
+    );
+
+    export_library(&Library(vec![pokemon]), &Originals, &folder, &[]).unwrap();
+
+    // File systems that normalize names, as macOS does, take both spellings for one name.
+    assert_eq!(
+        folder.paths(),
+        [
+            format!("{NES}/Pokemon (Japan)/Box Front/Pok\u{e9}mon (3333cccc).png"),
+            format!("{NES}/Pokemon (Japan)/Box Front/Pok\u{e9}mon (4444dddd).png"),
+        ]
+    );
+}
+
+#[test]
+fn long_names_fit_what_file_systems_hold_in_bytes() {
+    let folder = Folder::default();
+    let title = "\u{3042}".repeat(120);
+    let long = release(
+        6,
+        &title,
+        NES,
+        "Japan",
+        vec![asset(
+            1,
+            AssetType::BoxFront,
+            "5555eeee",
+            &format!("{title}.png"),
+            "image/png",
+        )],
+    );
+
+    export_library(&Library(vec![long]), &Originals, &folder, &[]).unwrap();
+
+    let path = folder.paths().remove(0);
+    for name in path.split('/') {
+        assert!(name.len() <= 255, "{} bytes: {name}", name.len());
+    }
+    assert!(path.ends_with(".png"), "{path}");
+}
+
+#[test]
+fn every_media_type_detected_gives_its_extension() {
+    let folder = Folder::default();
+    let images = release(
+        7,
+        "Images",
+        NES,
+        "USA",
+        [
+            ("image/qoi", "qoi"),
+            ("image/x-tga", "tga"),
+            ("image/x-exr", "exr"),
+            ("image/heif", "heif"),
+            ("image/vnd.radiance", "hdr"),
+            ("image/x-farbfeld", "ff"),
+            ("image/x-ilbm", "iff"),
+            ("image/x-portable-anymap", "pnm"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, (media_type, extension))| {
+            asset(
+                index as i64,
+                AssetType::Screenshot,
+                &format!("{index}000ffff"),
+                extension,
+                media_type,
+            )
+        })
+        .collect(),
+    );
+
+    export_library(&Library(vec![images]), &Originals, &folder, &[]).unwrap();
+
+    for extension in ["qoi", "tga", "exr", "heif", "hdr", "ff", "iff", "pnm"] {
+        let expected = format!("{NES}/Images (USA)/Screenshot/{extension}.{extension}");
+        assert!(folder.paths().contains(&expected), "{:?}", folder.paths());
+    }
 }

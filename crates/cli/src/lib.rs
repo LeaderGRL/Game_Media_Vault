@@ -928,10 +928,11 @@ where
         }
         Command::Export { to, platforms } => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
+            let folder = ExportFolder::outside_vault(&to, &cli.vault)?;
             Ok(serde_json::to_string_pretty(&export_library(
                 &catalog,
                 &ContentAddressedStore::new(&cli.vault),
-                &ExportFolder::new(to),
+                &folder,
                 &platforms,
             )?)?)
         }
