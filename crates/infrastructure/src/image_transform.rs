@@ -80,6 +80,21 @@ pub(crate) fn decode_original(
     media_type: &str,
     max_original_bytes: u64,
 ) -> Result<DynamicImage, PortError> {
+    let bytes = read_original(original, max_original_bytes)?;
+    match ImageFormat::from_mime_type(media_type) {
+        // Formats without a signature to guess from, such as TGA, need the recorded one.
+        Some(format) => image::load_from_memory_with_format(&bytes, format),
+        None => image::load_from_memory(&bytes),
+    }
+    .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))
+}
+
+/// Reads an original whole, refusing one larger than `max_original_bytes` rather than reading it
+/// into memory.
+pub(crate) fn read_original(
+    original: &mut dyn Read,
+    max_original_bytes: u64,
+) -> Result<Vec<u8>, PortError> {
     let mut bytes = Vec::new();
     original
         .take(max_original_bytes.saturating_add(1))
@@ -90,12 +105,7 @@ pub(crate) fn decode_original(
             "the original is larger than {max_original_bytes} bytes"
         )));
     }
-    match ImageFormat::from_mime_type(media_type) {
-        // Formats without a signature to guess from, such as TGA, need the recorded one.
-        Some(format) => image::load_from_memory_with_format(&bytes, format),
-        None => image::load_from_memory(&bytes),
-    }
-    .map_err(|error| PortError::new(format!("cannot decode the original: {error}")))
+    Ok(bytes)
 }
 
 /// Scales `image` down to fit both edges within `max_edge`, keeping its aspect ratio; a
