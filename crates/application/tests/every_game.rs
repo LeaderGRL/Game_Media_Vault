@@ -496,3 +496,27 @@ fn a_share_of_games_outside_one_to_a_hundred_percent_is_invalid() {
         );
     }
 }
+
+#[test]
+fn a_game_limit_no_game_list_can_apply_is_left_for_planning_to_refuse() {
+    let releases = Releases::default();
+    let mut five = every_game_of(&[SNES]);
+    five.limits.max_games = Some(5);
+
+    // No list names the games of the platform, so nothing keeps the request to five of them.
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), five.clone()).unwrap();
+    let error = plan_acquisition_request(
+        &releases,
+        &releases,
+        &game_lists(),
+        five.clone(),
+        &[&LanguageBlind as &dyn ConnectorPort],
+    )
+    .unwrap_err();
+
+    assert_eq!(expanded, five);
+    assert!(
+        matches!(error, ApplicationError::UnsupportedRequest(_)),
+        "{error:?}"
+    );
+}
