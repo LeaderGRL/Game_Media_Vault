@@ -106,7 +106,6 @@ from standard input (ADR 0005).
   `Sega - Mega Drive - Genesis`. A game is acquired only when TheGamesDB names it exactly as the
   request does, regardless of case, punctuation and spacing, on one of those platforms.
 
-
 ### PSX DataCenter (`psx-datacenter`)
 
 - **Provides:** high-resolution scans of PlayStation box fronts and backs (Box Front, Box Back)
