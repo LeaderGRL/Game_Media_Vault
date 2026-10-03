@@ -12,7 +12,9 @@ pub(crate) fn document_metadata(path: &Path) -> Option<DocumentMetadata> {
         .ok()?
         .ok()?;
     Some(DocumentMetadata {
-        page_count: metadata.page_count,
+        // A document has a page, so none read means its page tree was unreadable, as when it is
+        // encrypted with a password.
+        page_count: (metadata.page_count > 0).then_some(metadata.page_count),
         version: metadata.version,
         encrypted: metadata.encrypted,
         title: metadata.title,

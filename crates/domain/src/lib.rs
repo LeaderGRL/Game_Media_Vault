@@ -1064,7 +1064,8 @@ impl MediaInfo {
 /// declares encryption, and the entries of its Info dictionary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentMetadata {
-    pub page_count: u32,
+    /// Unknown when the page tree cannot be read, as behind a password.
+    pub page_count: Option<u32>,
     pub version: String,
     pub encrypted: bool,
     pub title: Option<String>,
