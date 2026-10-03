@@ -21,24 +21,28 @@ const LIBRARY_COLUMNS: &str = "g.id, g.title,
     a.media_type, a.width, a.height, a.document_json";
 
 impl SqliteCatalog {
-    /// Projects every Release Edition with its Assets, provenance and source assertions.
+    /// Projects every Release Edition with its Assets, provenance and source assertions, read
+    /// in one snapshot while executions retain media.
     pub(super) fn library_entries(&self) -> Result<Vec<LibraryEntry>, PortError> {
-        let connection = self.connect()?;
-        let mut entries = releases_with_assets(&connection, None)?;
-        attach_assertions(&connection, &mut entries)?;
-        attach_derived(&mut entries, derived_by_original(&connection, None)?);
+        let mut connection = self.connect()?;
+        let snapshot = connection.transaction().map_err(sql_error)?;
+        let mut entries = releases_with_assets(&snapshot, None)?;
+        attach_assertions(&snapshot, &mut entries)?;
+        attach_derived(&mut entries, derived_by_original(&snapshot, None)?);
         Ok(entries)
     }
 
     /// Projects the Release Editions holding the `limit` Assets retained last, with those Assets
-    /// alone and their provenance and derivatives, reading no other row.
+    /// alone and their provenance and derivatives, reading no other row. One snapshot reads both,
+    /// so an Asset retained meanwhile never shifts the derivatives' window off the Assets read.
     pub(super) fn latest_library_assets(
         &self,
         limit: usize,
     ) -> Result<Vec<LibraryEntry>, PortError> {
-        let connection = self.connect()?;
-        let mut entries = releases_with_assets(&connection, Some(limit))?;
-        attach_derived(&mut entries, derived_by_original(&connection, Some(limit))?);
+        let mut connection = self.connect()?;
+        let snapshot = connection.transaction().map_err(sql_error)?;
+        let mut entries = releases_with_assets(&snapshot, Some(limit))?;
+        attach_derived(&mut entries, derived_by_original(&snapshot, Some(limit))?);
         Ok(entries)
     }
 }
