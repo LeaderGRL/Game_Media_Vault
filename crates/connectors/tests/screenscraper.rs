@@ -685,3 +685,10 @@ fn gameplay_videos_are_found_and_downloaded_from_the_video_script() {
         "https://api.screenscraper.fr/api2/mediaVideoJeu.php?softname=game-media-vault&systemeid=57&jeuid=1234&media=video-normalized"
     );
 }
+
+#[test]
+fn looks_games_up_a_few_at_a_time_so_whole_platforms_are_discovered_in_batches() {
+    let api = FixtureApi::answering(&[]);
+
+    assert_eq!(connector(&api, &[]).discovery_batch_size(), Some(25));
+}

@@ -43,8 +43,9 @@ const IMAGE_BATCH_GAMES: usize = 20;
 /// The most pages of a game search one requested game reads.
 const MAX_SEARCH_PAGES: u32 = 5;
 
-/// The most games one request may look up, which keeps a request for a whole platform from
-/// spending a key's monthly allowance in one discovery.
+/// The most games one discovery may look up, which keeps a request for a whole platform from
+/// spending a key's monthly allowance in one discovery: such a request is discovered that many
+/// games at a time, each batch recorded as it completes.
 const MAX_REQUESTED_GAMES: usize = 100;
 
 /// The platforms TheGamesDB names with other words than the No-Intro and Redump catalogs do: each
@@ -171,6 +172,12 @@ where
             ));
         }
         Ok(None)
+    }
+
+    /// Games are looked up one by one, so a request for many is discovered a batch at a time,
+    /// each recorded as it completes.
+    fn discovery_batch_size(&self) -> Option<usize> {
+        Some(MAX_REQUESTED_GAMES)
     }
 
     /// Looks each requested game up by name on the TheGamesDB platforms its platform names,

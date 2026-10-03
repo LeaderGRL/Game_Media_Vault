@@ -8,11 +8,12 @@ use std::{
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
-    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, ImportedAsset,
-    LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
-    QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus,
-    SourceFailureStage, StoredObject, ValidatedMatchingPolicy, confirmed_asset_candidate_match,
-    match_asset_candidate_to_release_preferring, review_matches_for_asset_candidate,
+    AcquisitionWorkItem, AssetCandidate, AssetCandidateMatch, AssetType, GameSelection,
+    ImportedAsset, LibraryEntry, MatchConfidence, MatchingPolicy, NewReviewItem, PersistAsset,
+    PlatformBoundGameSelector, QualityRequirements, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceFailureStage, StoredObject, ValidatedMatchingPolicy,
+    confirmed_asset_candidate_match, match_asset_candidate_to_release_preferring,
+    review_matches_for_asset_candidate,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -294,10 +295,13 @@ enum Step {
 ///
 /// Only the Sources the run's plan kept when it started are contacted. Each is discovered once
 /// per run: its candidates are persisted as queued work, so resuming never rediscovers it, and a
-/// pause stops further discoveries. Sources progress independently: one without a registered
-/// connector, that now refuses the plan, cannot be reached, fails to discover or fails to
-/// download leaves the others' work to run, keeps the run running, and its error is returned
-/// once that work is done. Each queued candidate is matched against the library through its own
+/// pause stops further discoveries. A Source that looks games up a few at a time is discovered
+/// one batch of games per pass, each recorded as it completes and its work executed before the
+/// next batch, so an execution that stops, as on a spent quota, resumes with the next batch.
+/// Sources progress independently: one without a registered connector, that now refuses the
+/// plan, cannot be reached, fails to discover or fails to download is asked no further in that
+/// execution and leaves the others' work and batches to run, keeps the run running, and its
+/// error is returned once that work is done. Each queued candidate is matched against the library through its own
 /// Source's connector and is either imported, left unattached, or parked on its Review Item
 /// until a human decides. The run completes only once every planned Source was discovered.
 ///
@@ -377,9 +381,14 @@ where
     let mut source_failure = None;
     // Sources whose work failed; their remaining work waits for a later execution.
     let mut failed_sources: Vec<String> = Vec::new();
+    // Sources disabled or failing to discover; they are discovered further in a later execution.
+    let mut undiscoverable: Vec<String> = Vec::new();
     loop {
         for source_id in &run.planned_sources {
-            if runs.has_discovered(run_id, source_id)? {
+            if runs.has_discovered(run_id, source_id)?
+                || undiscoverable.contains(source_id)
+                || failed_sources.contains(source_id)
+            {
                 continue;
             }
             // A pause, even one landing during a failed discovery, keeps the snapshots already
@@ -389,22 +398,29 @@ where
             }
             // A Source disabled on this machine is not discovered, which is no failure of it.
             if let Some(reason) = disabled_reason_of(connectors, source_id) {
+                undiscoverable.push(source_id.clone());
                 source_failure.get_or_insert(ApplicationError::SourceDisabled {
                     source_id: source_id.clone(),
                     reason,
                 });
                 continue;
             }
+            let first_game = runs.discovered_games(run_id, source_id)?;
+            // The work of the batches already recorded is executed before the next batch is
+            // looked up, so a quota goes to one batch at a time, across executions too.
+            if first_game > 0 && has_queued_work(runs, run, source_id)? {
+                continue;
+            }
             let discovered = planned_connector(&run.request, source_id, connectors).and_then(
-                |(connector, asset_types)| discover_source(&run.request, connector, &asset_types),
+                |(connector, asset_types)| {
+                    discover_source(&run.request, connector, &asset_types, first_game)
+                },
             );
-            match discovered {
-                // A cancellation or completion that won the race while discovering stops
-                // quietly.
-                Ok(work) => {
-                    if !runs.record_discovery(run_id, source_id, &work)? {
-                        return Ok(imported_assets);
-                    }
+            // A cancellation or completion that won the race while discovering stops quietly.
+            let recorded = match discovered {
+                Ok((work, None)) => runs.record_discovery(run_id, source_id, &work)?,
+                Ok((work, Some(games))) => {
+                    runs.record_discovery_batch(run_id, source_id, first_game, games, &work)?
                 }
                 Err(error) => {
                     runs.record_source_failure(
@@ -413,8 +429,13 @@ where
                         SourceFailureStage::Discovery,
                         &error.to_string(),
                     )?;
+                    undiscoverable.push(source_id.clone());
                     source_failure.get_or_insert(error);
+                    true
                 }
+            };
+            if !recorded {
+                return Ok(imported_assets);
             }
         }
         // Sources take turns: each round processes the oldest queued work of every Source that
@@ -482,6 +503,22 @@ where
                 }
                 Err(error) => return Err(error),
             }
+        }
+        // The batches Sources have left are discovered, and their work executed, in this
+        // execution too, unless the run stopped meanwhile.
+        let mut batches_left = false;
+        for source_id in &run.planned_sources {
+            if !undiscoverable.contains(source_id)
+                && !failed_sources.contains(source_id)
+                && !runs.has_discovered(run_id, source_id)?
+            {
+                batches_left = true;
+            }
+        }
+        if batches_left
+            && load_acquisition_run(runs, run_id)?.status == AcquisitionRunStatus::Running
+        {
+            continue;
         }
         // A Source left undiscovered or failing keeps the run running for a later execution.
         if let Some(error) = source_failure.take() {
@@ -586,20 +623,207 @@ pub fn start_acquisition_run_with_connectors(
     Ok(runs.create_run(request, planned_sources)?)
 }
 
-/// Discovers the work of one Source once its connector accepts the plan, which may consult the
-/// Source. Only Sources not yet discovered need it: a persisted snapshot executes without them.
+/// Whether `source_id` has work queued in `run`, which executes before the Source is asked
+/// about more games.
+fn has_queued_work(
+    runs: &dyn RunRepositoryPort,
+    run: &AcquisitionRun,
+    source_id: &str,
+) -> Result<bool, ApplicationError> {
+    let others: Vec<String> = run
+        .planned_sources
+        .iter()
+        .filter(|planned| planned.as_str() != source_id)
+        .cloned()
+        .collect();
+    Ok(runs.next_queued_work(run.id, &others)?.is_some())
+}
+
+/// Discovers the work of the batch of one Source that starts at game `first_game` of the
+/// request, once its connector accepts that batch, which may consult the Source. Tells how many
+/// games the batch covered, or `None` when it was the last. Only Sources not yet discovered need
+/// it: a persisted snapshot executes without them.
 fn discover_source(
     request: &AcquisitionRequest,
     connector: &dyn ConnectorPort,
     asset_types: &[AssetType],
-) -> Result<Vec<AcquisitionWorkItem>, ApplicationError> {
-    if let Some(reason) = connector.unsupported_request_reason(request)? {
+    first_game: usize,
+) -> Result<(Vec<AcquisitionWorkItem>, Option<usize>), ApplicationError> {
+    let batch = discovery_batch(request, connector, first_game)?;
+    if let Some(reason) = connector.unsupported_request_reason(&batch.request)? {
         return Err(ApplicationError::UnsupportedConnectorPlan {
             source_id: connector.source_id().to_owned(),
             reason,
         });
     }
-    discover_work(request, connector, asset_types)
+    let work = discover_work(&batch.request, connector, asset_types)?;
+    Ok((work, (!batch.last).then_some(batch.games)))
+}
+
+/// The games of a request one discovery of a Source looks up.
+pub(crate) struct DiscoveryBatch {
+    pub(crate) request: AcquisitionRequest,
+    /// How many games of the request it covers.
+    pub(crate) games: usize,
+    /// Whether it covers the request's last game.
+    pub(crate) last: bool,
+}
+
+/// The batch of the discovery of `connector` that starts at game `first_game` of `request`: the
+/// whole request, as its only batch, unless the connector looks games up a few at a time and the
+/// request names more. A game named without its platform is looked up on every requested
+/// platform, each lookup counting toward the batch, and a game named twice, regardless of case
+/// and surrounding spaces, counts once.
+pub(crate) fn discovery_batch(
+    request: &AcquisitionRequest,
+    connector: &dyn ConnectorPort,
+    first_game: usize,
+) -> Result<DiscoveryBatch, ApplicationError> {
+    let games = unique_games(request.games());
+    let count = game_count(&games);
+    let whole = || DiscoveryBatch {
+        request: request.clone(),
+        games: count,
+        last: true,
+    };
+    let Some(size) = batch_size(request, connector) else {
+        return Ok(whole());
+    };
+    // Games past the last stand for the last batch.
+    let start = if first_game < count {
+        first_game
+    } else {
+        count.saturating_sub(size)
+    };
+    let end = (start + size).min(count);
+    if start == 0 && end == count {
+        return Ok(whole());
+    }
+    Ok(DiscoveryBatch {
+        request: with_games(request, slice(&games, start, end))?,
+        games: end - start,
+        last: end == count,
+    })
+}
+
+/// The requests `connector` is asked about before a run starts: the first batch of its
+/// discovery and, for games named with their platforms, a game of each platform that batch
+/// leaves out, batched alike, so a platform only a later batch names is checked too.
+pub(crate) fn planned_batches(
+    request: &AcquisitionRequest,
+    connector: &dyn ConnectorPort,
+) -> Result<Vec<AcquisitionRequest>, ApplicationError> {
+    let first = discovery_batch(request, connector, 0)?;
+    let first_platforms: HashSet<String> = platforms_named(first.request.games()).collect();
+    let mut checked = vec![first.request];
+    let (Some(size), false) = (batch_size(request, connector), first.last) else {
+        return Ok(checked);
+    };
+    let games = unique_games(request.games());
+    let (GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors)) = &games
+    else {
+        return Ok(checked);
+    };
+    let mut seen = first_platforms;
+    let others: Vec<PlatformBoundGameSelector> = selectors
+        .iter()
+        .filter(|selector| seen.insert(name_key(&selector.platform)))
+        .cloned()
+        .collect();
+    for chunk in others.chunks(size) {
+        let part = match &games {
+            GameSelection::QueryResult(_) => GameSelection::QueryResult(chunk.to_vec()),
+            _ => GameSelection::PlatformBound(chunk.to_vec()),
+        };
+        checked.push(with_games(request, part)?);
+    }
+    Ok(checked)
+}
+
+/// How many games one discovery of `connector` looks up for `request`, when it looks games up a
+/// few at a time: a game named without its platform takes a lookup on each requested platform.
+fn batch_size(request: &AcquisitionRequest, connector: &dyn ConnectorPort) -> Option<usize> {
+    let lookups = connector.discovery_batch_size().filter(|size| *size > 0)?;
+    let lookups_per_game = match request.games() {
+        GameSelection::Explicit(_) => request.platforms().len().max(1),
+        _ => 1,
+    };
+    Some((lookups / lookups_per_game).max(1))
+}
+
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// `games`, each once regardless of case and surrounding spaces, in request order.
+fn unique_games(games: &GameSelection) -> GameSelection {
+    let mut seen = HashSet::new();
+    match games {
+        GameSelection::All => GameSelection::All,
+        GameSelection::Explicit(games) => GameSelection::Explicit(
+            games
+                .iter()
+                .filter(|game| seen.insert((name_key(game), String::new())))
+                .cloned()
+                .collect(),
+        ),
+        GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors) => {
+            let unique = selectors
+                .iter()
+                .filter(|selector| {
+                    seen.insert((name_key(&selector.game), name_key(&selector.platform)))
+                })
+                .cloned()
+                .collect();
+            match games {
+                GameSelection::QueryResult(_) => GameSelection::QueryResult(unique),
+                _ => GameSelection::PlatformBound(unique),
+            }
+        }
+    }
+}
+
+fn game_count(games: &GameSelection) -> usize {
+    match games {
+        GameSelection::All => 0,
+        GameSelection::Explicit(games) => games.len(),
+        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games) => games.len(),
+    }
+}
+
+/// The games of `games` from `start` to `end`.
+fn slice(games: &GameSelection, start: usize, end: usize) -> GameSelection {
+    match games {
+        GameSelection::All => GameSelection::All,
+        GameSelection::Explicit(games) => GameSelection::Explicit(games[start..end].to_vec()),
+        GameSelection::PlatformBound(games) => {
+            GameSelection::PlatformBound(games[start..end].to_vec())
+        }
+        GameSelection::QueryResult(games) => GameSelection::QueryResult(games[start..end].to_vec()),
+    }
+}
+
+/// The platforms `games` names with its games, regardless of case and surrounding spaces.
+fn platforms_named(games: &GameSelection) -> impl Iterator<Item = String> + '_ {
+    let selectors: &[PlatformBoundGameSelector] = match games {
+        GameSelection::PlatformBound(selectors) | GameSelection::QueryResult(selectors) => {
+            selectors
+        }
+        _ => &[],
+    };
+    selectors
+        .iter()
+        .map(|selector| name_key(&selector.platform))
+}
+
+/// `request` naming `games` instead of its own.
+fn with_games(
+    request: &AcquisitionRequest,
+    games: GameSelection,
+) -> Result<AcquisitionRequest, ApplicationError> {
+    let mut draft = request.to_draft();
+    draft.games = games;
+    Ok(build_acquisition_request(draft)?)
 }
 
 fn discover_work(

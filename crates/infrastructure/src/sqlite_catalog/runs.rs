@@ -9,7 +9,7 @@ use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun, AcquisitionRunStatus,
     AcquisitionWorkItem, SourceFailure, SourceFailureStage,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{SqliteCatalog, sql_error};
 
@@ -188,16 +188,7 @@ impl RunRepositoryPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let status = transaction
-            .query_row(
-                "SELECT status FROM acquisition_runs WHERE id = ?1",
-                params![run_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(sql_error)?
-            .ok_or_else(|| PortError::new(format!("acquisition run #{run_id} does not exist")))?;
-        if !matches!(status.as_str(), "running" | "paused") {
+        if !accepts_discovery(&transaction, run_id)? {
             return Ok(false);
         }
         // Claiming the marker first under the write lock keeps exactly one discovery snapshot
@@ -212,21 +203,71 @@ impl RunRepositoryPort for SqliteCatalog {
         if claimed == 0 {
             return Ok(true);
         }
-        for item in work {
-            let candidate_json = serde_json::to_string(&item.candidate).map_err(|error| {
-                PortError::new(format!(
-                    "failed to serialize acquisition candidate: {error}"
-                ))
-            })?;
-            transaction
-                .execute(
-                    "INSERT OR IGNORE INTO acquisition_run_work (
-                         run_id, work_key, candidate_json, state
-                     ) VALUES (?1, ?2, ?3, 'queued')",
-                    params![run_id, item.key, candidate_json],
-                )
-                .map_err(sql_error)?;
+        queue_work(&transaction, run_id, work)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(true)
+    }
+
+    fn discovered_games(&self, run_id: i64, source_id: &str) -> Result<usize, PortError> {
+        let games: Option<i64> = self
+            .connect()?
+            .query_row(
+                "SELECT games FROM acquisition_run_discovery_batches
+                 WHERE run_id = ?1 AND source_id = ?2",
+                params![run_id, source_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        Ok(games.map_or(0, |games| games as usize))
+    }
+
+    fn record_discovery_batch(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        first_game: usize,
+        games: usize,
+        work: &[AcquisitionWorkItem],
+    ) -> Result<bool, PortError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        if !accepts_discovery(&transaction, run_id)? {
+            return Ok(false);
         }
+        // Advancing the count only from the game it starts at, under the write lock, records each
+        // batch once and in order when executions of the same run race.
+        let recorded = (first_game + games) as i64;
+        let advanced = if first_game == 0 {
+            transaction.execute(
+                "INSERT OR IGNORE INTO acquisition_run_discovery_batches (run_id, source_id, games)
+                 VALUES (?1, ?2, ?3)",
+                params![run_id, source_id, recorded],
+            )
+        } else {
+            transaction.execute(
+                "UPDATE acquisition_run_discovery_batches SET games = ?4
+                 WHERE run_id = ?1 AND source_id = ?2 AND games = ?3",
+                params![run_id, source_id, first_game as i64, recorded],
+            )
+        }
+        .map_err(sql_error)?;
+        let complete: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM acquisition_run_discoveries
+                     WHERE run_id = ?1 AND source_id = ?2
+                 )",
+                params![run_id, source_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if advanced == 0 || complete {
+            return Ok(true);
+        }
+        queue_work(&transaction, run_id, work)?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
     }
@@ -267,7 +308,11 @@ impl RunRepositoryPort for SqliteCatalog {
             return Ok(Vec::new());
         }
         let sources: Vec<String> = transaction
-            .prepare("SELECT source_id FROM acquisition_run_discoveries WHERE run_id = ?1")
+            // A discovery still in batches has queued work too.
+            .prepare(
+                "SELECT source_id FROM acquisition_run_discoveries WHERE run_id = ?1
+                 UNION SELECT source_id FROM acquisition_run_discovery_batches WHERE run_id = ?1",
+            )
             .map_err(sql_error)?
             .query_map(params![run_id], |row| row.get(0))
             .map_err(sql_error)?
@@ -523,6 +568,44 @@ fn run_status_to_str(status: AcquisitionRunStatus) -> &'static str {
 /// Converts a SQL `COUNT`, which is never negative.
 fn count(value: i64) -> u64 {
     u64::try_from(value).unwrap_or_default()
+}
+
+/// Whether the run still takes discovered work: it does while running or paused.
+fn accepts_discovery(transaction: &Transaction<'_>, run_id: i64) -> Result<bool, PortError> {
+    let status = transaction
+        .query_row(
+            "SELECT status FROM acquisition_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql_error)?
+        .ok_or_else(|| PortError::new(format!("acquisition run #{run_id} does not exist")))?;
+    Ok(matches!(status.as_str(), "running" | "paused"))
+}
+
+/// Queues `work`, leaving out the work whose key the run already recorded.
+fn queue_work(
+    transaction: &Transaction<'_>,
+    run_id: i64,
+    work: &[AcquisitionWorkItem],
+) -> Result<(), PortError> {
+    for item in work {
+        let candidate_json = serde_json::to_string(&item.candidate).map_err(|error| {
+            PortError::new(format!(
+                "failed to serialize acquisition candidate: {error}"
+            ))
+        })?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO acquisition_run_work (
+                     run_id, work_key, candidate_json, state
+                 ) VALUES (?1, ?2, ?3, 'queued')",
+                params![run_id, item.key, candidate_json],
+            )
+            .map_err(sql_error)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

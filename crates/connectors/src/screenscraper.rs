@@ -22,6 +22,10 @@ use crate::{
     selection::{name_key, platform_key, wanted_games},
 };
 
+/// The most games one discovery looks up: the Source answers one request per game, so a
+/// request for a whole platform is discovered that many games at a time.
+const DISCOVERY_BATCH: usize = 25;
+
 pub const SCREENSCRAPER_SOURCE_ID: &str = "screenscraper";
 
 /// Where every request goes, whatever server a media's own address names, so the credentials
@@ -366,6 +370,12 @@ where
             ));
         }
         Ok(None)
+    }
+
+    /// Games are looked up one by one, so a request for many is discovered a batch at a time,
+    /// each recorded as it completes.
+    fn discovery_batch_size(&self) -> Option<usize> {
+        Some(DISCOVERY_BATCH)
     }
 
     /// Searches each requested game by name on its platform's system, once for every platform

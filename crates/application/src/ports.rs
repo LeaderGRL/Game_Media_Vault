@@ -241,6 +241,25 @@ pub trait RunRepositoryPort: Send + Sync {
     /// Whether `source_id` already recorded its discovered work for the run.
     fn has_discovered(&self, run_id: i64, source_id: &str) -> Result<bool, PortError>;
 
+    /// How many of the requested games, in request order, the batches of the discovery of
+    /// `source_id` recorded, while that discovery is not complete.
+    fn discovered_games(&self, run_id: i64, source_id: &str) -> Result<usize, PortError>;
+
+    /// Queues the work of a batch of the discovery of `source_id` covering `games` requested
+    /// games from game `first_game`, counting from zero, and records them, atomically, leaving
+    /// the discovery incomplete; its last batch is recorded by `record_discovery`. A batch
+    /// starting anywhere but after the games already recorded is ignored, as is work whose key
+    /// the run already recorded. The work of a discovery still in batches is queued like any.
+    /// Returns `false`, recording nothing, when the run was cancelled or completed meanwhile.
+    fn record_discovery_batch(
+        &self,
+        run_id: i64,
+        source_id: &str,
+        first_game: usize,
+        games: usize,
+        work: &[AcquisitionWorkItem],
+    ) -> Result<bool, PortError>;
+
     /// Queues the work discovered from one Source and marks its discovery complete, atomically.
     /// Work whose key is already recorded for the run is ignored, and so is any later discovery
     /// of an already discovered source: a run keeps a single snapshot per source. Returns
@@ -334,6 +353,13 @@ pub trait ConnectorPort: Send + Sync {
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError>;
 
+    /// The most games one discovery looks up, for a Source that looks games up one by one under
+    /// a quota or a pace: a request naming more is discovered, and checked, that many games at
+    /// a time, each batch recorded as it completes. `None` discovers a request at once.
+    fn discovery_batch_size(&self) -> Option<usize> {
+        None
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError>;
 
     /// Why the Source takes no part in acquisitions at all, such as being disabled on this
@@ -378,6 +404,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for &T {
         (**self).discover(request)
     }
 
+    fn discovery_batch_size(&self) -> Option<usize> {
+        (**self).discovery_batch_size()
+    }
+
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {
         (**self).download(candidate)
     }
@@ -418,6 +448,10 @@ impl<T: ConnectorPort + ?Sized> ConnectorPort for Box<T> {
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
         (**self).discover(request)
+    }
+
+    fn discovery_batch_size(&self) -> Option<usize> {
+        (**self).discovery_batch_size()
     }
 
     fn download(&self, candidate: &AssetCandidate) -> Result<Box<dyn Read + Send>, PortError> {

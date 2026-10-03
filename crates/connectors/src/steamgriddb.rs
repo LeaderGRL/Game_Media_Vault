@@ -14,6 +14,10 @@ use crate::{
     selection::{name_key, platform_key, wanted_games},
 };
 
+/// The most games one discovery looks up: the Source answers one request per game, so a
+/// request for a whole platform is discovered that many games at a time.
+const DISCOVERY_BATCH: usize = 25;
+
 pub const STEAMGRIDDB_SOURCE_ID: &str = "steamgriddb";
 
 const API: &str = "https://www.steamgriddb.com/api/v2";
@@ -112,6 +116,12 @@ where
             ));
         }
         Ok(None)
+    }
+
+    /// Games are looked up one by one, so a request for many is discovered a batch at a time,
+    /// each recorded as it completes.
+    fn discovery_batch_size(&self) -> Option<usize> {
+        Some(DISCOVERY_BATCH)
     }
 
     /// Looks each requested game up by name, keeping only the game SteamGridDB names exactly

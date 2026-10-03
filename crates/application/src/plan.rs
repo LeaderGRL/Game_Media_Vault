@@ -4,7 +4,7 @@ use game_media_vault_domain::{
 };
 use serde::Serialize;
 
-use crate::{ApplicationError, ConnectorPort};
+use crate::{ApplicationError, ConnectorPort, acquisition::planned_batches};
 
 /// The Sources an Acquisition Request contacts and what each of them acquires for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,7 +55,16 @@ pub fn plan_acquisition(
     } = capable_sources(request, connectors)?;
     let mut sources = Vec::new();
     for (connector, asset_types) in capable {
-        match connector.unsupported_request_reason(request)? {
+        // A Source looking games up a few at a time is asked about batches, not the whole
+        // request, but about every platform it would look games up on.
+        let mut refusal = None;
+        for batch in planned_batches(request, connector)? {
+            refusal = connector.unsupported_request_reason(&batch)?;
+            if refusal.is_some() {
+                break;
+            }
+        }
+        match refusal {
             Some(reason) => excluded.push(excluded_source(connector, reason)),
             None => sources.push(PlannedSource {
                 source_id: connector.source_id().to_owned(),

@@ -99,8 +99,8 @@ only the one named; an API key is stored under the Source's id, any other creden
 - **Limits:** a key has a monthly allowance of requests. A discovery takes one request for the
   platform list, up to five pages of search per requested game and platform, and at most ten
   pages of images for each batch of twenty games found. A request naming more than 100 games,
-  such as one for a whole platform, leaves it out with the reason, so a single discovery never
-  spends the allowance. Without a stored key it is left out of
+  such as one for a whole platform, is discovered 100 games at a time, each batch recorded as it
+  completes: when the allowance runs out, the next execution resumes with the next batch. Without a stored key it is left out of
   every plan, with the reason. It needs an explicit game selection and refuses region and
   language filters. A platform is served when TheGamesDB names it with the same words,
   regardless of case and punctuation, with or without the words in parentheses it may add, such
