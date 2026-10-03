@@ -138,7 +138,8 @@ pub enum AssetTypeSelector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+// Requests come from documents people write: an unknown key is a mistake, never a default.
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RetentionPolicy {
     KeepEverything,
     KeepBestPerType,
