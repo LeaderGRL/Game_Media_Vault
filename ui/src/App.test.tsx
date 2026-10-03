@@ -22,6 +22,8 @@ beforeEach(() => {
   pickFolder.mockReset();
   latestMediaMock.mockReset();
   latestMediaMock.mockImplementation(() => Promise.resolve([]));
+  referenceReviewMock.mockReset();
+  referenceReviewMock.mockImplementation(() => Promise.resolve([]));
 });
 
 /**
@@ -2168,6 +2170,39 @@ describe("App acquisition", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /Library/ }));
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("shows the media an execution retained once it ends, however short it was", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return Promise.resolve({ ...startedRun, status: "completed", completed_work: 1 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    const continueButton = await screen.findByRole("button", { name: "Continue" });
+    // The execution ends before any progress poll.
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+
+    fireEvent.click(continueButton);
+
+    expect(
+      await screen.findByRole("img", { name: "Box Front of Metal Gear Solid" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps pause available while a run executes", async () => {
