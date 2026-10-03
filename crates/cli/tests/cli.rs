@@ -501,6 +501,74 @@ fn imports_then_lists_a_local_box_front() {
 }
 
 #[test]
+fn imports_a_local_manual_unchanged() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("manual.pdf");
+    let bytes = b"%PDF-1.4\n% a manual\n%%EOF\n";
+    fs::write(&source, bytes).unwrap();
+
+    let imported = run_in_vault(
+        &vault,
+        &[
+            "import-asset",
+            "--asset-type",
+            "manual",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    assert!(imported.contains("Imported Manual"), "{imported}");
+    let library: serde_json::Value =
+        serde_json::from_str(&run_in_vault(&vault, &["library"]).unwrap()).unwrap();
+    let asset = &library[0]["assets"][0];
+    assert_eq!(asset["asset_type"], "manual");
+    assert_eq!(asset["media_type"], "application/pdf");
+    assert_eq!(asset["byte_len"], bytes.len());
+    assert_eq!(asset["original_filename"], "manual.pdf");
+}
+
+#[test]
+fn an_unknown_asset_type_is_refused() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let source = temp.path().join("guide.pdf");
+    fs::write(&source, b"%PDF-1.4\n%%EOF\n").unwrap();
+
+    let error = run_in_vault(
+        &vault,
+        &[
+            "import-asset",
+            "--asset-type",
+            "strategy_guide",
+            "--game",
+            "Metal Gear Solid",
+            "--platform",
+            "PlayStation",
+            "--region",
+            "France",
+            "--edition",
+            "Original",
+            "--file",
+            source.to_str().unwrap(),
+        ],
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("strategy_guide"), "{error}");
+}
+
+#[test]
 fn game_id_links_a_second_import_to_an_existing_game() {
     let temp = tempdir().unwrap();
     let vault = temp.path().join("vault");

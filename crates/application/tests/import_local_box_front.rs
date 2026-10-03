@@ -1,7 +1,7 @@
 use std::{cell::RefCell, fs, io::Read, path::Path};
 
 use game_media_vault_application::{
-    CatalogPort, ErrorKind, ImportLocalBoxFrontRequest, ObjectStorePort, PortError,
+    CatalogPort, ErrorKind, ImportLocalAssetRequest, ObjectStorePort, PortError,
     import_local_box_front,
 };
 use game_media_vault_domain::{
@@ -57,7 +57,7 @@ fn imports_a_local_box_front_through_the_application_seam() {
     let alias_dir = temp.path().join("alias");
     fs::create_dir(&alias_dir).unwrap();
     let request_source = alias_dir.join("..").join("cover-front.png");
-    let request = ImportLocalBoxFrontRequest {
+    let request = ImportLocalAssetRequest {
         existing_game_id: None,
         game_title: "Metal Gear Solid".to_owned(),
         platform: "PlayStation".to_owned(),
@@ -108,7 +108,7 @@ fn a_directory_is_not_a_source_file() {
     let error = import_local_box_front(
         &RecordingCatalog::default(),
         &FakeObjectStore,
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),

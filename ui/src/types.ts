@@ -8,6 +8,7 @@ export type AssetType =
   | "cartridge_back"
   | "disc"
   | "pcb"
+  | "manual"
   | "screenshot"
   | "title_screen"
   | "logo"

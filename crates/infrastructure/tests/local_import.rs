@@ -5,7 +5,7 @@ use std::{
 };
 
 use game_media_vault_application::{
-    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front, list_library,
+    CatalogPort, ImportLocalAssetRequest, ObjectStorePort, import_local_box_front, list_library,
 };
 use game_media_vault_domain::{AssetType, MediaInfo, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
@@ -87,7 +87,7 @@ fn persists_and_lists_one_logical_asset_for_repeated_imports() {
     let source = alias_dir.join("..").join("mgs-front.png");
     let store = ContentAddressedStore::new(temp.path().join("vault"));
     let catalog = SqliteCatalog::open(temp.path().join("catalog.sqlite3")).unwrap();
-    let request = || ImportLocalBoxFrontRequest {
+    let request = || ImportLocalAssetRequest {
         existing_game_id: None,
         game_title: "Metal Gear Solid".to_owned(),
         platform: "PlayStation".to_owned(),
@@ -185,7 +185,7 @@ fn concurrent_reimports_persist_one_logical_asset() {
                 import_local_box_front(
                     &catalog,
                     &store,
-                    ImportLocalBoxFrontRequest {
+                    ImportLocalAssetRequest {
                         existing_game_id: None,
                         game_title: "Concurrent Game".to_owned(),
                         platform: "Windows".to_owned(),
@@ -231,7 +231,7 @@ fn same_title_imports_do_not_merge_distinct_games_without_matching_evidence() {
         import_local_box_front(
             &catalog,
             &store,
-            ImportLocalBoxFrontRequest {
+            ImportLocalAssetRequest {
                 existing_game_id: None,
                 game_title: "Same Name".to_owned(),
                 platform: "Windows".to_owned(),
@@ -263,7 +263,7 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
     let first = import_local_box_front(
         &catalog,
         &store,
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: None,
             game_title: "Same Game".to_owned(),
             platform: "Windows".to_owned(),
@@ -277,7 +277,7 @@ fn explicit_game_id_attaches_a_new_asset_to_the_existing_game() {
     let second = import_local_box_front(
         &catalog,
         &store,
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: Some(first.game_id),
             game_title: "Localized Same Game".to_owned(),
             platform: "Windows".to_owned(),
@@ -308,7 +308,7 @@ fn imported_originals_list_their_media_type_and_pixel_size() {
     import_local_box_front(
         &catalog,
         &ContentAddressedStore::new(&vault),
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),

@@ -9,26 +9,25 @@ use clap::{Args, Parser, Subcommand};
 use game_media_vault_application::{
     ACQUISITION_REQUEST_DOCUMENT_VERSION, AcquisitionRequestDocument, AcquisitionRequestInput,
     AcquisitionRequestValidationError, ApiKey, ApplicationError, ConnectorPort,
-    DEFAULT_LIBRARY_PAGE_SIZE, DownloadLimits, ErrorKind, ImportLocalBoxFrontRequest,
+    DEFAULT_LIBRARY_PAGE_SIZE, DownloadLimits, ErrorKind, ImportLocalAssetRequest,
     ImportReferenceCatalogRequest, LibraryQuery, LibraryStatus, Machine, PortError,
     ReferenceCatalogSourcePort, RepairActions, RepairSummary, VaultReport,
     acquire_run_with_connectors, build_acquisition_request, cancel_acquisition_run,
     clear_source_api_key, derive_assets, derive_packaging_models, describe_sources,
-    draft_from_document, export_acquisition_request, import_local_box_front,
-    import_reference_catalog, keep_reference_review_item_apart, link_reference_review_item,
-    list_acquisition_runs, list_library, list_reference_review_items, list_review_items,
-    load_acquisition_run, machine_connectors, pause_acquisition_run, plan_acquisition,
-    repair_vault, resolve_review_item, resume_acquisition_run, search_library, set_source_api_key,
-    set_source_enabled, start_acquisition_run_with_connectors, summarize_source_failures,
-    verify_vault,
+    draft_from_document, export_acquisition_request, import_local_asset, import_reference_catalog,
+    keep_reference_review_item_apart, link_reference_review_item, list_acquisition_runs,
+    list_library, list_reference_review_items, list_review_items, load_acquisition_run,
+    machine_connectors, pause_acquisition_run, plan_acquisition, repair_vault, resolve_review_item,
+    resume_acquisition_run, search_library, set_source_api_key, set_source_enabled,
+    start_acquisition_run_with_connectors, summarize_source_failures, verify_vault,
 };
 use game_media_vault_connectors::{
     MameSoftwareListCatalog, NoIntroReferenceCatalog, RedumpReferenceCatalog, registered_connectors,
 };
 use game_media_vault_domain::{
-    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetTypeSelector, DerivationRecipe,
-    GameSelection, MatchingPolicy, PlatformBoundGameSelector, QualityRequirements, RetentionPolicy,
-    ReviewDecision, SourceSelection,
+    AcquisitionLimits, AcquisitionRequest, AcquisitionRun, AssetType, AssetTypeSelector,
+    DerivationRecipe, GameSelection, MatchingPolicy, PlatformBoundGameSelector,
+    QualityRequirements, RetentionPolicy, ReviewDecision, SourceSelection,
 };
 use game_media_vault_infrastructure::{
     ContentAddressedStore, GltfPackagingBuilder, ImageTransformer, KeyringCredentialStore,
@@ -119,6 +118,23 @@ enum Command {
         command: SourceCommand,
     },
     ImportBoxFront {
+        #[arg(long)]
+        game_id: Option<i64>,
+        #[arg(long)]
+        game: String,
+        #[arg(long)]
+        platform: String,
+        #[arg(long)]
+        region: String,
+        #[arg(long)]
+        edition: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Stores a local file, unchanged, as an Asset of a stored type on a release.
+    ImportAsset {
+        #[arg(long, value_parser = parse_stored_asset_type)]
+        asset_type: AssetType,
         #[arg(long)]
         game_id: Option<i64>,
         #[arg(long)]
@@ -713,26 +729,38 @@ where
             region,
             edition,
             file,
-        } => {
-            let catalog = SqliteCatalog::open(cli.vault.join("catalog.sqlite3"))?;
-            let object_store = ContentAddressedStore::new(&cli.vault);
-            let imported = import_local_box_front(
-                &catalog,
-                &object_store,
-                ImportLocalBoxFrontRequest {
-                    existing_game_id: game_id,
-                    game_title: game,
-                    platform,
-                    region,
-                    edition_name: edition,
-                    source_path: file,
-                },
-            )?;
-            Ok(format!(
-                "Imported Box Front as asset #{} ({}, {} bytes)",
-                imported.asset_id, imported.object_hash, imported.byte_len
-            ))
-        }
+        } => import_local(
+            &cli.vault,
+            AssetType::BoxFront,
+            ImportLocalAssetRequest {
+                existing_game_id: game_id,
+                game_title: game,
+                platform,
+                region,
+                edition_name: edition,
+                source_path: file,
+            },
+        ),
+        Command::ImportAsset {
+            asset_type,
+            game_id,
+            game,
+            platform,
+            region,
+            edition,
+            file,
+        } => import_local(
+            &cli.vault,
+            asset_type,
+            ImportLocalAssetRequest {
+                existing_game_id: game_id,
+                game_title: game,
+                platform,
+                region,
+                edition_name: edition,
+                source_path: file,
+            },
+        ),
         Command::Verify => {
             let catalog = SqliteCatalog::open_existing(cli.vault.join("catalog.sqlite3"))?;
             let report = verify_vault(&catalog, &ContentAddressedStore::new(&cli.vault))?;
@@ -870,6 +898,10 @@ fn parse_asset_type(value: &str) -> Result<AssetTypeSelector, String> {
     parse_domain_enum(value).map_err(|_| format!("unsupported asset type: {value}"))
 }
 
+fn parse_stored_asset_type(value: &str) -> Result<AssetType, String> {
+    parse_domain_enum(value).map_err(|_| format!("not a stored asset type: {value}"))
+}
+
 fn parse_library_status(value: &str) -> Result<LibraryStatus, String> {
     parse_domain_enum(value).map_err(|_| format!("unsupported library status: {value}"))
 }
@@ -894,6 +926,40 @@ where
     T: serde::de::DeserializeOwned,
 {
     serde_json::from_value(serde_json::Value::String(value.replace('-', "_")))
+}
+
+/// Stores a local file unchanged as an Asset of `asset_type` and says what it recorded.
+fn import_local(
+    vault: &Path,
+    asset_type: AssetType,
+    request: ImportLocalAssetRequest,
+) -> Result<String, CliError> {
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3"))?;
+    let object_store = ContentAddressedStore::new(vault);
+    let imported = import_local_asset(&catalog, &object_store, asset_type, request)?;
+    Ok(format!(
+        "Imported {} as asset #{} ({}, {} bytes)",
+        asset_type_label(asset_type),
+        imported.asset_id,
+        imported.object_hash,
+        imported.byte_len
+    ))
+}
+
+/// The name of `asset_type` in words, such as `Box Front`.
+fn asset_type_label(asset_type: AssetType) -> String {
+    asset_type
+        .as_str()
+        .split('_')
+        .map(|word| {
+            let mut letters = word.chars();
+            letters
+                .next()
+                .map(|first| first.to_uppercase().chain(letters).collect())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 /// Records up to `max_games` releases of a reference datafile and prints how many it recorded.

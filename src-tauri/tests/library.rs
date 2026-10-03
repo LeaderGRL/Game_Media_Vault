@@ -1,7 +1,7 @@
 use std::{fs, io::Cursor};
 
 use game_media_vault_application::{
-    CatalogPort, ImportLocalBoxFrontRequest, ObjectStorePort, import_local_box_front,
+    CatalogPort, ImportLocalAssetRequest, ObjectStorePort, import_local_box_front,
 };
 use game_media_vault_domain::{AssetType, PersistAsset, SourceId};
 use game_media_vault_infrastructure::{ContentAddressedStore, SqliteCatalog};
@@ -19,7 +19,7 @@ fn loads_an_asset_imported_into_the_selected_vault() {
     import_local_box_front(
         &catalog,
         &store,
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "PlayStation".to_owned(),
@@ -53,7 +53,7 @@ fn searches_the_selected_vault_with_the_shared_library_query() {
         import_local_box_front(
             &catalog,
             &store,
-            ImportLocalBoxFrontRequest {
+            ImportLocalAssetRequest {
                 existing_game_id: None,
                 game_title: title.to_owned(),
                 platform: "Sony - PlayStation".to_owned(),
@@ -90,7 +90,7 @@ fn renders_thumbnails_of_the_selected_vault_off_the_calling_thread() {
     import_local_box_front(
         &catalog,
         &ContentAddressedStore::new(&vault),
-        ImportLocalBoxFrontRequest {
+        ImportLocalAssetRequest {
             existing_game_id: None,
             game_title: "Metal Gear Solid".to_owned(),
             platform: "Sony - PlayStation".to_owned(),
