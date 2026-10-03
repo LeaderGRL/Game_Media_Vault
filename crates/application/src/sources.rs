@@ -154,6 +154,11 @@ pub fn set_source_credential(
             }
         },
     };
+    if field.single_word && value.expose().contains(char::is_whitespace) {
+        return Err(ApplicationError::CredentialNotOneWord(
+            field.label.to_owned(),
+        ));
+    }
     machine
         .credentials
         .set_api_key(&field.stored_as(source_id), value)?;
@@ -203,6 +208,14 @@ pub fn clear_source_credential(
                 machine
                     .credentials
                     .clear_api_key(&field.stored_as(source_id))?;
+            }
+            // A key an earlier version stored under the Source's own name, when the Source
+            // asked for one, goes too.
+            if !fields
+                .iter()
+                .any(|field| field.stored_as(source_id) == source_id)
+            {
+                machine.credentials.clear_api_key(source_id)?;
             }
         }
     }

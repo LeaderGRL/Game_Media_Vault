@@ -2126,7 +2126,7 @@ fn an_empty_standard_input_stores_no_api_key() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("API key"), "{error}");
+    assert!(error.to_string().contains("cannot be blank"), "{error}");
     assert!(credentials.0.lock().unwrap().is_empty());
 }
 
@@ -2276,11 +2276,13 @@ impl ConnectorPort for AccountConnector {
                 id: "dev-id",
                 label: "Developer id",
                 optional: false,
+                single_word: true,
             },
             CredentialField {
                 id: "dev-password",
                 label: "Developer password",
                 optional: false,
+                single_word: false,
             },
         ]
     }

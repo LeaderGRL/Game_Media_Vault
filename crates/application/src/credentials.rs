@@ -4,23 +4,20 @@ use serde::Serialize;
 
 use crate::ApplicationError;
 
-/// An API key a Source requires, which only this machine's secure credential store keeps: never
-/// the vault, logs, exports or provenance. Its `Debug` output never shows it, and it cannot be
-/// serialized.
+/// A credential a Source requires, such as an API key or the password of an account, which only
+/// this machine's secure credential store keeps: never the vault, logs, exports or provenance.
+/// Its `Debug` output never shows it, and it cannot be serialized.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ApiKey(String);
 
 impl ApiKey {
-    /// The key as the user gave it, without surrounding whitespace. A blank key, or one with
-    /// whitespace or control characters inside, is refused.
+    /// The credential as the user gave it, without surrounding whitespace. A blank one, or one
+    /// with control characters inside, is refused; whether it may hold spaces depends on the
+    /// credential it is given as (`CredentialField::single_word`).
     pub fn new(value: impl AsRef<str>) -> Result<Self, ApplicationError> {
         let value = value.as_ref().trim();
-        if value.is_empty()
-            || value
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
-            return Err(ApplicationError::InvalidApiKey);
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(ApplicationError::InvalidCredential);
         }
         Ok(Self(value.to_owned()))
     }
@@ -47,6 +44,9 @@ pub struct CredentialField {
     pub label: &'static str,
     /// Whether the Source works without it, perhaps less well.
     pub optional: bool,
+    /// Whether it is a single word, as API keys are, so that a value with whitespace inside is
+    /// refused as a mistake. A password may hold spaces.
+    pub single_word: bool,
 }
 
 /// The one credential of a Source that needs just an API key.
@@ -54,6 +54,7 @@ pub const API_KEY_FIELD: CredentialField = CredentialField {
     id: "api-key",
     label: "API key",
     optional: false,
+    single_word: true,
 };
 
 impl CredentialField {
