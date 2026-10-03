@@ -517,8 +517,12 @@ impl QualityArgs {
 
 #[derive(Debug, Args)]
 struct LimitArgs {
+    /// For every game of a platform: the most games of each platform kept, by name.
     #[arg(long)]
     max_games: Option<u32>,
+    /// For every game of a platform: the share of each platform's games kept, in percent.
+    #[arg(long, value_name = "PERCENT")]
+    games_percent: Option<u8>,
     #[arg(long)]
     max_downloads: Option<u32>,
     #[arg(long)]
@@ -531,6 +535,7 @@ impl From<LimitArgs> for AcquisitionLimits {
     fn from(value: LimitArgs) -> Self {
         Self {
             max_games: value.max_games,
+            games_percent: value.games_percent,
             max_downloads: value.max_downloads,
             max_concurrent_downloads: value.max_concurrent_downloads,
             max_bytes: value.max_bytes,

@@ -249,7 +249,7 @@ fn an_unsupported_limit_is_refused_before_any_game_list_is_fetched() {
     let releases = Releases::default();
     let lists = game_lists();
     let mut limited = every_game_of(&[NES]);
-    limited.limits.max_games = Some(5);
+    limited.limits.max_downloads = Some(5);
 
     let error = expand_every_game(&releases, &releases, &lists, limited).unwrap_err();
 
@@ -437,4 +437,62 @@ fn every_region_no_intro_names_implies_its_language() {
             "Elite (United Kingdom)"
         ])
     );
+}
+
+/// Four NES games, listed out of alphabetical order.
+fn four_games() -> Releases {
+    Releases::holding(vec![
+        listed(1, "Zelda", "USA", "Zelda (USA)"),
+        listed(2, "Asterix", "Europe", "Asterix (Europe)"),
+        listed(3, "Tetris", "USA", "Tetris (USA)"),
+        listed(4, "Mario", "World", "Mario (World)"),
+    ])
+}
+
+#[test]
+fn every_game_kept_to_a_number_names_the_first_games_of_each_platform_by_name() {
+    let releases = four_games();
+    let mut two = every_game_of(&[NES]);
+    two.limits.max_games = Some(2);
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), two).unwrap();
+
+    assert_eq!(
+        expanded.games,
+        bound(&["Asterix (Europe)", "Mario (World)"])
+    );
+    // The games named are the limit: planning has none left to apply.
+    assert_eq!(expanded.limits, AcquisitionLimits::default());
+}
+
+#[test]
+fn every_game_kept_to_a_share_names_that_share_of_each_platform_rounded_up() {
+    let releases = four_games();
+    let mut a_third = every_game_of(&[NES]);
+    a_third.limits.games_percent = Some(30);
+
+    let expanded = expand_every_game(&releases, &releases, &game_lists(), a_third).unwrap();
+
+    // 30 % of four games is 1.2, kept as two.
+    assert_eq!(
+        expanded.games,
+        bound(&["Asterix (Europe)", "Mario (World)"])
+    );
+    assert_eq!(expanded.limits, AcquisitionLimits::default());
+}
+
+#[test]
+fn a_share_of_games_outside_one_to_a_hundred_percent_is_invalid() {
+    for percent in [0, 101] {
+        let mut draft = every_game_of(&[NES]);
+        draft.limits.games_percent = Some(percent);
+
+        let error =
+            expand_every_game(&four_games(), &four_games(), &game_lists(), draft).unwrap_err();
+
+        assert!(
+            matches!(error, ApplicationError::Validation(_)),
+            "{percent}: {error:?}"
+        );
+    }
 }

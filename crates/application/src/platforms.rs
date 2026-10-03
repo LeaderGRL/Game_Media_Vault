@@ -86,6 +86,14 @@ pub fn expand_every_game(
     if !matches!(input.games, GameSelection::All) || input.platforms.is_empty() {
         return Ok(input);
     }
+    // The games kept are the expansion's to apply; planning applies no game limit.
+    let (max_games, games_percent) = (input.limits.max_games, input.limits.games_percent);
+    input.limits.max_games = None;
+    input.limits.games_percent = None;
+    let mut checked = input.clone();
+    checked.limits.max_games = max_games;
+    checked.limits.games_percent = games_percent;
+    build_acquisition_request(checked)?;
     ensure_request_supported(&build_acquisition_request(input.clone())?)?;
     let mut releases = catalog.list_library()?;
     let mut synced = false;
@@ -139,7 +147,7 @@ pub fn expand_every_game(
         return Ok(input);
     }
     input.platforms = platforms;
-    input.games = GameSelection::PlatformBound(games);
+    input.games = GameSelection::PlatformBound(kept_games(games, max_games, games_percent));
     input.languages.clear();
     // Worldwide media serve the worldwide releases the regions keep.
     if !input.regions.is_empty()
@@ -165,6 +173,41 @@ pub fn plan_acquisition_request(
 ) -> Result<AcquisitionPlan, ApplicationError> {
     let input = expand_every_game(catalog, references, platform_catalogs, input)?;
     plan_acquisition(&build_acquisition_request(input)?, connectors)
+}
+
+/// `games`, kept to the first `max_games`, or `games_percent` percent rounded up, of each
+/// platform by name, in the order the platforms came.
+fn kept_games(
+    games: Vec<PlatformBoundGameSelector>,
+    max_games: Option<u32>,
+    games_percent: Option<u8>,
+) -> Vec<PlatformBoundGameSelector> {
+    if max_games.is_none() && games_percent.is_none() {
+        return games;
+    }
+    let mut platforms: Vec<String> = Vec::new();
+    for game in &games {
+        if !platforms.contains(&game.platform) {
+            platforms.push(game.platform.clone());
+        }
+    }
+    let mut kept = Vec::new();
+    for platform in platforms {
+        let mut of_platform: Vec<PlatformBoundGameSelector> = games
+            .iter()
+            .filter(|game| game.platform == platform)
+            .cloned()
+            .collect();
+        of_platform.sort_by_key(|game| game.game.to_lowercase());
+        let count = of_platform.len();
+        let by_share = games_percent.map_or(count, |percent| {
+            (count * usize::from(percent)).div_ceil(100)
+        });
+        let by_number = max_games.map_or(count, |max| max as usize);
+        of_platform.truncate(by_share.min(by_number));
+        kept.extend(of_platform);
+    }
+    kept
 }
 
 /// Whether `release` is of one of `regions`, any when none is named: a release of several
