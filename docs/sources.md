@@ -110,6 +110,54 @@ only the one named; an API key is stored under the Source's id, any other creden
   `Sega - Mega Drive - Genesis`. A game is acquired only when TheGamesDB names it exactly as the
   request does, regardless of case, punctuation and spacing, on one of those platforms.
 
+### ScreenScraper (`screenscraper`)
+
+- **Provides:** box fronts, backs and spines (Box Front, Box Back, Spine), 3D boxes (Box 3D
+  Render), scans of the cartridge or disc (Cartridge Front or Disc, by what the platform's games
+  come on), manuals as PDF (Manual), screenshots, title screens, wheels (Logo), fan art
+  (Wallpaper / Artwork) and arcade flyers (Flyer). The media type and region code, such as
+  `box-2D (us)`, is kept as its source label, and the region it stands for (`us` as USA, `eu` as
+  Europe, `jp` as Japan, `wor` as World, a country by its own) as the candidate's; a media of no
+  region, or of one ScreenScraper alone names, is recorded in no region. Mixes, videos and other
+  composites have no Asset Type and are not acquired.
+- **Reached at:** the API at `api.screenscraper.fr`, which searches each requested game by name
+  on the ScreenScraper system of its platform, describes a game found without its media, and
+  serves the media themselves. Every request goes to that API, whatever server a media's own
+  address names, and a media ScreenScraper does not serve itself is left out.
+- **Configuration:** ScreenScraper asks every software for developer credentials, and lets each
+  user add their own account, which brings their own quota and keeps requests going when it
+  closes its API to anonymous use. All of them are kept in this machine's credential store (ADR
+  0005) and sent only as query parameters of the requests the connector sends: errors name the
+  request without them, requests follow no redirect, and the addresses ScreenScraper gives its
+  media, which carry them, are never kept: each candidate is located by a path naming the media
+  instead, such as `https://api.screenscraper.fr/api2/mediaJeu.php/57/1234/box-2D(us)`. To get
+  them:
+  1. Create a free account at `https://www.screenscraper.fr` and sign in. Its user name and
+     password are the optional account credentials.
+  2. Ask ScreenScraper for developer credentials on its forum, in the section for developers of
+     scraping software: say that they are for your own use of Game Media Vault, a free and
+     open-source media archiver (`https://github.com/LeaderGRL/Game_Media_Vault`), which
+     identifies itself as `game-media-vault`. ScreenScraper answers with a developer id and
+     password. Its API may be used only by entirely free software, which Game Media Vault is.
+  3. In the desktop Sources view, ScreenScraper asks for its Developer id, Developer password,
+     Account user name and Account password: paste each in its field and choose **Store key**.
+     Or run `game-media-vault source key set screenscraper --field dev-id`, then with
+     `--field dev-password`, `--field user-id` and `--field user-password`, pasting each and
+     pressing Enter. The account is sent only once both its user name and password are stored.
+- **Limits:** an account may send one request at a time, and a daily quota of requests, which
+  free accounts keep low; the connector sends one request at a time, downloads included, and
+  holds each media whole before the next request leaves. A discovery takes one search per
+  requested game and platform, one more per game found without its media, and each media
+  downloaded one more. ScreenScraper refusing a request for too many at once (HTTP 429) is asked
+  again later; a quota spent for the day (HTTP 430) fails until the next day. Without developer
+  credentials it is left out of every plan, with the reason. It needs an explicit game selection,
+  takes region filters it has a code for and refuses language filters. It serves the platforms
+  it knows a ScreenScraper system for, by their catalog names: the Nintendo, Sega, Sony, NEC,
+  SNK, Bandai and Atari consoles and handhelds, ColecoVision, Intellivision, Vectrex, 3DO, CD-i,
+  Xbox and Xbox 360, and `MAME` and `FBNeo - Arcade Games` as ScreenScraper's arcade system; a
+  request naming another is refused. A game is acquired only when one of its ScreenScraper names
+  is the requested title, regardless of case, punctuation and spacing.
+
 ### PSX DataCenter (`psx-datacenter`)
 
 - **Provides:** high-resolution scans of PlayStation box fronts and backs (Box Front, Box Back)

@@ -24,6 +24,9 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   - **SteamGridDB**: community logos, icons and heroes, with the user's own API key.
   - **TheGamesDB**: box fronts and backs, screenshots, title screens, clear logos and fan art,
     with the user's own API key.
+  - **ScreenScraper**: regional box scans, spines and 3D boxes, cartridge and disc scans,
+    manuals, screenshots, title screens, logos, fan art and flyers, with developer credentials
+    and, optionally, the user's own account.
   - **PSX DataCenter**: high-resolution PlayStation cover scans and screenshots, read from its
     public website as a well-behaved client that honors robots.txt and leaves time between
     requests.
@@ -32,7 +35,7 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   ([ADR 0005](docs/adr/0005-keep-source-api-keys-in-the-os-credential-store.md)). The Sources
   view describes what each Source acquires, what it is known to limit and the failures
   executions recorded, stores or forgets API keys, and enables or disables each Source on this
-  machine. [`docs/sources.md`](docs/sources.md) explains how to get each key.
+  machine. [`docs/sources.md`](docs/sources.md) explains how to get each key or credential.
 - **Reference catalogs**: No-Intro and Redump datafiles and MAME software lists import as Release
   Editions with their identifiers, so acquired media can be matched to known releases; releases
   several catalogs describe with the same dumps, or else the same title, share one Release

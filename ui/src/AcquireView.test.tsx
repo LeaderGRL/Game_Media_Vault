@@ -95,7 +95,7 @@ describe("AcquireView", () => {
 
     expect(await screen.findByText("Box Front: Libretro Thumbnails")).toBeInTheDocument();
     expect(
-      screen.getByText("screenscraper left out: acquires none of the requested asset types"),
+      screen.getByText("ScreenScraper left out: acquires none of the requested asset types"),
     ).toBeInTheDocument();
     expect(checkPlan).toHaveBeenCalledWith(
       expect.objectContaining({ sources: { mode: "auto" }, asset_types: ["box_front"] }),

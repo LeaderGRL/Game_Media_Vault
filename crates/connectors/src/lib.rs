@@ -22,6 +22,7 @@ mod polite;
 mod psx_datacenter;
 mod resume;
 mod retry;
+mod screenscraper;
 mod selection;
 mod steamgriddb;
 mod thegamesdb;
@@ -31,6 +32,7 @@ pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
 pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
 pub use retry::RetryPolicy;
+pub use screenscraper::{SCREENSCRAPER_SOURCE_ID, ScreenScraperConnector};
 pub use steamgriddb::{STEAMGRIDDB_SOURCE_ID, SteamGridDbConnector};
 pub use thegamesdb::{THEGAMESDB_SOURCE_ID, TheGamesDbConnector};
 
@@ -68,7 +70,8 @@ pub fn registered_connectors(
         Box::new(LibretroThumbnailsConnector::new()),
         Box::new(LaunchBoxGamesDbConnector::new()),
         Box::new(SteamGridDbConnector::new(Arc::clone(&credentials))),
-        Box::new(TheGamesDbConnector::new(credentials)),
+        Box::new(TheGamesDbConnector::new(Arc::clone(&credentials))),
+        Box::new(ScreenScraperConnector::new(credentials)),
         Box::new(PsxDataCenterConnector::new()),
     ]
 }
