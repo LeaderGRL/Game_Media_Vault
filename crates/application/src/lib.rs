@@ -38,9 +38,9 @@ pub use game_media_vault_domain::{
 pub use identity::candidate_identity;
 pub use imports::{
     DescribedReferenceReviewItem, ImportLocalAssetRequest, ImportReferenceCatalogRequest,
-    ReferenceImportSummary, import_local_asset, import_local_box_front, import_reference_catalog,
-    keep_reference_review_item_apart, link_reference_review_item, list_library,
-    list_reference_review_items,
+    PlatformCatalogSummary, ReferenceImportSummary, import_local_asset, import_local_box_front,
+    import_reference_catalog, keep_reference_review_item_apart, link_reference_review_item,
+    list_library, list_reference_review_items, sync_platform_catalog,
 };
 pub use library::{
     DEFAULT_LIBRARY_PAGE_SIZE, LibraryPage, LibraryQuery, LibraryStatus, MAX_LIBRARY_PAGE_SIZE,
@@ -55,9 +55,9 @@ pub use plan::{
 };
 pub use ports::{
     CandidateAssetOutcome, CatalogPort, ConnectorPort, CredentialStorePort, MachineSettingsPort,
-    ObjectStorePort, ParkedReview, PortError, ReferenceCatalogRead, ReferenceCatalogRepositoryPort,
-    ReferenceCatalogSourcePort, ReferenceReviewOutcome, ReferenceReviewRepositoryPort,
-    ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
+    ObjectStorePort, ParkedReview, PlatformCatalogSourcePort, PortError, ReferenceCatalogRead,
+    ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReferenceReviewOutcome,
+    ReferenceReviewRepositoryPort, ReviewDecisionOutcome, ReviewRepositoryPort, RunRepositoryPort,
 };
 pub use review::{
     MAX_REVIEW_PREVIEW_BYTES, ReviewPreview, list_review_items, load_review_preview,

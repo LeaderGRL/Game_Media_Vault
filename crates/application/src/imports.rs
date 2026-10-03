@@ -4,15 +4,16 @@ use std::{
 };
 
 use game_media_vault_domain::{
-    AssetType, ImportedAsset, LibraryRelease, PersistAsset, ReferenceReviewEdition,
-    ReferenceReviewItem, SourceId,
+    AssetType, ImportedAsset, LibraryRelease, PersistAsset, ReferenceReleaseRecord,
+    ReferenceReviewEdition, ReferenceReviewItem, SourceId,
 };
 
 use serde::Serialize;
 
 use crate::{
-    ApplicationError, CatalogPort, ObjectStorePort, PortError, ReferenceCatalogRepositoryPort,
-    ReferenceCatalogSourcePort, ReferenceReviewOutcome, ReferenceReviewRepositoryPort,
+    ApplicationError, CatalogPort, ObjectStorePort, PlatformCatalogSourcePort, PortError,
+    ReferenceCatalogRepositoryPort, ReferenceCatalogSourcePort, ReferenceReviewOutcome,
+    ReferenceReviewRepositoryPort,
 };
 
 const REFERENCE_IMPORT_BATCH_SIZE: usize = 256;
@@ -61,12 +62,32 @@ pub fn import_reference_catalog(
     let source_path = resolve_source_path(&request.source_path)?;
     let location = source_location(&source_path);
     let read = source.read_releases(&source_path, request.max_games)?;
+    let releases = read
+        .releases
+        .into_iter()
+        .take(request.max_games)
+        .map(|mut release| {
+            for assertion in &mut release.assertions {
+                assertion.source_location.clone_from(&location);
+            }
+            release
+        });
+    let imported_releases = persist_in_batches(catalog, releases)?;
+
+    Ok(ReferenceImportSummary {
+        imported_releases,
+        skipped_records: read.skipped_records,
+    })
+}
+
+/// Persists `releases` in bounded batches, and counts those persisted.
+fn persist_in_batches(
+    catalog: &dyn ReferenceCatalogRepositoryPort,
+    releases: impl Iterator<Item = ReferenceReleaseRecord>,
+) -> Result<usize, ApplicationError> {
     let mut imported_releases = 0;
     let mut batch = Vec::with_capacity(REFERENCE_IMPORT_BATCH_SIZE);
-    for mut release in read.releases.into_iter().take(request.max_games) {
-        for assertion in &mut release.assertions {
-            assertion.source_location.clone_from(&location);
-        }
+    for release in releases {
         batch.push(release);
         if batch.len() == REFERENCE_IMPORT_BATCH_SIZE {
             imported_releases += catalog
@@ -77,10 +98,63 @@ pub fn import_reference_catalog(
     if !batch.is_empty() {
         imported_releases += catalog.persist_reference_releases(batch)?.len();
     }
+    Ok(imported_releases)
+}
 
-    Ok(ReferenceImportSummary {
+/// What importing a platform's game list recorded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlatformCatalogSummary {
+    pub platform: String,
+    pub imported_releases: usize,
+    /// Entries of the list too malformed to read.
+    pub skipped_records: usize,
+    /// Entries no retail release stands for, such as prototypes and demos, left out.
+    pub left_out_releases: usize,
+}
+
+/// Tags of game list entries no retail release stands for: prototypes, betas, demos, samples,
+/// pirate copies, hacks, aftermarket releases and programs. Media Sources serve retail
+/// releases, so such entries would only crowd the Library.
+const NON_RETAIL_TAGS: [&str; 8] = [
+    "proto",
+    "beta",
+    "demo",
+    "sample",
+    "pirate",
+    "hack",
+    "aftermarket",
+    "program",
+];
+
+/// Whether a retail release, unlicensed ones included, stands for a game list entry.
+fn is_retail(release: &ReferenceReleaseRecord) -> bool {
+    !release.game_title.starts_with("[BIOS]")
+        && !release.edition_name.split(" · ").any(|tag| {
+            let tag = tag.trim().to_lowercase();
+            NON_RETAIL_TAGS
+                .iter()
+                .any(|non_retail| tag == *non_retail || tag.starts_with(&format!("{non_retail} ")))
+        })
+}
+
+/// Imports the game list a Source publishes for `platform` as reference releases, so that the
+/// media acquired for its games have releases to match, without the user importing anything.
+/// Entries no retail release stands for are left out.
+pub fn sync_platform_catalog(
+    catalog: &dyn ReferenceCatalogRepositoryPort,
+    source: &dyn PlatformCatalogSourcePort,
+    platform: &str,
+) -> Result<PlatformCatalogSummary, ApplicationError> {
+    let read = source
+        .platform_releases(platform)?
+        .ok_or_else(|| ApplicationError::PlatformCatalogNotFound(platform.to_owned()))?;
+    let (retail, left_out): (Vec<_>, Vec<_>) = read.releases.into_iter().partition(is_retail);
+    let imported_releases = persist_in_batches(catalog, retail.into_iter())?;
+    Ok(PlatformCatalogSummary {
+        platform: platform.to_owned(),
         imported_releases,
         skipped_records: read.skipped_records,
+        left_out_releases: left_out.len(),
     })
 }
 

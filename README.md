@@ -40,7 +40,8 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
   view describes what each Source acquires, what it is known to limit and the failures
   executions recorded, stores or forgets API keys, and enables or disables each Source on this
   machine. [`docs/sources.md`](docs/sources.md) explains how to get each key or credential.
-- **Reference catalogs**: No-Intro and Redump datafiles and MAME software lists import as Release
+- **Reference catalogs**: a platform's game list downloads by itself from libretro-database
+  (`reference sync`), and No-Intro and Redump datafiles and MAME software lists import as Release
   Editions with their identifiers, so acquired media can be matched to known releases; releases
   several catalogs describe with the same dumps, or else the same title, share one Release
   Edition. A record whose evidence points at several editions becomes a Reference Review Item,
@@ -103,7 +104,7 @@ npm run tauri -- dev
 Command-line interface, with a vault in `./my-vault`:
 
 ```bash
-cargo run -p game-media-vault-cli -- --vault my-vault import-no-intro --file nes.dat --max-games 500
+cargo run -p game-media-vault-cli -- --vault my-vault reference sync --platform "Nintendo - Nintendo Entertainment System"
 ```
 
 ```bash

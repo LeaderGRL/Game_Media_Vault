@@ -71,6 +71,8 @@ pub enum ApplicationError {
     UnsupportedDocumentVersion { found: u32, supported: u32 },
     #[error("no connector is registered for source {0}")]
     SourceNotRegistered(String),
+    #[error("no game list is known for platform {0}")]
+    PlatformCatalogNotFound(String),
     #[error("source {source_id} takes no part in acquisitions: {reason}")]
     SourceDisabled { source_id: String, reason: String },
     #[error("source {0} needs no API key")]
@@ -176,7 +178,8 @@ impl ApplicationError {
             | Self::RunNotFound(_)
             | Self::ReviewItemNotFound(_)
             | Self::ReleaseEditionMissing(_)
-            | Self::SourceNotRegistered(_) => ErrorKind::NotFound,
+            | Self::SourceNotRegistered(_)
+            | Self::PlatformCatalogNotFound(_) => ErrorKind::NotFound,
             Self::RunHasQueuedWork { .. }
             | Self::RunAlreadyExecuting(_)
             | Self::InvalidRunTransition { .. }

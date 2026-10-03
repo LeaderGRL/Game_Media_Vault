@@ -234,14 +234,19 @@ fn missing_platform(source: &DatafileSource) -> PortError {
     ))
 }
 
-struct DatafileGame {
+/// One release of a datafile being read: its name as the datafile gives it, and the identifiers
+/// of its dumps.
+pub(crate) struct DatafileGame {
     raw_name: String,
     source_location: String,
     identifiers: Vec<(String, String)>,
 }
 
+/// The checksums a dump may assert, by the name datafiles give them.
+const CHECKSUMS: [&str; 4] = ["crc", "md5", "sha1", "sha256"];
+
 impl DatafileGame {
-    fn new(raw_name: String, source_location: &str) -> Self {
+    pub(crate) fn new(raw_name: String, source_location: &str) -> Self {
         Self {
             raw_name,
             source_location: source_location.to_owned(),
@@ -272,9 +277,31 @@ impl DatafileGame {
         Ok(())
     }
 
+    /// Records the name and checksums of one dump, given as its fields. A dump without a name
+    /// asserts none of its checksums, as in `read_identifiers`.
+    pub(crate) fn add_dump(&mut self, fields: &[(&str, &str)]) {
+        let field = |wanted: &str| {
+            fields
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                .map(|(_, value)| *value)
+        };
+        let Some(name) = field("name").filter(|name| !name.trim().is_empty()) else {
+            return;
+        };
+        self.identifiers
+            .push(("rom_name".to_owned(), name.to_owned()));
+        for checksum in CHECKSUMS {
+            if let Some(value) = field(checksum) {
+                self.identifiers
+                    .push((checksum.to_owned(), value.to_owned()));
+            }
+        }
+    }
+
     /// The release this entry describes. The datafile `version`, when the header records one,
     /// identifies which edition of the datafile asserted it.
-    fn finish(
+    pub(crate) fn finish(
         self,
         source: &DatafileSource,
         platform: &str,

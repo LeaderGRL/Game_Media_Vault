@@ -450,6 +450,13 @@ pub trait ReferenceCatalogSourcePort {
     ) -> Result<ReferenceCatalogRead, PortError>;
 }
 
+/// The game lists of whole platforms, from a Source that publishes one per platform. Each
+/// assertion it returns already names where it was read.
+pub trait PlatformCatalogSourcePort {
+    /// Every release the Source lists for `platform`, or none when it lists no such platform.
+    fn platform_releases(&self, platform: &str) -> Result<Option<ReferenceCatalogRead>, PortError>;
+}
+
 pub trait ReferenceCatalogRepositoryPort {
     fn persist_reference_release(
         &self,
