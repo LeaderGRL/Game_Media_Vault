@@ -327,3 +327,53 @@ fn the_nintendo_switch_atlas_is_known() {
 
     assert_eq!(reason, None);
 }
+
+#[test]
+fn a_shared_atlas_gives_each_platform_the_table_it_qualifies() {
+    let page = [
+        game(
+            "PrinceOfPersia",
+            "Prince Of Persia",
+            &[("Levels", "PrinceOfPersia-GB.png", "Game Boy levels")],
+        ),
+        game(
+            "PrinceOfPersiaGBC",
+            "Prince Of Persia (Game Boy Color)",
+            &[("Levels", "PrinceOfPersia-GBC.png", "Color levels")],
+        ),
+        game(
+            "PokemonGold",
+            "Pokemon Gold",
+            &[("Johto", "PokemonGold-Johto.png", "Johto")],
+        ),
+    ]
+    .concat();
+    let atlas = format!(r#"<HTML><BODY><table><tr><TD>{page}</TD></tr></table></BODY></HTML>"#);
+    let site = FixtureSite::serving(&[("https://www.vgmaps.com/Atlas/GB-GBC/index.htm", &atlas)]);
+    let found = |platform: &str, game: &str| -> Vec<String> {
+        VgMapsConnector::with_transport(&site)
+            .discover(&request(|draft| {
+                draft.platforms = vec![platform.to_owned()];
+                draft.games = GameSelection::Explicit(vec![game.to_owned()]);
+            }))
+            .unwrap()
+            .into_iter()
+            .map(|candidate| candidate.original_filename)
+            .collect()
+    };
+
+    // A table qualified with a platform of the atlas is that platform's alone; an unqualified
+    // one serves a platform that has none of its own.
+    assert_eq!(
+        found("Nintendo - Game Boy Color", "Prince of Persia (USA)"),
+        ["PrinceOfPersia-GBC.png"]
+    );
+    assert_eq!(
+        found("Nintendo - Game Boy", "Prince of Persia (USA)"),
+        ["PrinceOfPersia-GB.png"]
+    );
+    assert_eq!(
+        found("Nintendo - Game Boy Color", "Pokemon Gold (USA)"),
+        ["PokemonGold-Johto.png"]
+    );
+}

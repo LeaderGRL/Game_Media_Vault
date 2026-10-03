@@ -72,6 +72,36 @@ const ATLASES: &[(&str, &str)] = &[
     ("FBNeo - Arcade Games", "Arcade"),
 ];
 
+/// The words an atlas shared by several platforms adds to a game's title, in parentheses, to say
+/// the table is one platform's, as `Prince Of Persia (Game Boy Color)`.
+const QUALIFIERS: &[(&str, &[&str])] = &[
+    ("Nintendo - Game Boy", &["Game Boy", "GB"]),
+    ("Nintendo - Game Boy Color", &["Game Boy Color", "GBC"]),
+    (
+        "Nintendo - Nintendo Entertainment System",
+        &["NES", "Famicom"],
+    ),
+    (
+        "Nintendo - Family Computer Disk System",
+        &["Famicom Disk System", "Disk System", "FDS"],
+    ),
+    (
+        "NEC - PC Engine - TurboGrafx-16",
+        &["TurboGrafx-16", "PC Engine", "TG16"],
+    ),
+    (
+        "NEC - PC Engine CD - TurboGrafx-CD",
+        &["TurboGrafx-CD", "PC Engine CD", "CD-ROM2"],
+    ),
+    ("SNK - Neo Geo Pocket", &["Neo Geo Pocket", "NGP"]),
+    (
+        "SNK - Neo Geo Pocket Color",
+        &["Neo Geo Pocket Color", "NGPC"],
+    ),
+    ("Bandai - WonderSwan", &["WonderSwan", "WS"]),
+    ("Bandai - WonderSwan Color", &["WonderSwan Color", "WSC"]),
+];
+
 /// The formats maps are published in, by the extension of their file: images, and PDF documents
 /// for maps drawn as pages.
 const MAP_EXTENSIONS: [&str; 5] = [".png", ".gif", ".jpg", ".jpeg", ".pdf"];
@@ -170,7 +200,7 @@ where
             };
             if !atlases.contains_key(atlas) {
                 let page = atlas_url(atlas);
-                let games = atlas_games(&self.read(&page)?, &page);
+                let games = atlas_games(&self.read(&page)?, &page, atlas);
                 // Every atlas maps games: a page without any is of another kind, such as an
                 // outage.
                 if games.is_empty() {
@@ -181,10 +211,30 @@ where
                 atlases.insert(atlas, games);
             }
             let wanted = title_key(&title);
-            for game in atlases[atlas]
+            let named: Vec<&Game> = atlases[atlas]
                 .iter()
                 .filter(|game| title_key(&game.title) == wanted)
-            {
+                .collect();
+            // A table a shared atlas qualifies with the requested platform is that platform's;
+            // an unqualified one serves a platform that has none of its own.
+            let platform_key = name_key(&platform);
+            let own: Vec<&Game> = named
+                .iter()
+                .copied()
+                .filter(|game| {
+                    game.platform
+                        .is_some_and(|its| name_key(its) == platform_key)
+                })
+                .collect();
+            let chosen: Vec<&Game> = if own.is_empty() {
+                named
+                    .into_iter()
+                    .filter(|game| game.platform.is_none())
+                    .collect()
+            } else {
+                own
+            };
+            for game in chosen {
                 for map in &game.maps {
                     candidates.push(AssetCandidate {
                         // One map may serve several platforms of one atlas, each its own
@@ -238,6 +288,8 @@ impl<T: HttpTransport> VgMapsConnector<T> {
 /// A game an atlas maps: its title, and its maps.
 struct Game {
     title: String,
+    /// The platform of a shared atlas its title says it is, as `(Game Boy Color)` does.
+    platform: Option<&'static str>,
     maps: Vec<Map>,
 }
 
@@ -264,11 +316,11 @@ fn atlas_url(atlas: &str) -> Url {
         .expect("the atlas pages have valid locations")
 }
 
-/// The games an atlas page maps. Each game's table opens with a cell spanning half of it that
-/// names it, as `Super Mario Bros. Maps`, followed by a row per map, which names its area and links its
-/// image; the cells and links of the page are read in order, so a map belongs to the game named
-/// last before it.
-fn atlas_games(html: &str, page: &Url) -> Vec<Game> {
+/// The games the atlas page of `atlas` maps. Each game's table opens with a cell spanning half
+/// of it that names it, as `Super Mario Bros. Maps`, followed by a row per map, which names its
+/// area and links its image; the cells and links of the page are read in order, so a map belongs
+/// to the game named last before it.
+fn atlas_games(html: &str, page: &Url, atlas: &str) -> Vec<Game> {
     let document = Html::parse_document(html);
     let cells_and_links = Selector::parse("td, a[href]").expect("a valid selector");
     let tables = Selector::parse("table").expect("a valid selector");
@@ -284,8 +336,10 @@ fn atlas_games(html: &str, page: &Url) -> Vec<Game> {
             }
             let text = cell_text(element);
             if let Some(title) = text.strip_suffix(" Maps") {
+                let (title, platform) = qualified(title.trim(), atlas);
                 games.push(Game {
-                    title: with_article_first(title.trim()),
+                    title: with_article_first(title),
+                    platform,
                     maps: Vec::new(),
                 });
             }
@@ -344,6 +398,27 @@ fn map(link: ElementRef<'_>, page: &Url) -> Option<Map> {
         file,
         label,
     })
+}
+
+/// A title without the parenthesized words that say which platform of the shared atlas `atlas`
+/// it is, with that platform; other parenthesized words stay part of the title.
+fn qualified<'a>(title: &'a str, atlas: &str) -> (&'a str, Option<&'static str>) {
+    let Some((base, words)) = title
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+    else {
+        return (title, None);
+    };
+    let words = name_key(words);
+    let platform = QUALIFIERS
+        .iter()
+        .filter(|(platform, _)| atlas_of(platform) == Some(atlas))
+        .find(|(_, names)| names.iter().any(|name| name_key(name) == words))
+        .map(|(platform, _)| *platform);
+    match platform {
+        Some(platform) => (base.trim_end(), Some(platform)),
+        None => (title, None),
+    }
 }
 
 /// The text of an element, its whitespace and non-breaking spaces collapsed.

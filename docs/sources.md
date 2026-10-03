@@ -240,7 +240,9 @@ only the one named; an API key is stored under the Source's id, any other creden
   as its arcade atlas; a request naming another is refused. A game is acquired when the title
   of its table names it exactly, regardless of case, punctuation, an article filed last, such
   as `Legend of Zelda, The` for `The Legend Of Zelda`, and Roman numerals, such as `Mega Man 2`
-  for `Mega Man II`.
+  for `Mega Man II`. In an atlas several platforms share, such as Game Boy and Game Boy Color, a
+  table whose title adds one of them in parentheses, as `Prince Of Persia (Game Boy Color)`, serves
+  that platform alone, and an unqualified one serves a platform without a table of its own.
 
 ## Reference catalogs
 
