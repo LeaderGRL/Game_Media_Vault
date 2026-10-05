@@ -95,8 +95,10 @@ export function describeRunRequest(run: AcquisitionRun): string {
   const request = run.request;
   const games = gameCount(request.games);
   const parts = [games === 0 ? "Every game" : `${games} ${games === 1 ? "game" : "games"}`];
-  // Worldwide media serve every region, so a request kept to regions adds them by itself.
-  const regions = request.regions.filter((region) => region !== "World");
+  // Worldwide media serve every region, so a request kept to regions adds them by itself;
+  // World shows only when the request keeps to it alone.
+  const others = request.regions.filter((region) => region !== "World");
+  const regions = others.length > 0 ? others : request.regions;
   if (regions.length > 0) {
     parts.push(regions.join(", "));
   }

@@ -95,6 +95,13 @@ describe("runTitle and describeRunRequest", () => {
     expect(runTitle(run())).toBe("Super Nintendo Entertainment System");
     expect(describeRunRequest(run())).toBe("4 games · Europe · Best 3 of each type");
   });
+
+  it("names World when a run keeps to worldwide releases alone", () => {
+    const worldwide = run();
+    worldwide.request.regions = ["World"];
+
+    expect(describeRunRequest(worldwide)).toBe("4 games · World · Best 3 of each type");
+  });
 });
 
 describe("runProgress downloads", () => {
