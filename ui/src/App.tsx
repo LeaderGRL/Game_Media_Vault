@@ -186,6 +186,11 @@ export function App() {
   const [reviewUndecided, setReviewUndecided] = useState(0);
   const reviewOffset = useRef(0);
   const [shownReviewOffset, setShownReviewOffset] = useState(0);
+  // The decision on every Review Item of the open vault under way, or what the last one did.
+  const [bulkReview, setBulkReview] = useState<{ deciding: boolean; outcome: string | null }>({
+    deciding: false,
+    outcome: null,
+  });
   const reviewCount = reviewUndecided + referenceReviewItems.length;
 
   /**
@@ -369,6 +374,7 @@ export function App() {
     setReviewUndecided(0);
     reviewOffset.current = 0;
     setShownReviewOffset(0);
+    setBulkReview({ deciding: false, outcome: null });
     referenceReviewGeneration.current += 1;
     setReferenceReviewItems([]);
     setDecidingReferenceIds(new Set());
@@ -513,15 +519,27 @@ export function App() {
    */
   async function decideAllReviews(decision: PendingReviewDecision) {
     if (loadedVaultRoot === null) {
-      throw new Error("Open a vault before deciding reviews.");
+      setError("Open a vault before deciding reviews.");
+      return;
     }
     const decidingVaultRoot = loadedVaultRoot;
-    const summary = await invoke<PendingReviewSummary>("decide_pending_reviews", {
-      decision,
-      matching_policy: MATCHING_POLICY,
-    });
+    setBulkReview({ deciding: true, outcome: null });
+    let outcome: string;
+    try {
+      const summary = await invoke<PendingReviewSummary>("decide_pending_reviews", {
+        decision,
+        matching_policy: MATCHING_POLICY,
+      });
+      outcome =
+        summary.left === 0
+          ? `Decided ${summary.decided}.`
+          : `Decided ${summary.decided}; ${summary.left} left for you.`;
+    } catch (reason) {
+      // The batches recorded before the failure stay decided, which the refresh shows.
+      outcome = errorMessage(reason);
+    }
     if (activeVaultRoot.current !== decidingVaultRoot) {
-      return summary;
+      return;
     }
     reviewMutationGeneration.current += 1;
     reviewOffset.current = 0;
@@ -533,7 +551,9 @@ export function App() {
         setError(errorMessage(reason));
       }
     }
-    return summary;
+    if (activeVaultRoot.current === decidingVaultRoot) {
+      setBulkReview({ deciding: false, outcome });
+    }
   }
 
   async function resolveReviewItem(reviewItemId: number, decision: ReviewDecision) {
@@ -1528,7 +1548,10 @@ export function App() {
               }
             />
           ) : null}
-          {reviewItems.length > 0 || referenceReviewItems.length === 0 ? (
+          {reviewItems.length > 0 ||
+          referenceReviewItems.length === 0 ||
+          bulkReview.deciding ||
+          bulkReview.outcome !== null ? (
             <ReviewView
               items={reviewItems}
               undecided={reviewUndecided}
@@ -1538,7 +1561,9 @@ export function App() {
               resolvingIds={resolvingIds}
               onResolve={resolveReviewItem}
               onLoadPreview={loadReviewPreview}
-              onDecideAll={vaultReady ? decideAllReviews : undefined}
+              onDecideAll={vaultReady ? (decision) => void decideAllReviews(decision) : undefined}
+              decidingAll={bulkReview.deciding}
+              decideAllOutcome={bulkReview.outcome}
             />
           ) : null}
         </Page>

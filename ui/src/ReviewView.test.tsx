@@ -316,8 +316,8 @@ describe("ReviewView", () => {
     expect(onPage).toHaveBeenNthCalledWith(2, 0);
   });
 
-  it("accepts every suggestion once confirmed, and says how many it decided", async () => {
-    const onDecideAll = vi.fn().mockResolvedValue({ decided: 58, left: 2 });
+  it("accepts every suggestion once confirmed", () => {
+    const onDecideAll = vi.fn();
     render(
       <ReviewView
         items={[item]}
@@ -335,11 +335,33 @@ describe("ReviewView", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Accept 60" }));
 
     expect(onDecideAll).toHaveBeenCalledWith("accept_best_matches");
-    expect(await screen.findByText("Decided 58; 2 left for you.")).toBeInTheDocument();
+  });
+
+  it("shows a bulk decision under way, then what it decided", () => {
+    const view = (props: { deciding: boolean; outcome: string | null }) => (
+      <ReviewView
+        items={[item]}
+        undecided={60}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+        onDecideAll={vi.fn()}
+        decidingAll={props.deciding}
+        decideAllOutcome={props.outcome}
+      />
+    );
+    const { rerender } = render(view({ deciding: true, outcome: null }));
+    expect(screen.getByRole("button", { name: "Deciding…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject all" })).toBeDisabled();
+
+    rerender(view({ deciding: false, outcome: "Decided 58; 2 left for you." }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Decided 58; 2 left for you.");
+    expect(screen.getByRole("button", { name: "Accept all suggestions" })).toBeEnabled();
   });
 
   it("rejects every review once confirmed", () => {
-    const onDecideAll = vi.fn().mockResolvedValue({ decided: 60, left: 0 });
+    const onDecideAll = vi.fn();
     render(
       <ReviewView
         items={[item]}

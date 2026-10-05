@@ -4,13 +4,8 @@ import { attributionOf } from "./acquisition";
 import { Dialog } from "./controls";
 import { ExternalLink } from "./ExternalLink";
 import { Icon } from "./icons";
-import { errorMessage, previewMediaType } from "./types";
-import type {
-  PendingReviewDecision,
-  PendingReviewSummary,
-  ReviewDecision,
-  ReviewItem,
-} from "./types";
+import { previewMediaType } from "./types";
+import type { PendingReviewDecision, ReviewDecision, ReviewItem } from "./types";
 
 interface ReviewViewProps {
   /** The page of items shown. */
@@ -25,7 +20,11 @@ interface ReviewViewProps {
   onResolve: (reviewItemId: number, decision: ReviewDecision) => void;
   onLoadPreview: (reviewItemId: number) => Promise<ArrayBuffer>;
   /** Decides every item awaiting a decision at once; the bulk actions show only with it. */
-  onDecideAll?: (decision: PendingReviewDecision) => Promise<PendingReviewSummary>;
+  onDecideAll?: (decision: PendingReviewDecision) => void;
+  /** Whether a decision on every item is under way. */
+  decidingAll?: boolean;
+  /** What the last decision on every item did, or why it failed. */
+  decideAllOutcome?: string | null;
 }
 
 const BULK_ACTIONS: Record<
@@ -55,30 +54,14 @@ export function ReviewView({
   onResolve,
   onLoadPreview,
   onDecideAll,
+  decidingAll: deciding = false,
+  decideAllOutcome: outcome = null,
 }: ReviewViewProps) {
   const [confirming, setConfirming] = useState<PendingReviewDecision | null>(null);
-  const [deciding, setDeciding] = useState(false);
-  const [outcome, setOutcome] = useState<string | null>(null);
 
-  async function decideAll(decision: PendingReviewDecision) {
-    if (!onDecideAll) {
-      return;
-    }
+  function decideAll(decision: PendingReviewDecision) {
     setConfirming(null);
-    setDeciding(true);
-    setOutcome(null);
-    try {
-      const summary = await onDecideAll(decision);
-      setOutcome(
-        summary.left === 0
-          ? `Decided ${summary.decided}.`
-          : `Decided ${summary.decided}; ${summary.left} left for you.`,
-      );
-    } catch (reason) {
-      setOutcome(errorMessage(reason));
-    } finally {
-      setDeciding(false);
-    }
+    onDecideAll?.(decision);
   }
 
   const header =
@@ -155,7 +138,7 @@ export function ReviewView({
         <button
           type="button"
           className={confirming === "reject_all" ? "danger" : "primary"}
-          onClick={() => void decideAll(confirming)}
+          onClick={() => decideAll(confirming)}
         >
           {BULK_ACTIONS[confirming].verb} {undecided}
         </button>

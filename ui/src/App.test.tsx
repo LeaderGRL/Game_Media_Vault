@@ -1879,6 +1879,97 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
   });
 
+  it("shows what a bulk decision recorded before it failed", async () => {
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        // A first batch was recorded before a later one failed.
+        decided = true;
+        return Promise.reject({ kind: "external", message: "catalog busy" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("catalog busy");
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("keeps the summary of a bulk decision beside the reference records awaiting review", async () => {
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        decided = true;
+        return Promise.resolve({ decided: 1, left: 0 });
+      }
+      return Promise.resolve([]);
+    });
+    referenceReviewMock.mockImplementation(() => Promise.resolve([referenceReviewItem]));
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept all suggestions" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Accept all suggestions" })).getByRole(
+        "button",
+        { name: "Accept 1" },
+      ),
+    );
+
+    expect(await screen.findByText("Decided 1.")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Reference review #4" })).toBeInTheDocument();
+  });
+
+  it("forgets a bulk decision's summary in another vault, even one still running", async () => {
+    let finishDecision: ((summary: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve([reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        return new Promise((resolve) => {
+          finishDecision = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+    await waitFor(() => expect(finishDecision).toBeDefined());
+
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await vaultSettled();
+    await act(async () => finishDecision?.({ decided: 1, left: 0 }));
+    fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+
+    expect(screen.queryByText("Decided 1.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject all" })).toBeEnabled();
+  });
+
   it("reads the page of reviews asked for", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(
