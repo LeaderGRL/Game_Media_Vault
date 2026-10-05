@@ -56,6 +56,14 @@ function unusableReason(source: SourceDescription) {
   return "Needs a key";
 }
 
+/** Every console of each maker, which its bulk action picks whatever a search shows. */
+const MAKER_PLATFORMS = new Map(
+  consolesByMaker(CONSOLES).map((group) => [
+    group.maker,
+    group.consoles.map((console) => console.platform),
+  ]),
+);
+
 /**
  * Downloads media for whole consoles: which consoles, how many of their games, which regions,
  * languages and media, and how many of each to keep, picked rather than typed.
@@ -177,7 +185,7 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         <div className="console-groups">
           {groups.length === 0 ? <p className="hint">No console matches.</p> : null}
           {groups.map((group) => {
-            const platforms = group.consoles.map((console) => console.platform);
+            const platforms = MAKER_PLATFORMS.get(group.maker) ?? [];
             return (
               <div key={group.maker}>
                 <div className="console-group-heading">

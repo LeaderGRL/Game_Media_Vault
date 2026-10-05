@@ -112,6 +112,17 @@ describe("DownloadView", () => {
     expect(screen.getByLabelText("Game Boy")).toBeChecked();
   });
 
+  it("ticks every console of a maker even while a search shows only some", () => {
+    render(<DownloadView sources={SOURCES} onStart={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Find a console"), { target: { value: "game boy" } });
+    fireEvent.click(screen.getByRole("button", { name: "Select every Nintendo console" }));
+    fireEvent.change(screen.getByLabelText("Find a console"), { target: { value: "" } });
+
+    expect(screen.getByLabelText("Game Boy")).toBeChecked();
+    expect(screen.getByLabelText("Super Nintendo Entertainment System")).toBeChecked();
+  });
+
   it("offers each media type an available Source acquires, and says which ones need a key", () => {
     const onStart = vi.fn();
     render(<DownloadView sources={SOURCES} onStart={onStart} />);
