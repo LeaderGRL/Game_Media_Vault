@@ -148,6 +148,7 @@ export function App() {
   const [sources, setSources] = useState<SourceDescription[] | null>(null);
   // Why the Sources could not be read the last time the Sources view was shown.
   const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [sourcesReading, setSourcesReading] = useState(false);
   // The latest read of the Sources: an older one settling later applies nothing.
   const sourcesRequest = useRef(0);
   // The failures the loaded vault recorded by Source, read each time the Sources view is shown.
@@ -169,6 +170,9 @@ export function App() {
   // The newest Asset the app saw, so a poll tells when new media arrived: none when the vault
   // held none, unset before the first read.
   const newestAssetSeen = useRef<number | null | undefined>(undefined);
+  // Reads of the latest media, numbered as they start, and the one shown.
+  const latestMediaRequest = useRef(0);
+  const latestMediaShown = useRef(0);
   // Downloads chosen in the Download view start one after another, each run fetching its game
   // list first; their starts chain here.
   const startChain = useRef<Promise<void>>(Promise.resolve());
@@ -179,6 +183,9 @@ export function App() {
   // never asked for two downloads at once.
   const waitingRuns = useRef(new Map<string, number[]>());
   const drainingVaults = useRef(new Set<string>());
+  // Runs resumed while their execution still winds down after a pause, by vault: that
+  // execution may already be stopping, so they execute again once it ends.
+  const executeAgain = useRef(new Map<string, Set<number>>());
   const [waitingRunIds, setWaitingRunIds] = useState<Set<number>>(() => new Set());
   // Whether a poll is reading the latest media; a slow read is never doubled by the next poll.
   const followingMedia = useRef(false);
@@ -226,15 +233,20 @@ export function App() {
     });
   }
 
-  /** Shows a first page; a next page requested before it would extend other results. */
-  function showLibraryPage(page: LibraryPage) {
+  /**
+   * Shows a first page; a next page requested before it would extend other results. A page read
+   * when the newest media seen were `seenWhenRead` keeps offering those that arrived since.
+   */
+  function showLibraryPage(page: LibraryPage, seenWhenRead = newestAssetSeen.current) {
     abandonPageRequest();
     setEntries(page.releases);
     setLibraryTotal(page.total);
     setLibraryNextAfter(page.next_after);
     setLibraryAsOf(page.as_of);
     libraryPaged.current = false;
-    setNewMedia(false);
+    if (seenWhenRead === newestAssetSeen.current) {
+      setNewMedia(false);
+    }
     if (page.platforms_with_media !== undefined) {
       setLibraryPlatforms(page.platforms_with_media);
     }
@@ -257,6 +269,7 @@ export function App() {
     pendingSearchRef.current = filters;
     setSearchingLibrary(true);
     setError(null);
+    const seenWhenSearched = newestAssetSeen.current;
     try {
       const page = await searchLibrary(filters);
       if (
@@ -265,7 +278,7 @@ export function App() {
       ) {
         libraryFiltersRef.current = filters;
         setLibraryFilters(filters);
-        showLibraryPage(page);
+        showLibraryPage(page, seenWhenSearched);
         setLibraryFiltersRevision((revision) => revision + 1);
       }
     } catch (reason) {
@@ -771,15 +784,21 @@ export function App() {
     if (expectedVaultRoot === null || openedVaultRoot.current !== expectedVaultRoot) {
       return false;
     }
+    latestMediaRequest.current += 1;
+    const request = latestMediaRequest.current;
     const latest = await invoke<LatestMedium[]>("latest_media", { limit: LATEST_MEDIA_SHOWN });
-    if (activeVaultRoot.current !== expectedVaultRoot) {
+    // Reads can settle out of order: one started before the read shown changes nothing.
+    if (activeVaultRoot.current !== expectedVaultRoot || request < latestMediaShown.current) {
       return false;
     }
+    latestMediaShown.current = request;
     setLatestMedia(latest);
     const newest = latest.at(0)?.asset.asset_id ?? null;
     const previous = newestAssetSeen.current;
     newestAssetSeen.current = newest;
-    return previous !== undefined && newest !== null && (previous === null || newest > previous);
+    // The newest medium may also have left the vault, as when a review rejected it, and its
+    // id be given again: any other newest medium arrived.
+    return previous !== undefined && newest !== null && newest !== previous;
   }
 
   /**
@@ -1038,34 +1057,49 @@ export function App() {
     sourcesRequest.current += 1;
     const request = sourcesRequest.current;
     setSourcesError(null);
+    setSourcesReading(true);
     try {
       const listed = await invoke<SourceDescription[]>("list_sources");
       if (request === sourcesRequest.current) {
-        setSources(listed);
+        showSourceList(listed);
       }
     } catch (reason) {
       // Showing the view again reads them again.
       if (request === sourcesRequest.current) {
+        setSourcesReading(false);
         setSourcesError(errorMessage(reason));
       }
     }
   }
 
+  /**
+   * Shows the Sources as a change of them just described them: a read started before it would
+   * show their older state, so it ends there. A change that fails leaves reads under way alone.
+   */
+  function showChangedSources(listed: SourceDescription[]) {
+    sourcesRequest.current += 1;
+    showSourceList(listed);
+  }
+
+  /** Shows the Sources as the backend described them. */
+  function showSourceList(listed: SourceDescription[]) {
+    setSources(listed);
+    setSourcesReading(false);
+    setSourcesError(null);
+  }
+
   /** Enables or disables a Source on this machine, for every vault, and shows the outcome. */
   async function setSourceEnabled(sourceId: string, enabled: boolean) {
-    // A read of the Sources started before this change would show their older state.
-    sourcesRequest.current += 1;
     const described = await invoke<SourceDescription[]>("set_source_enabled", {
       source_id: sourceId,
       enabled,
     });
-    setSources(described);
+    showChangedSources(described);
   }
 
   /** Stores on this machine one credential a Source needs, for every vault, never showing it. */
   async function setSourceCredential(sourceId: string, field: string, key: string) {
-    sourcesRequest.current += 1;
-    setSources(
+    showChangedSources(
       await invoke<SourceDescription[]>("set_source_api_key", {
         source_id: sourceId,
         field,
@@ -1076,8 +1110,7 @@ export function App() {
 
   /** Forgets one credential this machine stores for a Source. */
   async function clearSourceCredential(sourceId: string, field: string) {
-    sourcesRequest.current += 1;
-    setSources(
+    showChangedSources(
       await invoke<SourceDescription[]>("clear_source_api_key", { source_id: sourceId, field }),
     );
   }
@@ -1247,7 +1280,12 @@ export function App() {
   /** Executes run `runId` of `vaultRoot` once the runs queued before it executed. */
   function queueExecution(vaultRoot: string, runId: number) {
     const queue = waitingRuns.current.get(vaultRoot) ?? [];
-    if (!queue.includes(runId) && !executionsByVault.current.get(vaultRoot)?.has(runId)) {
+    if (executionsByVault.current.get(vaultRoot)?.has(runId)) {
+      executeAgain.current.set(
+        vaultRoot,
+        new Set(executeAgain.current.get(vaultRoot)).add(runId),
+      );
+    } else if (!queue.includes(runId)) {
       waitingRuns.current.set(vaultRoot, [...queue, runId]);
       showWaiting(vaultRoot);
     }
@@ -1261,6 +1299,7 @@ export function App() {
       vaultRoot,
       queue.filter((queued) => queued !== runId),
     );
+    executeAgain.current.get(vaultRoot)?.delete(runId);
     showWaiting(vaultRoot);
   }
 
@@ -1311,8 +1350,9 @@ export function App() {
     // are refreshed once it ends. A failure of an earlier execution stays shown meanwhile.
     trackExecution(actingVaultRoot, runId, true);
     let executionError: string | null = null;
+    let executed: AcquisitionRun | null = null;
     try {
-      await invoke<AcquisitionRun>("execute_acquisition_run", {
+      executed = await invoke<AcquisitionRun>("execute_acquisition_run", {
         run_id: runId,
         matching_policy: MATCHING_POLICY,
       });
@@ -1324,7 +1364,37 @@ export function App() {
     } finally {
       trackExecution(actingVaultRoot, runId, false);
     }
+    // A resume that came while this execution stopped for a pause executes the run again,
+    // after the runs already waiting, unless the execution went on and ended the run.
+    if (actingVaultRoot !== null && executeAgain.current.get(actingVaultRoot)?.delete(runId)) {
+      void executeResumedAgain(actingVaultRoot, runId, executed);
+    }
     void showExecuted(actingVaultRoot, executionError);
+  }
+
+  /**
+   * Queues run `runId` of `vaultRoot` again when it still runs after the execution that ended
+   * as `executed`, read anew when that execution failed and returned none.
+   */
+  async function executeResumedAgain(
+    vaultRoot: string,
+    runId: number,
+    executed: AcquisitionRun | null,
+  ) {
+    let run = executed;
+    if (run === null) {
+      try {
+        // A Source failing leaves the run running with work for a later execution.
+        run = await invoke<AcquisitionRun>("get_acquisition_run", { run_id: runId });
+      } catch {
+        // Continue in Activity executes it, as for any stopped run.
+        return;
+      }
+    }
+    // A run read paused there was resumed after that read, as no pause came since.
+    if (run.status !== "completed" && run.status !== "cancelled") {
+      queueExecution(vaultRoot, runId);
+    }
   }
 
   /**
@@ -1508,6 +1578,8 @@ export function App() {
         >
           <DownloadView
             sources={sources}
+            sourcesReading={sourcesReading}
+            sourcesError={sourcesError}
             onStart={startDownloads}
             advanced={
               <AcquireView

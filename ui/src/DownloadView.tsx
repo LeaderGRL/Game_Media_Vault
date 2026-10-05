@@ -37,6 +37,10 @@ const KEEP_OPTIONS: { value: Keep; label: string }[] = [
 interface DownloadViewProps {
   /** The registered Sources, which tell the media types and Sources on offer, once read. */
   sources: SourceDescription[] | null;
+  /** Whether the Sources are being read, again or for the first time. */
+  sourcesReading?: boolean;
+  /** Why the last read of the Sources failed. */
+  sourcesError?: string | null;
   /** Starts one request per console chosen. */
   onStart: (requests: AcquisitionRequestDraft[]) => void;
   /** Requests the Download view does not cover, such as some games only. */
@@ -77,7 +81,13 @@ const MAKER_PLATFORMS = new Map(
  * Downloads media for whole consoles: which consoles, how many of their games, which regions,
  * languages and media, and how many of each to keep, picked rather than typed.
  */
-export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) {
+export function DownloadView({
+  sources,
+  sourcesReading = false,
+  sourcesError,
+  onStart,
+  advanced,
+}: DownloadViewProps) {
   const [query, setQuery] = useState("");
   const [consoles, setConsoles] = useState<string[]>([]);
   const [scope, setScope] = useState<GameScope>("all");
@@ -128,11 +138,16 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
       : scope === "percent" &&
           !(Number.isInteger(gamePercent) && gamePercent >= 1 && gamePercent <= 100)
         ? "Enter a share of games from 1 to 100%."
-        : sources === null || taking.length > 0
-          ? null
-          : sources.some(usable)
-            ? "Tick at least one Source to download from."
-            : "No Source can take part: enable one or store its key in Sources.";
+        : // Sources read earlier may have been enabled, disabled or given a key since.
+          sourcesError
+          ? `The Sources could not be read: ${sourcesError}`
+          : sources === null || sourcesReading
+            ? "Reading the Sources…"
+            : taking.length > 0
+            ? null
+            : sources.some(usable)
+              ? "Tick at least one Source to download from."
+              : "No Source can take part: enable one or store its key in Sources.";
   const limits: AcquisitionLimits =
     scope === "count"
       ? { max_games: gameCount }

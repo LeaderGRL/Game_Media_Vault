@@ -2,7 +2,7 @@ import type { AcquisitionRun } from "./acquisition";
 import { assetTypeLabel } from "./acquisition";
 import { ProgressBar } from "./controls";
 import { Icon } from "./icons";
-import { FallbackImage, thumbnailOf } from "./ReleaseDetail";
+import { FallbackImage, isImageOriginal, thumbnailOf } from "./ReleaseDetail";
 import { describeRunRequest, runProgress, runTitle } from "./runProgress";
 import type { LatestMedium } from "./types";
 
@@ -256,7 +256,7 @@ function LatestItem({
       <FallbackImage
         hashes={[
           thumbnailOf(asset)?.object_hash,
-          asset.media_type.startsWith("image/") ? asset.object_hash : undefined,
+          isImageOriginal(asset) ? asset.object_hash : undefined,
         ]}
         objectUrl={objectUrl}
         alt={description}

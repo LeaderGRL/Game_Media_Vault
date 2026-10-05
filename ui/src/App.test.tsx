@@ -86,7 +86,9 @@ vi.mock("@tauri-apps/api/core", () => ({
           ? referenceReviewMock(command, args)
           : command === "latest_media"
             ? latestMediaMock(args)
-            : invokeMock(command, ...(args === undefined ? [] : [args])),
+            : command === "list_sources"
+              ? listSources()
+              : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
@@ -124,6 +126,31 @@ function showSettings() {
 function settingsButton(name: string | RegExp) {
   showSettings();
   return screen.getByRole("button", { name });
+}
+
+/** A keyless Source that takes part, which the Sources read answers with unless scripted. */
+const KEYLESS_SOURCE = {
+  source_id: "libretro-thumbnails",
+  asset_types: ["box_front", "screenshot", "title_screen"],
+  direct_media_download: true,
+  enabled: true,
+  credential: "not_needed",
+  credential_fields: [],
+  rate_limits: null,
+};
+
+/** Reads the Sources as scripted, or the keyless Source when a test scripts none. */
+function listSources() {
+  return Promise.resolve(invokeMock("list_sources")).then((listed: unknown) =>
+    Array.isArray(listed) && listed.length > 0 ? listed : [KEYLESS_SOURCE],
+  );
+}
+
+/** Starts the download picked in the Download view once its Sources are read. */
+async function startPickedDownload() {
+  const start = screen.getByRole("button", { name: "Start download" });
+  await waitFor(() => expect(start).toBeEnabled());
+  fireEvent.click(start);
 }
 
 /** Opens a vault whose identity is the path as typed. */
@@ -2278,7 +2305,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
     fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
 
     // Both runs start, each for every game of its console, and the first one downloads.
     expect(await screen.findByRole("article", { name: /Run #2$/ })).toHaveTextContent("Waiting");
@@ -2340,7 +2367,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByLabelText("Game Boy"));
     fireEvent.click(screen.getByLabelText("Game Boy Color"));
     fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
 
     await waitFor(() =>
       expect(screen.getByRole("article", { name: "Game Boy Color" })).toHaveTextContent(
@@ -2376,7 +2403,7 @@ describe("App acquisition", () => {
     await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
     await waitFor(() =>
       expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
         "game list unreachable",
@@ -2423,7 +2450,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
     fireEvent.click(screen.getByLabelText("Game Boy Color"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
     await waitFor(() => expect(finishFirst).toBeDefined());
 
     // The same vault opens again while the first console still fetches its game list.
@@ -2460,7 +2487,7 @@ describe("App acquisition", () => {
     await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
     await screen.findByText("Downloading");
 
     fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
@@ -3173,7 +3200,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
 
     fireEvent.click(screen.getByLabelText("Game Boy"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
 
     expect(await screen.findByRole("article", { name: /Run #1$/ })).toBeInTheDocument();
     expect(
@@ -3276,6 +3303,241 @@ describe("App Library requests", () => {
     openVaultMock.mockReset();
     openVaultMock.mockImplementation(sameIdentity);
     libraryQueries.length = 0;
+  });
+
+  it("executes a run resumed while its paused execution winds down", async () => {
+    const executions: Array<() => void> = [];
+    let status = "running";
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([{ ...runToExecute, status }]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) =>
+          executions.push(() => resolve({ ...runToExecute, status })),
+        );
+      }
+      if (command === "pause_acquisition_run" || command === "resume_acquisition_run") {
+        status = command === "pause_acquisition_run" ? "paused" : "running";
+        return Promise.resolve({ ...runToExecute, status });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(executions).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(status).toBe("running"));
+
+    // The first execution ends only now, having stopped for the pause.
+    await act(async () => executions[0]());
+
+    await waitFor(() => expect(executions).toHaveLength(2));
+  });
+
+  it("keeps offering media that arrived while a search read older results", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.change(await screen.findByLabelText("Search titles"), {
+      target: { value: "mario" },
+    });
+    fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+    // Activity sees the media arrive while the search still reads.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByText("Just arrived")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+
+    await act(async () =>
+      finishSearch?.({ releases: [], total: 0, next_after: null, as_of: 9 }),
+    );
+
+    expect(screen.getByText("New media arrived.")).toBeInTheDocument();
+  });
+
+  it("does not execute again a run whose execution completed despite the pause", async () => {
+    const executions: Array<() => void> = [];
+    let status = "running";
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([{ ...runToExecute, status }]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) =>
+          executions.push(() => resolve({ ...runToExecute, status: "completed" })),
+        );
+      }
+      if (command === "pause_acquisition_run" || command === "resume_acquisition_run") {
+        status = command === "pause_acquisition_run" ? "paused" : "running";
+        return Promise.resolve({ ...runToExecute, status });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(executions).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(status).toBe("running"));
+
+    // The resume came before the execution saw the pause, so it finished the run.
+    await act(async () => executions[0]());
+    await act(async () => {});
+
+    expect(executions).toHaveLength(1);
+  });
+
+  it("keeps the arrival banner when an older read of the latest media settles last", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    const medium = (assetId: number) => ({
+      release_edition_id: entry.release_edition_id,
+      game_title: entry.game_title,
+      platform: entry.platform,
+      region: entry.region,
+      asset: { ...entry.assets[0], asset_id: assetId },
+    });
+    let finishOlderRead: ((latest: unknown) => void) | undefined;
+    latestMediaMock
+      .mockResolvedValueOnce([medium(3)])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOlderRead = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([medium(4)]);
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    showLibrary();
+    fireEvent.change(await screen.findByLabelText("Search titles"), {
+      target: { value: "mario" },
+    });
+    fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+    // A first read of the latest media lags; a second sees medium 4 arrive.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await waitFor(() => expect(finishOlderRead).toBeDefined());
+    showLibrary();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await waitFor(() => expect(latestMediaMock).toHaveBeenCalledTimes(3));
+    showLibrary();
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+
+    await act(async () => finishOlderRead?.([medium(3)]));
+    await act(async () =>
+      finishSearch?.({ releases: [], total: 0, next_after: null, as_of: 9 }),
+    );
+
+    expect(screen.getByText("New media arrived.")).toBeInTheDocument();
+  });
+
+  it("shows the latest media as read, even when the newest one left the vault", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_acquisition_runs" ? [runToExecute] : []),
+    );
+    const medium = (assetId: number, gameTitle: string) => ({
+      release_edition_id: entry.release_edition_id,
+      game_title: gameTitle,
+      platform: entry.platform,
+      region: entry.region,
+      asset: { ...entry.assets[0], asset_id: assetId },
+    });
+    latestMediaMock
+      .mockResolvedValueOnce([medium(4, "Rejected Game"), medium(3, "Kept Game")])
+      .mockResolvedValue([medium(3, "Kept Game")]);
+    render(<App />);
+    openVault();
+    await vaultSettled();
+
+    // A review rejected since then removed the newest medium.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+
+    expect(await screen.findByText("Kept Game")).toBeInTheDocument();
+    expect(screen.queryByText("Rejected Game")).not.toBeInTheDocument();
+  });
+
+  it("executes again a resumed run whose winding-down execution failed", async () => {
+    const executions: Array<() => void> = [];
+    let status = "running";
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([{ ...runToExecute, status }]);
+      }
+      if (command === "get_acquisition_run") {
+        return Promise.resolve({ ...runToExecute, status });
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((_resolve, reject) =>
+          executions.push(() => reject({ kind: "external", message: "Source unreachable" })),
+        );
+      }
+      if (command === "pause_acquisition_run" || command === "resume_acquisition_run") {
+        status = command === "pause_acquisition_run" ? "paused" : "running";
+        return Promise.resolve({ ...runToExecute, status });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(executions).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(status).toBe("running"));
+
+    // The execution stops on a Source failure, leaving the run running with work.
+    await act(async () => executions[0]());
+
+    await waitFor(() => expect(executions).toHaveLength(2));
   });
 
   it("ignores the failure of a page a newer search superseded", async () => {
@@ -3706,6 +3968,51 @@ describe("App Library requests", () => {
     // The read started before the toggle, so its older state is dropped.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked();
+  });
+
+  it("keeps a read of the Sources that a failed toggle answered during", async () => {
+    const launchbox = {
+      source_id: "launchbox-games-db",
+      asset_types: ["box_front"],
+      direct_media_download: true,
+      credential_fields: [],
+      enabled: true,
+    };
+    let reads = 0;
+    let answerLateRead: (sources: unknown) => void = () => {};
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_sources") {
+        reads += 1;
+        return reads === 1
+          ? Promise.resolve([launchbox])
+          : new Promise((resolve) => {
+              answerLateRead = resolve;
+            });
+      }
+      if (command === "set_source_enabled") {
+        return Promise.reject({ kind: "external", message: "settings locked" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await screen.findByRole("checkbox", { name: "Enabled on this machine" });
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() => expect(reads).toBe(2));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled on this machine" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("set_source_enabled", expect.anything()),
+    );
+    // The Source was disabled elsewhere meanwhile, as the read in flight says.
+    await act(async () => answerLateRead([{ ...launchbox, enabled: false }]));
+
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked(),
+    );
   });
 
   it("stores the API key of a Source from the Sources view", async () => {
