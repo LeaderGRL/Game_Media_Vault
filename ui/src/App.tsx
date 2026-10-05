@@ -974,8 +974,16 @@ export function App() {
   async function showActivity() {
     showView("activity");
     const listingLoadGeneration = vaultLoadRequestGeneration.current;
+    const listingVaultRoot = loadedVaultRoot;
     try {
-      await Promise.all([refreshRuns(loadedVaultRoot), refreshLatestMedia(loadedVaultRoot)]);
+      const [, arrived] = await Promise.all([
+        refreshRuns(listingVaultRoot),
+        refreshLatestMedia(listingVaultRoot),
+      ]);
+      // Media this read sees first would never reach a Library someone browses otherwise.
+      if (arrived && activeVaultRoot.current === listingVaultRoot && browsingLibrary()) {
+        setNewMedia(true);
+      }
     } catch (reason) {
       // A vault loaded meanwhile reports its own failures.
       if (vaultLoadRequestGeneration.current === listingLoadGeneration) {

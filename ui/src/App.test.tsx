@@ -3240,6 +3240,51 @@ describe("App Library requests", () => {
     expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
   });
 
+  it("offers the media Activity saw arrive to someone browsing the Library", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+
+    // Activity reads the media before any poll does.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByText("Just arrived")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+    expect(screen.getByText("Vagrant Story")).toBeInTheDocument();
+  });
+
   it("shows the registered Sources", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(
