@@ -179,6 +179,8 @@ export interface LibraryFilters {
   /** Asset Types or families the release has an Asset of. */
   assetTypes: string[];
   statuses: LibraryStatus[];
+  /** Whether games without any media show too; by default only those with media do. */
+  includeWithoutMedia: boolean;
 }
 
 export const NO_LIBRARY_FILTERS: LibraryFilters = {
@@ -188,6 +190,7 @@ export const NO_LIBRARY_FILTERS: LibraryFilters = {
   sources: [],
   assetTypes: [],
   statuses: [],
+  includeWithoutMedia: false,
 };
 
 /** Whether any filter narrows the Library search. */
@@ -208,6 +211,17 @@ export interface LibraryPage {
   next_after: number | null;
   /** The newest Release Edition the search considered, passed back for later pages. */
   as_of: number;
+  /** Every platform whose releases retain an Asset, whatever the query. */
+  platforms_with_media?: string[];
+}
+
+/** A retained Asset with its release, newest first (Rust `LatestMedium`). */
+export interface LatestMedium {
+  release_edition_id: number;
+  game_title: string;
+  platform: string;
+  region: string;
+  asset: LibraryAsset;
 }
 
 export interface AssetCandidate {

@@ -1,17 +1,17 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReferenceReviewItem, ReviewItem } from "./types";
 
-const { invokeMock, openVaultMock, referenceReviewMock, libraryQueries, pickFolder } = vi.hoisted(
-  () => ({
+const { invokeMock, openVaultMock, referenceReviewMock, latestMediaMock, libraryQueries, pickFolder } =
+  vi.hoisted(() => ({
     invokeMock: vi.fn(),
     openVaultMock: vi.fn(),
     referenceReviewMock: vi.fn(),
+    latestMediaMock: vi.fn(),
     libraryQueries: [] as Record<string, unknown>[],
     pickFolder: vi.fn(),
-  }),
-);
+  }));
 
 // Folders are picked with the desktop's own dialog, which the tests stand in for.
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: pickFolder }));
@@ -20,6 +20,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: pickFolder }));
 beforeEach(() => {
   localStorage.clear();
   pickFolder.mockReset();
+  latestMediaMock.mockReset();
+  latestMediaMock.mockImplementation(() => Promise.resolve([]));
+  referenceReviewMock.mockReset();
+  referenceReviewMock.mockImplementation(() => Promise.resolve([]));
 });
 
 /**
@@ -39,8 +43,8 @@ function searchLibrary(query: Record<string, unknown>) {
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them. Like the backend, it answers with the vault's identity,
 // which tests take to be the path as typed unless they script another one.
-// The Reference Review commands are mocked apart too, answering no items unless a test
-// scripts some, so the scripted order of the other commands stays theirs.
+// The Reference Review commands and the latest media are mocked apart too, answering no items
+// unless a test scripts some, so the scripted order of the other commands stays theirs.
 vi.mock("@tauri-apps/api/core", () => ({
   // Mirrors how Tauri addresses custom protocols on Windows.
   convertFileSrc: (path: string, protocol: string) => "http://" + protocol + ".localhost/" + path,
@@ -51,10 +55,47 @@ vi.mock("@tauri-apps/api/core", () => ({
         ? searchLibrary(args?.query as Record<string, unknown>)
         : command.includes("reference_review")
           ? referenceReviewMock(command, args)
-          : invokeMock(command, ...(args === undefined ? [] : [args])),
+          : command === "latest_media"
+            ? latestMediaMock(args)
+            : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
+
+/** The vault folder field, on the welcome screen or in the dialog the sidebar opens. */
+function vaultFolder() {
+  if (screen.queryByLabelText("Vault folder") === null) {
+    fireEvent.click(screen.getByRole("button", { name: "Change vault" }));
+  }
+  return screen.getByLabelText("Vault folder");
+}
+
+/** Opens the vault typed in the vault form. */
+function openVault() {
+  vaultFolder();
+  fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+}
+
+/** Waits until the vault being opened is open, or could not be opened. */
+async function vaultSettled() {
+  await waitFor(() => expect(document.querySelector('[aria-busy="true"]')).toBeNull());
+}
+
+/** Shows the Library view. */
+function showLibrary() {
+  fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+}
+
+/** Shows the Settings view. */
+function showSettings() {
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+}
+
+/** A button of the Settings view, which it shows first. */
+function settingsButton(name: string | RegExp) {
+  showSettings();
+  return screen.getByRole("button", { name });
+}
 
 /** Opens a vault whose identity is the path as typed. */
 function sameIdentity(args: { vault_root: string }) {
@@ -179,43 +220,60 @@ describe("App", () => {
     referenceReviewMock.mockImplementation(() => Promise.resolve([]));
   });
 
-  it("searches the Library with the filters entered", async () => {
-    invokeMock.mockImplementation(() => Promise.resolve([]));
+  it("searches the Library with the filters picked from lists", async () => {
+    invokeMock.mockImplementation(() =>
+      Promise.resolve({
+        releases: [],
+        total: 0,
+        next_after: null,
+        as_of: 0,
+        platforms_with_media: ["Nintendo - Game Boy", "Nintendo - Game Boy Color"],
+      }),
+    );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    openVault();
+    await vaultSettled();
     libraryQueries.length = 0;
 
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
-    fireEvent.change(screen.getByLabelText("Platforms (one per line)"), {
-      target: { value: "Nintendo - Game Boy\n\n Nintendo - Game Boy Color " },
-    });
-    fireEvent.change(screen.getByLabelText("Regions (one per line)"), {
-      target: { value: "USA, Europe" },
-    });
-    fireEvent.change(screen.getByLabelText("Sources (one per line)"), {
-      target: { value: "no-intro" },
-    });
-    const assetTypes = screen.getByLabelText("Asset Types") as HTMLSelectElement;
-    for (const option of Array.from(assetTypes.options)) {
-      option.selected = option.value === "box_front" || option.value === "screenshot";
-    }
-    fireEvent.change(assetTypes);
+    fireEvent.submit(screen.getByRole("search"));
+    fireEvent.click(screen.getByRole("button", { name: "Consoles" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByLabelText("Game Boy Color"));
+    fireEvent.click(screen.getByRole("button", { name: "Regions" }));
+    fireEvent.click(screen.getByLabelText("USA"));
+    fireEvent.click(screen.getByLabelText("Europe"));
+    fireEvent.click(screen.getByRole("button", { name: "Media" }));
+    fireEvent.click(screen.getByLabelText("Box Front"));
+    fireEvent.click(screen.getByLabelText("Screenshot"));
+    fireEvent.click(screen.getByRole("button", { name: "Status" }));
     fireEvent.click(screen.getByLabelText("Partial"));
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
 
-    await waitFor(() => expect(libraryQueries).toHaveLength(1));
-    // Several values of one filter widen the search; the backend applies its default page size.
-    expect(libraryQueries[0]).toEqual({
+    // Each pick searches at once, adding to the picks before it; several values of one filter
+    // widen the search, and the backend applies its default page size.
+    await waitFor(() => expect(libraryQueries).toHaveLength(8));
+    expect(libraryQueries.at(-1)).toEqual({
       text: "mario",
       platforms: ["Nintendo - Game Boy", "Nintendo - Game Boy Color"],
-      regions: ["USA, Europe"],
-      sources: ["no-intro"],
+      regions: ["USA", "Europe"],
+      sources: [],
       asset_types: ["box_front", "screenshot"],
       statuses: ["partial"],
       after: null,
       as_of: null,
     });
+  });
+
+  it("shows only the games with media unless asked for the others", async () => {
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    expect(libraryQueries.at(-1)).toMatchObject({ asset_types: ["any"] });
+
+    fireEvent.click(screen.getByLabelText("Include games without media"));
+
+    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ asset_types: [] }));
   });
 
   it("does not page while a filter search is pending", async () => {
@@ -232,11 +290,11 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(finishSearch).toBeDefined());
 
     expect(screen.getByRole("button", { name: "Load more" })).toBeDisabled();
@@ -256,14 +314,14 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "first" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(failFirstSearch).toBeDefined());
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "second" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "second" }));
     await act(async () => failFirstSearch?.({ kind: "external", message: "catalog busy" }));
 
@@ -294,7 +352,7 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(finishPage).toBeDefined());
@@ -324,7 +382,9 @@ describe("App", () => {
       ),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Box Front"));
 
     fireEvent.click(screen.getByRole("button", { name: "Check plan" }));
@@ -363,15 +423,16 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
 
     expect(
       await screen.findByText("Rendered 1 thumbnail; 1 original could not be rendered."),
     ).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("derive_thumbnails", { max_edge: 256 });
+    showLibrary();
     expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
       "src",
       "http://gmv-object.localhost/thumb256",
@@ -389,9 +450,10 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: "Export…" }));
     fireEvent.change(screen.getByLabelText("Export folder"), {
       target: { value: "D:\Media" },
     });
@@ -436,10 +498,10 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Build 3D boxes" }));
+    fireEvent.click(settingsButton("Build 3D boxes"));
 
     expect(
       await screen.findByText(
@@ -447,6 +509,8 @@ describe("App", () => {
       ),
     ).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("derive_packaging_models");
+    showLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: /Metal Gear Solid/ }));
     expect(await screen.findByRole("figure", { name: "3D box of Metal Gear Solid" })).toBeInTheDocument();
   });
 
@@ -461,10 +525,10 @@ describe("App", () => {
       ),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
 
     expect(
       await screen.findByText("Rendered 0 thumbnails; 2 originals skipped as unsupported formats."),
@@ -478,17 +542,17 @@ describe("App", () => {
         : Promise.resolve(command === "list_library" ? [entry] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
     expect(await screen.findByRole("button", { name: "Rendering thumbnails…" })).toBeDisabled();
 
     // Reloading the same vault keeps its rendering; another vault can render its own.
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    openVault();
+    await vaultSettled();
     expect(screen.getByRole("button", { name: "Rendering thumbnails…" })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
 
     expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeEnabled();
   });
@@ -507,10 +571,10 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
 
     expect(await screen.findByText("Rendered 1 thumbnail.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Render thumbnails" })).toBeEnabled();
@@ -529,12 +593,13 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
 
     expect(await screen.findByText("disk full")).toBeInTheDocument();
+    showLibrary();
     await waitFor(() =>
       expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
         "src",
@@ -554,15 +619,15 @@ describe("App", () => {
         : Promise.resolve(command === "list_library" ? [entry] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
     await waitFor(() => expect(finishRendering).toBeDefined());
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "C:/VAULTS/main" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     await waitFor(() => expect(openVaultMock).toHaveBeenCalledTimes(2));
 
     // The same vault cannot start a second rendering, and reports the one it runs.
@@ -600,15 +665,16 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
     await waitFor(() => expect(finishRendering).toBeDefined());
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     await waitFor(() => expect(finishReload).toBeDefined());
 
     await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
     await act(async () => finishReload?.([]));
+    showLibrary();
 
     expect(screen.getByRole("img", { name: "Box Front of Metal Gear Solid" })).toHaveAttribute(
       "src",
@@ -636,12 +702,13 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
     await waitFor(() => expect(finishRendering).toBeDefined());
+    showLibrary();
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(metalSearches).toBe(1));
 
     await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
@@ -672,9 +739,9 @@ describe("App", () => {
         return Promise.resolve(command === "list_library" ? [entry] : []);
       });
       render(<App />);
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+      openVault();
       expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+      fireEvent.click(settingsButton("Render thumbnails"));
       await waitFor(() => expect(settleRendering).toBeDefined());
       openVaultMock.mockImplementationOnce(
         (args: { vault_root: string }) =>
@@ -682,7 +749,7 @@ describe("App", () => {
             finishReopen = () => resolve(args.vault_root);
           }),
       );
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+      openVault();
       await waitFor(() => expect(finishReopen).toBeDefined());
 
       await act(async () => settleRendering?.());
@@ -708,12 +775,12 @@ describe("App", () => {
         return Promise.resolve(command === "list_library" ? [entry] : []);
       });
       render(<App />);
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+      openVault();
       expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+      fireEvent.click(settingsButton("Render thumbnails"));
       await waitFor(() => expect(settleRendering).toBeDefined());
-      fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+      fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+      openVault();
       expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeEnabled();
 
       await act(async () => settleRendering?.());
@@ -747,14 +814,15 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Render thumbnails" }));
+    fireEvent.click(settingsButton("Render thumbnails"));
     await waitFor(() => expect(finishRendering).toBeDefined());
     await act(async () => finishRendering?.({ derived: 1, skipped: 0, failed: [] }));
     await waitFor(() => expect(failRefresh).toBeDefined());
+    showLibrary();
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue("metal"));
 
     await act(async () => failRefresh?.({ kind: "external", message: "catalog busy" }));
@@ -772,8 +840,10 @@ describe("App", () => {
       return Promise.resolve(command === "list_library" && imported ? [entry] : []);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+    openVault();
+    await vaultSettled();
+    showSettings();
+    fireEvent.change(screen.getByLabelText("Catalog file"), {
       target: { value: "D:/dats/nes.dat" },
     });
 
@@ -782,6 +852,7 @@ describe("App", () => {
     expect(
       await screen.findByText("Imported 1 release; 2 malformed records skipped."),
     ).toBeInTheDocument();
+    showLibrary();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("import_reference_catalog", {
       input: { kind: "no_intro", file: "D:/dats/nes.dat", max_games: 5000, mame_version: null },
@@ -792,7 +863,7 @@ describe("App", () => {
     invokeMock.mockImplementation(() => Promise.resolve([]));
     referenceReviewMock.mockImplementation(() => Promise.resolve([referenceReviewItem]));
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
@@ -808,7 +879,7 @@ describe("App", () => {
       Promise.resolve(command === "list_reference_review_items" ? [referenceReviewItem] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     libraryQueries.length = 0;
 
@@ -836,7 +907,7 @@ describe("App", () => {
       return Promise.resolve(pending);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Distinct release" }));
@@ -858,8 +929,10 @@ describe("App", () => {
       Promise.resolve(imported ? [referenceReviewItem] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+    openVault();
+    await vaultSettled();
+    showSettings();
+    fireEvent.change(screen.getByLabelText("Catalog file"), {
       target: { value: "D:/dats/gb.dat" },
     });
 
@@ -879,15 +952,18 @@ describe("App", () => {
       return Promise.resolve(command === "list_library" && attempted ? [entry] : []);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+    openVault();
+    await vaultSettled();
+    showSettings();
+    fireEvent.change(screen.getByLabelText("Catalog file"), {
       target: { value: "nes.dat" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
 
+    expect(await screen.findByText("disk full")).toBeInTheDocument();
+    showLibrary();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    expect(screen.getByText("disk full")).toBeInTheDocument();
   });
 
   it("reports a reference catalog it could not import and keeps the Library", async () => {
@@ -897,15 +973,17 @@ describe("App", () => {
         : Promise.resolve(command === "list_library" ? [entry] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    showSettings();
     fireEvent.change(screen.getByLabelText("Catalog file"), { target: { value: "broken.dat" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
 
     expect(await screen.findByText("invalid No-Intro XML: broken")).toBeInTheDocument();
-    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import catalog" })).toBeEnabled();
+    showLibrary();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
   });
 
   it("keeps a reference import attached to its vault while another vault loads", async () => {
@@ -915,20 +993,22 @@ describe("App", () => {
         : Promise.resolve(command === "list_library" ? [entry] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.change(await screen.findByLabelText("Catalog file"), {
+    openVault();
+    await vaultSettled();
+    showSettings();
+    fireEvent.change(screen.getByLabelText("Catalog file"), {
       target: { value: "nes.dat" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
     expect(await screen.findByRole("button", { name: "Importing…" })).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
     expect(await screen.findByRole("button", { name: "Import catalog" })).toBeEnabled();
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "Game Media Vault" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     // The backend still imports into this vault, so a second import must not start.
     expect(await screen.findByRole("button", { name: "Importing…" })).toBeDisabled();
@@ -954,13 +1034,15 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+    showSettings();
     fireEvent.change(screen.getByLabelText("Catalog file"), { target: { value: "nes.dat" } });
     fireEvent.click(screen.getByRole("button", { name: "Import catalog" }));
     await waitFor(() => expect(finishImport).toBeDefined());
+    showLibrary();
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(metalSearches).toBe(1));
 
     await act(async () => finishImport?.({ imported_releases: 1, skipped_records: 0 }));
@@ -971,18 +1053,22 @@ describe("App", () => {
     expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" });
   });
 
-  it("offers no reference catalog import before a vault is loaded", () => {
+  it("asks for a vault before anything else", () => {
     render(<App />);
 
-    expect(
-      screen.queryByRole("form", { name: "Reference catalog import" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Welcome" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Vault views" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("search")).not.toBeInTheDocument();
   });
 
-  it("offers no Library search before a vault is loaded", () => {
+  it("goes back to the welcome screen when the first vault cannot be opened", async () => {
+    openVaultMock.mockRejectedValueOnce({ kind: "external", message: "catalog does not exist" });
     render(<App />);
 
-    expect(screen.queryByRole("form", { name: "Library filters" })).not.toBeInTheDocument();
+    openVault();
+
+    expect(await screen.findByText(/catalog does not exist/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Welcome" })).toBeInTheDocument();
   });
 
   it("keeps the previous results and filters when a search fails", async () => {
@@ -998,12 +1084,12 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
 
     failNextSearch = true;
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     expect(await screen.findByText("catalog busy")).toBeInTheDocument();
     // The filter bar shows the filters of the shown results again.
     expect(screen.getByLabelText("Search titles")).toHaveValue("");
@@ -1030,10 +1116,10 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(finishSearch).toBeDefined());
 
     fireEvent.click(screen.getByRole("button", { name: "Review (0)" }));
@@ -1057,7 +1143,7 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     libraryQueries.length = 0;
 
@@ -1083,9 +1169,10 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    expect(screen.getByText("2 releases · 0 reviews")).toBeInTheDocument();
+    expect(screen.getByText("2 releases")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Library (2)" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
 
@@ -1100,28 +1187,29 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    expect(screen.getByText("1 release · 0 reviews")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Library (1)" })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "missing-vault" },
     });
     openVaultMock.mockRejectedValueOnce({ kind: "external", message: "catalog does not exist" });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     expect(await screen.findByText(/catalog does not exist/)).toBeInTheDocument();
     expect(screen.queryByText("Metal Gear Solid")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
   });
 
   it("opens the typed vault in the backend session before listing it", async () => {
     invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([]);
     render(<App />);
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "D:/vaults/main" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     expect(openVaultMock).toHaveBeenCalledWith({ vault_root: "D:/vaults/main", create: true });
@@ -1136,7 +1224,7 @@ describe("App", () => {
   it("shows the message of a structured backend error", async () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
     invokeMock
@@ -1158,7 +1246,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     expect(await screen.findByText("Review Game")).toBeInTheDocument();
 
@@ -1180,7 +1268,7 @@ describe("App", () => {
   it("refreshes the library after a review decision moves assets", async () => {
     invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
     const rejectedReviewItem: ReviewItem = {
@@ -1233,7 +1321,7 @@ describe("App", () => {
     });
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
     expect(invokeMock).not.toHaveBeenCalledWith("load_review_preview", expect.anything());
@@ -1264,7 +1352,7 @@ describe("App", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
@@ -1294,7 +1382,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, otherReviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
     invokeMock.mockResolvedValueOnce(rejectedReviewItem).mockResolvedValueOnce([
       rejectedReviewItem,
@@ -1313,9 +1401,9 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "another-vault" },
     });
 
@@ -1347,7 +1435,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     invokeMock.mockImplementationOnce(
       () =>
@@ -1357,11 +1445,11 @@ describe("App", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Accept Standard" }));
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "other-vault" },
     });
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([otherReviewItem]);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Other Review Game")).toBeInTheDocument();
 
     finishResolution?.({
@@ -1397,7 +1485,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
     invokeMock
       .mockImplementationOnce(
@@ -1491,7 +1579,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
     invokeMock.mockImplementation((command, args) => {
       if (command === "resolve_review_item") {
@@ -1572,7 +1660,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem, secondReviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
     invokeMock.mockImplementation((command, args) => {
       if (command === "resolve_review_item") {
@@ -1628,7 +1716,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     invokeMock.mockImplementationOnce(
       () =>
@@ -1642,10 +1730,8 @@ describe("App", () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([reviewItem])
       .mockResolvedValueOnce([acceptedReviewItem]);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled();
-    });
+    openVault();
+    await vaultSettled();
 
     finishResolution?.(acceptedReviewItem);
 
@@ -1663,7 +1749,7 @@ describe("App", () => {
     invokeMock.mockResolvedValueOnce([]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     invokeMock.mockImplementationOnce(
       () =>
@@ -1679,7 +1765,7 @@ describe("App", () => {
           finishReloadReviews = resolve;
         }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     finishResolution?.(acceptedReviewItem);
     invokeMock.mockResolvedValueOnce([acceptedReviewItem]);
@@ -1687,9 +1773,7 @@ describe("App", () => {
 
     finishReloadReviews?.([reviewItem]);
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled();
-    });
+    await vaultSettled();
     await waitFor(() => {
       expect(screen.getByText("Accepted · release #201")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Accept Standard" })).toBeDisabled();
@@ -1706,7 +1790,7 @@ describe("App", () => {
     };
     invokeMock.mockResolvedValueOnce([entry]).mockResolvedValueOnce([reviewItem]);
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     invokeMock.mockImplementationOnce(
       () =>
@@ -1723,16 +1807,14 @@ describe("App", () => {
           finishReloadReviews = resolve;
         }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     finishResolution?.(rejectedReviewItem);
     invokeMock.mockResolvedValueOnce([rejectedReviewItem]);
     expect(await screen.findByText("Rejected")).toBeInTheDocument();
 
     finishReloadReviews?.([reviewItem]);
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled();
-    });
+    await vaultSettled();
     expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
   });
 });
@@ -1770,7 +1852,7 @@ describe("App acquisition", () => {
     invokeMock.mockResolvedValue([]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     // A name alone is a folder the backend keeps in the user's Documents.
     await waitFor(() =>
@@ -1791,17 +1873,17 @@ describe("App acquisition", () => {
     await waitFor(() =>
       expect(openVaultMock).toHaveBeenCalledWith({ vault_root: "D:\\Media\\Vault", create: true }),
     );
-    expect(screen.getByLabelText("Vault folder")).toHaveValue("D:\\Media\\Vault");
+    expect(await screen.findByText("D:\\Media\\Vault")).toBeInTheDocument();
   });
 
   it("reopens the last vault opened when the app starts again", async () => {
     invokeMock.mockResolvedValue([]);
     const { unmount } = render(<App />);
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "D:/vaults/main" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    openVault();
+    await vaultSettled();
     unmount();
     openVaultMock.mockClear();
 
@@ -1811,7 +1893,7 @@ describe("App acquisition", () => {
     await waitFor(() =>
       expect(openVaultMock).toHaveBeenCalledWith({ vault_root: "D:/vaults/main", create: false }),
     );
-    expect(screen.getByLabelText("Vault folder")).toHaveValue("D:/vaults/main");
+    expect(screen.getByText("D:/vaults/main")).toBeInTheDocument();
   });
 
   it("starts a run from the Acquire view and shows it in the Runs view", async () => {
@@ -1830,10 +1912,10 @@ describe("App acquisition", () => {
       return Promise.reject(new Error(`unexpected command: ${command} ${JSON.stringify(args)}`));
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    openVault();
+    await vaultSettled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Libretro Thumbnails"));
     fireEvent.change(screen.getByLabelText("Platforms (one per line)"), {
       target: { value: "Nintendo - Game Boy" },
@@ -1844,50 +1926,200 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByLabelText("Box Front"));
     fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
 
-    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: /Run #1$/ })).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("start_acquisition_run", {
       request: startedRun.request,
     });
   });
 
-  it("downloads everything of a platform at once, following the run in the Runs view", async () => {
+  it("downloads every game of the consoles picked, one console after another", async () => {
+    const megaDriveRun = {
+      ...startedRun,
+      id: 2,
+      request: { ...startedRun.request, platforms: ["Sega - Mega Drive - Genesis"] },
+    };
+    const finishExecutions: Array<() => void> = [];
     let runs: unknown[] = [];
-    invokeMock.mockImplementation((command: string) => {
-      if (command === "start_acquisition_run") {
-        runs = [startedRun];
-        return Promise.resolve(startedRun);
-      }
-      if (command === "execute_acquisition_run") {
-        return new Promise(() => {});
-      }
-      return Promise.resolve(command === "list_acquisition_runs" ? runs : []);
-    });
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
-    fireEvent.change(screen.getByLabelText("Platform"), {
-      target: { value: "Nintendo - Game Boy" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
-
-    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
-    expect(invokeMock).toHaveBeenCalledWith(
-      "start_acquisition_run",
-      expect.objectContaining({
-        request: expect.objectContaining({
-          platforms: ["Nintendo - Game Boy"],
-          games: { mode: "all" },
-        }),
-      }),
+    invokeMock.mockImplementation(
+      (command: string, args?: { request?: { platforms: string[] } }) => {
+        if (command === "start_acquisition_run") {
+          const started =
+            args?.request?.platforms[0] === "Nintendo - Game Boy" ? startedRun : megaDriveRun;
+          runs = [...runs, started];
+          return Promise.resolve(started);
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise((resolve) => finishExecutions.push(() => resolve(startedRun)));
+        }
+        return Promise.resolve(command === "list_acquisition_runs" ? runs : []);
+      },
     );
-    // Nothing is left to start by hand: the run executes as soon as it is started.
+    render(<App />);
+    openVault();
+    await vaultSettled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+
+    // Both runs start, each for every game of its console, and the first one downloads.
+    expect(await screen.findByRole("article", { name: /Run #2$/ })).toHaveTextContent("Waiting");
+    expect(screen.getByRole("article", { name: "Game Boy · Run #1" })).toHaveTextContent(
+      "Downloading",
+    );
+    expect(invokeMock).toHaveBeenCalledWith("start_acquisition_run", {
+      request: expect.objectContaining({
+        sources: { mode: "auto" },
+        platforms: ["Nintendo - Game Boy"],
+        games: { mode: "all" },
+        asset_types: ["any"],
+      }),
+    });
     expect(invokeMock).toHaveBeenCalledWith("execute_acquisition_run", {
       run_id: 1,
       matching_policy: { high_confidence_threshold: 80, medium_confidence_threshold: 50 },
     });
-    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "execute_acquisition_run",
+      expect.objectContaining({ run_id: 2 }),
+    );
+
+    // The next console downloads once the first one is done.
+    await act(async () => finishExecutions[0]());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "execute_acquisition_run",
+        expect.objectContaining({ run_id: 2 }),
+      ),
+    );
+  });
+
+  it("names each console whose download could not start, and starts the others", async () => {
+    invokeMock.mockImplementation(
+      (command: string, args?: { request?: { platforms: string[] } }) => {
+        if (command === "start_acquisition_run") {
+          const platform = args?.request?.platforms[0];
+          return platform === "Nintendo - Game Boy"
+            ? Promise.reject({
+                kind: "invalid_request",
+                message: "no game of the list matches the regions or languages asked for",
+              })
+            : platform === "Nintendo - Game Boy Color"
+              ? Promise.reject({ kind: "external", message: "game list unreachable" })
+              : Promise.resolve({ ...startedRun, id: 2 });
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      },
+    );
+    render(<App />);
+    openVault();
+    await vaultSettled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByLabelText("Game Boy Color"));
+    fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("article", { name: "Game Boy Color" })).toHaveTextContent(
+        "game list unreachable",
+      ),
+    );
+    expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
+      "no game of the list matches the regions or languages asked for",
+    );
+    fireEvent.click(
+      within(screen.getByRole("article", { name: "Game Boy" })).getByRole("button", {
+        name: "Dismiss",
+      }),
+    );
+    expect(screen.queryByRole("article", { name: "Game Boy" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "execute_acquisition_run",
+        expect.objectContaining({ run_id: 2 }),
+      ),
+    );
+  });
+
+  it("keeps a console that could not start with its vault until dismissed", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      command === "start_acquisition_run"
+        ? Promise.reject({ kind: "external", message: "game list unreachable" })
+        : Promise.resolve([]),
+    );
+    render(<App />);
+    const firstVault = (vaultFolder() as HTMLInputElement).value;
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await waitFor(() =>
+      expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
+        "game list unreachable",
+      ),
+    );
+    // A console that could not start is no download under way.
+    expect(screen.getByRole("button", { name: "Activity" }).querySelector(".nav-badge")).toBeNull();
+
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.queryByRole("article", { name: "Game Boy" })).not.toBeInTheDocument();
+
+    fireEvent.change(vaultFolder(), { target: { value: firstVault } });
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
+      "game list unreachable",
+    );
+  });
+
+  it("reports a console that fails to start after its vault was opened again", async () => {
+    let finishFirst: ((run: unknown) => void) | undefined;
+    invokeMock.mockImplementation(
+      (command: string, args?: { request?: { platforms: string[] } }) => {
+        if (command === "start_acquisition_run") {
+          return args?.request?.platforms[0] === "Nintendo - Game Boy"
+            ? new Promise((resolve) => {
+                finishFirst = resolve;
+              })
+            : Promise.reject({ kind: "external", message: "game list unreachable" });
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      },
+    );
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByLabelText("Game Boy Color"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await waitFor(() => expect(finishFirst).toBeDefined());
+
+    // The same vault opens again while the first console still fetches its game list.
+    openVault();
+    await vaultSettled();
+    await act(async () => finishFirst?.({ ...startedRun, id: 2 }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("article", { name: "Game Boy Color" })).toHaveTextContent(
+        "game list unreachable",
+      ),
+    );
   });
 
   it("shows the media a run acquired so far when the Library opens while it executes", async () => {
@@ -1907,18 +2139,70 @@ describe("App acquisition", () => {
       return Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
-    fireEvent.change(screen.getByLabelText("Platform"), {
-      target: { value: "Nintendo - Game Boy" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Download everything" }));
-    await screen.findByRole("button", { name: "Executing…" });
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await screen.findByText("Downloading");
 
     fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
 
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("shows the media arriving while a run executes, in the Activity view and the Library", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let library: LibraryEntry[] = [];
+      invokeMock.mockImplementation((command: string) => {
+        if (command === "list_acquisition_runs") {
+          return Promise.resolve([startedRun]);
+        }
+        if (command === "get_acquisition_run") {
+          return Promise.resolve(startedRun);
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve(command === "list_library" ? library : []);
+      });
+      const latest = (assetId: number) => [
+        {
+          release_edition_id: entry.release_edition_id,
+          game_title: entry.game_title,
+          platform: entry.platform,
+          region: entry.region,
+          asset: { ...entry.assets[0], asset_id: assetId },
+        },
+      ];
+      latestMediaMock.mockResolvedValue([]);
+      render(<App />);
+      openVault();
+      await vaultSettled();
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+      await act(async () => {
+        vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
+      });
+
+      // A cover arrives: the Activity view shows it, and the Library shows it without asking.
+      library = [entry];
+      latestMediaMock.mockResolvedValue(latest(3));
+      await act(async () => {
+        vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
+      });
+
+      expect(
+        await screen.findByRole("img", { name: "Box Front of Metal Gear Solid" }),
+      ).toBeInTheDocument();
+      expect(latestMediaMock).toHaveBeenCalledWith({ limit: 12 });
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Library (1)" })).toBeInTheDocument(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the shared validator message when the backend rejects a request", async () => {
@@ -1932,14 +2216,14 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    openVault();
+    await vaultSettled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
 
     expect(
-      await screen.findByText("acquisition request must include at least one source"),
+      await screen.findByText(/acquisition request must include at least one source/),
     ).toBeInTheDocument();
   });
 
@@ -1961,11 +2245,11 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 
     expect(await screen.findByText("Completed")).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith("execute_acquisition_run", {
@@ -1974,6 +2258,39 @@ describe("App acquisition", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /Library/ }));
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("shows the media an execution retained once it ends, however short it was", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([startedRun]);
+      }
+      if (command === "execute_acquisition_run") {
+        return Promise.resolve({ ...startedRun, status: "completed", completed_work: 1 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    const continueButton = await screen.findByRole("button", { name: "Continue" });
+    // The execution ends before any progress poll.
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+
+    fireEvent.click(continueButton);
+
+    expect(
+      await screen.findByRole("img", { name: "Box Front of Metal Gear Solid" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps pause available while a run executes", async () => {
@@ -1987,13 +2304,13 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 
-    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
+    expect(await screen.findByText("Downloading")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
   });
 
@@ -2013,14 +2330,14 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 
     expect(await screen.findByText("download failed")).toBeInTheDocument();
-    expect(await screen.findByText("0 queued · 0 awaiting review · 1 completed")).toBeInTheDocument();
+    expect(await screen.findByText("1 of 1 done")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Library (1)" })).toBeInTheDocument();
   });
 
@@ -2040,11 +2357,11 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 
     expect(
       await screen.findByText("download failed (the vault could not be refreshed: catalog busy)"),
@@ -2081,10 +2398,10 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(finishExecutionRefresh).toBeDefined());
 
     fireEvent.click(screen.getByRole("button", { name: "Review (1)" }));
@@ -2109,19 +2426,19 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(executions).toHaveLength(1));
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(executions).toHaveLength(2));
     await act(async () => executions[0]());
 
-    expect(screen.getByRole("button", { name: "Executing…" })).toBeDisabled();
+    expect(screen.getByText("Downloading")).toBeInTheDocument();
   });
 
   it("keeps a run executing when its vault is loaded again", async () => {
@@ -2135,22 +2452,22 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
-    await screen.findByRole("button", { name: "Executing…" });
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await screen.findByRole("button", { name: "Execute" });
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await screen.findByRole("button", { name: "Continue" });
+    fireEvent.change(vaultFolder(), {
       target: { value: "Game Media Vault" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     // The backend still executes the run, so it must not be started a second time.
-    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Execute" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Downloading")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
   });
 
   it("shares a run executing in a vault with every spelling of its path", async () => {
@@ -2166,21 +2483,21 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
-    await screen.findByRole("button", { name: "Executing…" });
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), {
+    fireEvent.change(vaultFolder(), {
       target: { value: "./Game Media Vault" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
     await waitFor(() => expect(openVaultMock).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole("button", { name: "Executing…" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Execute" })).not.toBeInTheDocument();
-    // The field keeps the spelling the user typed.
-    expect(screen.getByLabelText("Vault folder")).toHaveValue("./Game Media Vault");
+    expect(await screen.findByText("Downloading")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    // The vault shows as the user spelled it.
+    expect(screen.getByText("./Game Media Vault")).toBeInTheDocument();
   });
 
   it("polls an executing run only once its vault is open again", async () => {
@@ -2199,13 +2516,13 @@ describe("App acquisition", () => {
         return Promise.resolve([]);
       });
       render(<App />);
-      fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
-      await screen.findByRole("button", { name: "Executing…" });
-      fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-      await screen.findByRole("button", { name: "Execute" });
+      openVault();
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+      await screen.findByText("Downloading");
+      fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+      openVault();
+      await screen.findByRole("button", { name: "Continue" });
 
       let finishOpen: (() => void) | undefined;
       openVaultMock.mockImplementationOnce(
@@ -2214,10 +2531,10 @@ describe("App acquisition", () => {
             finishOpen = () => resolve(args.vault_root);
           }),
       );
-      fireEvent.change(screen.getByLabelText("Vault folder"), {
+      fireEvent.change(vaultFolder(), {
         target: { value: "Game Media Vault" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+      openVault();
       invokeMock.mockClear();
       await act(async () => {
         vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
@@ -2260,18 +2577,18 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(finishExecution).toBeDefined());
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
     await waitFor(() => expect(finishOtherListing).toBeDefined());
 
     await act(async () => finishExecution?.());
     await act(async () => finishOtherListing?.([{ ...startedRun, id: 5 }]));
 
-    expect(await screen.findByRole("article", { name: "Run #5" })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: /Run #5$/ })).toBeInTheDocument();
   });
 
   it("does not let progress polls discard a full run list refresh", async () => {
@@ -2279,19 +2596,19 @@ describe("App acquisition", () => {
     try {
       const secondRun = { ...startedRun, id: 2 };
       let finishListing: ((runs: unknown[]) => void) | undefined;
-      let paused = false;
+      let cancelled = false;
       invokeMock.mockImplementation((command: string) => {
         if (command === "list_acquisition_runs") {
-          if (paused) {
+          if (cancelled) {
             return new Promise((resolve) => {
               finishListing = resolve;
             });
           }
           return Promise.resolve([startedRun, secondRun]);
         }
-        if (command === "pause_acquisition_run") {
-          paused = true;
-          return Promise.resolve({ ...secondRun, status: "paused" });
+        if (command === "cancel_acquisition_run") {
+          cancelled = true;
+          return Promise.resolve({ ...secondRun, status: "cancelled" });
         }
         if (command === "get_acquisition_run") {
           return Promise.resolve({ ...startedRun, completed_work: 2 });
@@ -2302,11 +2619,11 @@ describe("App acquisition", () => {
         return Promise.resolve([]);
       });
       render(<App />);
-      fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-      await screen.findByRole("article", { name: "Run #2" });
-      fireEvent.click(screen.getAllByRole("button", { name: "Execute" })[0]);
-      fireEvent.click(screen.getAllByRole("button", { name: "Pause" })[1]);
+      openVault();
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      await screen.findByRole("article", { name: /Run #2$/ });
+      fireEvent.click(screen.getAllByRole("button", { name: "Continue" })[0]);
+      fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
       await act(async () => {});
       expect(finishListing).toBeDefined();
 
@@ -2317,66 +2634,66 @@ describe("App acquisition", () => {
       await act(async () =>
         finishListing?.([
           { ...startedRun, completed_work: 2 },
-          { ...secondRun, status: "paused" },
+          { ...secondRun, status: "cancelled" },
         ]),
       );
 
-      expect(screen.getByText("Paused")).toBeInTheDocument();
+      expect(screen.getByText("Cancelled")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
   });
 
   it("shows a run action that succeeded even when the run list cannot be refreshed", async () => {
-    let paused = false;
+    let cancelled = false;
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
-        return paused
+        return cancelled
           ? Promise.reject({ kind: "external", message: "catalog busy" })
           : Promise.resolve([startedRun]);
       }
-      if (command === "pause_acquisition_run") {
-        paused = true;
-        return Promise.resolve({ ...startedRun, status: "paused" });
+      if (command === "cancel_acquisition_run") {
+        cancelled = true;
+        return Promise.resolve({ ...startedRun, status: "cancelled" });
       }
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
-    expect(await screen.findByText("Paused")).toBeInTheDocument();
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
     expect(
-      screen.getByText("Run #1 is paused, but the run list could not be refreshed: catalog busy"),
+      screen.getByText("Run #1 is cancelled, but the run list could not be refreshed: catalog busy"),
     ).toBeInTheDocument();
   });
 
   it("keeps another vault's run action pending when an older one finishes", async () => {
-    const pauses: Array<() => void> = [];
+    const cancels: Array<() => void> = [];
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
         return Promise.resolve([startedRun]);
       }
-      if (command === "pause_acquisition_run") {
-        return new Promise<void>((resolve) => pauses.push(() => resolve()));
+      if (command === "cancel_acquisition_run") {
+        return new Promise<void>((resolve) => cancels.push(() => resolve()));
       }
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => expect(pauses).toHaveLength(1));
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancels).toHaveLength(1));
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => expect(pauses).toHaveLength(2));
-    await act(async () => pauses[0]());
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancels).toHaveLength(2));
+    await act(async () => cancels[0]());
 
-    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
   });
 
   it("refreshes run counts while a run executes", async () => {
@@ -2396,18 +2713,16 @@ describe("App acquisition", () => {
         return Promise.resolve([]);
       });
       render(<App />);
-      fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-      fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+      openVault();
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
 
       completed = 3;
       await act(async () => {
         vi.advanceTimersByTime(RUN_PROGRESS_REFRESH_MS);
       });
 
-      expect(
-        await screen.findByText("0 queued · 0 awaiting review · 3 completed"),
-      ).toBeInTheDocument();
+      expect(await screen.findByText("3 of 3 done")).toBeInTheDocument();
       expect(invokeMock).toHaveBeenCalledWith("get_acquisition_run", { run_id: 1 });
     } finally {
       vi.useRealTimers();
@@ -2425,7 +2740,7 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
     invokeMock.mockClear();
 
@@ -2446,12 +2761,12 @@ describe("App acquisition", () => {
       Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     await act(async () => finishOpen?.());
 
-    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: /Run #1$/ })).toBeInTheDocument();
   });
 
   it("keeps the newest run list when refreshes finish out of order", async () => {
@@ -2468,25 +2783,25 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    await screen.findByRole("article", { name: "Run #2" });
-    const [pauseFirst, pauseSecond] = screen.getAllByRole("button", { name: "Pause" });
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("article", { name: /Run #2$/ });
+    const [cancelFirst, cancelSecond] = screen.getAllByRole("button", { name: "Cancel" });
 
-    fireEvent.click(pauseFirst);
+    fireEvent.click(cancelFirst);
     await waitFor(() => expect(listings).toHaveLength(2));
-    fireEvent.click(pauseSecond);
+    fireEvent.click(cancelSecond);
     await waitFor(() => expect(listings).toHaveLength(3));
     await act(async () =>
       listings[2]([
-        { ...startedRun, status: "paused" },
-        { ...secondRun, status: "paused" },
+        { ...startedRun, status: "cancelled" },
+        { ...secondRun, status: "cancelled" },
       ]),
     );
-    await act(async () => listings[1]([{ ...startedRun, status: "paused" }, secondRun]));
+    await act(async () => listings[1]([{ ...startedRun, status: "cancelled" }, secondRun]));
 
-    expect(screen.getAllByText("Paused")).toHaveLength(2);
+    expect(screen.getAllByText("Cancelled")).toHaveLength(2);
   });
 
   it("keeps the newest library when acquisition refreshes finish out of order", async () => {
@@ -2506,11 +2821,12 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await screen.findByRole("article", { name: "Run #2" });
-    const [executeFirst, executeSecond] = screen.getAllByRole("button", { name: "Execute" });
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("article", { name: /Run #2$/ });
+    const [executeSecond, executeFirst] = screen.getAllByRole("button", { name: "Continue" });
 
+    // The second execution starts while the refresh after the first one is still pending.
     fireEvent.click(executeFirst);
     await waitFor(() => expect(libraries).toHaveLength(2));
     fireEvent.click(executeSecond);
@@ -2529,18 +2845,22 @@ describe("App acquisition", () => {
       if (command === "list_acquisition_runs") {
         return Promise.reject({ kind: "external", message: "catalog busy" });
       }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
 
-    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: /Run #1$/ })).toBeInTheDocument();
     expect(
-      screen.getByText("Run #1 started, but the run list could not be refreshed: catalog busy"),
+      await screen.findByText("Run #1 started, but the run list could not be refreshed: catalog busy"),
     ).toBeInTheDocument();
   });
 
@@ -2555,15 +2875,15 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
     await waitFor(() => expect(failStart).toBeDefined());
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await vaultSettled();
     await act(async () => failStart?.({ kind: "external", message: "catalog busy" }));
 
     expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
@@ -2580,43 +2900,35 @@ describe("App acquisition", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     await waitFor(() => expect(failListing).toBeDefined());
 
-    fireEvent.change(screen.getByLabelText("Vault folder"), { target: { value: "other-vault" } });
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open vault" })).toBeEnabled());
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await vaultSettled();
     await act(async () => failListing?.({ kind: "external", message: "catalog busy" }));
 
     expect(screen.queryByText("catalog busy")).not.toBeInTheDocument();
   });
 
-  it("lists the runs of a vault loaded from the Runs view", async () => {
+  it("lists the runs of a vault loaded from the Activity view", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(command === "list_acquisition_runs" ? [startedRun] : []),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
 
-    expect(await screen.findByRole("article", { name: "Run #1" })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: /Run #1$/ })).toBeInTheDocument();
+    expect(openVaultMock).toHaveBeenLastCalledWith({ vault_root: "other-vault", create: true });
   });
 
-  it("asks for a vault before starting an acquisition", async () => {
-    invokeMock.mockResolvedValue([]);
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Acquire" }));
-    fireEvent.click(screen.getByRole("button", { name: "Start acquisition" }));
-
-    expect(
-      await screen.findByText("Open a vault before starting an acquisition."),
-    ).toBeInTheDocument();
-    expect(invokeMock).not.toHaveBeenCalledWith("start_acquisition_run", expect.anything());
-  });
 });
 
 describe("App Library requests", () => {
@@ -2663,13 +2975,13 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(failPage).toBeDefined());
 
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" }));
     await act(async () => failPage?.({ kind: "external", message: "catalog busy" }));
 
@@ -2702,14 +3014,14 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(finishRefreshPage).toBeDefined());
 
     fireEvent.click(screen.getByRole("button", { name: /Library/ }));
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal" }));
     await act(async () => finishRefreshPage?.([]));
 
@@ -2731,13 +3043,13 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
+    openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByRole("button", { name: "Loading more…" })).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "metal" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
 
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "metal", after: 2 }));
@@ -2773,9 +3085,9 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(finishRefreshPage).toBeDefined());
 
     // The page continues the results shown before the execution refresh.
@@ -2793,7 +3105,7 @@ describe("App Library requests", () => {
     expect(screen.queryByText("Vagrant Story")).not.toBeInTheDocument();
   });
 
-  it("shows the applied filters again when a refresh supersedes a pending search", async () => {
+  it("keeps a pending search when an execution ends, offering the media it brought", async () => {
     let finishExecution: ((run: unknown) => void) | undefined;
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
@@ -2806,7 +3118,7 @@ describe("App Library requests", () => {
       }
       if (command === "list_library") {
         if (libraryQueries.at(-1)?.text === "mario") {
-          // The search never settles; the refresh after the execution supersedes it.
+          // The search is still pending when the execution ends.
           return new Promise(() => {});
         }
         return Promise.resolve([entry]);
@@ -2814,23 +3126,166 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() => expect(finishExecution).toBeDefined());
     fireEvent.click(screen.getByRole("button", { name: /Library/ }));
     fireEvent.change(screen.getByLabelText("Search titles"), { target: { value: "mario" } });
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: "mario" }));
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
 
     await act(async () => finishExecution?.(runToExecute));
 
-    // The refresh searched with the applied filters, which the filter bar shows again.
-    await waitFor(() => expect(libraryQueries.at(-1)).toMatchObject({ text: null }));
-    await waitFor(() => expect(screen.getByLabelText("Search titles")).toHaveValue(""));
+    // The search goes on with its filters; a banner offers the media the execution brought.
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+    expect(libraryQueries.at(-1)).toMatchObject({ text: "mario" });
+    expect(screen.getByLabelText("Search titles")).toHaveValue("mario");
   });
 
-  it("shows the registered Sources without a vault", async () => {
+  it("keeps the pages someone loaded when an execution ends", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    let finishExecution: ((run: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) => {
+          finishExecution = resolve;
+        });
+      }
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(finishExecution).toBeDefined());
+    // Opening the Library while the run executes refreshes it first.
+    const searched = libraryQueries.length;
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    await waitFor(() => expect(libraryQueries.length).toBeGreaterThan(searched));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+
+    await act(async () => finishExecution?.(runToExecute));
+
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+    expect(screen.getByText("Vagrant Story")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("keeps the pages someone loaded when the Library opens again during an execution", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    const searched = libraryQueries.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    await act(async () => {});
+
+    // Both pages stay; media arriving meanwhile would show the banner instead.
+    expect(libraryQueries).toHaveLength(searched);
+    expect(screen.getByText("Vagrant Story")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
+  it("offers the media Activity saw arrive to someone browsing the Library", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+
+    // Activity reads the media before any poll does.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByText("Just arrived")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+    expect(screen.getByText("Vagrant Story")).toBeInTheDocument();
+  });
+
+  it("shows the registered Sources", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(
         command === "list_sources"
@@ -2846,7 +3301,8 @@ describe("App Library requests", () => {
       ),
     );
     render(<App />);
-
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
     expect(
@@ -2874,6 +3330,8 @@ describe("App Library requests", () => {
       ),
     );
     render(<App />);
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
     fireEvent.click(await screen.findByRole("checkbox", { name: "Enabled on this machine" }));
@@ -2914,6 +3372,8 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
     await screen.findByRole("checkbox", { name: "Enabled on this machine" });
     fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
@@ -2957,6 +3417,8 @@ describe("App Library requests", () => {
       ),
     );
     render(<App />);
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
     fireEvent.change(await screen.findByLabelText("API key for SteamGridDB"), {
@@ -2991,6 +3453,8 @@ describe("App Library requests", () => {
       ),
     );
     render(<App />);
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
     expect(
       await screen.findByRole("checkbox", { name: "Enabled on this machine" }),
@@ -3023,6 +3487,8 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
     expect(await screen.findByText("registry unavailable")).toBeInTheDocument();
 
@@ -3057,6 +3523,8 @@ describe("App Library requests", () => {
       return Promise.resolve([]);
     });
     render(<App />);
+    openVault();
+    await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
     expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
@@ -3101,9 +3569,8 @@ describe("App Library requests", () => {
       return new Promise((resolve) => setTimeout(() => resolve([]), 20));
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open vault" }));
-    // The Library shows its empty page while the vault opens; its actions need the open vault.
-    expect(await screen.findByRole("button", { name: "Render thumbnails" })).toBeInTheDocument();
+    openVault();
+    await vaultSettled();
 
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
@@ -3111,27 +3578,4 @@ describe("App Library requests", () => {
     expect(invokeMock).toHaveBeenCalledWith("list_source_failures", { latest: 3 });
   });
 
-  it("reads no failures before a vault is loaded", async () => {
-    invokeMock.mockImplementation((command: string) =>
-      Promise.resolve(
-        command === "list_sources"
-          ? [
-              {
-                source_id: "libretro-thumbnails",
-                asset_types: [],
-                direct_media_download: true,
-                credential_fields: [],
-              },
-            ]
-          : [],
-      ),
-    );
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
-
-    expect(await screen.findByRole("region", { name: "Libretro Thumbnails" })).toBeInTheDocument();
-    expect(invokeMock).not.toHaveBeenCalledWith("list_source_failures", expect.anything());
-    expect(screen.queryByText("No failure recorded")).not.toBeInTheDocument();
-  });
 });
