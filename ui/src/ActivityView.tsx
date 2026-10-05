@@ -1,9 +1,11 @@
+import { useState } from "react";
+
 import type { AcquisitionRun } from "./acquisition";
 import { assetTypeLabel } from "./acquisition";
 import { ProgressBar } from "./controls";
 import { Icon } from "./icons";
+import { thumbnailOf } from "./ReleaseDetail";
 import { describeRunRequest, runProgress, runTitle } from "./runProgress";
-import { LIBRARY_THUMBNAIL_EDGE } from "./LibraryView";
 import type { LatestMedium } from "./types";
 
 /** A download being prepared: its run starting, which fetches its game list and plans it. */
@@ -211,7 +213,10 @@ function Stat({ value, label }: { value: number; label: string }) {
   );
 }
 
-/** A medium that just arrived: its thumbnail, else its original when it is an image. */
+/**
+ * A medium that just arrived: its thumbnail, else its original when it is an image, else a
+ * placeholder, each tried once the one before it cannot be shown.
+ */
 function LatestItem({
   medium,
   objectUrl,
@@ -220,20 +225,26 @@ function LatestItem({
   objectUrl: (objectHash: string) => string;
 }) {
   const asset = medium.asset;
-  const thumbnail = asset.derived.find(
-    (derived) =>
-      derived.recipe.transform === "thumbnail" && derived.recipe.max_edge === LIBRARY_THUMBNAIL_EDGE,
-  );
-  const shown = thumbnail?.object_hash ?? (asset.media_type.startsWith("image/") ? asset.object_hash : null);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const shown = [
+    thumbnailOf(asset)?.object_hash,
+    asset.media_type.startsWith("image/") ? asset.object_hash : undefined,
+  ].find((hash) => hash !== undefined && !failed.has(hash));
   const description = `${assetTypeLabel(asset.asset_type)} of ${medium.game_title}`;
   return (
     <div className="latest-item">
-      {shown === null ? (
+      {shown === undefined ? (
         <div className="media-placeholder" aria-label={description} role="img">
           <Icon name="image" size={26} />
         </div>
       ) : (
-        <img src={objectUrl(shown)} alt={description} loading="lazy" />
+        <img
+          key={shown}
+          src={objectUrl(shown)}
+          alt={description}
+          loading="lazy"
+          onError={() => setFailed((current) => new Set(current).add(shown))}
+        />
       )}
       <span title={medium.game_title}>{medium.game_title}</span>
       <span className="hint">{assetTypeLabel(asset.asset_type)}</span>

@@ -148,6 +148,26 @@ describe("ActivityView", () => {
     );
   });
 
+  it("falls back from an arriving medium's thumbnail to its original, then a placeholder", () => {
+    const thumbnail = {
+      recipe: { transform: "thumbnail" as const, max_edge: 256 },
+      object_hash: "thumb-hash",
+      byte_len: 100,
+      media_type: "image/png",
+      width: 180,
+      height: 256,
+    };
+    view({ latest: [{ ...latest, asset: { ...latest.asset, derived: [thumbnail] } }] });
+    const name = "Box Front of Super Metroid";
+    expect(screen.getByRole("img", { name })).toHaveAttribute("src", "object://thumb-hash");
+
+    fireEvent.error(screen.getByRole("img", { name }));
+    expect(screen.getByRole("img", { name })).toHaveAttribute("src", "object://cover-hash");
+
+    fireEvent.error(screen.getByRole("img", { name }));
+    expect(screen.getByRole("img", { name })).not.toHaveAttribute("src");
+  });
+
   it("explains there is nothing yet", () => {
     view({ runs: [], executingRunIds: new Set() });
 
