@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ReviewView } from "./ReviewView";
@@ -290,5 +290,96 @@ describe("ReviewView", () => {
     expect(link).toHaveAttribute("href", "https://rawg.io");
     fireEvent.click(link);
     expect(openUrl).toHaveBeenCalledWith("https://rawg.io");
+  });
+
+  it("pages the reviews awaiting a decision", () => {
+    const onPage = vi.fn();
+    render(
+      <ReviewView
+        items={[item]}
+        undecided={60}
+        offset={25}
+        pageSize={25}
+        onPage={onPage}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+      />,
+    );
+
+    // The pager shows above and below the page.
+    expect(screen.getAllByText("26–50 of 60")).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Previous page" })[1]);
+
+    expect(onPage).toHaveBeenNthCalledWith(1, 50);
+    expect(onPage).toHaveBeenNthCalledWith(2, 0);
+  });
+
+  it("accepts every suggestion once confirmed", () => {
+    const onDecideAll = vi.fn();
+    render(
+      <ReviewView
+        items={[item]}
+        undecided={60}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+        onDecideAll={onDecideAll}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept all suggestions" }));
+    const dialog = screen.getByRole("dialog", { name: "Accept all suggestions" });
+    expect(dialog).toHaveTextContent("60");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Accept 60" }));
+
+    expect(onDecideAll).toHaveBeenCalledWith("accept_best_matches");
+  });
+
+  it("shows a bulk decision under way, then what it decided", () => {
+    const view = (props: { deciding: boolean; outcome: string | null }) => (
+      <ReviewView
+        items={[item]}
+        undecided={60}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+        onDecideAll={vi.fn()}
+        decidingAll={props.deciding}
+        decideAllOutcome={props.outcome}
+      />
+    );
+    const { rerender } = render(view({ deciding: true, outcome: null }));
+    expect(screen.getByRole("button", { name: "Deciding…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject all" })).toBeDisabled();
+
+    rerender(view({ deciding: false, outcome: "Decided 58; 2 left for you." }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Decided 58; 2 left for you.");
+    expect(screen.getByRole("button", { name: "Accept all suggestions" })).toBeEnabled();
+  });
+
+  it("rejects every review once confirmed", () => {
+    const onDecideAll = vi.fn();
+    render(
+      <ReviewView
+        items={[item]}
+        undecided={60}
+        resolvingIds={new Set()}
+        onResolve={vi.fn()}
+        onLoadPreview={vi.fn()}
+        onDecideAll={onDecideAll}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 60",
+      }),
+    );
+
+    expect(onDecideAll).toHaveBeenCalledWith("reject_all");
   });
 });

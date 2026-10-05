@@ -1,28 +1,168 @@
 import { useEffect, useRef, useState } from "react";
 
 import { attributionOf } from "./acquisition";
+import { Dialog } from "./controls";
 import { ExternalLink } from "./ExternalLink";
+import { Icon } from "./icons";
 import { previewMediaType } from "./types";
-import type { ReviewDecision, ReviewItem } from "./types";
+import type { PendingReviewDecision, ReviewDecision, ReviewItem } from "./types";
 
 interface ReviewViewProps {
+  /** The page of items shown. */
   items: ReviewItem[];
+  /** How many items await a decision in all; the shown ones by default. */
+  undecided?: number;
+  /** How many awaiting items come before the page. */
+  offset?: number;
+  pageSize?: number;
+  onPage?: (offset: number) => void;
   resolvingIds: ReadonlySet<number>;
   onResolve: (reviewItemId: number, decision: ReviewDecision) => void;
   onLoadPreview: (reviewItemId: number) => Promise<ArrayBuffer>;
+  /** Decides every item awaiting a decision at once; the bulk actions show only with it. */
+  onDecideAll?: (decision: PendingReviewDecision) => void;
+  /** Whether a decision on every item is under way. */
+  decidingAll?: boolean;
+  /** What the last decision on every item did, or why it failed. */
+  decideAllOutcome?: string | null;
 }
 
-export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: ReviewViewProps) {
+const BULK_ACTIONS: Record<
+  PendingReviewDecision,
+  { title: string; verb: string; explanation: string }
+> = {
+  accept_best_matches: {
+    title: "Accept all suggestions",
+    verb: "Accept",
+    explanation:
+      "Each medium goes to the release it matches best, as if you accepted it yourself; a medium tied between several games stays here. Accepted media download when their downloads continue in Activity.",
+  },
+  reject_all: {
+    title: "Reject all",
+    verb: "Reject",
+    explanation: "Every medium awaiting a decision is left out of the vault.",
+  },
+};
+
+export function ReviewView({
+  items,
+  undecided = items.length,
+  offset = 0,
+  pageSize = items.length,
+  onPage,
+  resolvingIds,
+  onResolve,
+  onLoadPreview,
+  onDecideAll,
+  decidingAll: deciding = false,
+  decideAllOutcome: outcome = null,
+}: ReviewViewProps) {
+  const [confirming, setConfirming] = useState<PendingReviewDecision | null>(null);
+
+  function decideAll(decision: PendingReviewDecision) {
+    setConfirming(null);
+    onDecideAll?.(decision);
+  }
+
+  const header =
+    undecided > 0 || outcome ? (
+      <div className="review-toolbar">
+        <p className="review-count">
+          {undecided} {undecided === 1 ? "medium awaits" : "media await"} a decision
+        </p>
+        {outcome ? (
+          <p className="tool-status" role="status">
+            {outcome}
+          </p>
+        ) : null}
+        {onDecideAll && undecided > 0 ? (
+          <div className="review-bulk">
+            <button
+              type="button"
+              className="primary"
+              disabled={deciding}
+              onClick={() => setConfirming("accept_best_matches")}
+            >
+              <Icon name="check" size={16} />
+              {deciding ? "Deciding…" : "Accept all suggestions"}
+            </button>
+            <button
+              type="button"
+              className="ghost danger"
+              disabled={deciding}
+              onClick={() => setConfirming("reject_all")}
+            >
+              Reject all
+            </button>
+          </div>
+        ) : null}
+      </div>
+    ) : null;
+
+  const pager =
+    onPage && undecided > pageSize ? (
+      <nav className="review-pager" aria-label="Review pages">
+        <button
+          type="button"
+          aria-label="Previous page"
+          disabled={offset === 0}
+          onClick={() => onPage(Math.max(offset - pageSize, 0))}
+        >
+          Previous
+        </button>
+        <span>
+          {offset + 1}–{Math.min(offset + pageSize, undecided)} of {undecided}
+        </span>
+        <button
+          type="button"
+          aria-label="Next page"
+          disabled={offset + pageSize >= undecided}
+          onClick={() => onPage(offset + pageSize)}
+        >
+          Next
+        </button>
+      </nav>
+    ) : null;
+
+  const dialog = confirming ? (
+    <Dialog title={BULK_ACTIONS[confirming].title} onClose={() => setConfirming(null)}>
+      <p>
+        {BULK_ACTIONS[confirming].verb} the {undecided}{" "}
+        {undecided === 1 ? "medium" : "media"} awaiting a decision?
+      </p>
+      <p className="hint">{BULK_ACTIONS[confirming].explanation}</p>
+      <div className="dialog-actions">
+        <button type="button" className="ghost" onClick={() => setConfirming(null)}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className={confirming === "reject_all" ? "danger" : "primary"}
+          onClick={() => decideAll(confirming)}
+        >
+          {BULK_ACTIONS[confirming].verb} {undecided}
+        </button>
+      </div>
+    </Dialog>
+  ) : null;
+
   if (items.length === 0) {
     return (
-      <section className="empty-state" aria-live="polite">
-        <h2>No review items</h2>
-        <p>Medium-confidence matches will appear here with their evidence.</p>
-      </section>
+      <>
+        {header}
+        <section className="empty-state" aria-live="polite">
+          <h2>No review items</h2>
+          <p>Medium-confidence matches will appear here with their evidence.</p>
+        </section>
+      </>
     );
   }
 
   return (
+    <>
+    {header}
+    {pager}
+    {dialog}
     <section className="review-list" aria-label="Review items">
       {items.map((item) => {
         const busy = resolvingIds.has(item.id);
@@ -138,6 +278,8 @@ export function ReviewView({ items, resolvingIds, onResolve, onLoadPreview }: Re
         );
       })}
     </section>
+    {pager}
+    </>
   );
 }
 

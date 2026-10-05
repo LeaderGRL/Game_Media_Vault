@@ -117,6 +117,8 @@ pub enum ReviewDecisionOutcome {
     NotUndecided(ReviewStatus),
     /// The accepted Release Edition is not among the item's current competing matches.
     NotCompeting,
+    /// The item's candidate or competing matches changed since the decision was taken on them.
+    Changed,
 }
 
 impl ReviewDecisionOutcome {
@@ -154,6 +156,26 @@ pub enum CandidateAssetOutcome {
 pub trait ReviewRepositoryPort {
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
 
+    /// The Review Items awaiting a decision, pending or deferred, in the order they were opened,
+    /// after the first `offset` of them and at most `limit`, with how many await one in all, as
+    /// of one moment; a repository may read the page alone rather than every item.
+    fn undecided_review_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<ReviewItem>, usize), PortError> {
+        let undecided: Vec<ReviewItem> = self
+            .list_review_items()?
+            .into_iter()
+            .filter(|item| item.status.is_undecided())
+            .collect();
+        let count = undecided.len();
+        Ok((
+            undecided.into_iter().skip(offset).take(limit).collect(),
+            count,
+        ))
+    }
+
     fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError>;
 
     fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError>;
@@ -180,6 +202,21 @@ pub trait ReviewRepositoryPort {
         candidate_identity: &str,
     ) -> Result<bool, PortError>;
 
+    /// The undecided items, pending or deferred, that work of run `run_id` is parked on, each
+    /// with the candidate of that work as the run recorded it, which can differ from the
+    /// snapshot another run refreshed the shared item with. A repository reads these alone,
+    /// however many items the vault holds.
+    fn parked_reviews_of_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<(ReviewItem, AssetCandidate)>, PortError>;
+
+    /// Requeues the work parked on an undecided item, pending or deferred, in run `run_id`,
+    /// reopening the run when it completed, and leaves the item undecided, so the run's execution
+    /// matches the candidate again. Work parked in other runs, or in this one once it is
+    /// cancelled, stays parked; the run's status is checked in the same transaction.
+    fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError>;
+
     /// Records a human decision on an undecided item and moves its parked work: accepting
     /// requeues it in runs that are not cancelled (reopening completed runs), rejecting
     /// completes it and detaches the Assets linked to the candidate, deferring keeps it parked.
@@ -189,6 +226,15 @@ pub trait ReviewRepositoryPort {
         review_item_id: i64,
         decision: ReviewDecision,
     ) -> Result<ReviewDecisionOutcome, PortError>;
+
+    /// Records each of `decisions`, taken on an item as it was read, as `decide_review_item`
+    /// does, in order, unless the item's candidate or competing matches changed since it was
+    /// read (`Changed`), answering their outcomes. Each item is compared and decided atomically,
+    /// so a refresh cannot land between the comparison and the decision.
+    fn decide_review_items(
+        &self,
+        decisions: &[(ReviewItem, ReviewDecision)],
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError>;
 
     /// Persists an Asset acquired for the candidate with this identity, in one transaction that
     /// keeps the candidate linked to a single Release Edition: links of the same candidate to

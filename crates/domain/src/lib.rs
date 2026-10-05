@@ -880,6 +880,14 @@ pub struct ReviewItem {
     pub status: ReviewStatus,
 }
 
+impl ReviewItem {
+    /// Whether the candidate or its competing matches differ from those of `read`, the same item
+    /// as read earlier, as after an acquisition refreshed it.
+    pub fn changed_since(&self, read: &ReviewItem) -> bool {
+        self.candidate != read.candidate || self.competing_matches != read.competing_matches
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchingPolicy {
     pub high_confidence_threshold: u8,
@@ -1194,6 +1202,9 @@ fn exact_match_evidence(
         || (signal == MatchSignal::Region && regions_overlap(candidate_value, release_value))
     {
         score
+    } else if signal == MatchSignal::Region && regions_contain(candidate_value, release_value) {
+        // Agreeing, yet less than a shared region, so a release of the very country still wins.
+        score * 2 / 3
     } else {
         -score
     };
@@ -1203,6 +1214,99 @@ fn exact_match_evidence(
         release_value: release_value.to_owned(),
         score_delta,
     }
+}
+
+/// The region each country belongs to, as a box sold there is one of the region's release:
+/// Australia, New Zealand and Oceania with Europe, whose PAL releases they share.
+const REGION_OF_COUNTRY: &[(&str, &str)] = &[
+    ("albania", "europe"),
+    ("andorra", "europe"),
+    ("austria", "europe"),
+    ("belarus", "europe"),
+    ("belgium", "europe"),
+    ("bosnia and herzegovina", "europe"),
+    ("bulgaria", "europe"),
+    ("croatia", "europe"),
+    ("cyprus", "europe"),
+    ("czech", "europe"),
+    ("czech republic", "europe"),
+    ("czechia", "europe"),
+    ("denmark", "europe"),
+    ("england", "europe"),
+    ("estonia", "europe"),
+    ("finland", "europe"),
+    ("france", "europe"),
+    ("germany", "europe"),
+    ("great britain", "europe"),
+    ("greece", "europe"),
+    ("hungary", "europe"),
+    ("iceland", "europe"),
+    ("ireland", "europe"),
+    ("italy", "europe"),
+    ("latvia", "europe"),
+    ("liechtenstein", "europe"),
+    ("lithuania", "europe"),
+    ("luxembourg", "europe"),
+    ("malta", "europe"),
+    ("moldova", "europe"),
+    ("monaco", "europe"),
+    ("montenegro", "europe"),
+    ("netherlands", "europe"),
+    ("north macedonia", "europe"),
+    ("norway", "europe"),
+    ("poland", "europe"),
+    ("portugal", "europe"),
+    ("romania", "europe"),
+    ("san marino", "europe"),
+    ("scandinavia", "europe"),
+    ("scotland", "europe"),
+    ("serbia", "europe"),
+    ("slovakia", "europe"),
+    ("slovenia", "europe"),
+    ("spain", "europe"),
+    ("sweden", "europe"),
+    ("switzerland", "europe"),
+    ("uk", "europe"),
+    ("ukraine", "europe"),
+    ("united kingdom", "europe"),
+    ("wales", "europe"),
+    ("australia", "europe"),
+    ("new zealand", "europe"),
+    ("oceania", "europe"),
+    ("canada", "usa"),
+    ("north america", "usa"),
+    ("hong kong", "asia"),
+    ("taiwan", "asia"),
+    ("singapore", "asia"),
+    ("malaysia", "asia"),
+    ("argentina", "latin america"),
+    ("chile", "latin america"),
+    ("colombia", "latin america"),
+    ("mexico", "latin america"),
+    ("peru", "latin america"),
+];
+
+/// Whether one of two regions holds a region of the other, as `Europe` holds `Germany`, or is
+/// `World`, which holds every region.
+fn regions_contain(a: &str, b: &str) -> bool {
+    let region_of = |country: &str| {
+        REGION_OF_COUNTRY
+            .iter()
+            .find(|(known, _)| *known == country)
+            .map(|(_, region)| *region)
+    };
+    a.split(',')
+        .map(|region| region.trim().to_lowercase())
+        .any(|left| {
+            b.split(',')
+                .map(|region| region.trim().to_lowercase())
+                .any(|right| {
+                    left == "world"
+                        || right == "world"
+                        || region_of(&left) == Some(right.as_str())
+                        || region_of(&right) == Some(left.as_str())
+                })
+        })
 }
 
 /// Whether two regions share one, as `Europe` and a release of `USA, Europe` do.

@@ -4,13 +4,14 @@ use std::{
 };
 
 use game_media_vault_application::{
-    AcquisitionRequestInput, ConnectorPort, ParkedReview, PortError, ReviewRepositoryPort,
-    RunRepositoryPort, candidate_identity, load_acquisition_run, start_acquisition_run,
+    AcquisitionRequestInput, ConnectorPort, ParkedReview, PendingReviewDecision, PortError,
+    ReviewRepositoryPort, RunRepositoryPort, candidate_identity, load_acquisition_run,
+    start_acquisition_run,
 };
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType,
     AssetTypeSelector, ConnectorCapabilities, GameSelection, MatchEvidence, MatchSignal,
-    NewReviewItem, RetentionPolicy, ReviewDecision, ReviewMatchCandidate, SourceId,
+    MatchingPolicy, NewReviewItem, RetentionPolicy, ReviewDecision, ReviewMatchCandidate, SourceId,
     SourceSelection,
 };
 use game_media_vault_infrastructure::SqliteCatalog;
@@ -223,5 +224,36 @@ fn tauri_commands_return_structured_errors() {
             "kind": "not_found",
             "message": "review item #999 does not exist"
         })
+    );
+}
+
+#[test]
+fn tauri_pages_the_reviews_awaiting_a_decision_and_rejects_them_all() {
+    let temp = tempdir().unwrap();
+    let vault = temp.path().join("vault");
+    let catalog = SqliteCatalog::open(vault.join("catalog.sqlite3")).unwrap();
+    seed_parked_review(&catalog, candidate("First Game"));
+    seed_parked_review(&catalog, candidate("Second Game"));
+    drop(catalog);
+
+    let page = game_media_vault_tauri::review_page_in_vault(&vault, 1, 1).unwrap();
+    assert_eq!(page.undecided, 2);
+    assert_eq!(page.items[0].candidate.game_title, "Second Game");
+
+    let summary = game_media_vault_tauri::decide_pending_reviews_in_vault(
+        &vault,
+        PendingReviewDecision::RejectAll,
+        MatchingPolicy {
+            high_confidence_threshold: 80,
+            medium_confidence_threshold: 50,
+        },
+    )
+    .unwrap();
+    assert_eq!(summary.decided, 2);
+    assert_eq!(
+        game_media_vault_tauri::review_page_in_vault(&vault, 0, 25)
+            .unwrap()
+            .undecided,
+        0
     );
 }

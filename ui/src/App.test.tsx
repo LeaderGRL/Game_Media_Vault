@@ -3,13 +3,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReferenceReviewItem, ReviewItem } from "./types";
 
-const { invokeMock, openVaultMock, referenceReviewMock, latestMediaMock, libraryQueries, pickFolder } =
+const {
+  invokeMock,
+  openVaultMock,
+  referenceReviewMock,
+  latestMediaMock,
+  libraryQueries,
+  reviewPageQueries,
+  pickFolder,
+} =
   vi.hoisted(() => ({
     invokeMock: vi.fn(),
     openVaultMock: vi.fn(),
     referenceReviewMock: vi.fn(),
     latestMediaMock: vi.fn(),
     libraryQueries: [] as Record<string, unknown>[],
+    reviewPageQueries: [] as Record<string, unknown>[],
     pickFolder: vi.fn(),
   }));
 
@@ -40,6 +49,24 @@ function searchLibrary(query: Record<string, unknown>) {
   );
 }
 
+/**
+ * Tests script the Review Items as `list_review_items` arrays; the App reads pages of them, so
+ * a page read answers with the scripted listing as a single page. A scripted value that is
+ * already a page is returned as is, and any other value, scripted for other commands, as an
+ * empty page.
+ */
+function reviewPage(args: Record<string, unknown> | undefined) {
+  reviewPageQueries.push(args ?? {});
+  const offset = args?.offset ?? 0;
+  return Promise.resolve(invokeMock("list_review_items")).then((listing: unknown) =>
+    Array.isArray(listing)
+      ? { items: listing, undecided: listing.length, offset }
+      : typeof listing === "object" && listing !== null && "items" in listing
+        ? listing
+        : { items: [], undecided: 0, offset },
+  );
+}
+
 // Opening the vault session is mocked separately so each test can script the data commands
 // in the order the App issues them. Like the backend, it answers with the vault's identity,
 // which tests take to be the path as typed unless they script another one.
@@ -53,6 +80,8 @@ vi.mock("@tauri-apps/api/core", () => ({
       ? openVaultMock(args)
       : command === "search_library"
         ? searchLibrary(args?.query as Record<string, unknown>)
+        : command === "review_page"
+          ? reviewPage(args)
         : command.includes("reference_review")
           ? referenceReviewMock(command, args)
           : command === "latest_media"
@@ -1816,6 +1845,294 @@ describe("App", () => {
 
     await vaultSettled();
     expect(screen.getByRole("button", { name: "Library (0)" })).toBeInTheDocument();
+  });
+
+  it("decides every pending review at once and shows what is left", async () => {
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        decided = true;
+        return Promise.resolve({ decided: 1, left: 0 });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept all suggestions" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Accept all suggestions" })).getByRole(
+        "button",
+        { name: "Accept 1" },
+      ),
+    );
+
+    expect(await screen.findByText("Decided 1.")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("decide_pending_reviews", {
+      decision: "accept_best_matches",
+      matching_policy: { high_confidence_threshold: 80, medium_confidence_threshold: 50 },
+    });
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("shows what a bulk decision recorded before it failed", async () => {
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        // A first batch was recorded before a later one failed.
+        decided = true;
+        return Promise.reject({ kind: "external", message: "catalog busy" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("catalog busy");
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("keeps the summary of a bulk decision beside the reference records awaiting review", async () => {
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        decided = true;
+        return Promise.resolve({ decided: 1, left: 0 });
+      }
+      return Promise.resolve([]);
+    });
+    referenceReviewMock.mockImplementation(() => Promise.resolve([referenceReviewItem]));
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (2)" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept all suggestions" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Accept all suggestions" })).getByRole(
+        "button",
+        { name: "Accept 1" },
+      ),
+    );
+
+    expect(await screen.findByText("Decided 1.")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Reference review #4" })).toBeInTheDocument();
+  });
+
+  it("forgets a bulk decision's summary in another vault, even one still running", async () => {
+    let finishDecision: ((summary: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve([reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        return new Promise((resolve) => {
+          finishDecision = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+    await waitFor(() => expect(finishDecision).toBeDefined());
+
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await vaultSettled();
+    await act(async () => finishDecision?.({ decided: 1, left: 0 }));
+    fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+
+    expect(screen.queryByText("Decided 1.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject all" })).toBeEnabled();
+  });
+
+  it("keeps a bulk decision under way when its vault opens again, then shows what it did", async () => {
+    let decided = false;
+    let finishDecision: ((summary: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        return new Promise((resolve) => {
+          finishDecision = (summary) => {
+            decided = true;
+            resolve(summary);
+          };
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+    await waitFor(() => expect(finishDecision).toBeDefined());
+
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+    expect(screen.getByRole("button", { name: "Deciding…" })).toBeDisabled();
+
+    await act(async () => finishDecision?.({ decided: 1, left: 0 }));
+
+    expect(await screen.findByText("Decided 1.")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("shows the reviews a bulk decision left once its vault, opening again, is open", async () => {
+    let decided = false;
+    let finishDecision: ((summary: unknown) => void) | undefined;
+    let finishReopen: (() => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        return new Promise((resolve) => {
+          finishDecision = (summary) => {
+            decided = true;
+            resolve(summary);
+          };
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+    await waitFor(() => expect(finishDecision).toBeDefined());
+    openVaultMock.mockImplementationOnce(
+      (args: { vault_root: string }) =>
+        new Promise<string>((resolve) => {
+          finishReopen = () => resolve(args.vault_root);
+        }),
+    );
+    openVault();
+    await waitFor(() => expect(finishReopen).toBeDefined());
+
+    // The decision ends while the vault is still opening, which reads what it left.
+    await act(async () => finishDecision?.({ decided: 1, left: 0 }));
+    await act(async () => finishReopen?.());
+
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("reads the page of reviews asked for", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "list_review_items"
+          ? { items: [reviewItem], undecided: 60, offset: 0 }
+          : [],
+      ),
+    );
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (60)" }));
+    reviewPageQueries.length = 0;
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+
+    await waitFor(() => expect(reviewPageQueries.at(-1)).toEqual({ offset: 25, limit: 25 }));
+  });
+
+  it("keeps the page shown when the next one cannot be read", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Number(reviewPageQueries.at(-1)?.offset ?? 0) === 0
+          ? Promise.resolve({ items: [reviewItem], undecided: 60, offset: 0 })
+          : Promise.reject({ kind: "external", message: "catalog busy" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (60)" }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+
+    expect(await screen.findByText("catalog busy")).toBeInTheDocument();
+    expect(screen.getAllByText("1–25 of 60")).toHaveLength(2);
+    reviewPageQueries.length = 0;
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+    await waitFor(() => expect(reviewPageQueries.at(-1)).toEqual({ offset: 25, limit: 25 }));
+  });
+
+  it("shows the last page again once a decision leaves no review on the page shown", async () => {
+    const firstPage = Array.from({ length: 25 }, (_, index) => ({ ...reviewItem, id: 100 + index }));
+    const last = {
+      ...reviewItem,
+      id: 200,
+      candidate: { ...reviewItem.candidate, game_title: "Last Game" },
+    };
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        // Answers the page the App asked for, as the desktop shell does.
+        const offset = Number(reviewPageQueries.at(-1)?.offset ?? 0);
+        const undecided = decided ? firstPage : [...firstPage, last];
+        return Promise.resolve({
+          items: undecided.slice(offset, offset + 25),
+          undecided: undecided.length,
+          offset,
+        });
+      }
+      if (command === "resolve_review_item") {
+        decided = true;
+        return Promise.resolve({ ...last, status: "rejected", decision: { decision: "reject" } });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (26)" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Reject candidate" })).toHaveLength(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    expect(await screen.findByRole("button", { name: "Review (25)" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Reject candidate" })).toHaveLength(25),
+    );
+    expect(reviewPageQueries.at(-1)).toEqual({ offset: 0, limit: 25 });
   });
 });
 

@@ -9,7 +9,7 @@ use super::sql_error;
 const VAULT_APPLICATION_ID: i32 = 0x474D_5641;
 
 /// Layout version of the catalog tables. Bump it together with a new entry in `MIGRATIONS`.
-const VAULT_SCHEMA_VERSION: i32 = 16;
+const VAULT_SCHEMA_VERSION: i32 = 17;
 
 /// Oldest layout that can still be upgraded. Version 1 was an unreleased pre-release layout.
 const OLDEST_SUPPORTED_SCHEMA_VERSION: i32 = 2;
@@ -32,7 +32,20 @@ const MIGRATIONS: &[Migration] = &[
     add_asset_document_metadata,
     add_run_discovery_batches,
     add_work_dismissed,
+    add_review_status_index,
 ];
+
+/// Version 17 indexes Review Items by status, so a page of those awaiting a decision and their
+/// count read only them however long the closed history grows. The index matches new catalogs.
+fn add_review_status_index(transaction: &Transaction<'_>) -> Result<(), PortError> {
+    transaction
+        .execute_batch(REVIEW_STATUS_INDEX)
+        .map_err(sql_error)
+}
+
+const REVIEW_STATUS_INDEX: &str = "
+    CREATE INDEX idx_review_status ON review_items(status, id);
+";
 
 /// Version 16 records which completed work settled without keeping its candidate, so a run
 /// tells the media it acquired from those a human rejected or matching dismissed. The column
@@ -389,6 +402,9 @@ pub(super) fn create(connection: &mut Connection) -> Result<(), PortError> {
         .map_err(sql_error)?;
     transaction
         .execute_batch(RUN_DISCOVERY_BATCHES_TABLE)
+        .map_err(sql_error)?;
+    transaction
+        .execute_batch(REVIEW_STATUS_INDEX)
         .map_err(sql_error)?;
     stamp(&transaction, VAULT_SCHEMA_VERSION)?;
     transaction.commit().map_err(sql_error)

@@ -363,6 +363,7 @@ pub fn acquire_run_with_connectors(
         dispatcher: Arc::new(Dispatcher::new(limits)),
         limits,
     };
+    acquisition.requeue_settled_reviews()?;
     thread::scope(|scope| execute(&acquisition, &run, scope))
 }
 
@@ -941,6 +942,37 @@ impl Acquisition<'_> {
                     reason: "no connector is registered for this source".to_owned(),
                 }
             })
+    }
+
+    /// Requeues the run's work parked on undecided Review Items, pending or deferred, whose
+    /// candidate now matches one of the releases it competed for with high confidence, as after
+    /// the matcher learned that a region holds a country; this execution then links it as any
+    /// queued work, closing the item for the other runs too.
+    fn requeue_settled_reviews(&self) -> Result<(), ApplicationError> {
+        let releases: HashMap<i64, &LibraryEntry> = self
+            .releases
+            .iter()
+            .map(|release| (release.release_edition_id, release))
+            .collect();
+        // The run's own candidate is matched, as the shared item may hold another run's.
+        for (item, candidate) in self.reviews.parked_reviews_of_run(self.run_id)? {
+            let competing: Vec<LibraryEntry> = item
+                .competing_matches
+                .iter()
+                .filter_map(|candidate| releases.get(&candidate.release_edition_id))
+                .map(|release| (*release).clone())
+                .collect();
+            let rematched = match_asset_candidate_to_release_preferring(
+                &candidate,
+                &competing,
+                self.matching_policy,
+                &|release| self.requested_releases.contains(&release_key(release)),
+            );
+            if rematched.confidence == MatchConfidence::High {
+                self.reviews.requeue_review_work(item.id, self.run_id)?;
+            }
+        }
+        Ok(())
     }
 
     fn process(

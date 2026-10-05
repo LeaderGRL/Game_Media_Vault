@@ -271,6 +271,23 @@ export type ReviewStatus =
   | "auto_resolved"
   | "superseded";
 
+/** A page of the Review Items awaiting a decision (Rust `ReviewPage`). */
+export interface ReviewPage {
+  items: ReviewItem[];
+  /** How many items await a decision in all. */
+  undecided: number;
+  offset: number;
+}
+
+/** A decision taken on every Review Item awaiting one (Rust `PendingReviewDecision`). */
+export type PendingReviewDecision = "accept_best_matches" | "reject_all";
+
+/** What deciding every Review Item awaiting one did (Rust `PendingReviewSummary`). */
+export interface PendingReviewSummary {
+  decided: number;
+  left: number;
+}
+
 export interface ReviewItem {
   id: number;
   candidate_identity: string;

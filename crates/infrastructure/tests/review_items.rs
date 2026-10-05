@@ -1219,3 +1219,204 @@ fn keeping_the_best_two_links_an_original_only_one_retained_asset_outranks() {
     assert!(matches!(outcome, CandidateAssetOutcome::Linked(_)));
     assert_eq!(library_asset_count(&catalog), 2);
 }
+
+#[test]
+fn requeueing_review_work_moves_one_run_and_leaves_the_item_pending() {
+    let (_temp, catalog) = open_catalog();
+    let completed_run = start_run(&catalog);
+    let item = parked_item(&catalog, completed_run);
+    complete_run(&catalog, completed_run);
+    let other_run = start_run(&catalog);
+    parked_item(&catalog, other_run);
+
+    catalog.requeue_review_work(item.id, completed_run).unwrap();
+
+    // The run executing matches the candidate again; the other run keeps it parked.
+    let run = load_acquisition_run(&catalog, completed_run).unwrap();
+    assert_eq!(run.status, AcquisitionRunStatus::Running);
+    assert_eq!(counts(&catalog, completed_run), (1, 0, 0));
+    assert_eq!(counts(&catalog, other_run), (0, 1, 0));
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Pending
+    );
+}
+
+/// Discovers work of `run_id` for each of `identities` and parks each on its own Review Item.
+fn park_each(catalog: &SqliteCatalog, run_id: i64, identities: &[&str]) -> Vec<ReviewItem> {
+    let work: Vec<AcquisitionWorkItem> = identities
+        .iter()
+        .map(|identity| AcquisitionWorkItem {
+            key: (*identity).to_owned(),
+            candidate: candidate(),
+        })
+        .collect();
+    catalog.record_discovery(run_id, SOURCE_ID, &work).unwrap();
+    identities
+        .iter()
+        .map(|identity| {
+            let item = NewReviewItem {
+                candidate_identity: (*identity).to_owned(),
+                ..new_item(vec![
+                    competing_match(201, "Standard"),
+                    competing_match(202, "Deluxe"),
+                ])
+            };
+            match catalog
+                .park_work_for_review(run_id, identity, item)
+                .unwrap()
+            {
+                ParkedReview::Parked(item) => item,
+                other => panic!("expected parked work, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_batch_of_decisions_leaves_an_item_refreshed_since_it_was_read_undecided() {
+    let (_temp, catalog) = open_catalog();
+    let first_run = start_run(&catalog);
+    let read = parked_item(&catalog, first_run);
+    // Another run meets the candidate among other releases, which refreshes the item.
+    let other_run = start_run(&catalog);
+    discover(&catalog, other_run);
+    catalog
+        .park_work_for_review(
+            other_run,
+            IDENTITY,
+            new_item(vec![
+                competing_match(201, "Standard"),
+                competing_match(203, "Limited"),
+            ]),
+        )
+        .unwrap();
+
+    let outcomes = catalog
+        .decide_review_items(&[(
+            read.clone(),
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )])
+        .unwrap();
+
+    assert_eq!(outcomes, vec![ReviewDecisionOutcome::Changed]);
+    assert_eq!(
+        catalog.get_review_item(read.id).unwrap().unwrap().status,
+        ReviewStatus::Pending
+    );
+}
+
+#[test]
+fn a_run_reads_the_undecided_reviews_its_work_is_parked_on_with_its_own_candidates() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let items = park_each(&catalog, run, &["first", "second", "third"]);
+    catalog
+        .decide_review_item(items[0].id, ReviewDecision::Reject)
+        .unwrap();
+    catalog
+        .decide_review_item(items[1].id, ReviewDecision::Defer)
+        .unwrap();
+    let other_run = start_run(&catalog);
+    // Another run meets the third candidate with its own title, refreshing the shared item.
+    let refreshed = AssetCandidate {
+        game_title: "Review Game Refreshed".to_owned(),
+        ..candidate()
+    };
+    catalog
+        .record_discovery(
+            other_run,
+            SOURCE_ID,
+            &[AcquisitionWorkItem {
+                key: "third".to_owned(),
+                candidate: refreshed.clone(),
+            }],
+        )
+        .unwrap();
+    catalog
+        .park_work_for_review(
+            other_run,
+            "third",
+            NewReviewItem {
+                candidate_identity: "third".to_owned(),
+                candidate: refreshed,
+                competing_matches: items[2].competing_matches.clone(),
+            },
+        )
+        .unwrap();
+
+    let parked = catalog.parked_reviews_of_run(run).unwrap();
+
+    // The rejected item is left out, and the shared item comes with this run's candidate.
+    assert_eq!(
+        parked.iter().map(|(item, _)| item.id).collect::<Vec<_>>(),
+        [items[1].id, items[2].id]
+    );
+    assert_eq!(parked[1].0.candidate.game_title, "Review Game Refreshed");
+    assert_eq!(parked[1].1, candidate());
+}
+
+#[test]
+fn undecided_reviews_come_a_page_at_a_time_in_the_order_they_were_opened() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let items = park_each(&catalog, run, &["first", "second", "third", "fourth"]);
+    catalog
+        .decide_review_item(items[1].id, ReviewDecision::Reject)
+        .unwrap();
+    catalog
+        .decide_review_item(items[2].id, ReviewDecision::Defer)
+        .unwrap();
+
+    let (page, undecided) = catalog.undecided_review_page(1, 2).unwrap();
+
+    // The rejected item left; the deferred one still awaits a decision.
+    assert_eq!(undecided, 3);
+    assert_eq!(
+        page.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [items[2].id, items[3].id]
+    );
+    assert_eq!(page[0].status, ReviewStatus::Deferred);
+}
+
+#[test]
+fn requeueing_review_work_leaves_a_cancelled_run_parked() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let item = parked_item(&catalog, run);
+    // The run is cancelled after its execution read it, before the requeue.
+    cancel_acquisition_run(&catalog, run).unwrap();
+
+    catalog.requeue_review_work(item.id, run).unwrap();
+
+    assert_eq!(counts(&catalog, run), (0, 1, 0));
+    assert_eq!(
+        load_acquisition_run(&catalog, run).unwrap().status,
+        AcquisitionRunStatus::Cancelled
+    );
+    // A later rejection still settles the work parked on the item.
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+    assert_eq!(counts(&catalog, run).1, 0);
+}
+
+#[test]
+fn requeueing_review_work_moves_the_work_of_a_deferred_item_and_leaves_it_deferred() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let item = parked_item(&catalog, run);
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Defer)
+        .unwrap();
+
+    catalog.requeue_review_work(item.id, run).unwrap();
+
+    assert_eq!(counts(&catalog, run), (1, 0, 0));
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Deferred
+    );
+}

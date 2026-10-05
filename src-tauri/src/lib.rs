@@ -8,12 +8,14 @@ use game_media_vault_application::{
     AcquisitionPlan, AcquisitionRequestInput, ApiKey, ApplicationError, ConnectorPort,
     DerivationSummary, DescribedReferenceReviewItem, DownloadLimits, ErrorKind, ExportSummary,
     ImportReferenceCatalogRequest, LatestMedium, LibraryPage, LibraryQuery, Machine,
-    PackagingModelSummary, PlatformCatalogSourcePort, PortError, ReferenceCatalogSourcePort,
-    ReferenceImportSummary, SourceDescription, SourceFailureSummary, VaultReport,
+    PackagingModelSummary, PendingReviewDecision, PendingReviewSummary, PlatformCatalogSourcePort,
+    PortError, ReferenceCatalogSourcePort, ReferenceImportSummary, ReviewPage, SourceDescription,
+    SourceFailureSummary, VaultReport,
     acquire_run_with_connectors as acquire_run_with_connectors_use_case,
     build_acquisition_request as build_acquisition_request_use_case,
     cancel_acquisition_run as cancel_acquisition_run_use_case,
     clear_source_credential as clear_source_credential_use_case,
+    decide_pending_reviews as decide_pending_reviews_use_case,
     derive_assets as derive_assets_use_case,
     derive_packaging_models as derive_packaging_models_use_case, describe_sources,
     expand_every_game, export_library as export_library_use_case,
@@ -29,7 +31,7 @@ use game_media_vault_application::{
     pause_acquisition_run as pause_acquisition_run_use_case,
     plan_acquisition as plan_acquisition_use_case, plan_acquisition_request,
     resolve_review_item as resolve_review_item_use_case,
-    resume_acquisition_run as resume_acquisition_run_use_case,
+    resume_acquisition_run as resume_acquisition_run_use_case, review_page as review_page_use_case,
     search_library as search_library_use_case,
     set_source_credential as set_source_credential_use_case,
     set_source_enabled as set_source_enabled_use_case, start_acquisition_run_with_connectors,
@@ -264,6 +266,34 @@ pub fn load_review_items(vault_root: &Path) -> Result<Vec<ReviewItem>, CommandEr
     Ok(list_review_items_use_case(&open_existing_catalog(
         vault_root,
     )?)?)
+}
+
+/// The page of `limit` Review Items awaiting a decision after the first `offset` of them.
+pub fn review_page_in_vault(
+    vault_root: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<ReviewPage, CommandError> {
+    Ok(review_page_use_case(
+        &open_existing_catalog(vault_root)?,
+        offset,
+        limit,
+    )?)
+}
+
+/// Decides every Review Item awaiting a decision, as `decide_pending_reviews` does.
+pub fn decide_pending_reviews_in_vault(
+    vault_root: &Path,
+    decision: PendingReviewDecision,
+    matching_policy: MatchingPolicy,
+) -> Result<PendingReviewSummary, CommandError> {
+    let catalog = open_existing_catalog(vault_root)?;
+    Ok(decide_pending_reviews_use_case(
+        &catalog,
+        &catalog,
+        decision,
+        matching_policy,
+    )?)
 }
 
 pub fn resolve_review_item_in_vault(
@@ -532,6 +562,31 @@ fn latest_media(
 #[tauri::command(rename_all = "snake_case")]
 fn list_review_items(session: State<'_, VaultSession>) -> Result<Vec<ReviewItem>, CommandError> {
     load_review_items(&session.root()?)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn review_page(
+    session: State<'_, VaultSession>,
+    offset: usize,
+    limit: usize,
+) -> Result<ReviewPage, CommandError> {
+    review_page_in_vault(&session.root()?, offset, limit)
+}
+
+/// Decides every Review Item awaiting a decision on a blocking worker: thousands of them take
+/// a few seconds.
+#[tauri::command(rename_all = "snake_case")]
+async fn decide_pending_reviews(
+    session: State<'_, VaultSession>,
+    decision: PendingReviewDecision,
+    matching_policy: MatchingPolicy,
+) -> Result<PendingReviewSummary, CommandError> {
+    let vault_root = session.root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        decide_pending_reviews_in_vault(&vault_root, decision, matching_policy)
+    })
+    .await
+    .map_err(|error| CommandError::worker_failed("review decisions", error))?
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1183,6 +1238,8 @@ pub fn run() {
             export_library,
             search_library,
             latest_media,
+            review_page,
+            decide_pending_reviews,
             derive_thumbnails,
             derive_packaging_models,
             verify_vault,

@@ -196,6 +196,12 @@ pub struct FakeVault {
     /// Simulates a human rejecting the first Review Item right before the Nth next read of a
     /// Review Item, counting from one.
     pub rejection_before_review_read: Shared<Option<usize>>,
+    /// Simulates a human rejecting the first Review Item right before the next batch of
+    /// decisions is recorded.
+    pub rejection_before_next_decisions: Shared<bool>,
+    /// Simulates an acquisition refreshing the competing matches of the first Review Item right
+    /// before the next batch of decisions is recorded.
+    pub matches_refreshed_before_next_decisions: Shared<bool>,
     /// Simulates a work item leaving the queue right before the Nth next read of the queue,
     /// counting from one.
     pub work_leaving_before_queue_read: Shared<Option<(usize, WorkLeaving)>>,
@@ -861,6 +867,51 @@ impl ReviewRepositoryPort for FakeVault {
         Ok(true)
     }
 
+    fn parked_reviews_of_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<(ReviewItem, AssetCandidate)>, PortError> {
+        let parked: Vec<(i64, AssetCandidate)> = self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .filter_map(|work| match work.state {
+                WorkState::Parked(review_item_id) => {
+                    Some((review_item_id, work.item.candidate.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let review_items = self.review_items.borrow();
+        Ok(parked
+            .into_iter()
+            .filter_map(|(review_item_id, candidate)| {
+                review_items
+                    .iter()
+                    .find(|item| item.id == review_item_id && item.status.is_undecided())
+                    .map(|item| (item.clone(), candidate))
+            })
+            .collect())
+    }
+
+    fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError> {
+        let mut runs = self.runs.borrow_mut();
+        let run = runs.get_mut(&run_id).unwrap();
+        if run.status == AcquisitionRunStatus::Cancelled {
+            return Ok(());
+        }
+        let mut moved = false;
+        for work in &mut run.work {
+            if work.state == WorkState::Parked(review_item_id) {
+                work.state = WorkState::Queued;
+                moved = true;
+            }
+        }
+        if moved && run.status == AcquisitionRunStatus::Completed {
+            run.status = AcquisitionRunStatus::Running;
+        }
+        Ok(())
+    }
+
     fn decide_review_item(
         &self,
         review_item_id: i64,
@@ -910,6 +961,34 @@ impl ReviewRepositoryPort for FakeVault {
             ReviewDecision::Defer => {}
         }
         Ok(ReviewDecisionOutcome::Recorded(Box::new(decided)))
+    }
+
+    fn decide_review_items(
+        &self,
+        decisions: &[(ReviewItem, ReviewDecision)],
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
+        if std::mem::take(&mut *self.rejection_before_next_decisions.borrow_mut()) {
+            let review_item_id = self.review_items.borrow()[0].id;
+            self.decide_review_item(review_item_id, ReviewDecision::Reject)?;
+        }
+        if std::mem::take(&mut *self.matches_refreshed_before_next_decisions.borrow_mut()) {
+            for candidate in &mut self.review_items.borrow_mut()[0].competing_matches {
+                candidate.score -= 1;
+            }
+        }
+        decisions
+            .iter()
+            .map(|(read, decision)| {
+                let changed = self
+                    .get_review_item(read.id)?
+                    .is_some_and(|current| current.changed_since(read));
+                if changed {
+                    Ok(ReviewDecisionOutcome::Changed)
+                } else {
+                    self.decide_review_item(read.id, decision.clone())
+                }
+            })
+            .collect()
     }
 
     fn persist_candidate_asset(
