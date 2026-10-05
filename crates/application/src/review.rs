@@ -25,21 +25,18 @@ pub struct ReviewPage {
     pub offset: usize,
 }
 
-/// The page of `limit` undecided Review Items after the first `offset` of them.
+/// The page of `limit` undecided Review Items after the first `offset` of them, read alone
+/// however many items the vault holds.
 pub fn review_page(
     reviews: &dyn ReviewRepositoryPort,
     offset: usize,
     limit: usize,
 ) -> Result<ReviewPage, ApplicationError> {
-    let undecided: Vec<ReviewItem> = reviews
-        .list_review_items()?
-        .into_iter()
-        .filter(|item| item.status.is_undecided())
-        .collect();
+    let (items, undecided) = reviews.undecided_review_page(offset, limit)?;
     Ok(ReviewPage {
-        undecided: undecided.len(),
+        items,
+        undecided,
         offset,
-        items: undecided.into_iter().skip(offset).take(limit).collect(),
     })
 }
 

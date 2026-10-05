@@ -154,6 +154,26 @@ pub enum CandidateAssetOutcome {
 pub trait ReviewRepositoryPort {
     fn list_review_items(&self) -> Result<Vec<ReviewItem>, PortError>;
 
+    /// The Review Items awaiting a decision, pending or deferred, in the order they were opened,
+    /// after the first `offset` of them and at most `limit`, with how many await one in all, as
+    /// of one moment; a repository may read the page alone rather than every item.
+    fn undecided_review_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<ReviewItem>, usize), PortError> {
+        let undecided: Vec<ReviewItem> = self
+            .list_review_items()?
+            .into_iter()
+            .filter(|item| item.status.is_undecided())
+            .collect();
+        let count = undecided.len();
+        Ok((
+            undecided.into_iter().skip(offset).take(limit).collect(),
+            count,
+        ))
+    }
+
     fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError>;
 
     fn find_review_item(&self, candidate_identity: &str) -> Result<Option<ReviewItem>, PortError>;

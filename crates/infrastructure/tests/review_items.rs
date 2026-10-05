@@ -1242,6 +1242,60 @@ fn requeueing_review_work_moves_one_run_and_leaves_the_item_pending() {
     );
 }
 
+/// Discovers work of `run_id` for each of `identities` and parks each on its own Review Item.
+fn park_each(catalog: &SqliteCatalog, run_id: i64, identities: &[&str]) -> Vec<ReviewItem> {
+    let work: Vec<AcquisitionWorkItem> = identities
+        .iter()
+        .map(|identity| AcquisitionWorkItem {
+            key: (*identity).to_owned(),
+            candidate: candidate(),
+        })
+        .collect();
+    catalog.record_discovery(run_id, SOURCE_ID, &work).unwrap();
+    identities
+        .iter()
+        .map(|identity| {
+            let item = NewReviewItem {
+                candidate_identity: (*identity).to_owned(),
+                ..new_item(vec![
+                    competing_match(201, "Standard"),
+                    competing_match(202, "Deluxe"),
+                ])
+            };
+            match catalog
+                .park_work_for_review(run_id, identity, item)
+                .unwrap()
+            {
+                ParkedReview::Parked(item) => item,
+                other => panic!("expected parked work, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn undecided_reviews_come_a_page_at_a_time_in_the_order_they_were_opened() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let items = park_each(&catalog, run, &["first", "second", "third", "fourth"]);
+    catalog
+        .decide_review_item(items[1].id, ReviewDecision::Reject)
+        .unwrap();
+    catalog
+        .decide_review_item(items[2].id, ReviewDecision::Defer)
+        .unwrap();
+
+    let (page, undecided) = catalog.undecided_review_page(1, 2).unwrap();
+
+    // The rejected item left; the deferred one still awaits a decision.
+    assert_eq!(undecided, 3);
+    assert_eq!(
+        page.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [items[2].id, items[3].id]
+    );
+    assert_eq!(page[0].status, ReviewStatus::Deferred);
+}
+
 #[test]
 fn requeueing_review_work_leaves_a_cancelled_run_parked() {
     let (_temp, catalog) = open_catalog();

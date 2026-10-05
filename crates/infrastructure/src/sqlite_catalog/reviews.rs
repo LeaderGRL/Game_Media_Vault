@@ -33,6 +33,47 @@ impl ReviewRepositoryPort for SqliteCatalog {
         rows.into_iter().map(decode_review_item).collect()
     }
 
+    fn undecided_review_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<ReviewItem>, usize), PortError> {
+        let mut connection = self.connect()?;
+        // One read sees the page and the count of the same moment.
+        let transaction = connection.transaction().map_err(sql_error)?;
+        let undecided: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM review_items WHERE status IN ('pending', 'deferred')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        let rows = {
+            let mut statement = transaction
+                .prepare(&format!(
+                    "SELECT {REVIEW_ITEM_COLUMNS} FROM review_items
+                     WHERE status IN ('pending', 'deferred') ORDER BY id LIMIT ?1 OFFSET ?2"
+                ))
+                .map_err(sql_error)?;
+            statement
+                .query_map(
+                    params![
+                        i64::try_from(limit).unwrap_or(i64::MAX),
+                        i64::try_from(offset).unwrap_or(i64::MAX)
+                    ],
+                    review_item_row,
+                )
+                .map_err(sql_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql_error)?
+        };
+        let items = rows
+            .into_iter()
+            .map(decode_review_item)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((items, usize::try_from(undecided).unwrap_or_default()))
+    }
+
     fn get_review_item(&self, review_item_id: i64) -> Result<Option<ReviewItem>, PortError> {
         select_review_item(&self.connect()?, "id = ?1", params![review_item_id])
     }
