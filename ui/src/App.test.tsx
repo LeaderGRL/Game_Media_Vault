@@ -3338,6 +3338,57 @@ describe("App Library requests", () => {
     await waitFor(() => expect(executions).toHaveLength(2));
   });
 
+  it("keeps offering media that arrived while a search read older results", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.change(await screen.findByLabelText("Search titles"), {
+      target: { value: "mario" },
+    });
+    fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+    latestMediaMock.mockResolvedValue([
+      {
+        release_edition_id: entry.release_edition_id,
+        game_title: entry.game_title,
+        platform: entry.platform,
+        region: entry.region,
+        asset: entry.assets[0],
+      },
+    ]);
+    // Activity sees the media arrive while the search still reads.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByText("Just arrived")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+
+    await act(async () =>
+      finishSearch?.({ releases: [], total: 0, next_after: null, as_of: 9 }),
+    );
+
+    expect(screen.getByText("New media arrived.")).toBeInTheDocument();
+  });
+
   it("ignores the failure of a page a newer search superseded", async () => {
     let failPage: ((reason: unknown) => void) | undefined;
     invokeMock.mockImplementation((command: string) => {

@@ -229,15 +229,20 @@ export function App() {
     });
   }
 
-  /** Shows a first page; a next page requested before it would extend other results. */
-  function showLibraryPage(page: LibraryPage) {
+  /**
+   * Shows a first page; a next page requested before it would extend other results. A page read
+   * when the newest media seen were `seenWhenRead` keeps offering those that arrived since.
+   */
+  function showLibraryPage(page: LibraryPage, seenWhenRead = newestAssetSeen.current) {
     abandonPageRequest();
     setEntries(page.releases);
     setLibraryTotal(page.total);
     setLibraryNextAfter(page.next_after);
     setLibraryAsOf(page.as_of);
     libraryPaged.current = false;
-    setNewMedia(false);
+    if (seenWhenRead === newestAssetSeen.current) {
+      setNewMedia(false);
+    }
     if (page.platforms_with_media !== undefined) {
       setLibraryPlatforms(page.platforms_with_media);
     }
@@ -260,6 +265,7 @@ export function App() {
     pendingSearchRef.current = filters;
     setSearchingLibrary(true);
     setError(null);
+    const seenWhenSearched = newestAssetSeen.current;
     try {
       const page = await searchLibrary(filters);
       if (
@@ -268,7 +274,7 @@ export function App() {
       ) {
         libraryFiltersRef.current = filters;
         setLibraryFilters(filters);
-        showLibraryPage(page);
+        showLibraryPage(page, seenWhenSearched);
         setLibraryFiltersRevision((revision) => revision + 1);
       }
     } catch (reason) {
