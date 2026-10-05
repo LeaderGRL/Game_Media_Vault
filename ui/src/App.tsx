@@ -1508,6 +1508,7 @@ export function App() {
         >
           <DownloadView
             sources={sources}
+            sourcesError={sourcesError}
             onStart={startDownloads}
             advanced={
               <AcquireView

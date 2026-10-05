@@ -86,7 +86,9 @@ vi.mock("@tauri-apps/api/core", () => ({
           ? referenceReviewMock(command, args)
           : command === "latest_media"
             ? latestMediaMock(args)
-            : invokeMock(command, ...(args === undefined ? [] : [args])),
+            : command === "list_sources"
+              ? listSources()
+              : invokeMock(command, ...(args === undefined ? [] : [args])),
 }));
 
 import { App, RUN_PROGRESS_REFRESH_MS } from "./App";
@@ -124,6 +126,31 @@ function showSettings() {
 function settingsButton(name: string | RegExp) {
   showSettings();
   return screen.getByRole("button", { name });
+}
+
+/** A keyless Source that takes part, which the Sources read answers with unless scripted. */
+const KEYLESS_SOURCE = {
+  source_id: "libretro-thumbnails",
+  asset_types: ["box_front", "screenshot", "title_screen"],
+  direct_media_download: true,
+  enabled: true,
+  credential: "not_needed",
+  credential_fields: [],
+  rate_limits: null,
+};
+
+/** Reads the Sources as scripted, or the keyless Source when a test scripts none. */
+function listSources() {
+  return Promise.resolve(invokeMock("list_sources")).then((listed: unknown) =>
+    Array.isArray(listed) && listed.length > 0 ? listed : [KEYLESS_SOURCE],
+  );
+}
+
+/** Starts the download picked in the Download view once its Sources are read. */
+async function startPickedDownload() {
+  const start = screen.getByRole("button", { name: "Start download" });
+  await waitFor(() => expect(start).toBeEnabled());
+  fireEvent.click(start);
 }
 
 /** Opens a vault whose identity is the path as typed. */
@@ -2278,7 +2305,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
     fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
 
     // Both runs start, each for every game of its console, and the first one downloads.
     expect(await screen.findByRole("article", { name: /Run #2$/ })).toHaveTextContent("Waiting");
@@ -2340,7 +2367,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByLabelText("Game Boy"));
     fireEvent.click(screen.getByLabelText("Game Boy Color"));
     fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
 
     await waitFor(() =>
       expect(screen.getByRole("article", { name: "Game Boy Color" })).toHaveTextContent(
@@ -2376,7 +2403,7 @@ describe("App acquisition", () => {
     await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
     await waitFor(() =>
       expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
         "game list unreachable",
@@ -2423,7 +2450,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
     fireEvent.click(screen.getByLabelText("Game Boy Color"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
     await waitFor(() => expect(finishFirst).toBeDefined());
 
     // The same vault opens again while the first console still fetches its game list.
@@ -2460,7 +2487,7 @@ describe("App acquisition", () => {
     await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
     await screen.findByText("Downloading");
 
     fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
@@ -3173,7 +3200,7 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
 
     fireEvent.click(screen.getByLabelText("Game Boy"));
-    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await startPickedDownload();
 
     expect(await screen.findByRole("article", { name: /Run #1$/ })).toBeInTheDocument();
     expect(
