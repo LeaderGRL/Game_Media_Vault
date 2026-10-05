@@ -59,7 +59,8 @@ pub struct PendingReviewSummary {
     pub decided: usize,
     /// Items considered that still await a decision once every decision is recorded: those whose
     /// best match ties releases of several Games, and those whose competing releases changed
-    /// meanwhile. Items someone else decided or closed meanwhile are not counted.
+    /// meanwhile, or that someone deferred meanwhile. Items someone else accepted, rejected or
+    /// closed meanwhile are not counted.
     pub left: usize,
 }
 
