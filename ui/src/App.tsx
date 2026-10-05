@@ -186,6 +186,9 @@ export function App() {
   const [reviewUndecided, setReviewUndecided] = useState(0);
   const reviewOffset = useRef(0);
   const [shownReviewOffset, setShownReviewOffset] = useState(0);
+  // Vaults deciding every Review Item: the backend goes on while another vault is loaded, so
+  // loading the vault again shows the decision under way instead of offering another.
+  const decidingReviewVaults = useRef(new Set<string>());
   // The decision on every Review Item of the open vault under way, or what the last one did.
   const [bulkReview, setBulkReview] = useState<{ deciding: boolean; outcome: string | null }>({
     deciding: false,
@@ -374,7 +377,7 @@ export function App() {
     setReviewUndecided(0);
     reviewOffset.current = 0;
     setShownReviewOffset(0);
-    setBulkReview({ deciding: false, outcome: null });
+    setBulkReview({ deciding: decidingReviewVaults.current.has(vaultKey), outcome: null });
     referenceReviewGeneration.current += 1;
     setReferenceReviewItems([]);
     setDecidingReferenceIds(new Set());
@@ -406,6 +409,7 @@ export function App() {
         setRenderingThumbnails(renderingThumbnailVaults.current.has(identity));
         setBuildingModels(buildingModelVaults.current.has(identity));
         setImportingReference(importingReferenceVaults.current.has(identity));
+        setBulkReview({ deciding: decidingReviewVaults.current.has(identity), outcome: null });
         setExecutingRunIds(new Set(executionsByVault.current.get(identity)));
         setWaitingRunIds(new Set(waitingRuns.current.get(identity)));
       }
@@ -522,7 +526,14 @@ export function App() {
       setError("Open a vault before deciding reviews.");
       return;
     }
+    if (
+      openedVaultRoot.current !== loadedVaultRoot ||
+      decidingReviewVaults.current.has(loadedVaultRoot)
+    ) {
+      return;
+    }
     const decidingVaultRoot = loadedVaultRoot;
+    decidingReviewVaults.current.add(decidingVaultRoot);
     setBulkReview({ deciding: true, outcome: null });
     let outcome: string;
     try {
@@ -537,18 +548,23 @@ export function App() {
     } catch (reason) {
       // The batches recorded before the failure stay decided, which the refresh shows.
       outcome = errorMessage(reason);
+    } finally {
+      decidingReviewVaults.current.delete(decidingVaultRoot);
     }
     if (activeVaultRoot.current !== decidingVaultRoot) {
       return;
     }
-    reviewMutationGeneration.current += 1;
-    reviewOffset.current = 0;
-    setShownReviewOffset(0);
-    try {
-      await Promise.all([refreshVaultData(decidingVaultRoot), refreshRuns(decidingVaultRoot)]);
-    } catch (reason) {
-      if (activeVaultRoot.current === decidingVaultRoot) {
-        setError(errorMessage(reason));
+    // A reopening of the vault reads its reviews, Library and runs itself once it is open.
+    if (openedVaultRoot.current === decidingVaultRoot) {
+      reviewMutationGeneration.current += 1;
+      reviewOffset.current = 0;
+      setShownReviewOffset(0);
+      try {
+        await Promise.all([refreshVaultData(decidingVaultRoot), refreshRuns(decidingVaultRoot)]);
+      } catch (reason) {
+        if (activeVaultRoot.current === decidingVaultRoot) {
+          setError(errorMessage(reason));
+        }
       }
     }
     if (activeVaultRoot.current === decidingVaultRoot) {

@@ -1970,6 +1970,89 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Reject all" })).toBeEnabled();
   });
 
+  it("keeps a bulk decision under way when its vault opens again, then shows what it did", async () => {
+    let decided = false;
+    let finishDecision: ((summary: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        return new Promise((resolve) => {
+          finishDecision = (summary) => {
+            decided = true;
+            resolve(summary);
+          };
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+    await waitFor(() => expect(finishDecision).toBeDefined());
+
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: /^Review/ }));
+    expect(screen.getByRole("button", { name: "Deciding…" })).toBeDisabled();
+
+    await act(async () => finishDecision?.({ decided: 1, left: 0 }));
+
+    expect(await screen.findByText("Decided 1.")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
+  it("shows the reviews a bulk decision left once its vault, opening again, is open", async () => {
+    let decided = false;
+    let finishDecision: ((summary: unknown) => void) | undefined;
+    let finishReopen: (() => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Promise.resolve(decided ? [] : [reviewItem]);
+      }
+      if (command === "decide_pending_reviews") {
+        return new Promise((resolve) => {
+          finishDecision = (summary) => {
+            decided = true;
+            resolve(summary);
+          };
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Reject all" })).getByRole("button", {
+        name: "Reject 1",
+      }),
+    );
+    await waitFor(() => expect(finishDecision).toBeDefined());
+    openVaultMock.mockImplementationOnce(
+      (args: { vault_root: string }) =>
+        new Promise<string>((resolve) => {
+          finishReopen = () => resolve(args.vault_root);
+        }),
+    );
+    openVault();
+    await waitFor(() => expect(finishReopen).toBeDefined());
+
+    // The decision ends while the vault is still opening, which reads what it left.
+    await act(async () => finishDecision?.({ decided: 1, left: 0 }));
+    await act(async () => finishReopen?.());
+
+    expect(await screen.findByRole("button", { name: "Review (0)" })).toBeInTheDocument();
+  });
+
   it("reads the page of reviews asked for", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(
