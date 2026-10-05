@@ -498,8 +498,9 @@ export function App() {
       return;
     }
     const readingVaultRoot = loadedVaultRoot;
+    // The page shown changes once the asked one is read; until then the shown one stays.
+    const shownOffset = reviewOffset.current;
     reviewOffset.current = offset;
-    setShownReviewOffset(offset);
     reviewRefreshRequestGeneration.current += 1;
     const generation = reviewRefreshRequestGeneration.current;
     try {
@@ -512,6 +513,9 @@ export function App() {
       }
     } catch (reason) {
       if (activeVaultRoot.current === readingVaultRoot) {
+        if (generation === reviewRefreshRequestGeneration.current) {
+          reviewOffset.current = shownOffset;
+        }
         setError(errorMessage(reason));
       }
     }

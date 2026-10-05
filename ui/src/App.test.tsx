@@ -2071,6 +2071,28 @@ describe("App", () => {
     await waitFor(() => expect(reviewPageQueries.at(-1)).toEqual({ offset: 25, limit: 25 }));
   });
 
+  it("keeps the page shown when the next one cannot be read", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        return Number(reviewPageQueries.at(-1)?.offset ?? 0) === 0
+          ? Promise.resolve({ items: [reviewItem], undecided: 60, offset: 0 })
+          : Promise.reject({ kind: "external", message: "catalog busy" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (60)" }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+
+    expect(await screen.findByText("catalog busy")).toBeInTheDocument();
+    expect(screen.getAllByText("1–25 of 60")).toHaveLength(2);
+    reviewPageQueries.length = 0;
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+    await waitFor(() => expect(reviewPageQueries.at(-1)).toEqual({ offset: 25, limit: 25 }));
+  });
+
   it("shows the last page again once a decision leaves no review on the page shown", async () => {
     const firstPage = Array.from({ length: 25 }, (_, index) => ({ ...reviewItem, id: 100 + index }));
     const last = {
