@@ -1614,3 +1614,18 @@ fn an_execution_links_the_work_parked_on_a_review_its_matcher_now_settles() {
     assert_eq!(vault.work_states(run), vec![WorkState::Done]);
     assert_eq!(vault.run(run).awaiting_review_work, 0);
 }
+
+#[test]
+fn an_execution_links_the_work_parked_on_a_deferred_review_its_matcher_now_settles() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    let run = park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    // A deferred item still awaits a decision, which the matcher can now take.
+    resolve_review_item(&vault, vault.review_item(0).id, ReviewDecision::Defer).unwrap();
+
+    let imported = execute(&vault, &FakeConnector::new(vec![threshold]), run).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.review_item(0).status, ReviewStatus::AutoResolved);
+    assert_eq!(vault.work_states(run), vec![WorkState::Done]);
+}

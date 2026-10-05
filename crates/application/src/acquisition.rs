@@ -944,10 +944,10 @@ impl Acquisition<'_> {
             })
     }
 
-    /// Requeues the run's work parked on pending Review Items whose candidate now matches one
-    /// of the releases it competed for with high confidence, as after the matcher learned that a
-    /// region holds a country; this execution then links it as any queued work, closing the
-    /// item for the other runs too.
+    /// Requeues the run's work parked on undecided Review Items, pending or deferred, whose
+    /// candidate now matches one of the releases it competed for with high confidence, as after
+    /// the matcher learned that a region holds a country; this execution then links it as any
+    /// queued work, closing the item for the other runs too.
     fn requeue_settled_reviews(&self) -> Result<(), ApplicationError> {
         let releases: HashMap<i64, &LibraryEntry> = self
             .releases
@@ -955,7 +955,7 @@ impl Acquisition<'_> {
             .map(|release| (release.release_edition_id, release))
             .collect();
         for item in self.reviews.list_review_items()? {
-            if item.status != ReviewStatus::Pending {
+            if !item.status.is_undecided() {
                 continue;
             }
             let competing: Vec<LibraryEntry> = item

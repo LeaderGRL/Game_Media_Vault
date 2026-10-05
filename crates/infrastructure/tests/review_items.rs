@@ -1241,3 +1241,21 @@ fn requeueing_review_work_moves_one_run_and_leaves_the_item_pending() {
         ReviewStatus::Pending
     );
 }
+
+#[test]
+fn requeueing_review_work_moves_the_work_of_a_deferred_item_and_leaves_it_deferred() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let item = parked_item(&catalog, run);
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Defer)
+        .unwrap();
+
+    catalog.requeue_review_work(item.id, run).unwrap();
+
+    assert_eq!(counts(&catalog, run), (1, 0, 0));
+    assert_eq!(
+        catalog.get_review_item(item.id).unwrap().unwrap().status,
+        ReviewStatus::Deferred
+    );
+}

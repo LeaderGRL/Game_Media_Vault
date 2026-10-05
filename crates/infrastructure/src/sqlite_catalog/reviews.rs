@@ -196,9 +196,9 @@ impl ReviewRepositoryPort for SqliteCatalog {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         // A decision taken meanwhile moved the work itself.
-        let pending = select_review_item(&transaction, "id = ?1", params![review_item_id])?
-            .is_some_and(|item| item.status == ReviewStatus::Pending);
-        if pending {
+        let undecided = select_review_item(&transaction, "id = ?1", params![review_item_id])?
+            .is_some_and(|item| item.status.is_undecided());
+        if undecided {
             let requeued = transaction
                 .execute(
                     "UPDATE acquisition_run_work SET state = 'queued', review_item_id = NULL
