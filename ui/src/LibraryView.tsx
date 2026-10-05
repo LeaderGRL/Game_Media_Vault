@@ -5,7 +5,7 @@ import { REGIONS, consoleName } from "./catalog";
 import { Dialog, FilterMenu } from "./controls";
 import { ExportPanel } from "./ExportPanel";
 import { Icon } from "./icons";
-import { ReleaseDetail, coverOf, thumbnailOf } from "./ReleaseDetail";
+import { FallbackImage, ReleaseDetail, coverOf, thumbnailOf } from "./ReleaseDetail";
 import {
   type ExportSummary,
   type LibraryEntry,
@@ -268,29 +268,20 @@ function CoverCard({
   onOpen: () => void;
 }) {
   const cover = coverOf(entry);
-  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
-  const shown = cover
-    ? [thumbnailOf(cover)?.object_hash, cover.object_hash].find(
-        (hash) => hash !== undefined && !failed.has(hash),
-      )
-    : undefined;
   const count = entry.assets.length;
   return (
     <button type="button" className="cover-card" onClick={onOpen}>
       <div className="cover-frame">
-        {cover && shown ? (
-          <img
-            key={shown}
-            src={objectUrl(shown)}
-            alt={`${assetTypeLabel(cover.asset_type)} of ${entry.game_title}`}
-            loading="lazy"
-            onError={() => setFailed((current) => new Set(current).add(shown))}
-          />
-        ) : (
-          <div className="media-placeholder">
-            <Icon name="gamepad" size={34} />
-          </div>
-        )}
+        <FallbackImage
+          hashes={cover ? [thumbnailOf(cover)?.object_hash, cover.object_hash] : []}
+          objectUrl={objectUrl}
+          alt={cover ? `${assetTypeLabel(cover.asset_type)} of ${entry.game_title}` : ""}
+          fallback={
+            <div className="media-placeholder">
+              <Icon name="gamepad" size={34} />
+            </div>
+          }
+        />
         {count > 0 ? <span className="cover-badge">{count}</span> : null}
       </div>
       <span className="cover-title">{entry.game_title}</span>

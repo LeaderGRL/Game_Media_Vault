@@ -1,10 +1,8 @@
-import { useState } from "react";
-
 import type { AcquisitionRun } from "./acquisition";
 import { assetTypeLabel } from "./acquisition";
 import { ProgressBar } from "./controls";
 import { Icon } from "./icons";
-import { thumbnailOf } from "./ReleaseDetail";
+import { FallbackImage, thumbnailOf } from "./ReleaseDetail";
 import { describeRunRequest, runProgress, runTitle } from "./runProgress";
 import type { LatestMedium } from "./types";
 
@@ -252,27 +250,22 @@ function LatestItem({
   objectUrl: (objectHash: string) => string;
 }) {
   const asset = medium.asset;
-  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
-  const shown = [
-    thumbnailOf(asset)?.object_hash,
-    asset.media_type.startsWith("image/") ? asset.object_hash : undefined,
-  ].find((hash) => hash !== undefined && !failed.has(hash));
   const description = `${assetTypeLabel(asset.asset_type)} of ${medium.game_title}`;
   return (
     <div className="latest-item">
-      {shown === undefined ? (
-        <div className="media-placeholder" aria-label={description} role="img">
-          <Icon name="image" size={26} />
-        </div>
-      ) : (
-        <img
-          key={shown}
-          src={objectUrl(shown)}
-          alt={description}
-          loading="lazy"
-          onError={() => setFailed((current) => new Set(current).add(shown))}
-        />
-      )}
+      <FallbackImage
+        hashes={[
+          thumbnailOf(asset)?.object_hash,
+          asset.media_type.startsWith("image/") ? asset.object_hash : undefined,
+        ]}
+        objectUrl={objectUrl}
+        alt={description}
+        fallback={
+          <div className="media-placeholder" aria-label={description} role="img">
+            <Icon name="image" size={26} />
+          </div>
+        }
+      />
       <span title={medium.game_title}>{medium.game_title}</span>
       <span className="hint">{assetTypeLabel(asset.asset_type)}</span>
     </div>

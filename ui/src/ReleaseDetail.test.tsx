@@ -105,6 +105,19 @@ describe("ReleaseDetail", () => {
     expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
   });
 
+  it("falls back from the header cover's thumbnail to its original, then a placeholder", () => {
+    const { container } = render(<ReleaseDetail entry={withThumbnail} objectUrl={objectUrl} />);
+    const cover = () => container.querySelector(".drawer-cover img");
+    expect(cover()).toHaveAttribute("src", "gmv-object://localhost/thumb256");
+
+    fireEvent.error(cover()!);
+    expect(cover()).toHaveAttribute("src", "gmv-object://localhost/abc123");
+
+    fireEvent.error(cover()!);
+    expect(cover()).toBeNull();
+    expect(container.querySelector(".drawer-cover .media-placeholder")).not.toBeNull();
+  });
+
   it("shows the pixel size of image originals", () => {
     render(<ReleaseDetail entry={entry} objectUrl={objectUrl} />);
 

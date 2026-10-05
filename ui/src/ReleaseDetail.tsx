@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { ASSET_TYPE_FAMILIES, assetTypeLabel, attributionOf } from "./acquisition";
 import { ExternalLink } from "./ExternalLink";
@@ -38,13 +38,16 @@ export function ReleaseDetail({ entry, objectUrl, onClose }: ReleaseDetailProps)
     <article className="release-detail" aria-label={entry.game_title}>
       <header className="drawer-header">
         <div className="drawer-cover">
-          {cover ? (
-            <img src={objectUrl(thumbnailOf(cover)?.object_hash ?? cover.object_hash)} alt="" />
-          ) : (
-            <div className="media-placeholder">
-              <Icon name="gamepad" size={28} />
-            </div>
-          )}
+          <FallbackImage
+            hashes={cover ? [thumbnailOf(cover)?.object_hash, cover.object_hash] : []}
+            objectUrl={objectUrl}
+            alt=""
+            fallback={
+              <div className="media-placeholder">
+                <Icon name="gamepad" size={28} />
+              </div>
+            }
+          />
         </div>
         <div>
           <h2>{entry.game_title}</h2>
@@ -273,6 +276,37 @@ export function AssetOriginal({ asset, description, objectUrl }: AssetOriginalPr
       alt={description}
       loading="lazy"
       onError={() => setFailedHashes((failed) => new Set(failed).add(shownHash))}
+    />
+  );
+}
+
+/**
+ * The first of the objects `hashes` names that the view can show, each tried once the one
+ * before it cannot be served or decoded, else `fallback`.
+ */
+export function FallbackImage({
+  hashes,
+  objectUrl,
+  alt,
+  fallback,
+}: {
+  hashes: (string | undefined)[];
+  objectUrl: (objectHash: string) => string;
+  alt: string;
+  fallback: ReactNode;
+}) {
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const shown = hashes.find((hash) => hash !== undefined && !failed.has(hash));
+  if (shown === undefined) {
+    return fallback;
+  }
+  return (
+    <img
+      key={shown}
+      src={objectUrl(shown)}
+      alt={alt}
+      loading="lazy"
+      onError={() => setFailed((current) => new Set(current).add(shown))}
     />
   );
 }
