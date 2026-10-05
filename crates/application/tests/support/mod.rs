@@ -199,6 +199,9 @@ pub struct FakeVault {
     /// Simulates a human rejecting the first Review Item right before the next batch of
     /// decisions is recorded.
     pub rejection_before_next_decisions: Shared<bool>,
+    /// Simulates an acquisition refreshing the competing matches of the first Review Item right
+    /// before the next batch of decisions is recorded.
+    pub matches_refreshed_before_next_decisions: Shared<bool>,
     /// Simulates a work item leaving the queue right before the Nth next read of the queue,
     /// counting from one.
     pub work_leaving_before_queue_read: Shared<Option<(usize, WorkLeaving)>>,
@@ -936,16 +939,28 @@ impl ReviewRepositoryPort for FakeVault {
 
     fn decide_review_items(
         &self,
-        decisions: &[(i64, ReviewDecision)],
+        decisions: &[(ReviewItem, ReviewDecision)],
     ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
         if std::mem::take(&mut *self.rejection_before_next_decisions.borrow_mut()) {
             let review_item_id = self.review_items.borrow()[0].id;
             self.decide_review_item(review_item_id, ReviewDecision::Reject)?;
         }
+        if std::mem::take(&mut *self.matches_refreshed_before_next_decisions.borrow_mut()) {
+            for candidate in &mut self.review_items.borrow_mut()[0].competing_matches {
+                candidate.score -= 1;
+            }
+        }
         decisions
             .iter()
-            .map(|(review_item_id, decision)| {
-                self.decide_review_item(*review_item_id, decision.clone())
+            .map(|(read, decision)| {
+                let changed = self
+                    .get_review_item(read.id)?
+                    .is_some_and(|current| current.changed_since(read));
+                if changed {
+                    Ok(ReviewDecisionOutcome::Changed)
+                } else {
+                    self.decide_review_item(read.id, decision.clone())
+                }
             })
             .collect()
     }

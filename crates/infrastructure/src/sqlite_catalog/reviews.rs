@@ -282,7 +282,7 @@ impl ReviewRepositoryPort for SqliteCatalog {
 
     fn decide_review_items(
         &self,
-        decisions: &[(i64, ReviewDecision)],
+        decisions: &[(ReviewItem, ReviewDecision)],
     ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -290,8 +290,13 @@ impl ReviewRepositoryPort for SqliteCatalog {
             .map_err(sql_error)?;
         let outcomes = decisions
             .iter()
-            .map(|(review_item_id, decision)| {
-                decide_in_transaction(&transaction, *review_item_id, decision.clone())
+            .map(|(read, decision)| {
+                if select_review_item(&transaction, "id = ?1", params![read.id])?
+                    .is_some_and(|current| current.changed_since(read))
+                {
+                    return Ok(ReviewDecisionOutcome::Changed);
+                }
+                decide_in_transaction(&transaction, read.id, decision.clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().map_err(sql_error)?;

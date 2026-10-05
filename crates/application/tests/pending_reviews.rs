@@ -196,6 +196,33 @@ fn a_tie_closed_meanwhile_is_not_left_awaiting_a_decision() {
     );
 }
 
+#[test]
+fn a_review_whose_matches_changed_since_it_was_read_is_left_undecided() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    park(&vault, vec![threshold], stricter_matching_policy());
+    // An acquisition refreshes the item's competing releases before the decision is recorded,
+    // so the best match chosen may no longer be.
+    *vault.matches_refreshed_before_next_decisions.borrow_mut() = true;
+
+    let summary = decide_pending_reviews(
+        &vault,
+        &vault,
+        PendingReviewDecision::AcceptBestMatches,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary,
+        PendingReviewSummary {
+            decided: 0,
+            left: 1
+        }
+    );
+    assert_eq!(vault.review_item(0).status, ReviewStatus::Pending);
+}
+
 fn resolve(vault: &FakeVault, review_item_id: i64, decision: ReviewDecision) {
     game_media_vault_application::resolve_review_item(vault, review_item_id, decision).unwrap();
 }

@@ -117,6 +117,8 @@ pub enum ReviewDecisionOutcome {
     NotUndecided(ReviewStatus),
     /// The accepted Release Edition is not among the item's current competing matches.
     NotCompeting,
+    /// The item's candidate or competing matches changed since the decision was taken on them.
+    Changed,
 }
 
 impl ReviewDecisionOutcome {
@@ -216,16 +218,25 @@ pub trait ReviewRepositoryPort {
         decision: ReviewDecision,
     ) -> Result<ReviewDecisionOutcome, PortError>;
 
-    /// Records each of `decisions` as `decide_review_item` does, in order, answering their
-    /// outcomes; a repository may record them all in one transaction.
+    /// Records each of `decisions`, taken on an item as it was read, as `decide_review_item`
+    /// does, in order, unless the item's candidate or competing matches changed since it was
+    /// read (`Changed`), answering their outcomes. A repository may record them all in one
+    /// transaction, checking each item in it.
     fn decide_review_items(
         &self,
-        decisions: &[(i64, ReviewDecision)],
+        decisions: &[(ReviewItem, ReviewDecision)],
     ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
         decisions
             .iter()
-            .map(|(review_item_id, decision)| {
-                self.decide_review_item(*review_item_id, decision.clone())
+            .map(|(read, decision)| {
+                if self
+                    .get_review_item(read.id)?
+                    .is_some_and(|current| current.changed_since(read))
+                {
+                    Ok(ReviewDecisionOutcome::Changed)
+                } else {
+                    self.decide_review_item(read.id, decision.clone())
+                }
             })
             .collect()
     }

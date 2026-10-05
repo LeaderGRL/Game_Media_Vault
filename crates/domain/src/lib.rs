@@ -880,6 +880,14 @@ pub struct ReviewItem {
     pub status: ReviewStatus,
 }
 
+impl ReviewItem {
+    /// Whether the candidate or its competing matches differ from those of `read`, the same item
+    /// as read earlier, as after an acquisition refreshed it.
+    pub fn changed_since(&self, read: &ReviewItem) -> bool {
+        self.candidate != read.candidate || self.competing_matches != read.competing_matches
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchingPolicy {
     pub high_confidence_threshold: u8,

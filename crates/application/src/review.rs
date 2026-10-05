@@ -94,8 +94,9 @@ pub fn decide_pending_reviews(
                     .map(|release_edition_id| ReviewDecision::Accept { release_edition_id })
             }
         };
+        // Recorded only while the item is as read, so the match chosen for it still holds.
         if let Some(chosen) = chosen {
-            decisions.push((item.id, chosen));
+            decisions.push((item, chosen));
         }
     }
     let mut decided = 0;
@@ -207,6 +208,10 @@ pub fn resolve_review_item(
                     _ => 0,
                 },
             })
+        }
+        // Only a batch, whose decisions were taken on items as read, answers this.
+        ReviewDecisionOutcome::Changed => {
+            Err(ApplicationError::ReviewItemContended(review_item_id))
         }
     }
 }

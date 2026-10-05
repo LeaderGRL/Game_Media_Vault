@@ -1274,6 +1274,41 @@ fn park_each(catalog: &SqliteCatalog, run_id: i64, identities: &[&str]) -> Vec<R
 }
 
 #[test]
+fn a_batch_of_decisions_leaves_an_item_refreshed_since_it_was_read_undecided() {
+    let (_temp, catalog) = open_catalog();
+    let first_run = start_run(&catalog);
+    let read = parked_item(&catalog, first_run);
+    // Another run meets the candidate among other releases, which refreshes the item.
+    let other_run = start_run(&catalog);
+    discover(&catalog, other_run);
+    catalog
+        .park_work_for_review(
+            other_run,
+            IDENTITY,
+            new_item(vec![
+                competing_match(201, "Standard"),
+                competing_match(203, "Limited"),
+            ]),
+        )
+        .unwrap();
+
+    let outcomes = catalog
+        .decide_review_items(&[(
+            read.clone(),
+            ReviewDecision::Accept {
+                release_edition_id: 201,
+            },
+        )])
+        .unwrap();
+
+    assert_eq!(outcomes, vec![ReviewDecisionOutcome::Changed]);
+    assert_eq!(
+        catalog.get_review_item(read.id).unwrap().unwrap().status,
+        ReviewStatus::Pending
+    );
+}
+
+#[test]
 fn undecided_reviews_come_a_page_at_a_time_in_the_order_they_were_opened() {
     let (_temp, catalog) = open_catalog();
     let run = start_run(&catalog);
