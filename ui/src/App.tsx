@@ -455,8 +455,21 @@ export function App() {
     }
   }
 
-  /** Reads the page of the Review Items awaiting a decision the Review view shows. */
-  function readReviewPage() {
+  /**
+   * Reads the page of the Review Items awaiting a decision the Review view shows, or the last
+   * page when decisions left fewer items than that page starts at.
+   */
+  async function readReviewPage() {
+    const offset = reviewOffset.current;
+    const page = await invoke<ReviewPage>("review_page", { offset, limit: REVIEW_PAGE_SIZE });
+    if (page.items.length > 0 || offset === 0 || offset < page.undecided) {
+      return page;
+    }
+    // Unless another page was asked for meanwhile, which a later read shows.
+    if (reviewOffset.current === offset) {
+      reviewOffset.current =
+        Math.max(0, Math.ceil(page.undecided / REVIEW_PAGE_SIZE) - 1) * REVIEW_PAGE_SIZE;
+    }
     return invoke<ReviewPage>("review_page", {
       offset: reviewOffset.current,
       limit: REVIEW_PAGE_SIZE,
@@ -466,6 +479,7 @@ export function App() {
   function showReviewPage(page: ReviewPage) {
     setReviewItems(page.items);
     setReviewUndecided(page.undecided);
+    setShownReviewOffset(page.offset);
   }
 
   /** Shows the page of Review Items after the first `offset`, or the last page past the end. */
@@ -479,13 +493,7 @@ export function App() {
     reviewRefreshRequestGeneration.current += 1;
     const generation = reviewRefreshRequestGeneration.current;
     try {
-      let page = await readReviewPage();
-      // Decisions taken meanwhile can leave fewer items than the page starts at.
-      if (page.items.length === 0 && page.undecided > 0 && offset >= page.undecided) {
-        reviewOffset.current = Math.floor((page.undecided - 1) / REVIEW_PAGE_SIZE) * REVIEW_PAGE_SIZE;
-        setShownReviewOffset(reviewOffset.current);
-        page = await readReviewPage();
-      }
+      const page = await readReviewPage();
       if (
         activeVaultRoot.current === readingVaultRoot &&
         generation === reviewRefreshRequestGeneration.current

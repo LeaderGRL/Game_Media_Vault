@@ -567,7 +567,7 @@ Each download shows as a card named after its consoles, with what its run reques
 
 ### Review
 
-Review Items show the competing Release Editions or metadata values, thumbnails/previews, evidence from each Source, matching score breakdown, and actions to accept, reject, merge, split, or defer. A preview downloads the candidate through the registered connector of its own Source. The view shows the items awaiting a decision 25 to a page, with how many await in all, and decides them all at once after a confirmation: « Accept all suggestions » accepts the best match of each, « Reject all » rejects them all; it then says how many it decided and how many it left, and shows the first page again with the Library and runs the decisions changed.
+Review Items show the competing Release Editions or metadata values, thumbnails/previews, evidence from each Source, matching score breakdown, and actions to accept, reject, merge, split, or defer. A preview downloads the candidate through the registered connector of its own Source. The view shows the items awaiting a decision 25 to a page, with how many await in all, and the last page again whenever decisions leave none on the page shown, and decides them all at once after a confirmation: « Accept all suggestions » accepts the best match of each, « Reject all » rejects them all; it then says how many it decided and how many it left, and shows the first page again with the Library and runs the decisions changed.
 
 ### Library
 

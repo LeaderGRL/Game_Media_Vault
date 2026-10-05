@@ -52,14 +52,18 @@ function searchLibrary(query: Record<string, unknown>) {
 /**
  * Tests script the Review Items as `list_review_items` arrays; the App reads pages of them, so
  * a page read answers with the scripted listing as a single page. A scripted value that is
- * already a page is returned as is.
+ * already a page is returned as is, and any other value, scripted for other commands, as an
+ * empty page.
  */
 function reviewPage(args: Record<string, unknown> | undefined) {
   reviewPageQueries.push(args ?? {});
+  const offset = args?.offset ?? 0;
   return Promise.resolve(invokeMock("list_review_items")).then((listing: unknown) =>
     Array.isArray(listing)
-      ? { items: listing, undecided: listing.length, offset: args?.offset ?? 0 }
-      : (listing ?? { items: [], undecided: 0, offset: 0 }),
+      ? { items: listing, undecided: listing.length, offset }
+      : typeof listing === "object" && listing !== null && "items" in listing
+        ? listing
+        : { items: [], undecided: 0, offset },
   );
 }
 
@@ -1891,6 +1895,48 @@ describe("App", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
 
     await waitFor(() => expect(reviewPageQueries.at(-1)).toEqual({ offset: 25, limit: 25 }));
+  });
+
+  it("shows the last page again once a decision leaves no review on the page shown", async () => {
+    const firstPage = Array.from({ length: 25 }, (_, index) => ({ ...reviewItem, id: 100 + index }));
+    const last = {
+      ...reviewItem,
+      id: 200,
+      candidate: { ...reviewItem.candidate, game_title: "Last Game" },
+    };
+    let decided = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_review_items") {
+        // Answers the page the App asked for, as the desktop shell does.
+        const offset = Number(reviewPageQueries.at(-1)?.offset ?? 0);
+        const undecided = decided ? firstPage : [...firstPage, last];
+        return Promise.resolve({
+          items: undecided.slice(offset, offset + 25),
+          undecided: undecided.length,
+          offset,
+        });
+      }
+      if (command === "resolve_review_item") {
+        decided = true;
+        return Promise.resolve({ ...last, status: "rejected", decision: { decision: "reject" } });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(await screen.findByRole("button", { name: "Review (26)" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Next page" })[0]);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Reject candidate" })).toHaveLength(1),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject candidate" }));
+
+    expect(await screen.findByRole("button", { name: "Review (25)" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Reject candidate" })).toHaveLength(25),
+    );
+    expect(reviewPageQueries.at(-1)).toEqual({ offset: 0, limit: 25 });
   });
 });
 
