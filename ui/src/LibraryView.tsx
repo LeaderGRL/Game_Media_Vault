@@ -61,9 +61,11 @@ const SOURCE_OPTIONS = [
   { value: "local_import", label: "Local import" },
 ];
 
-const MEDIA_OPTIONS = ASSET_TYPE_FAMILIES.flatMap((family) =>
-  family.types.map((type) => ({ value: type.value, label: type.label })),
-);
+/** Each media family, which also matches the types added to it later, then its own types. */
+const MEDIA_OPTIONS = ASSET_TYPE_FAMILIES.flatMap((family) => [
+  { value: family.value, label: `All ${family.label}` },
+  ...family.types.map((type) => ({ value: type.value, label: type.label })),
+]);
 
 /** The games of the vault as a grid of covers, filtered by lists, each opening its media. */
 export function LibraryView({

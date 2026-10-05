@@ -132,6 +132,18 @@ describe("LibraryView", () => {
     });
   });
 
+  it("filters by a whole media family", () => {
+    const onSearch = library();
+
+    fireEvent.click(screen.getByRole("button", { name: "Media" }));
+    fireEvent.click(screen.getByLabelText("All Packaging"));
+
+    expect(onSearch).toHaveBeenLastCalledWith({
+      ...NO_LIBRARY_FILTERS,
+      assetTypes: ["packaging"],
+    });
+  });
+
   it("searches titles once submitted, and can show games without media", () => {
     const onSearch = library();
 
