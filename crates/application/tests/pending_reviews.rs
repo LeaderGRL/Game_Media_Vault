@@ -169,6 +169,33 @@ fn reviews_closed_meanwhile_are_not_left_awaiting_a_decision() {
     );
 }
 
+#[test]
+fn a_tie_closed_meanwhile_is_not_left_awaiting_a_decision() {
+    let (tie, mut releases) = tied("Tied Game", 401);
+    let (threshold, release) = threshold_candidate_and_release();
+    releases.push(release);
+    let vault = FakeVault::with_library(releases);
+    park(&vault, vec![tie, threshold], stricter_matching_policy());
+    // Someone rejects the tie, the first item, while the other decisions are recorded.
+    *vault.rejection_before_next_decisions.borrow_mut() = true;
+
+    let summary = decide_pending_reviews(
+        &vault,
+        &vault,
+        PendingReviewDecision::AcceptBestMatches,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary,
+        PendingReviewSummary {
+            decided: 1,
+            left: 0
+        }
+    );
+}
+
 fn resolve(vault: &FakeVault, review_item_id: i64, decision: ReviewDecision) {
     game_media_vault_application::resolve_review_item(vault, review_item_id, decision).unwrap();
 }

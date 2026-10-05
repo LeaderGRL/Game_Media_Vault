@@ -1,4 +1,7 @@
-use std::{collections::HashMap, io::Read};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+};
 
 use game_media_vault_domain::{
     LibraryEntry, MatchingPolicy, ReviewDecision, ReviewItem, ValidatedMatchingPolicy,
@@ -54,9 +57,9 @@ pub enum PendingReviewDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PendingReviewSummary {
     pub decided: usize,
-    /// Items left awaiting a decision: those whose best match ties releases of several Games,
-    /// and those whose competing releases changed meanwhile. Items someone else decided or
-    /// closed meanwhile no longer await one and are not counted.
+    /// Items considered that still await a decision once every decision is recorded: those whose
+    /// best match ties releases of several Games, and those whose competing releases changed
+    /// meanwhile. Items someone else decided or closed meanwhile are not counted.
     pub left: usize,
 }
 
@@ -77,15 +80,13 @@ pub fn decide_pending_reviews(
             .collect(),
         PendingReviewDecision::RejectAll => HashMap::new(),
     };
-    let mut summary = PendingReviewSummary {
-        decided: 0,
-        left: 0,
-    };
+    let mut considered = HashSet::new();
     let mut decisions = Vec::new();
     for item in reviews.list_review_items()? {
         if !item.status.is_undecided() {
             continue;
         }
+        considered.insert(item.id);
         let chosen = match decision {
             PendingReviewDecision::RejectAll => Some(ReviewDecision::Reject),
             PendingReviewDecision::AcceptBestMatches => {
@@ -93,22 +94,27 @@ pub fn decide_pending_reviews(
                     .map(|release_edition_id| ReviewDecision::Accept { release_edition_id })
             }
         };
-        match chosen {
-            Some(chosen) => decisions.push((item.id, chosen)),
-            None => summary.left += 1,
+        if let Some(chosen) = chosen {
+            decisions.push((item.id, chosen));
         }
     }
+    let mut decided = 0;
     // Batches keep each transaction short, so executions are not held off for long.
     for batch in decisions.chunks(DECISION_BATCH) {
-        for outcome in reviews.decide_review_items(batch)? {
-            match outcome {
-                ReviewDecisionOutcome::Recorded(_) => summary.decided += 1,
-                ReviewDecisionOutcome::NotCompeting => summary.left += 1,
-                ReviewDecisionOutcome::NotFound | ReviewDecisionOutcome::NotUndecided(_) => {}
-            }
-        }
+        decided += reviews
+            .decide_review_items(batch)?
+            .into_iter()
+            .filter(|outcome| matches!(outcome, ReviewDecisionOutcome::Recorded(_)))
+            .count();
     }
-    Ok(summary)
+    // What is left is read once every decision is recorded, so items others decided meanwhile,
+    // whether this decided them or not, are not counted.
+    let left = reviews
+        .list_review_items()?
+        .into_iter()
+        .filter(|item| item.status.is_undecided() && considered.contains(&item.id))
+        .count();
+    Ok(PendingReviewSummary { decided, left })
 }
 
 /// The release among those `item` competed for that its candidate matches best now, unless the
