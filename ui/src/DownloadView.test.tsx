@@ -97,6 +97,27 @@ describe("DownloadView", () => {
     expect(onStart.mock.calls[0][0][0].limits).toEqual({ games_percent: 25 });
   });
 
+  it("refuses a number or share of games it would not keep as shown", () => {
+    const onStart = vi.fn();
+    render(<DownloadView sources={SOURCES} onStart={onStart} />);
+    fireEvent.click(screen.getByLabelText("Super Nintendo Entertainment System"));
+    const startButton = screen.getByRole("button", { name: "Start download" });
+
+    fireEvent.click(screen.getByRole("button", { name: "A number per console" }));
+    fireEvent.change(screen.getByLabelText("Games per console"), { target: { value: "0" } });
+    expect(startButton).toBeDisabled();
+    expect(screen.getByText("Enter a whole number of games per console, at least 1.")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "A share of each console" }));
+    fireEvent.change(screen.getByLabelText("Share of games (%)"), { target: { value: "200" } });
+    expect(startButton).toBeDisabled();
+    expect(screen.getByText("Enter a share of games from 1 to 100%.")).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("Share of games (%)"), { target: { value: "100" } });
+    start();
+    expect(onStart.mock.calls[0][0][0].limits).toEqual({ games_percent: 100 });
+  });
+
   it("finds consoles by name and ticks every console of a maker at once", () => {
     render(<DownloadView sources={SOURCES} onStart={vi.fn()} />);
 

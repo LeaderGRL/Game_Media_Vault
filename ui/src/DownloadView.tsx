@@ -111,11 +111,19 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
     );
   }
 
+  // A number or share of games the request could not keep as typed is refused, not changed.
+  const limitProblem =
+    scope === "count" && !(Number.isInteger(gameCount) && gameCount >= 1)
+      ? "Enter a whole number of games per console, at least 1."
+      : scope === "percent" &&
+          !(Number.isInteger(gamePercent) && gamePercent >= 1 && gamePercent <= 100)
+        ? "Enter a share of games from 1 to 100%."
+        : null;
   const limits: AcquisitionLimits =
     scope === "count"
-      ? { max_games: Math.max(1, Math.round(gameCount)) }
+      ? { max_games: gameCount }
       : scope === "percent"
-        ? { games_percent: Math.min(100, Math.max(1, Math.round(gamePercent))) }
+        ? { games_percent: gamePercent }
         : {};
   const retention: RetentionPolicy =
     keep === "all" ? "keep_everything" : { keep_best: { per_type: Number(keep) } };
@@ -124,7 +132,10 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
     ? [ANY_ASSET_TYPE]
     : mediaTypes.filter((type) => available.has(type));
   const ready =
-    consoles.length > 0 && assetTypes.length > 0 && (everySource || chosenSources.length > 0);
+    consoles.length > 0 &&
+    limitProblem === null &&
+    assetTypes.length > 0 &&
+    (everySource || chosenSources.length > 0);
 
   function start() {
     onStart(
@@ -399,6 +410,8 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         <p className="summary-text" aria-live="polite">
           {consoles.length === 0 ? (
             "Choose at least one console to start."
+          ) : limitProblem !== null ? (
+            limitProblem
           ) : (
             <>
               <strong>
