@@ -603,8 +603,9 @@ export function App() {
     activeViewRef.current = view;
     setActiveView(view);
     // Executions import as they go: the Library shows what they imported so far when it opens,
-    // rather than only once they end.
-    if (view === "library" && executingRunIds.size > 0) {
+    // rather than only once they end. Results someone browses stay, and the poll offers the
+    // media arriving through the banner instead.
+    if (view === "library" && executingRunIds.size > 0 && !browsingLibrary()) {
       const refreshingVaultRoot = activeVaultRoot.current;
       refreshVaultData(refreshingVaultRoot).catch((reason) => {
         if (activeVaultRoot.current === refreshingVaultRoot) {

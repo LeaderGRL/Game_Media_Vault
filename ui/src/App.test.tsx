@@ -3127,6 +3127,44 @@ describe("App Library requests", () => {
     expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
   });
 
+  it("keeps the pages someone loaded when the Library opens again during an execution", async () => {
+    const vagrantStory = { ...entry, release_edition_id: 9, game_title: "Vagrant Story" };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([runToExecute]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise(() => {});
+      }
+      if (command === "list_library") {
+        return Promise.resolve(
+          libraryQueries.at(-1)?.after === 2
+            ? { releases: [vagrantStory], total: 2, next_after: null, as_of: 9 }
+            : { releases: [entry], total: 2, next_after: 2, as_of: 9 },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByText("Downloading");
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Vagrant Story")).toBeInTheDocument();
+    const searched = libraryQueries.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("button", { name: /Library/ }));
+    await act(async () => {});
+
+    // Both pages stay; media arriving meanwhile would show the banner instead.
+    expect(libraryQueries).toHaveLength(searched);
+    expect(screen.getByText("Vagrant Story")).toBeInTheDocument();
+    expect(screen.getByText("Metal Gear Solid")).toBeInTheDocument();
+  });
+
   it("shows the registered Sources", async () => {
     invokeMock.mockImplementation((command: string) =>
       Promise.resolve(
