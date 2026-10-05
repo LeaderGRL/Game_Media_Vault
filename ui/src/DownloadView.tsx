@@ -120,14 +120,19 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
     );
   }
 
-  // A number or share of games the request could not keep as typed is refused, not changed.
-  const limitProblem =
+  // A number or share of games the request could not keep as typed is refused, not changed,
+  // and a request no Source could serve waits for one, as planning would refuse it.
+  const problem =
     scope === "count" && !(Number.isInteger(gameCount) && gameCount >= 1)
       ? "Enter a whole number of games per console, at least 1."
       : scope === "percent" &&
           !(Number.isInteger(gamePercent) && gamePercent >= 1 && gamePercent <= 100)
         ? "Enter a share of games from 1 to 100%."
-        : null;
+        : sources === null || taking.length > 0
+          ? null
+          : sources.some(usable)
+            ? "Tick at least one Source to download from."
+            : "No Source can take part: enable one or store its key in Sources.";
   const limits: AcquisitionLimits =
     scope === "count"
       ? { max_games: gameCount }
@@ -142,7 +147,7 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
     : mediaTypes.filter((type) => available.has(type));
   const ready =
     consoles.length > 0 &&
-    limitProblem === null &&
+    problem === null &&
     assetTypes.length > 0 &&
     (everySource || chosenSources.length > 0);
 
@@ -419,8 +424,8 @@ export function DownloadView({ sources, onStart, advanced }: DownloadViewProps) 
         <p className="summary-text" aria-live="polite">
           {consoles.length === 0 ? (
             "Choose at least one console to start."
-          ) : limitProblem !== null ? (
-            limitProblem
+          ) : problem !== null ? (
+            problem
           ) : (
             <>
               <strong>

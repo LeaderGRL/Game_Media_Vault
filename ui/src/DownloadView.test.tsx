@@ -184,6 +184,21 @@ describe("DownloadView", () => {
     );
   });
 
+  it("waits for a Source that can take part", () => {
+    render(
+      <DownloadView
+        sources={[source({ enabled: false }), source({ source_id: "rawg", credential: "missing" })]}
+        onStart={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Super Nintendo Entertainment System"));
+
+    expect(screen.getByRole("button", { name: "Start download" })).toBeDisabled();
+    expect(
+      screen.getByText("No Source can take part: enable one or store its key in Sources."),
+    ).toBeVisible();
+  });
+
   it("keeps to the Sources chosen", () => {
     const onStart = vi.fn();
     render(<DownloadView sources={SOURCES} onStart={onStart} />);
