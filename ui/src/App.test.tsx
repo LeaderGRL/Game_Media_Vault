@@ -3970,6 +3970,51 @@ describe("App Library requests", () => {
     expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked();
   });
 
+  it("keeps a read of the Sources that a failed toggle answered during", async () => {
+    const launchbox = {
+      source_id: "launchbox-games-db",
+      asset_types: ["box_front"],
+      direct_media_download: true,
+      credential_fields: [],
+      enabled: true,
+    };
+    let reads = 0;
+    let answerLateRead: (sources: unknown) => void = () => {};
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_sources") {
+        reads += 1;
+        return reads === 1
+          ? Promise.resolve([launchbox])
+          : new Promise((resolve) => {
+              answerLateRead = resolve;
+            });
+      }
+      if (command === "set_source_enabled") {
+        return Promise.reject({ kind: "external", message: "settings locked" });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await screen.findByRole("checkbox", { name: "Enabled on this machine" });
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() => expect(reads).toBe(2));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enabled on this machine" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("set_source_enabled", expect.anything()),
+    );
+    // The Source was disabled elsewhere meanwhile, as the read in flight says.
+    await act(async () => answerLateRead([{ ...launchbox, enabled: false }]));
+
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Enabled on this machine" })).not.toBeChecked(),
+    );
+  });
+
   it("stores the API key of a Source from the Sources view", async () => {
     const steamgriddb = {
       source_id: "steamgriddb",

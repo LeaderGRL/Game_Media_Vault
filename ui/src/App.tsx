@@ -1072,7 +1072,16 @@ export function App() {
     }
   }
 
-  /** Shows the Sources as the backend just described them, ending any older read. */
+  /**
+   * Shows the Sources as a change of them just described them: a read started before it would
+   * show their older state, so it ends there. A change that fails leaves reads under way alone.
+   */
+  function showChangedSources(listed: SourceDescription[]) {
+    sourcesRequest.current += 1;
+    showSourceList(listed);
+  }
+
+  /** Shows the Sources as the backend described them. */
   function showSourceList(listed: SourceDescription[]) {
     setSources(listed);
     setSourcesReading(false);
@@ -1081,19 +1090,16 @@ export function App() {
 
   /** Enables or disables a Source on this machine, for every vault, and shows the outcome. */
   async function setSourceEnabled(sourceId: string, enabled: boolean) {
-    // A read of the Sources started before this change would show their older state.
-    sourcesRequest.current += 1;
     const described = await invoke<SourceDescription[]>("set_source_enabled", {
       source_id: sourceId,
       enabled,
     });
-    showSourceList(described);
+    showChangedSources(described);
   }
 
   /** Stores on this machine one credential a Source needs, for every vault, never showing it. */
   async function setSourceCredential(sourceId: string, field: string, key: string) {
-    sourcesRequest.current += 1;
-    showSourceList(
+    showChangedSources(
       await invoke<SourceDescription[]>("set_source_api_key", {
         source_id: sourceId,
         field,
@@ -1104,8 +1110,7 @@ export function App() {
 
   /** Forgets one credential this machine stores for a Source. */
   async function clearSourceCredential(sourceId: string, field: string) {
-    sourcesRequest.current += 1;
-    showSourceList(
+    showChangedSources(
       await invoke<SourceDescription[]>("clear_source_api_key", { source_id: sourceId, field }),
     );
   }
