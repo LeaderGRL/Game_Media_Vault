@@ -2047,6 +2047,40 @@ describe("App acquisition", () => {
     );
   });
 
+  it("keeps a console that could not start with its vault until dismissed", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      command === "start_acquisition_run"
+        ? Promise.reject({ kind: "external", message: "game list unreachable" })
+        : Promise.resolve([]),
+    );
+    render(<App />);
+    const firstVault = (vaultFolder() as HTMLInputElement).value;
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await waitFor(() =>
+      expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
+        "game list unreachable",
+      ),
+    );
+
+    fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.queryByRole("article", { name: "Game Boy" })).not.toBeInTheDocument();
+
+    fireEvent.change(vaultFolder(), { target: { value: firstVault } });
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
+      "game list unreachable",
+    );
+  });
+
   it("shows the media a run acquired so far when the Library opens while it executes", async () => {
     let library: LibraryEntry[] = [];
     invokeMock.mockImplementation((command: string) => {

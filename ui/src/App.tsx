@@ -167,7 +167,8 @@ export function App() {
   // list first; their starts chain here.
   const startChain = useRef<Promise<void>>(Promise.resolve());
   const preparingKey = useRef(0);
-  const [preparing, setPreparing] = useState<PreparingDownload[]>([]);
+  // Each with the vault it was chosen in.
+  const [preparing, setPreparing] = useState<(PreparingDownload & { vaultRoot: string })[]>([]);
   // Runs waiting to execute, by vault: each vault executes one run at a time, so Sources are
   // never asked for two downloads at once.
   const waitingRuns = useRef(new Map<string, number[]>());
@@ -364,8 +365,9 @@ export function App() {
     setBusyRunIds(new Set());
     setExecutingRunIds(new Set(executionsByVault.current.get(vaultKey)));
     setWaitingRunIds(new Set(waitingRuns.current.get(vaultKey)));
-    // Downloads still preparing belong to the vault they were chosen in, which stops them.
-    setPreparing([]);
+    // Downloads still preparing belong to the vault they were chosen in, which stops them;
+    // those that could not start stay with their vault until dismissed.
+    setPreparing((current) => current.filter((item) => item.failure !== undefined));
     setLatestMedia([]);
     newestAssetSeen.current = undefined;
     try {
@@ -1028,7 +1030,14 @@ export function App() {
     const startingVaultRoot = loadedVaultRoot;
     const downloads = requests.map((request) => {
       preparingKey.current += 1;
-      return { request, preparing: { key: preparingKey.current, title: requestTitle(request) } };
+      return {
+        request,
+        preparing: {
+          key: preparingKey.current,
+          title: requestTitle(request),
+          vaultRoot: startingVaultRoot,
+        },
+      };
     });
     setPreparing((current) => [...current, ...downloads.map((download) => download.preparing)]);
     setError(null);
@@ -1365,7 +1374,7 @@ export function App() {
         <Page title="Activity" subtitle="Downloads under way and done, as media arrive.">
           <ActivityView
             runs={runs}
-            preparing={preparing}
+            preparing={preparing.filter((item) => item.vaultRoot === loadedVaultRoot)}
             executingRunIds={executingRunIds}
             waitingRunIds={waitingRunIds}
             busyRunIds={busyRunIds}
