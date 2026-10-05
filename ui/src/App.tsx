@@ -1336,8 +1336,9 @@ export function App() {
     // are refreshed once it ends. A failure of an earlier execution stays shown meanwhile.
     trackExecution(actingVaultRoot, runId, true);
     let executionError: string | null = null;
+    let executed: AcquisitionRun | null = null;
     try {
-      await invoke<AcquisitionRun>("execute_acquisition_run", {
+      executed = await invoke<AcquisitionRun>("execute_acquisition_run", {
         run_id: runId,
         matching_policy: MATCHING_POLICY,
       });
@@ -1350,8 +1351,15 @@ export function App() {
       trackExecution(actingVaultRoot, runId, false);
     }
     // A resume that came while this execution stopped for a pause executes the run again,
-    // after the runs already waiting.
-    if (actingVaultRoot !== null && executeAgain.current.get(actingVaultRoot)?.delete(runId)) {
+    // after the runs already waiting, unless the execution went on and ended the run.
+    const resumed =
+      actingVaultRoot !== null && executeAgain.current.get(actingVaultRoot)?.delete(runId);
+    if (
+      resumed &&
+      executed !== null &&
+      executed.status !== "completed" &&
+      executed.status !== "cancelled"
+    ) {
       queueExecution(actingVaultRoot, runId);
     }
     void showExecuted(actingVaultRoot, executionError);

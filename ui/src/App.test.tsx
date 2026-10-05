@@ -3389,6 +3389,40 @@ describe("App Library requests", () => {
     expect(screen.getByText("New media arrived.")).toBeInTheDocument();
   });
 
+  it("does not execute again a run whose execution completed despite the pause", async () => {
+    const executions: Array<() => void> = [];
+    let status = "running";
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_acquisition_runs") {
+        return Promise.resolve([{ ...runToExecute, status }]);
+      }
+      if (command === "execute_acquisition_run") {
+        return new Promise((resolve) =>
+          executions.push(() => resolve({ ...runToExecute, status: "completed" })),
+        );
+      }
+      if (command === "pause_acquisition_run" || command === "resume_acquisition_run") {
+        status = command === "pause_acquisition_run" ? "paused" : "running";
+        return Promise.resolve({ ...runToExecute, status });
+      }
+      return Promise.resolve([]);
+    });
+    render(<App />);
+    openVault();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(executions).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(status).toBe("running"));
+
+    // The resume came before the execution saw the pause, so it finished the run.
+    await act(async () => executions[0]());
+    await act(async () => {});
+
+    expect(executions).toHaveLength(1);
+  });
+
   it("ignores the failure of a page a newer search superseded", async () => {
     let failPage: ((reason: unknown) => void) | undefined;
     invokeMock.mockImplementation((command: string) => {
