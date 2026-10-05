@@ -223,6 +223,23 @@ fn a_review_whose_matches_changed_since_it_was_read_is_left_undecided() {
     assert_eq!(vault.review_item(0).status, ReviewStatus::Pending);
 }
 
+#[test]
+fn rejecting_every_review_needs_no_valid_matching_policy() {
+    let (tie, releases) = tied("Tied Game", 401);
+    let vault = FakeVault::with_library(releases);
+    park(&vault, vec![tie], matching_policy());
+    // Rejecting scores nothing, so thresholds a match could not use do not stop it.
+    let unusable = MatchingPolicy {
+        high_confidence_threshold: 40,
+        medium_confidence_threshold: 50,
+    };
+
+    let summary =
+        decide_pending_reviews(&vault, &vault, PendingReviewDecision::RejectAll, unusable).unwrap();
+
+    assert_eq!(summary.decided, 1);
+}
+
 fn resolve(vault: &FakeVault, review_item_id: i64, decision: ReviewDecision) {
     game_media_vault_application::resolve_review_item(vault, review_item_id, decision).unwrap();
 }

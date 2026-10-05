@@ -72,14 +72,18 @@ pub fn decide_pending_reviews(
     decision: PendingReviewDecision,
     matching_policy: MatchingPolicy,
 ) -> Result<PendingReviewSummary, ApplicationError> {
-    let matching_policy = matching_policy.validate()?;
-    let releases: HashMap<i64, LibraryEntry> = match decision {
-        PendingReviewDecision::AcceptBestMatches => catalog
-            .list_library()?
-            .into_iter()
-            .map(|release| (release.release_edition_id, release))
-            .collect(),
-        PendingReviewDecision::RejectAll => HashMap::new(),
+    // Accepting scores each item against the releases it competed for; rejecting needs neither
+    // the matcher nor the catalog.
+    let scoring: Option<(ValidatedMatchingPolicy, HashMap<i64, LibraryEntry>)> = match decision {
+        PendingReviewDecision::AcceptBestMatches => Some((
+            matching_policy.validate()?,
+            catalog
+                .list_library()?
+                .into_iter()
+                .map(|release| (release.release_edition_id, release))
+                .collect(),
+        )),
+        PendingReviewDecision::RejectAll => None,
     };
     let mut considered = HashSet::new();
     let mut decisions = Vec::new();
@@ -88,10 +92,10 @@ pub fn decide_pending_reviews(
             continue;
         }
         considered.insert(item.id);
-        let chosen = match decision {
-            PendingReviewDecision::RejectAll => Some(ReviewDecision::Reject),
-            PendingReviewDecision::AcceptBestMatches => {
-                best_competing_release(&item, &releases, matching_policy)
+        let chosen = match &scoring {
+            None => Some(ReviewDecision::Reject),
+            Some((matching_policy, releases)) => {
+                best_competing_release(&item, releases, *matching_policy)
                     .map(|release_edition_id| ReviewDecision::Accept { release_edition_id })
             }
         };
