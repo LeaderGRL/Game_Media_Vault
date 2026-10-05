@@ -1065,11 +1065,14 @@ export function App() {
     try {
       started = await invoke<AcquisitionRun>("start_acquisition_run", { request });
     } catch (reason) {
-      // The download stays in the Activity view with its reason, beside any other that failed.
+      // The download stays in the Activity view with its reason, beside any other that failed,
+      // even when its vault opened again meanwhile and dropped the cards still preparing.
       if (activeVaultRoot.current === startingVaultRoot) {
-        const failure = errorMessage(reason);
+        const failed = { ...download, vaultRoot: startingVaultRoot, failure: errorMessage(reason) };
         setPreparing((current) =>
-          current.map((item) => (item.key === download.key ? { ...item, failure } : item)),
+          current.some((item) => item.key === download.key)
+            ? current.map((item) => (item.key === download.key ? failed : item))
+            : [...current, failed],
         );
       }
       return;
@@ -1295,7 +1298,12 @@ export function App() {
   }
 
   const vaultReady = loadedVaultRoot !== null;
-  const activeDownloads = executingRunIds.size + waitingRunIds.size + preparing.length;
+  // Consoles that could not start are no downloads under way.
+  const activeDownloads =
+    executingRunIds.size +
+    waitingRunIds.size +
+    preparing.filter((item) => item.failure === undefined && item.vaultRoot === loadedVaultRoot)
+      .length;
 
   return (
     <AppShell

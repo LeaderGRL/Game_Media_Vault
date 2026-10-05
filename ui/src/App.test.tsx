@@ -2065,6 +2065,8 @@ describe("App acquisition", () => {
         "game list unreachable",
       ),
     );
+    // A console that could not start is no download under way.
+    expect(screen.getByRole("button", { name: "Activity" }).querySelector(".nav-badge")).toBeNull();
 
     fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
     openVault();
@@ -2078,6 +2080,45 @@ describe("App acquisition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
       "game list unreachable",
+    );
+  });
+
+  it("reports a console that fails to start after its vault was opened again", async () => {
+    let finishFirst: ((run: unknown) => void) | undefined;
+    invokeMock.mockImplementation(
+      (command: string, args?: { request?: { platforms: string[] } }) => {
+        if (command === "start_acquisition_run") {
+          return args?.request?.platforms[0] === "Nintendo - Game Boy"
+            ? new Promise((resolve) => {
+                finishFirst = resolve;
+              })
+            : Promise.reject({ kind: "external", message: "game list unreachable" });
+        }
+        if (command === "execute_acquisition_run") {
+          return new Promise(() => {});
+        }
+        return Promise.resolve([]);
+      },
+    );
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByLabelText("Game Boy Color"));
+    fireEvent.click(screen.getByRole("button", { name: "Start download" }));
+    await waitFor(() => expect(finishFirst).toBeDefined());
+
+    // The same vault opens again while the first console still fetches its game list.
+    openVault();
+    await vaultSettled();
+    await act(async () => finishFirst?.({ ...startedRun, id: 2 }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("article", { name: "Game Boy Color" })).toHaveTextContent(
+        "game list unreachable",
+      ),
     );
   });
 
