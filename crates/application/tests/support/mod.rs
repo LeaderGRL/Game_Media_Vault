@@ -867,6 +867,32 @@ impl ReviewRepositoryPort for FakeVault {
         Ok(true)
     }
 
+    fn parked_reviews_of_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<(ReviewItem, AssetCandidate)>, PortError> {
+        let parked: Vec<(i64, AssetCandidate)> = self.runs.borrow()[&run_id]
+            .work
+            .iter()
+            .filter_map(|work| match work.state {
+                WorkState::Parked(review_item_id) => {
+                    Some((review_item_id, work.item.candidate.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let review_items = self.review_items.borrow();
+        Ok(parked
+            .into_iter()
+            .filter_map(|(review_item_id, candidate)| {
+                review_items
+                    .iter()
+                    .find(|item| item.id == review_item_id && item.status.is_undecided())
+                    .map(|item| (item.clone(), candidate))
+            })
+            .collect())
+    }
+
     fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError> {
         let mut runs = self.runs.borrow_mut();
         let run = runs.get_mut(&run_id).unwrap();

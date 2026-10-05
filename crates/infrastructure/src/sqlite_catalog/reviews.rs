@@ -2,9 +2,9 @@ use game_media_vault_application::{
     CandidateAssetOutcome, ParkedReview, PortError, ReviewDecisionOutcome, ReviewRepositoryPort,
 };
 use game_media_vault_domain::{
-    AssetType, LibraryAsset, MediaInfo, NewReviewItem, PersistAsset, QualityShortfall,
-    RetentionPolicy, ReviewDecision, ReviewItem, ReviewMatchCandidate, ReviewStatus, StoredObject,
-    outranked_by,
+    AssetCandidate, AssetType, LibraryAsset, MediaInfo, NewReviewItem, PersistAsset,
+    QualityShortfall, RetentionPolicy, ReviewDecision, ReviewItem, ReviewMatchCandidate,
+    ReviewStatus, StoredObject, outranked_by,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -229,6 +229,42 @@ impl ReviewRepositoryPort for SqliteCatalog {
         )?;
         transaction.commit().map_err(sql_error)?;
         Ok(true)
+    }
+
+    fn parked_reviews_of_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<(ReviewItem, AssetCandidate)>, PortError> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT review_items.id, review_items.candidate_identity,
+                        review_items.candidate_json, review_items.competing_matches_json,
+                        review_items.decision_json, review_items.status,
+                        acquisition_run_work.candidate_json
+                 FROM acquisition_run_work
+                 JOIN review_items ON review_items.id = acquisition_run_work.review_item_id
+                 WHERE acquisition_run_work.run_id = ?1
+                   AND acquisition_run_work.state = 'parked'
+                   AND review_items.status IN ('pending', 'deferred')
+                 ORDER BY acquisition_run_work.id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok((review_item_row(row)?, row.get::<_, String>(6)?))
+            })
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .map(|(item, candidate_json)| {
+                Ok((
+                    decode_review_item(item)?,
+                    from_json(&candidate_json, "run work candidate")?,
+                ))
+            })
+            .collect()
     }
 
     fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError> {

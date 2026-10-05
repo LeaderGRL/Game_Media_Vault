@@ -954,10 +954,8 @@ impl Acquisition<'_> {
             .iter()
             .map(|release| (release.release_edition_id, release))
             .collect();
-        for item in self.reviews.list_review_items()? {
-            if !item.status.is_undecided() {
-                continue;
-            }
+        // The run's own candidate is matched, as the shared item may hold another run's.
+        for (item, candidate) in self.reviews.parked_reviews_of_run(self.run_id)? {
             let competing: Vec<LibraryEntry> = item
                 .competing_matches
                 .iter()
@@ -965,7 +963,7 @@ impl Acquisition<'_> {
                 .map(|release| (*release).clone())
                 .collect();
             let rematched = match_asset_candidate_to_release_preferring(
-                &item.candidate,
+                &candidate,
                 &competing,
                 self.matching_policy,
                 &|release| self.requested_releases.contains(&release_key(release)),

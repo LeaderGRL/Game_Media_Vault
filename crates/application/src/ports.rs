@@ -202,6 +202,15 @@ pub trait ReviewRepositoryPort {
         candidate_identity: &str,
     ) -> Result<bool, PortError>;
 
+    /// The undecided items, pending or deferred, that work of run `run_id` is parked on, each
+    /// with the candidate of that work as the run recorded it, which can differ from the
+    /// snapshot another run refreshed the shared item with. A repository reads these alone,
+    /// however many items the vault holds.
+    fn parked_reviews_of_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<(ReviewItem, AssetCandidate)>, PortError>;
+
     /// Requeues the work parked on an undecided item, pending or deferred, in run `run_id`,
     /// reopening the run when it completed, and leaves the item undecided, so the run's execution
     /// matches the candidate again. Work parked in other runs, or in this one once it is

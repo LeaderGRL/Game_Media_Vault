@@ -1616,6 +1616,20 @@ fn an_execution_links_the_work_parked_on_a_review_its_matcher_now_settles() {
 }
 
 #[test]
+fn an_execution_matches_again_the_candidate_its_own_run_parked() {
+    let (threshold, release) = threshold_candidate_and_release();
+    let vault = FakeVault::with_library(vec![release]);
+    let run = park_in_new_run(&vault, &threshold, stricter_matching_policy());
+    // Another run refreshed the shared item with its own, uncertain, snapshot of the candidate.
+    vault.review_items.borrow_mut()[0].candidate.region = "Japan".to_owned();
+
+    let imported = execute(&vault, &FakeConnector::new(vec![threshold]), run).unwrap();
+
+    assert_eq!(imported.len(), 1);
+    assert_eq!(vault.work_states(run), vec![WorkState::Done]);
+}
+
+#[test]
 fn an_execution_links_the_work_parked_on_a_deferred_review_its_matcher_now_settles() {
     let (threshold, release) = threshold_candidate_and_release();
     let vault = FakeVault::with_library(vec![release]);

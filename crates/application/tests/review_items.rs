@@ -175,6 +175,13 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         unreachable!()
     }
 
+    fn parked_reviews_of_run(
+        &self,
+        _run_id: i64,
+    ) -> Result<Vec<(ReviewItem, AssetCandidate)>, PortError> {
+        unreachable!()
+    }
+
     fn requeue_review_work(&self, _review_item_id: i64, _run_id: i64) -> Result<(), PortError> {
         unreachable!()
     }

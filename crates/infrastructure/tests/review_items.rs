@@ -1309,6 +1309,56 @@ fn a_batch_of_decisions_leaves_an_item_refreshed_since_it_was_read_undecided() {
 }
 
 #[test]
+fn a_run_reads_the_undecided_reviews_its_work_is_parked_on_with_its_own_candidates() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let items = park_each(&catalog, run, &["first", "second", "third"]);
+    catalog
+        .decide_review_item(items[0].id, ReviewDecision::Reject)
+        .unwrap();
+    catalog
+        .decide_review_item(items[1].id, ReviewDecision::Defer)
+        .unwrap();
+    let other_run = start_run(&catalog);
+    // Another run meets the third candidate with its own title, refreshing the shared item.
+    let refreshed = AssetCandidate {
+        game_title: "Review Game Refreshed".to_owned(),
+        ..candidate()
+    };
+    catalog
+        .record_discovery(
+            other_run,
+            SOURCE_ID,
+            &[AcquisitionWorkItem {
+                key: "third".to_owned(),
+                candidate: refreshed.clone(),
+            }],
+        )
+        .unwrap();
+    catalog
+        .park_work_for_review(
+            other_run,
+            "third",
+            NewReviewItem {
+                candidate_identity: "third".to_owned(),
+                candidate: refreshed,
+                competing_matches: items[2].competing_matches.clone(),
+            },
+        )
+        .unwrap();
+
+    let parked = catalog.parked_reviews_of_run(run).unwrap();
+
+    // The rejected item is left out, and the shared item comes with this run's candidate.
+    assert_eq!(
+        parked.iter().map(|(item, _)| item.id).collect::<Vec<_>>(),
+        [items[1].id, items[2].id]
+    );
+    assert_eq!(parked[1].0.candidate.game_title, "Review Game Refreshed");
+    assert_eq!(parked[1].1, candidate());
+}
+
+#[test]
 fn undecided_reviews_come_a_page_at_a_time_in_the_order_they_were_opened() {
     let (_temp, catalog) = open_catalog();
     let run = start_run(&catalog);
