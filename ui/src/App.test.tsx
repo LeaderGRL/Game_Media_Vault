@@ -3479,6 +3479,31 @@ describe("App Library requests", () => {
     expect(screen.getByText("New media arrived.")).toBeInTheDocument();
   });
 
+  it("shows the latest media as read, even when the newest one left the vault", async () => {
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(command === "list_acquisition_runs" ? [runToExecute] : []),
+    );
+    const medium = (assetId: number, gameTitle: string) => ({
+      release_edition_id: entry.release_edition_id,
+      game_title: gameTitle,
+      platform: entry.platform,
+      region: entry.region,
+      asset: { ...entry.assets[0], asset_id: assetId },
+    });
+    latestMediaMock
+      .mockResolvedValueOnce([medium(4, "Rejected Game"), medium(3, "Kept Game")])
+      .mockResolvedValue([medium(3, "Kept Game")]);
+    render(<App />);
+    openVault();
+    await vaultSettled();
+
+    // A review rejected since then removed the newest medium.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+
+    expect(await screen.findByText("Kept Game")).toBeInTheDocument();
+    expect(screen.queryByText("Rejected Game")).not.toBeInTheDocument();
+  });
+
   it("ignores the failure of a page a newer search superseded", async () => {
     let failPage: ((reason: unknown) => void) | undefined;
     invokeMock.mockImplementation((command: string) => {

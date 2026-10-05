@@ -170,6 +170,9 @@ export function App() {
   // The newest Asset the app saw, so a poll tells when new media arrived: none when the vault
   // held none, unset before the first read.
   const newestAssetSeen = useRef<number | null | undefined>(undefined);
+  // Reads of the latest media, numbered as they start, and the one shown.
+  const latestMediaRequest = useRef(0);
+  const latestMediaShown = useRef(0);
   // Downloads chosen in the Download view start one after another, each run fetching its game
   // list first; their starts chain here.
   const startChain = useRef<Promise<void>>(Promise.resolve());
@@ -781,20 +784,21 @@ export function App() {
     if (expectedVaultRoot === null || openedVaultRoot.current !== expectedVaultRoot) {
       return false;
     }
+    latestMediaRequest.current += 1;
+    const request = latestMediaRequest.current;
     const latest = await invoke<LatestMedium[]>("latest_media", { limit: LATEST_MEDIA_SHOWN });
-    if (activeVaultRoot.current !== expectedVaultRoot) {
+    // Reads can settle out of order: one started before the read shown changes nothing.
+    if (activeVaultRoot.current !== expectedVaultRoot || request < latestMediaShown.current) {
       return false;
     }
+    latestMediaShown.current = request;
+    setLatestMedia(latest);
     const newest = latest.at(0)?.asset.asset_id ?? null;
     const previous = newestAssetSeen.current;
-    // Reads can settle out of order: one older than the media already seen changes nothing,
-    // so the newest media seen never go back.
-    if (typeof previous === "number" && (newest === null || newest < previous)) {
-      return false;
-    }
-    setLatestMedia(latest);
     newestAssetSeen.current = newest;
-    return previous !== undefined && newest !== null && (previous === null || newest > previous);
+    // The newest medium may also have left the vault, as when a review rejected it, and its
+    // id be given again: any other newest medium arrived.
+    return previous !== undefined && newest !== null && newest !== previous;
   }
 
   /**
