@@ -78,7 +78,7 @@ Each [release](https://github.com/LeaderGRL/Game_Media_Vault/releases) has an ar
 | System | Archive |
 | --- | --- |
 | Windows (x64) | `game-media-vault-<version>-x86_64-pc-windows-msvc.zip` |
-| Linux (x64) | `game-media-vault-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (x64, glibc 2.35 or newer, as on Ubuntu 22.04; not musl) | `game-media-vault-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | macOS (Apple Silicon) | `game-media-vault-<version>-aarch64-apple-darwin.tar.gz` |
 
 Extract it anywhere, such as `%LOCALAPPDATA%\Programs\Game Media Vault` on Windows, and keep its
@@ -88,9 +88,12 @@ command-line interface, and the pdfium library beside them renders PDF previews.
 `%APPDATA%\Microsoft\Windows\Start Menu\Programs` adds it to the Start menu.
 
 The binaries are not signed, so Windows SmartScreen asks to confirm the first launch (**More
-info**, then **Run anyway**) and macOS opens it once Control-clicked and **Open** chosen. The
-desktop app needs WebView2 on Windows, which Windows 11 and an up-to-date Windows 10 include, and
-WebKitGTK 4.1 on Linux (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).
+info**, then **Run anyway**), and macOS refuses it until you allow it: try to open it once, then
+choose **Open Anyway** in **System Settings** > **Privacy & Security**. The desktop app needs
+the WebView2 Runtime on Windows, which Windows 11 includes; where it is missing, as on some
+managed or LTSC editions of Windows 10, install Microsoft's
+[Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/). On
+Linux it needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).
 
 The app remembers the vault it opened last outside its folder, so updating means replacing the
 extracted files with those of the new release; a vault opens again in a newer version, which
