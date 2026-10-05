@@ -199,10 +199,13 @@ impl ReviewRepositoryPort for SqliteCatalog {
         let undecided = select_review_item(&transaction, "id = ?1", params![review_item_id])?
             .is_some_and(|item| item.status.is_undecided());
         if undecided {
+            // A run cancelled meanwhile keeps its work parked, for a decision to settle it.
             let requeued = transaction
                 .execute(
                     "UPDATE acquisition_run_work SET state = 'queued', review_item_id = NULL
-                     WHERE review_item_id = ?1 AND run_id = ?2",
+                     WHERE review_item_id = ?1 AND run_id = ?2 AND EXISTS (
+                         SELECT 1 FROM acquisition_runs WHERE id = ?2 AND status != 'cancelled'
+                     )",
                     params![review_item_id, run_id],
                 )
                 .map_err(sql_error)?;

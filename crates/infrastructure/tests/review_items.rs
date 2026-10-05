@@ -1243,6 +1243,28 @@ fn requeueing_review_work_moves_one_run_and_leaves_the_item_pending() {
 }
 
 #[test]
+fn requeueing_review_work_leaves_a_cancelled_run_parked() {
+    let (_temp, catalog) = open_catalog();
+    let run = start_run(&catalog);
+    let item = parked_item(&catalog, run);
+    // The run is cancelled after its execution read it, before the requeue.
+    cancel_acquisition_run(&catalog, run).unwrap();
+
+    catalog.requeue_review_work(item.id, run).unwrap();
+
+    assert_eq!(counts(&catalog, run), (0, 1, 0));
+    assert_eq!(
+        load_acquisition_run(&catalog, run).unwrap().status,
+        AcquisitionRunStatus::Cancelled
+    );
+    // A later rejection still settles the work parked on the item.
+    catalog
+        .decide_review_item(item.id, ReviewDecision::Reject)
+        .unwrap();
+    assert_eq!(counts(&catalog, run).1, 0);
+}
+
+#[test]
 fn requeueing_review_work_moves_the_work_of_a_deferred_item_and_leaves_it_deferred() {
     let (_temp, catalog) = open_catalog();
     let run = start_run(&catalog);

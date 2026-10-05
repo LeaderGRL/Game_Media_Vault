@@ -864,6 +864,9 @@ impl ReviewRepositoryPort for FakeVault {
     fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError> {
         let mut runs = self.runs.borrow_mut();
         let run = runs.get_mut(&run_id).unwrap();
+        if run.status == AcquisitionRunStatus::Cancelled {
+            return Ok(());
+        }
         let mut moved = false;
         for work in &mut run.work {
             if work.state == WorkState::Parked(review_item_id) {

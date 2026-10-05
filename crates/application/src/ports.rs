@@ -182,7 +182,8 @@ pub trait ReviewRepositoryPort {
 
     /// Requeues the work parked on an undecided item, pending or deferred, in run `run_id`,
     /// reopening the run when it completed, and leaves the item undecided, so the run's execution
-    /// matches the candidate again. Work parked in other runs stays parked.
+    /// matches the candidate again. Work parked in other runs, or in this one once it is
+    /// cancelled, stays parked; the run's status is checked in the same transaction.
     fn requeue_review_work(&self, review_item_id: i64, run_id: i64) -> Result<(), PortError>;
 
     /// Records a human decision on an undecided item and moves its parked work: accepting
