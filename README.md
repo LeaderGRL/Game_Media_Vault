@@ -71,6 +71,31 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
 See [`docs/SPEC.md`](docs/SPEC.md) for the complete product specification, including what is
 planned next.
 
+## Install
+
+Each [release](https://github.com/LeaderGRL/Game_Media_Vault/releases) has an archive per system:
+
+| System | Archive |
+| --- | --- |
+| Windows (x64) | `game-media-vault-<version>-x86_64-pc-windows-msvc.zip` |
+| Linux (x64) | `game-media-vault-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Apple Silicon) | `game-media-vault-<version>-aarch64-apple-darwin.tar.gz` |
+
+Extract it anywhere, such as `%LOCALAPPDATA%\Programs\Game Media Vault` on Windows, and keep its
+files together: `game-media-vault-desktop` is the desktop app, `game-media-vault` the
+command-line interface, and the pdfium library beside them renders PDF previews. Launch
+`game-media-vault-desktop`; on Windows, a shortcut to it in
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs` adds it to the Start menu.
+
+The binaries are not signed, so Windows SmartScreen asks to confirm the first launch (**More
+info**, then **Run anyway**) and macOS opens it once Control-clicked and **Open** chosen. The
+desktop app needs WebView2 on Windows, which Windows 11 and an up-to-date Windows 10 include, and
+WebKitGTK 4.1 on Linux (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).
+
+The app remembers the vault it opened last outside its folder, so updating means replacing the
+extracted files with those of the new release; a vault opens again in a newer version, which
+upgrades its catalog.
+
 ## Workspace
 
 | Path | Contents |
