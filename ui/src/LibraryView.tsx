@@ -205,7 +205,7 @@ export function LibraryView({
       ) : (
         <>
           <p className="library-meta">
-            {total} {total === 1 ? "game" : "games"}
+            {total} {total === 1 ? "release" : "releases"}
           </p>
           <section className="cover-grid" aria-label="Library games">
             {entries.map((entry) => (

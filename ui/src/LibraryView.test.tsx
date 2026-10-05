@@ -87,7 +87,7 @@ describe("LibraryView", () => {
     );
     expect(card).toHaveTextContent("PlayStation · France");
     expect(card).toHaveTextContent("1 medium");
-    expect(screen.getByText("1 game")).toBeInTheDocument();
+    expect(screen.getByText("1 release")).toBeInTheDocument();
   });
 
   it("opens a game's media and where they came from, and closes them", () => {

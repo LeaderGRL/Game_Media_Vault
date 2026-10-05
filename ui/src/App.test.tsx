@@ -1171,7 +1171,7 @@ describe("App", () => {
     render(<App />);
     openVault();
     expect(await screen.findByText("Metal Gear Solid")).toBeInTheDocument();
-    expect(screen.getByText("2 games")).toBeInTheDocument();
+    expect(screen.getByText("2 releases")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Library (2)" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
