@@ -53,7 +53,16 @@ function unusableReason(source: SourceDescription) {
   if (!source.enabled) {
     return "Disabled";
   }
-  return "Needs a key";
+  return source.credential === "unreadable" ? "Key store unreadable" : "Needs a key";
+}
+
+/** Why none of `sources`, which take no part, can provide a media type: the reason to act on. */
+function unavailableReason(sources: SourceDescription[]) {
+  const reasons: string[] = sources.map(unusableReason);
+  return (
+    ["Needs a key", "Key store unreadable"].find((reason) => reasons.includes(reason)) ??
+    "Disabled"
+  );
 }
 
 /** Every console of each maker, which its bulk action picks whatever a search shows. */
@@ -501,7 +510,9 @@ function mediaOffer(sources: SourceDescription[] | null, taking: SourceDescripti
             ? null
             : acquiring((sources ?? []).filter(usable), type.value)
               ? "Not from these Sources"
-              : "Needs a key",
+              : unavailableReason(
+                  (sources ?? []).filter((source) => source.asset_types.includes(type.value)),
+                ),
         };
       }),
   })).filter((family) => family.types.length > 0);

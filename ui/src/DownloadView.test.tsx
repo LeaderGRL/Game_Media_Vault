@@ -161,6 +161,29 @@ describe("DownloadView", () => {
     expect(onStart.mock.calls[0][0][0].asset_types).toEqual(["box_front", "screenshot"]);
   });
 
+  it("says why a Source or a media type only it acquires cannot take part", () => {
+    render(
+      <DownloadView
+        sources={[
+          source({}),
+          source({ source_id: "vgmaps", asset_types: ["map"], enabled: false }),
+          source({ source_id: "rawg", asset_types: ["wallpaper_artwork"], credential: "unreadable" }),
+        ]}
+        onStart={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Every kind of media"));
+    expect(screen.getByLabelText("Map").closest(".choice-row")).toHaveTextContent("Disabled");
+    expect(screen.getByLabelText("Wallpaper / Artwork").closest(".choice-row")).toHaveTextContent(
+      "Key store unreadable",
+    );
+    fireEvent.click(screen.getByLabelText("Use every available Source"));
+    expect(screen.getByLabelText("RAWG").closest(".console-option")).toHaveTextContent(
+      "Key store unreadable",
+    );
+  });
+
   it("keeps to the Sources chosen", () => {
     const onStart = vi.fn();
     render(<DownloadView sources={SOURCES} onStart={onStart} />);
