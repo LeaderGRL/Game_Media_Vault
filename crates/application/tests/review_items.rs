@@ -194,6 +194,13 @@ impl ReviewRepositoryPort for ChangedDuringDecision {
         Ok(self.outcome.clone())
     }
 
+    fn decide_review_items(
+        &self,
+        _decisions: &[(ReviewItem, ReviewDecision)],
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
+        unreachable!()
+    }
+
     fn persist_candidate_asset(
         &self,
         _run_id: i64,

@@ -229,26 +229,12 @@ pub trait ReviewRepositoryPort {
 
     /// Records each of `decisions`, taken on an item as it was read, as `decide_review_item`
     /// does, in order, unless the item's candidate or competing matches changed since it was
-    /// read (`Changed`), answering their outcomes. A repository may record them all in one
-    /// transaction, checking each item in it.
+    /// read (`Changed`), answering their outcomes. Each item is compared and decided atomically,
+    /// so a refresh cannot land between the comparison and the decision.
     fn decide_review_items(
         &self,
         decisions: &[(ReviewItem, ReviewDecision)],
-    ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
-        decisions
-            .iter()
-            .map(|(read, decision)| {
-                if self
-                    .get_review_item(read.id)?
-                    .is_some_and(|current| current.changed_since(read))
-                {
-                    Ok(ReviewDecisionOutcome::Changed)
-                } else {
-                    self.decide_review_item(read.id, decision.clone())
-                }
-            })
-            .collect()
-    }
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError>;
 
     /// Persists an Asset acquired for the candidate with this identity, in one transaction that
     /// keeps the candidate linked to a single Release Edition: links of the same candidate to
