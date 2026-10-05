@@ -148,6 +148,7 @@ export function App() {
   const [sources, setSources] = useState<SourceDescription[] | null>(null);
   // Why the Sources could not be read the last time the Sources view was shown.
   const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [sourcesReading, setSourcesReading] = useState(false);
   // The latest read of the Sources: an older one settling later applies nothing.
   const sourcesRequest = useRef(0);
   // The failures the loaded vault recorded by Source, read each time the Sources view is shown.
@@ -1047,17 +1048,26 @@ export function App() {
     sourcesRequest.current += 1;
     const request = sourcesRequest.current;
     setSourcesError(null);
+    setSourcesReading(true);
     try {
       const listed = await invoke<SourceDescription[]>("list_sources");
       if (request === sourcesRequest.current) {
-        setSources(listed);
+        showSourceList(listed);
       }
     } catch (reason) {
       // Showing the view again reads them again.
       if (request === sourcesRequest.current) {
+        setSourcesReading(false);
         setSourcesError(errorMessage(reason));
       }
     }
+  }
+
+  /** Shows the Sources as the backend just described them, ending any older read. */
+  function showSourceList(listed: SourceDescription[]) {
+    setSources(listed);
+    setSourcesReading(false);
+    setSourcesError(null);
   }
 
   /** Enables or disables a Source on this machine, for every vault, and shows the outcome. */
@@ -1068,13 +1078,13 @@ export function App() {
       source_id: sourceId,
       enabled,
     });
-    setSources(described);
+    showSourceList(described);
   }
 
   /** Stores on this machine one credential a Source needs, for every vault, never showing it. */
   async function setSourceCredential(sourceId: string, field: string, key: string) {
     sourcesRequest.current += 1;
-    setSources(
+    showSourceList(
       await invoke<SourceDescription[]>("set_source_api_key", {
         source_id: sourceId,
         field,
@@ -1086,7 +1096,7 @@ export function App() {
   /** Forgets one credential this machine stores for a Source. */
   async function clearSourceCredential(sourceId: string, field: string) {
     sourcesRequest.current += 1;
-    setSources(
+    showSourceList(
       await invoke<SourceDescription[]>("clear_source_api_key", { source_id: sourceId, field }),
     );
   }
@@ -1528,6 +1538,7 @@ export function App() {
         >
           <DownloadView
             sources={sources}
+            sourcesReading={sourcesReading}
             sourcesError={sourcesError}
             onStart={startDownloads}
             advanced={

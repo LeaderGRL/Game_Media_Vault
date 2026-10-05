@@ -212,6 +212,19 @@ describe("DownloadView", () => {
     expect(screen.getByText("The Sources could not be read: catalog busy")).toBeVisible();
   });
 
+  it("waits while the Sources are read again, and when that read fails", () => {
+    const { rerender } = render(<DownloadView sources={SOURCES} sourcesReading onStart={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Super Nintendo Entertainment System"));
+
+    expect(screen.getByRole("button", { name: "Start download" })).toBeDisabled();
+    expect(screen.getByText("Reading the Sources…")).toBeVisible();
+
+    rerender(<DownloadView sources={SOURCES} sourcesError="catalog busy" onStart={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Start download" })).toBeDisabled();
+    expect(screen.getByText("The Sources could not be read: catalog busy")).toBeVisible();
+  });
+
   it("keeps to the Sources chosen", () => {
     const onStart = vi.fn();
     render(<DownloadView sources={SOURCES} onStart={onStart} />);
