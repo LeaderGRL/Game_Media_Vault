@@ -58,7 +58,8 @@ pub enum PendingReviewDecision {
 pub struct PendingReviewSummary {
     pub decided: usize,
     /// Items left awaiting a decision: those whose best match ties releases of several Games,
-    /// and those decided or closed meanwhile.
+    /// and those whose competing releases changed meanwhile. Items someone else decided or
+    /// closed meanwhile no longer await one and are not counted.
     pub left: usize,
 }
 
@@ -103,10 +104,10 @@ pub fn decide_pending_reviews(
     // Batches keep each transaction short, so executions are not held off for long.
     for batch in decisions.chunks(DECISION_BATCH) {
         for outcome in reviews.decide_review_items(batch)? {
-            if matches!(outcome, ReviewDecisionOutcome::Recorded(_)) {
-                summary.decided += 1;
-            } else {
-                summary.left += 1;
+            match outcome {
+                ReviewDecisionOutcome::Recorded(_) => summary.decided += 1,
+                ReviewDecisionOutcome::NotCompeting => summary.left += 1,
+                ReviewDecisionOutcome::NotFound | ReviewDecisionOutcome::NotUndecided(_) => {}
             }
         }
     }

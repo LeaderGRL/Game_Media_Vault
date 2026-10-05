@@ -196,6 +196,9 @@ pub struct FakeVault {
     /// Simulates a human rejecting the first Review Item right before the Nth next read of a
     /// Review Item, counting from one.
     pub rejection_before_review_read: Shared<Option<usize>>,
+    /// Simulates a human rejecting the first Review Item right before the next batch of
+    /// decisions is recorded.
+    pub rejection_before_next_decisions: Shared<bool>,
     /// Simulates a work item leaving the queue right before the Nth next read of the queue,
     /// counting from one.
     pub work_leaving_before_queue_read: Shared<Option<(usize, WorkLeaving)>>,
@@ -929,6 +932,22 @@ impl ReviewRepositoryPort for FakeVault {
             ReviewDecision::Defer => {}
         }
         Ok(ReviewDecisionOutcome::Recorded(Box::new(decided)))
+    }
+
+    fn decide_review_items(
+        &self,
+        decisions: &[(i64, ReviewDecision)],
+    ) -> Result<Vec<ReviewDecisionOutcome>, PortError> {
+        if std::mem::take(&mut *self.rejection_before_next_decisions.borrow_mut()) {
+            let review_item_id = self.review_items.borrow()[0].id;
+            self.decide_review_item(review_item_id, ReviewDecision::Reject)?;
+        }
+        decisions
+            .iter()
+            .map(|(review_item_id, decision)| {
+                self.decide_review_item(*review_item_id, decision.clone())
+            })
+            .collect()
     }
 
     fn persist_candidate_asset(

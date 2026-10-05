@@ -142,6 +142,33 @@ fn rejecting_every_review_settles_all_their_work() {
     assert_eq!(vault.run(run).dismissed_work, 1);
 }
 
+#[test]
+fn reviews_closed_meanwhile_are_not_left_awaiting_a_decision() {
+    let (first, mut releases) = tied("First Game", 401);
+    let (second, more) = tied("Second Game", 411);
+    releases.extend(more);
+    let vault = FakeVault::with_library(releases);
+    park(&vault, vec![first, second], matching_policy());
+    // Someone rejects the first item after the listing, before the decisions are recorded.
+    *vault.rejection_before_next_decisions.borrow_mut() = true;
+
+    let summary = decide_pending_reviews(
+        &vault,
+        &vault,
+        PendingReviewDecision::RejectAll,
+        matching_policy(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary,
+        PendingReviewSummary {
+            decided: 1,
+            left: 0
+        }
+    );
+}
+
 fn resolve(vault: &FakeVault, review_item_id: i64, decision: ReviewDecision) {
     game_media_vault_application::resolve_review_item(vault, review_item_id, decision).unwrap();
 }
