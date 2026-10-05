@@ -347,6 +347,41 @@ fn a_country_agrees_with_the_region_holding_it_less_than_with_itself() {
 }
 
 #[test]
+fn every_european_country_agrees_with_europe() {
+    let european = LibraryEntry {
+        region: "Europe".to_owned(),
+        ..release()
+    };
+    for region in [
+        "Romania",
+        "Slovenia",
+        "Estonia",
+        "Latvia",
+        "Lithuania",
+        "Czech Republic",
+        "Czechia",
+        "Serbia",
+        "Luxembourg",
+        "Iceland",
+        "Ukraine",
+        "England",
+    ] {
+        let candidate = AssetCandidate {
+            region: region.to_owned(),
+            ..candidate()
+        };
+
+        let result = match_asset_candidate_to_release(
+            &candidate,
+            std::slice::from_ref(&european),
+            matching_policy(80, 50),
+        );
+
+        assert_eq!(result.confidence, MatchConfidence::High, "{region}");
+    }
+}
+
+#[test]
 fn a_worldwide_box_agrees_with_every_region_and_a_canadian_one_with_usa() {
     let european = LibraryEntry {
         region: "Europe".to_owned(),

@@ -258,7 +258,7 @@ Matching can use:
 - ROM/disc hashes where catalog sources legitimately provide them;
 - source IDs and cross-references.
 
-Every non-trivial match carries evidence and a confidence score. Thresholds are configuration, not hard-coded domain constants. A candidate's region agrees with a release's when they share one: a `Europe` candidate agrees with a `USA, Europe` release. A region also agrees with the countries it holds and `World` with every region, for two thirds of the region's weight so a release of the very country still wins: the countries of Europe, and Australia, New Zealand and Oceania, whose PAL releases they share, with Europe; Canada with USA; Hong Kong, Taiwan, Singapore and Malaysia with Asia; Argentina, Chile, Colombia, Mexico and Peru with Latin America. Two countries of one region still conflict.
+Every non-trivial match carries evidence and a confidence score. Thresholds are configuration, not hard-coded domain constants. A candidate's region agrees with a release's when they share one: a `Europe` candidate agrees with a `USA, Europe` release. A region also agrees with the countries it holds and `World` with every region, for two thirds of the region's weight so a release of the very country still wins: the countries of Europe (Russia and Turkey aside, which No-Intro names apart), and Australia, New Zealand and Oceania, whose PAL releases they share, with Europe; Canada with USA; Hong Kong, Taiwan, Singapore and Malaysia with Asia; Argentina, Chile, Colombia, Mexico and Peru with Latin America. Two countries of one region still conflict.
 
 Suggested behavior:
 
