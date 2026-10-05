@@ -3423,6 +3423,62 @@ describe("App Library requests", () => {
     expect(executions).toHaveLength(1);
   });
 
+  it("keeps the arrival banner when an older read of the latest media settles last", async () => {
+    let finishSearch: ((page: unknown) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_library") {
+        if (libraryQueries.at(-1)?.text === "mario") {
+          return new Promise((resolve) => {
+            finishSearch = resolve;
+          });
+        }
+        return Promise.resolve([entry]);
+      }
+      return Promise.resolve([]);
+    });
+    const medium = (assetId: number) => ({
+      release_edition_id: entry.release_edition_id,
+      game_title: entry.game_title,
+      platform: entry.platform,
+      region: entry.region,
+      asset: { ...entry.assets[0], asset_id: assetId },
+    });
+    let finishOlderRead: ((latest: unknown) => void) | undefined;
+    latestMediaMock
+      .mockResolvedValueOnce([medium(3)])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOlderRead = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([medium(4)]);
+    render(<App />);
+    openVault();
+    await vaultSettled();
+    showLibrary();
+    fireEvent.change(await screen.findByLabelText("Search titles"), {
+      target: { value: "mario" },
+    });
+    fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(finishSearch).toBeDefined());
+    // A first read of the latest media lags; a second sees medium 4 arrive.
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await waitFor(() => expect(finishOlderRead).toBeDefined());
+    showLibrary();
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await waitFor(() => expect(latestMediaMock).toHaveBeenCalledTimes(3));
+    showLibrary();
+    expect(await screen.findByText("New media arrived.")).toBeInTheDocument();
+
+    await act(async () => finishOlderRead?.([medium(3)]));
+    await act(async () =>
+      finishSearch?.({ releases: [], total: 0, next_after: null, as_of: 9 }),
+    );
+
+    expect(screen.getByText("New media arrived.")).toBeInTheDocument();
+  });
+
   it("ignores the failure of a page a newer search superseded", async () => {
     let failPage: ((reason: unknown) => void) | undefined;
     invokeMock.mockImplementation((command: string) => {

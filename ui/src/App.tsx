@@ -785,9 +785,14 @@ export function App() {
     if (activeVaultRoot.current !== expectedVaultRoot) {
       return false;
     }
-    setLatestMedia(latest);
     const newest = latest.at(0)?.asset.asset_id ?? null;
     const previous = newestAssetSeen.current;
+    // Reads can settle out of order: one older than the media already seen changes nothing,
+    // so the newest media seen never go back.
+    if (typeof previous === "number" && (newest === null || newest < previous)) {
+      return false;
+    }
+    setLatestMedia(latest);
     newestAssetSeen.current = newest;
     return previous !== undefined && newest !== null && (previous === null || newest > previous);
   }
