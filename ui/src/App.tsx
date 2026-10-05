@@ -179,6 +179,9 @@ export function App() {
   // never asked for two downloads at once.
   const waitingRuns = useRef(new Map<string, number[]>());
   const drainingVaults = useRef(new Set<string>());
+  // Runs resumed while their execution still winds down after a pause, by vault: that
+  // execution may already be stopping, so they execute again once it ends.
+  const executeAgain = useRef(new Map<string, Set<number>>());
   const [waitingRunIds, setWaitingRunIds] = useState<Set<number>>(() => new Set());
   // Whether a poll is reading the latest media; a slow read is never doubled by the next poll.
   const followingMedia = useRef(false);
@@ -1247,7 +1250,12 @@ export function App() {
   /** Executes run `runId` of `vaultRoot` once the runs queued before it executed. */
   function queueExecution(vaultRoot: string, runId: number) {
     const queue = waitingRuns.current.get(vaultRoot) ?? [];
-    if (!queue.includes(runId) && !executionsByVault.current.get(vaultRoot)?.has(runId)) {
+    if (executionsByVault.current.get(vaultRoot)?.has(runId)) {
+      executeAgain.current.set(
+        vaultRoot,
+        new Set(executeAgain.current.get(vaultRoot)).add(runId),
+      );
+    } else if (!queue.includes(runId)) {
       waitingRuns.current.set(vaultRoot, [...queue, runId]);
       showWaiting(vaultRoot);
     }
@@ -1261,6 +1269,7 @@ export function App() {
       vaultRoot,
       queue.filter((queued) => queued !== runId),
     );
+    executeAgain.current.get(vaultRoot)?.delete(runId);
     showWaiting(vaultRoot);
   }
 
@@ -1323,6 +1332,11 @@ export function App() {
       }
     } finally {
       trackExecution(actingVaultRoot, runId, false);
+    }
+    // A resume that came while this execution stopped for a pause executes the run again,
+    // after the runs already waiting.
+    if (actingVaultRoot !== null && executeAgain.current.get(actingVaultRoot)?.delete(runId)) {
+      queueExecution(actingVaultRoot, runId);
     }
     void showExecuted(actingVaultRoot, executionError);
   }
