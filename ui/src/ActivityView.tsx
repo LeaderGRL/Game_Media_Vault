@@ -8,11 +8,16 @@ import { thumbnailOf } from "./ReleaseDetail";
 import { describeRunRequest, runProgress, runTitle } from "./runProgress";
 import type { LatestMedium } from "./types";
 
-/** A download being prepared: its run starting, which fetches its game list and plans it. */
+/**
+ * A download being prepared: its run starting, which fetches its game list and plans it. One
+ * that could not start stays with the reason until dismissed.
+ */
 export interface PreparingDownload {
   key: number;
   /** What it downloads, such as its consoles. */
   title: string;
+  /** Why its run could not start, once it failed to. */
+  failure?: string;
 }
 
 interface ActivityViewProps {
@@ -32,6 +37,8 @@ interface ActivityViewProps {
   onPause: (runId: number) => void;
   onResume: (runId: number) => void;
   onCancel: (runId: number) => void;
+  /** Forgets a download that could not start. */
+  onDismiss: (key: number) => void;
 }
 
 type Phase = "downloading" | "waiting" | "stopped" | "paused" | "completed" | "cancelled";
@@ -58,6 +65,7 @@ export function ActivityView({
   onPause,
   onResume,
   onCancel,
+  onDismiss,
 }: ActivityViewProps) {
   const newestFirst = [...runs].sort((a, b) => b.id - a.id);
   if (newestFirst.length === 0 && preparing.length === 0) {
@@ -92,13 +100,32 @@ export function ActivityView({
           <article className="card run-card" key={download.key} aria-label={download.title}>
             <div className="run-heading">
               <h2>{download.title}</h2>
-              <span className="status-pill waiting">Preparing</span>
+              {download.failure === undefined ? (
+                <span className="status-pill waiting">Preparing</span>
+              ) : (
+                <>
+                  <span className="status-pill failed">Could not start</span>
+                  <div className="run-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => onDismiss(download.key)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
-            <ProgressBar
-              label="Preparing"
-              value={null}
-              detail="Fetching the game list and checking the Sources"
-            />
+            {download.failure === undefined ? (
+              <ProgressBar
+                label="Preparing"
+                value={null}
+                detail="Fetching the game list and checking the Sources"
+              />
+            ) : (
+              <p className="run-failure">{download.failure}</p>
+            )}
           </article>
         ))}
         {newestFirst.map((run) => {

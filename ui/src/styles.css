@@ -909,6 +909,17 @@ details.advanced[open] > summary {
   color: var(--success);
 }
 
+.status-pill.failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.run-failure {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
 @keyframes pulse {
   50% {
     opacity: 0.35;

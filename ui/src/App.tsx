@@ -1055,9 +1055,12 @@ export function App() {
     try {
       started = await invoke<AcquisitionRun>("start_acquisition_run", { request });
     } catch (reason) {
+      // The download stays in the Activity view with its reason, beside any other that failed.
       if (activeVaultRoot.current === startingVaultRoot) {
-        settle();
-        setError(`${download.title}: ${errorMessage(reason)}`);
+        const failure = errorMessage(reason);
+        setPreparing((current) =>
+          current.map((item) => (item.key === download.key ? { ...item, failure } : item)),
+        );
       }
       return;
     }
@@ -1375,6 +1378,9 @@ export function App() {
             onPause={(runId) => void applyRunAction(runId, "pause")}
             onResume={(runId) => void applyRunAction(runId, "resume")}
             onCancel={(runId) => void applyRunAction(runId, "cancel")}
+            onDismiss={(key) =>
+              setPreparing((current) => current.filter((item) => item.key !== key))
+            }
           />
         </Page>
       ) : null}

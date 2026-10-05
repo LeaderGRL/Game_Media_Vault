@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryEntry, ReferenceReviewItem, ReviewItem } from "./types";
@@ -1995,16 +1995,19 @@ describe("App acquisition", () => {
     );
   });
 
-  it("names the console whose download could not start, and starts the others", async () => {
+  it("names each console whose download could not start, and starts the others", async () => {
     invokeMock.mockImplementation(
       (command: string, args?: { request?: { platforms: string[] } }) => {
         if (command === "start_acquisition_run") {
-          return args?.request?.platforms[0] === "Nintendo - Game Boy"
+          const platform = args?.request?.platforms[0];
+          return platform === "Nintendo - Game Boy"
             ? Promise.reject({
                 kind: "invalid_request",
                 message: "no game of the list matches the regions or languages asked for",
               })
-            : Promise.resolve({ ...startedRun, id: 2 });
+            : platform === "Nintendo - Game Boy Color"
+              ? Promise.reject({ kind: "external", message: "game list unreachable" })
+              : Promise.resolve({ ...startedRun, id: 2 });
         }
         if (command === "execute_acquisition_run") {
           return new Promise(() => {});
@@ -2018,14 +2021,24 @@ describe("App acquisition", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     fireEvent.click(screen.getByLabelText("Game Boy"));
+    fireEvent.click(screen.getByLabelText("Game Boy Color"));
     fireEvent.click(screen.getByLabelText("Mega Drive - Genesis"));
     fireEvent.click(screen.getByRole("button", { name: "Start download" }));
 
-    expect(
-      await screen.findByText(
-        "Game Boy: no game of the list matches the regions or languages asked for",
+    await waitFor(() =>
+      expect(screen.getByRole("article", { name: "Game Boy Color" })).toHaveTextContent(
+        "game list unreachable",
       ),
-    ).toBeInTheDocument();
+    );
+    expect(screen.getByRole("article", { name: "Game Boy" })).toHaveTextContent(
+      "no game of the list matches the regions or languages asked for",
+    );
+    fireEvent.click(
+      within(screen.getByRole("article", { name: "Game Boy" })).getByRole("button", {
+        name: "Dismiss",
+      }),
+    );
+    expect(screen.queryByRole("article", { name: "Game Boy" })).not.toBeInTheDocument();
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
         "execute_acquisition_run",

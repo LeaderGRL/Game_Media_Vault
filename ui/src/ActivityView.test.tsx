@@ -66,6 +66,7 @@ function view(props: Partial<Parameters<typeof ActivityView>[0]> = {}) {
     onPause: vi.fn(),
     onResume: vi.fn(),
     onCancel: vi.fn(),
+    onDismiss: vi.fn(),
   };
   render(
     <ActivityView
@@ -137,6 +138,19 @@ describe("ActivityView", () => {
     expect(
       screen.getByRole("article", { name: "Mega Drive" }),
     ).toHaveTextContent("Fetching the game list");
+  });
+
+  it("keeps a console that could not start with its reason until dismissed", () => {
+    const handlers = view({
+      preparing: [{ key: 4, title: "Game Boy", failure: "no game matches the regions asked for" }],
+    });
+
+    const card = screen.getByRole("article", { name: "Game Boy" });
+    expect(card).toHaveTextContent("Could not start");
+    expect(card).toHaveTextContent("no game matches the regions asked for");
+    fireEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+
+    expect(handlers.onDismiss).toHaveBeenCalledWith(4);
   });
 
   it("shows the media arriving", () => {
