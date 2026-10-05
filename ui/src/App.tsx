@@ -1361,17 +1361,35 @@ export function App() {
     }
     // A resume that came while this execution stopped for a pause executes the run again,
     // after the runs already waiting, unless the execution went on and ended the run.
-    const resumed =
-      actingVaultRoot !== null && executeAgain.current.get(actingVaultRoot)?.delete(runId);
-    if (
-      resumed &&
-      executed !== null &&
-      executed.status !== "completed" &&
-      executed.status !== "cancelled"
-    ) {
-      queueExecution(actingVaultRoot, runId);
+    if (actingVaultRoot !== null && executeAgain.current.get(actingVaultRoot)?.delete(runId)) {
+      void executeResumedAgain(actingVaultRoot, runId, executed);
     }
     void showExecuted(actingVaultRoot, executionError);
+  }
+
+  /**
+   * Queues run `runId` of `vaultRoot` again when it still runs after the execution that ended
+   * as `executed`, read anew when that execution failed and returned none.
+   */
+  async function executeResumedAgain(
+    vaultRoot: string,
+    runId: number,
+    executed: AcquisitionRun | null,
+  ) {
+    let run = executed;
+    if (run === null) {
+      try {
+        // A Source failing leaves the run running with work for a later execution.
+        run = await invoke<AcquisitionRun>("get_acquisition_run", { run_id: runId });
+      } catch {
+        // Continue in Activity executes it, as for any stopped run.
+        return;
+      }
+    }
+    // A run read paused there was resumed after that read, as no pause came since.
+    if (run.status !== "completed" && run.status !== "cancelled") {
+      queueExecution(vaultRoot, runId);
+    }
   }
 
   /**
