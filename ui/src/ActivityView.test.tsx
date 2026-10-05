@@ -104,6 +104,29 @@ describe("ActivityView", () => {
     expect(within(card).getByText("not found")).toBeInTheDocument();
   });
 
+  it("keeps both progress bars on a completed download", () => {
+    view({
+      runs: [
+        run({
+          status: "completed",
+          queued_work: 0,
+          discoveries: [
+            { source_id: "libretro-thumbnails", complete: true, discovered_games: 0 },
+            { source_id: "screenscraper", complete: true, discovered_games: 0 },
+          ],
+        }),
+      ],
+      executingRunIds: new Set(),
+    });
+
+    expect(screen.getByRole("progressbar", { name: "Search" })).toHaveAttribute(
+      "aria-valuenow",
+      "100",
+    );
+    expect(screen.getByText("2 of 2 Sources done")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Downloads" })).toBeInTheDocument();
+  });
+
   it("pauses or cancels a download under way", () => {
     const handlers = view();
 

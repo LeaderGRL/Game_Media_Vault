@@ -182,7 +182,7 @@ export function ActivityView({
                   ) : null}
                 </div>
               </div>
-              {progress.sources > 0 && (progress.searching || phase !== "completed") ? (
+              {progress.sources > 0 ? (
                 <ProgressBar
                   label="Search"
                   tone="search"
