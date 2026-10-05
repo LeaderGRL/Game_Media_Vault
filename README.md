@@ -71,6 +71,34 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
 See [`docs/SPEC.md`](docs/SPEC.md) for the complete product specification, including what is
 planned next.
 
+## Install
+
+Each [release](https://github.com/LeaderGRL/Game_Media_Vault/releases) has an archive per system:
+
+| System | Archive |
+| --- | --- |
+| Windows (x64) | `game-media-vault-<version>-x86_64-pc-windows-msvc.zip` |
+| Linux (x64, glibc 2.35 or newer, as on Ubuntu 22.04; not musl) | `game-media-vault-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Apple Silicon) | `game-media-vault-<version>-aarch64-apple-darwin.tar.gz` |
+
+Extract it anywhere, such as `%LOCALAPPDATA%\Programs\Game Media Vault` on Windows, and keep its
+files together: `game-media-vault-desktop` is the desktop app, `game-media-vault` the
+command-line interface, and the pdfium library beside them renders PDF previews. Launch
+`game-media-vault-desktop`; on Windows, a shortcut to it in
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs` adds it to the Start menu.
+
+The binaries are not signed, so Windows SmartScreen asks to confirm the first launch (**More
+info**, then **Run anyway**), and macOS refuses it until you allow it: try to open it once, then
+choose **Open Anyway** in **System Settings** > **Privacy & Security**. The desktop app needs
+the WebView2 Runtime on Windows, which Windows 11 includes; where it is missing, as on some
+managed or LTSC editions of Windows 10, install Microsoft's
+[Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/). On
+Linux it needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).
+
+The app remembers the vault it opened last outside its folder, so updating means replacing the
+extracted files with those of the new release; a vault opens again in a newer version, which
+upgrades its catalog.
+
 ## Workspace
 
 | Path | Contents |
