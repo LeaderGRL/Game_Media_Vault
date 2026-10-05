@@ -205,6 +205,17 @@ describe("ActivityView", () => {
     expect(screen.getByRole("img", { name })).not.toHaveAttribute("src");
   });
 
+  it("shows an arriving image whose media type is not inspected yet by its file name", () => {
+    view({
+      latest: [{ ...latest, asset: { ...latest.asset, media_type: "application/octet-stream" } }],
+    });
+
+    expect(screen.getByRole("img", { name: "Box Front of Super Metroid" })).toHaveAttribute(
+      "src",
+      "object://cover-hash",
+    );
+  });
+
   it("explains there is nothing yet", () => {
     view({ runs: [], executingRunIds: new Set() });
 
