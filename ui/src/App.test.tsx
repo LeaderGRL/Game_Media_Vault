@@ -2508,19 +2508,19 @@ describe("App acquisition", () => {
     try {
       const secondRun = { ...startedRun, id: 2 };
       let finishListing: ((runs: unknown[]) => void) | undefined;
-      let paused = false;
+      let cancelled = false;
       invokeMock.mockImplementation((command: string) => {
         if (command === "list_acquisition_runs") {
-          if (paused) {
+          if (cancelled) {
             return new Promise((resolve) => {
               finishListing = resolve;
             });
           }
           return Promise.resolve([startedRun, secondRun]);
         }
-        if (command === "pause_acquisition_run") {
-          paused = true;
-          return Promise.resolve({ ...secondRun, status: "paused" });
+        if (command === "cancel_acquisition_run") {
+          cancelled = true;
+          return Promise.resolve({ ...secondRun, status: "cancelled" });
         }
         if (command === "get_acquisition_run") {
           return Promise.resolve({ ...startedRun, completed_work: 2 });
@@ -2535,7 +2535,7 @@ describe("App acquisition", () => {
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       await screen.findByRole("article", { name: /Run #2$/ });
       fireEvent.click(screen.getAllByRole("button", { name: "Continue" })[0]);
-      fireEvent.click(screen.getAllByRole("button", { name: "Pause" })[1]);
+      fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
       await act(async () => {});
       expect(finishListing).toBeDefined();
 
@@ -2546,27 +2546,27 @@ describe("App acquisition", () => {
       await act(async () =>
         finishListing?.([
           { ...startedRun, completed_work: 2 },
-          { ...secondRun, status: "paused" },
+          { ...secondRun, status: "cancelled" },
         ]),
       );
 
-      expect(screen.getByText("Paused")).toBeInTheDocument();
+      expect(screen.getByText("Cancelled")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
   });
 
   it("shows a run action that succeeded even when the run list cannot be refreshed", async () => {
-    let paused = false;
+    let cancelled = false;
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
-        return paused
+        return cancelled
           ? Promise.reject({ kind: "external", message: "catalog busy" })
           : Promise.resolve([startedRun]);
       }
-      if (command === "pause_acquisition_run") {
-        paused = true;
-        return Promise.resolve({ ...startedRun, status: "paused" });
+      if (command === "cancel_acquisition_run") {
+        cancelled = true;
+        return Promise.resolve({ ...startedRun, status: "cancelled" });
       }
       return Promise.resolve([]);
     });
@@ -2574,38 +2574,38 @@ describe("App acquisition", () => {
     openVault();
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
-    expect(await screen.findByText("Paused")).toBeInTheDocument();
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
     expect(
-      screen.getByText("Run #1 is paused, but the run list could not be refreshed: catalog busy"),
+      screen.getByText("Run #1 is cancelled, but the run list could not be refreshed: catalog busy"),
     ).toBeInTheDocument();
   });
 
   it("keeps another vault's run action pending when an older one finishes", async () => {
-    const pauses: Array<() => void> = [];
+    const cancels: Array<() => void> = [];
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_acquisition_runs") {
         return Promise.resolve([startedRun]);
       }
-      if (command === "pause_acquisition_run") {
-        return new Promise<void>((resolve) => pauses.push(() => resolve()));
+      if (command === "cancel_acquisition_run") {
+        return new Promise<void>((resolve) => cancels.push(() => resolve()));
       }
       return Promise.resolve([]);
     });
     render(<App />);
     openVault();
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => expect(pauses).toHaveLength(1));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancels).toHaveLength(1));
 
     fireEvent.change(vaultFolder(), { target: { value: "other-vault" } });
     openVault();
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    await waitFor(() => expect(pauses).toHaveLength(2));
-    await act(async () => pauses[0]());
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancels).toHaveLength(2));
+    await act(async () => cancels[0]());
 
-    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
   });
 
   it("refreshes run counts while a run executes", async () => {
@@ -2699,21 +2699,21 @@ describe("App acquisition", () => {
     await vaultSettled();
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("article", { name: /Run #2$/ });
-    const [pauseFirst, pauseSecond] = screen.getAllByRole("button", { name: "Pause" });
+    const [cancelFirst, cancelSecond] = screen.getAllByRole("button", { name: "Cancel" });
 
-    fireEvent.click(pauseFirst);
+    fireEvent.click(cancelFirst);
     await waitFor(() => expect(listings).toHaveLength(2));
-    fireEvent.click(pauseSecond);
+    fireEvent.click(cancelSecond);
     await waitFor(() => expect(listings).toHaveLength(3));
     await act(async () =>
       listings[2]([
-        { ...startedRun, status: "paused" },
-        { ...secondRun, status: "paused" },
+        { ...startedRun, status: "cancelled" },
+        { ...secondRun, status: "cancelled" },
       ]),
     );
-    await act(async () => listings[1]([{ ...startedRun, status: "paused" }, secondRun]));
+    await act(async () => listings[1]([{ ...startedRun, status: "cancelled" }, secondRun]));
 
-    expect(screen.getAllByText("Paused")).toHaveLength(2);
+    expect(screen.getAllByText("Cancelled")).toHaveLength(2);
   });
 
   it("keeps the newest library when acquisition refreshes finish out of order", async () => {

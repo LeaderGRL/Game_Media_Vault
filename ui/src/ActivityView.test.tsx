@@ -117,6 +117,8 @@ describe("ActivityView", () => {
     const handlers = view({ executingRunIds: new Set() });
 
     expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(handlers.onContinue).toHaveBeenCalledWith(3);

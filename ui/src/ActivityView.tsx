@@ -124,7 +124,7 @@ export function ActivityView({
                       Continue
                     </button>
                   ) : null}
-                  {run.status === "running" ? (
+                  {phase === "downloading" || phase === "waiting" ? (
                     <button type="button" disabled={busy} onClick={() => onPause(run.id)}>
                       <Icon name="pause" size={16} />
                       Pause
