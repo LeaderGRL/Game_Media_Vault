@@ -10,7 +10,7 @@ use std::{
 };
 
 use game_media_vault_application::{CatalogPort, PortError};
-use game_media_vault_domain::{ImportedAsset, LibraryEntry, PersistAsset};
+use game_media_vault_domain::{ImportedAsset, LibraryEntry, LibrarySummary, PersistAsset};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
 mod assets;
@@ -173,6 +173,17 @@ impl CatalogPort for SqliteCatalog {
 
     fn list_latest_assets(&self, limit: usize) -> Result<Vec<LibraryEntry>, PortError> {
         self.latest_library_assets(limit)
+    }
+
+    fn list_library_summaries(&self) -> Result<Vec<LibrarySummary>, PortError> {
+        self.library_summaries()
+    }
+
+    fn library_entries_of(
+        &self,
+        release_edition_ids: &[i64],
+    ) -> Result<Vec<LibraryEntry>, PortError> {
+        self.library_entries_named(release_edition_ids)
     }
 }
 

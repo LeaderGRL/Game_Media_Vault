@@ -1184,7 +1184,7 @@ fn persist_release_assertions(
     Ok(())
 }
 
-fn assertion_field_to_str(field: ReleaseAssertionField) -> &'static str {
+pub(super) fn assertion_field_to_str(field: ReleaseAssertionField) -> &'static str {
     match field {
         ReleaseAssertionField::Title => "title",
         ReleaseAssertionField::Region => "region",

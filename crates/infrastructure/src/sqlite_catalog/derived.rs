@@ -4,7 +4,7 @@ use game_media_vault_application::{DerivativeRepositoryPort, OriginalObject, Por
 use game_media_vault_domain::{DerivationRecipe, DerivedAsset, MediaInfo, StoredObject};
 use rusqlite::{Connection, params};
 
-use super::{SqliteCatalog, sql_error};
+use super::{SqliteCatalog, library::Projection, sql_error};
 
 impl DerivativeRepositoryPort for SqliteCatalog {
     fn originals_without(
@@ -72,15 +72,19 @@ impl DerivativeRepositoryPort for SqliteCatalog {
     }
 }
 
-/// The Derived Assets of every original, in recipe order.
+/// The Derived Assets of the originals the Assets of `projection` retain, in recipe order.
 pub(super) fn derived_by_original(
     connection: &Connection,
-    latest: Option<usize>,
+    projection: Projection<'_>,
 ) -> Result<HashMap<String, Vec<DerivedAsset>>, PortError> {
-    let filter = match latest {
-        None => "",
-        Some(_) => {
+    let filter = match projection {
+        Projection::All => "",
+        Projection::Latest(_) => {
             "WHERE original_hash IN (SELECT object_hash FROM assets ORDER BY id DESC LIMIT ?1)"
+        }
+        Projection::Releases(_) => {
+            "WHERE original_hash IN (SELECT object_hash FROM assets
+                 WHERE release_edition_id IN (SELECT value FROM json_each(?1)))"
         }
     };
     let mut statement = connection
@@ -91,9 +95,10 @@ pub(super) fn derived_by_original(
              ORDER BY original_hash, recipe_key"
         ))
         .map_err(sql_error)?;
-    let mut rows = match latest {
-        None => statement.query([]),
-        Some(limit) => statement.query([i64::try_from(limit).unwrap_or(i64::MAX)]),
+    let mut rows = match projection {
+        Projection::All => statement.query([]),
+        Projection::Latest(limit) => statement.query([i64::try_from(limit).unwrap_or(i64::MAX)]),
+        Projection::Releases(ids) => statement.query([ids]),
     }
     .map_err(sql_error)?;
     let mut derived: HashMap<String, Vec<DerivedAsset>> = HashMap::new();

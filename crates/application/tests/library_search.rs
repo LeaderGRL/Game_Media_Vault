@@ -69,6 +69,63 @@ fn ids(vault: &FakeVault, query: LibraryQuery) -> Vec<i64> {
 }
 
 #[test]
+fn a_page_reads_the_entries_of_its_own_releases_alone() {
+    let vault = FakeVault::with_library(library());
+
+    let page = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            limit: 2,
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    let shown: Vec<i64> = page
+        .releases
+        .iter()
+        .map(|release| release.entry.release_edition_id)
+        .collect();
+    assert_eq!(shown, vec![3, 4]);
+    assert_eq!(page.total, 4);
+    // However large the library, a page projects its releases only.
+    assert_eq!(*vault.whole_library_reads.borrow(), 0);
+    assert_eq!(*vault.entries_read.borrow(), vec![shown]);
+}
+
+#[test]
+fn a_release_merged_away_while_its_page_is_read_is_searched_again_without_it() {
+    let vault = FakeVault::with_library(library());
+    // A reference review merges `Homebrew Quest` into another release after the summaries
+    // chose it for the page.
+    vault
+        .releases_merged_after_next_summaries
+        .borrow_mut()
+        .push(4);
+
+    let page = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            limit: 2,
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        page.releases
+            .iter()
+            .map(|release| release.entry.release_edition_id)
+            .collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+    assert_eq!(page.total, 3);
+    assert_eq!(page.next_after, Some(2));
+}
+
+#[test]
 fn filters_narrow_across_kinds_and_widen_within_one() {
     let vault = FakeVault::with_library(library());
 

@@ -10,7 +10,7 @@ mod quality;
 pub use canonical::{CanonicalValue, LibraryRelease, canonical_values};
 pub use coverage::{
     CoverageProfile, CoverageStatus, PackagingFamily, ProfileCoverage, ReleaseCoverage,
-    packaging_family, packaging_platforms, release_coverage,
+    packaging_family, packaging_platforms, release_coverage, release_coverage_of_types,
 };
 pub use derived::{
     DerivationRecipe, DerivedAsset, PackagingModelBasis, PackagingModelScans, PackagingTemplate,
@@ -1435,6 +1435,68 @@ pub struct LibraryEntry {
     pub edition_name: String,
     pub assertions: Vec<ReleaseAssertion>,
     pub assets: Vec<LibraryAsset>,
+}
+
+/// What a Library search filters and orders a Release Edition by, without the details of its
+/// Assets and assertions: its identity, the Asset Types it retains (all its coverage depends on),
+/// the Sources of its Assets and assertions, and the title assertions its Canonical Title comes
+/// from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibrarySummary {
+    pub game_id: i64,
+    pub game_title: String,
+    pub release_edition_id: i64,
+    pub platform: String,
+    pub region: String,
+    pub edition_name: String,
+    /// The types of its Assets, each once, in the order its Assets were retained.
+    pub asset_types: Vec<AssetType>,
+    /// The Sources of its Assets' provenance and of its assertions, each once, by name.
+    pub source_ids: Vec<SourceId>,
+    /// Its title assertions, in observation order.
+    pub title_assertions: Vec<ReleaseAssertion>,
+}
+
+impl LibrarySummary {
+    /// Summarizes `entry`, whose Assets and assertions are listed in library order.
+    pub fn of(entry: &LibraryEntry) -> Self {
+        let mut asset_types: Vec<AssetType> = Vec::new();
+        for asset in &entry.assets {
+            if !asset_types.contains(&asset.asset_type) {
+                asset_types.push(asset.asset_type);
+            }
+        }
+        let mut source_ids: Vec<SourceId> = entry
+            .assets
+            .iter()
+            .flat_map(|asset| asset.provenance.iter())
+            .map(|provenance| provenance.source_id.clone())
+            .chain(
+                entry
+                    .assertions
+                    .iter()
+                    .map(|assertion| assertion.source_id.clone()),
+            )
+            .collect();
+        source_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        source_ids.dedup();
+        Self {
+            game_id: entry.game_id,
+            game_title: entry.game_title.clone(),
+            release_edition_id: entry.release_edition_id,
+            platform: entry.platform.clone(),
+            region: entry.region.clone(),
+            edition_name: entry.edition_name.clone(),
+            asset_types,
+            source_ids,
+            title_assertions: entry
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.field == ReleaseAssertionField::Title)
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
