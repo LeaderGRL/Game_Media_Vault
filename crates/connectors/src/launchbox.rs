@@ -19,7 +19,9 @@ use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::{
-    Fetched, HttpTransport, ReqwestHttpTransport, Validators, naming::parse_release_name,
+    Fetched, HttpTransport, ReqwestHttpTransport, Validators,
+    naming::parse_release_name,
+    selection::{ARTICLES, requested_platforms, title_key},
     xml::push_xml_reference,
 };
 
@@ -662,17 +664,6 @@ impl WantedGames {
     }
 }
 
-fn requested_platforms(request: &AcquisitionRequest) -> Vec<&str> {
-    match request.games() {
-        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games)
-            if request.platforms().is_empty() =>
-        {
-            games.iter().map(|game| game.platform.as_str()).collect()
-        }
-        _ => request.platforms().iter().map(String::as_str).collect(),
-    }
-}
-
 fn launchbox_platform(platform: &str) -> Option<&'static str> {
     PLATFORMS
         .iter()
@@ -686,30 +677,6 @@ fn no_intro_region(region: &str) -> String {
         .find(|(launchbox, _)| launchbox.eq_ignore_ascii_case(region.trim()))
         .map(|(_, no_intro)| (*no_intro).to_owned())
         .unwrap_or_else(|| region.trim().to_owned())
-}
-
-const ARTICLES: [&str; 3] = ["the", "a", "an"];
-
-/// Compares titles regardless of case, spacing, subtitle separator (No-Intro writes " - ",
-/// LaunchBox ": ") and article placement: No-Intro moves a leading article after the main
-/// title ("Legend of Zelda, The - A Link to the Past").
-fn title_key(title: &str) -> String {
-    let words = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    words
-        .to_lowercase()
-        .replace(": ", " - ")
-        .split(" - ")
-        .map(|part| {
-            ARTICLES
-                .iter()
-                .find_map(|article| {
-                    part.strip_suffix(&format!(", {article}"))
-                        .map(|rest| format!("{article} {rest}"))
-                })
-                .unwrap_or_else(|| part.to_owned())
-        })
-        .collect::<Vec<_>>()
-        .join(": ")
 }
 
 /// `title` as No-Intro writes it, so a candidate matches a Library imported from No-Intro: a

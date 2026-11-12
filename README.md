@@ -34,6 +34,8 @@ The same Rust application layer runs behind a Tauri desktop app and a command-li
     between requests.
   - **VGMaps**: maps of games' levels and worlds, read from its public atlas pages the same
     way.
+  - **Internet Archive console manuals**: PDF scans of console game manuals from the
+    `consolemanuals` collection, read the same way.
 
   API keys stay in the operating system's credential store, never in a vault
   ([ADR 0005](docs/adr/0005-keep-source-api-keys-in-the-os-credential-store.md)). The Sources
@@ -105,7 +107,7 @@ upgrades its catalog.
 | --- | --- |
 | `crates/domain` | Domain model: requests, releases, assets, matching, coverage |
 | `crates/application` | Use cases and the ports they depend on |
-| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, SteamGridDB, TheGamesDB, ScreenScraper, RAWG, PSX DataCenter, VGMaps, and the No-Intro, Redump and MAME software list reference catalogs |
+| `crates/connectors` | Sources: Libretro Thumbnails, LaunchBox Games Database, SteamGridDB, TheGamesDB, ScreenScraper, RAWG, PSX DataCenter, VGMaps, Internet Archive console manuals, and the No-Intro, Redump and MAME software list reference catalogs |
 | `crates/infrastructure` | SQLite catalog, content-addressed object store, image and PDF transforms, credential store |
 | `crates/cli` | The `game-media-vault` command-line interface |
 | `src-tauri` | The Tauri desktop shell |

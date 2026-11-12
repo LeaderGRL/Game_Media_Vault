@@ -30,7 +30,8 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
             "screenscraper",
             "rawg",
             "psx-datacenter",
-            "vgmaps"
+            "vgmaps",
+            "internet-archive-manuals"
         ]
     );
     assert!(sources.iter().all(|source| source.direct_media_download));
@@ -48,6 +49,7 @@ fn the_desktop_describes_every_registered_source_without_a_vault() {
             CredentialState::Missing,
             CredentialState::Missing,
             CredentialState::Missing,
+            CredentialState::NotNeeded,
             CredentialState::NotNeeded,
             CredentialState::NotNeeded,
         ]
