@@ -1,18 +1,20 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{Cursor, Read},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use game_media_vault_application::PortError;
-use game_media_vault_connectors::{HttpTransport, PoliteTransport, SiteManners};
+use game_media_vault_connectors::{HttpTransport, PaceClock, PoliteTransport, SiteManners};
 
 /// A website served from fixtures: each URL answers its body, a missing one is unavailable as a
-/// 404 answer is, and `failing` ones fail. Records every request with when it arrived.
+/// 404 answer is, and `failing` ones fail. Records every request with when it arrived, by its
+/// `clock` if it has one.
 struct Website {
     pages: HashMap<String, String>,
     failing: Vec<String>,
+    clock: Option<Arc<TestClock>>,
     requests: Mutex<Vec<(String, Instant)>>,
 }
 
@@ -24,8 +26,27 @@ impl Website {
                 .map(|(url, body)| ((*url).to_owned(), (*body).to_owned()))
                 .collect(),
             failing: failing.iter().map(|url| (*url).to_owned()).collect(),
+            clock: None,
             requests: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A website recording its requests by `clock`.
+    fn keeping_time(pages: &[(&str, &str)], clock: &Arc<TestClock>) -> Self {
+        Self {
+            clock: Some(Arc::clone(clock)),
+            ..Self::with(pages, &[])
+        }
+    }
+
+    /// How long after `start` each request arrived.
+    fn arrivals_after(&self, start: Instant) -> Vec<Duration> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, at)| *at - start)
+            .collect()
     }
 
     fn requested(&self) -> Vec<String> {
@@ -40,10 +61,12 @@ impl Website {
 
 impl HttpTransport for &Website {
     fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push((url.to_owned(), Instant::now()));
+        self.requests.lock().unwrap().push((
+            url.to_owned(),
+            self.clock
+                .as_ref()
+                .map_or_else(Instant::now, |clock| clock.now()),
+        ));
         if self.failing.iter().any(|failing| failing == url) {
             return Err(PortError::new(format!("download of {url} failed")));
         }
@@ -56,11 +79,66 @@ impl HttpTransport for &Website {
     }
 }
 
-const ROBOTS: &str = "https://example.org/robots.txt";
+/// A clock the test moves: a wait moves it on by the time waited, and by how late the thread
+/// wakes from it, the next of its late wakes. A thread that does not wait wakes on time.
+struct TestClock {
+    now: Mutex<Instant>,
+    late_wakes: Mutex<VecDeque<Duration>>,
+}
 
-/// How much earlier than its turn a request may be recorded: the time of a request is taken once
-/// the thread waiting for its turn wakes, which timers may round by a fraction of a millisecond.
-const TIMER_SLACK: Duration = Duration::from_millis(5);
+impl TestClock {
+    fn waking_late_by(late_wakes: &[u64]) -> Arc<Self> {
+        Arc::new(Self {
+            now: Mutex::new(Instant::now()),
+            late_wakes: Mutex::new(
+                late_wakes
+                    .iter()
+                    .map(|late| Duration::from_millis(*late))
+                    .collect(),
+            ),
+        })
+    }
+
+    fn on_time() -> Arc<Self> {
+        Self::waking_late_by(&[])
+    }
+}
+
+impl PaceClock for TestClock {
+    fn now(&self) -> Instant {
+        *self.now.lock().unwrap()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        if duration.is_zero() {
+            return;
+        }
+        let late = self
+            .late_wakes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        *self.now.lock().unwrap() += duration + late;
+    }
+}
+
+/// Manners leaving `delay` between requests by `clock`.
+fn manners(delay: u64, clock: &Arc<TestClock>) -> Arc<SiteManners> {
+    Arc::new(SiteManners::with_clock(
+        Duration::from_millis(delay),
+        Box::new(Arc::clone(clock)),
+    ))
+}
+
+fn millis(times: &[u64]) -> Vec<Duration> {
+    times
+        .iter()
+        .map(|time| Duration::from_millis(*time))
+        .collect()
+}
+
+const ROBOTS: &str = "https://example.org/robots.txt";
 
 fn read(transport: &impl HttpTransport, url: &str) -> Result<String, PortError> {
     let mut body = String::new();
@@ -155,44 +233,42 @@ fn a_site_whose_robots_txt_cannot_be_read_is_asked_nothing() {
 
 #[test]
 fn requests_to_a_site_are_spaced_by_the_delay() {
-    let site = Website::with(
+    let clock = TestClock::on_time();
+    let start = clock.now();
+    let site = Website::keeping_time(
         &[
             ("https://example.org/games/a.html", "game a"),
             ("https://example.org/games/b.html", "game b"),
         ],
-        &[],
+        &clock,
     );
-    let polite = PoliteTransport::with_delay(&site, Duration::from_millis(60));
+    let polite = PoliteTransport::with_manners(&site, manners(60, &clock));
 
     read(&polite, "https://example.org/games/a.html").unwrap();
     read(&polite, "https://example.org/games/b.html").unwrap();
 
-    let requests = site.requests.lock().unwrap();
-    let times: Vec<Instant> = requests.iter().map(|(_, at)| *at).collect();
-    // robots.txt, then each page, each at least the delay after the previous request.
-    assert_eq!(times.len(), 3);
-    for pair in times.windows(2) {
-        assert!(pair[1] - pair[0] + TIMER_SLACK >= Duration::from_millis(60));
-    }
+    // robots.txt, then each page, each the delay after the previous request.
+    assert_eq!(site.arrivals_after(start), millis(&[0, 60, 120]));
 }
 
 #[test]
 fn a_crawl_delay_longer_than_the_delay_is_honored() {
-    let site = Website::with(
+    let clock = TestClock::on_time();
+    let start = clock.now();
+    let site = Website::keeping_time(
         &[
-            (ROBOTS, "User-agent: *\nCrawl-delay: 0.1\n"),
+            (ROBOTS, "User-agent: *\nCrawl-delay: 0.5\n"),
             ("https://example.org/games/a.html", "game a"),
             ("https://example.org/games/b.html", "game b"),
         ],
-        &[],
+        &clock,
     );
-    let polite = PoliteTransport::with_delay(&site, Duration::ZERO);
+    let polite = PoliteTransport::with_manners(&site, manners(60, &clock));
 
     read(&polite, "https://example.org/games/a.html").unwrap();
     read(&polite, "https://example.org/games/b.html").unwrap();
 
-    let requests = site.requests.lock().unwrap();
-    assert!(requests[2].1 - requests[1].1 + TIMER_SLACK >= Duration::from_millis(100));
+    assert_eq!(site.arrivals_after(start), millis(&[0, 500, 1000]));
 }
 
 #[test]
@@ -223,23 +299,24 @@ fn a_site_asking_for_longer_pauses_than_this_application_takes_is_left_alone() {
 
 #[test]
 fn transports_sharing_their_manners_read_robots_txt_once_and_keep_the_pace_together() {
-    let site = Website::with(
+    let clock = TestClock::on_time();
+    let start = clock.now();
+    let site = Website::keeping_time(
         &[
             ("https://example.org/games/a.html", "game a"),
             ("https://example.org/games/b.html", "game b"),
         ],
-        &[],
+        &clock,
     );
-    let manners = std::sync::Arc::new(SiteManners::new(Duration::from_millis(60)));
-    let first = PoliteTransport::with_manners(&site, std::sync::Arc::clone(&manners));
+    let manners = manners(60, &clock);
+    let first = PoliteTransport::with_manners(&site, Arc::clone(&manners));
     let second = PoliteTransport::with_manners(&site, manners);
 
     read(&first, "https://example.org/games/a.html").unwrap();
     read(&second, "https://example.org/games/b.html").unwrap();
 
-    let requests = site.requests.lock().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert!(requests[2].1 - requests[1].1 + TIMER_SLACK >= Duration::from_millis(60));
+    // One robots.txt, and one pace for both transports.
+    assert_eq!(site.arrivals_after(start), millis(&[0, 60, 120]));
 }
 
 #[test]
@@ -344,14 +421,38 @@ fn a_robots_txt_that_failed_to_load_is_read_again_by_the_next_request() {
 
 #[test]
 fn a_failed_robots_txt_read_is_followed_by_the_pause_too() {
-    let site = Website::with(&[], &[ROBOTS]);
-    let polite = PoliteTransport::with_delay(&site, Duration::from_millis(60));
+    let clock = TestClock::on_time();
+    let start = clock.now();
+    let site = Website {
+        clock: Some(Arc::clone(&clock)),
+        ..Website::with(&[], &[ROBOTS])
+    };
+    let polite = PoliteTransport::with_manners(&site, manners(60, &clock));
 
     assert!(read(&polite, "https://example.org/games/a.html").is_err());
     assert!(read(&polite, "https://example.org/games/a.html").is_err());
 
     // Each failed read of robots.txt was a request, and the next one waited its turn.
-    let requests = site.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].1 - requests[0].1 + TIMER_SLACK >= Duration::from_millis(60));
+    assert_eq!(site.arrivals_after(start), millis(&[0, 60]));
+}
+
+#[test]
+fn a_request_sent_late_puts_the_next_one_off_by_the_whole_delay() {
+    // The first wait wakes 20 ms late, as a thread of a loaded machine may.
+    let clock = TestClock::waking_late_by(&[20]);
+    let start = clock.now();
+    let site = Website::keeping_time(
+        &[
+            ("https://example.org/games/a.html", "game a"),
+            ("https://example.org/games/b.html", "game b"),
+        ],
+        &clock,
+    );
+    let polite = PoliteTransport::with_manners(&site, manners(60, &clock));
+
+    read(&polite, "https://example.org/games/a.html").unwrap();
+    read(&polite, "https://example.org/games/b.html").unwrap();
+
+    // robots.txt, then a page sent 20 ms past its turn, then the next a whole delay after it.
+    assert_eq!(site.arrivals_after(start), millis(&[0, 80, 140]));
 }
