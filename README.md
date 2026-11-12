@@ -78,7 +78,7 @@ Each [release](https://github.com/LeaderGRL/Game_Media_Vault/releases) has an ar
 | System | Archive |
 | --- | --- |
 | Windows (x64) | `game-media-vault-<version>-x86_64-pc-windows-msvc.zip` |
-| Linux (x64, glibc 2.35 or newer, as on Ubuntu 22.04; not musl) | `game-media-vault-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (x64, glibc 2.39 or newer, as on Ubuntu 24.04, or 2.35 up to 0.1.1; not musl) | `game-media-vault-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | macOS (Apple Silicon) | `game-media-vault-<version>-aarch64-apple-darwin.tar.gz` |
 
 Extract it anywhere, such as `%LOCALAPPDATA%\Programs\Game Media Vault` on Windows, and keep its
