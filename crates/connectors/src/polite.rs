@@ -5,7 +5,6 @@ use std::{
     collections::HashMap,
     io::Read,
     sync::{Arc, Mutex, OnceLock, PoisonError},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -13,7 +12,7 @@ use game_media_vault_application::{ApiKey, PortError};
 use texting_robots::Robot;
 use url::Url;
 
-use crate::{Fetched, HttpTransport, Validators};
+use crate::{Fetched, HttpTransport, PaceClock, Validators, pace::SystemClock};
 
 /// The name robots.txt rules address this application by, the product token of its requests.
 pub const ROBOTS_USER_AGENT: &str = "game-media-vault";
@@ -33,6 +32,8 @@ const MAX_ROBOTS_BYTES: u64 = 512 * 1024;
 /// keep one pace per site.
 pub struct SiteManners {
     delay: Duration,
+    /// The time the pace keeps to, and the waits it takes.
+    clock: Box<dyn PaceClock>,
     sites: Mutex<HashMap<String, Arc<Site>>>,
 }
 
@@ -52,8 +53,14 @@ struct Asked {
 
 impl SiteManners {
     pub fn new(delay: Duration) -> Self {
+        Self::with_clock(delay, Box::new(SystemClock))
+    }
+
+    /// Manners keeping time with `clock`, which a test can control.
+    pub fn with_clock(delay: Duration, clock: Box<dyn PaceClock>) -> Self {
         Self {
             delay,
+            clock,
             sites: Mutex::new(HashMap::new()),
         }
     }
@@ -75,7 +82,7 @@ impl SiteManners {
             Arc::clone(sites.entry(origin.clone()).or_insert_with(|| {
                 Arc::new(Site {
                     asked: Mutex::new(None),
-                    next: Mutex::new(Instant::now()),
+                    next: Mutex::new(self.clock.now()),
                 })
             }))
         };
@@ -85,12 +92,12 @@ impl SiteManners {
                 Some(known) => Arc::clone(known),
                 None => {
                     // Reading robots.txt is a request too, which waits its turn, failing or not.
-                    thread::sleep(take_turn(&site.next, self.delay));
+                    wait_for_turn(&site.next, self.delay, self.clock.as_ref());
                     // A failure to read it is kept for no one: the next request reads it again.
                     let read = Arc::new(self.visit(&origin, transport)?);
                     // Reading robots.txt was a request too.
                     *site.next.lock().unwrap_or_else(PoisonError::into_inner) =
-                        Instant::now() + read.delay;
+                        self.clock.now() + read.delay;
                     *asked = Some(Arc::clone(&read));
                     read
                 }
@@ -108,7 +115,7 @@ impl SiteManners {
             }
             Ok(_) => {}
         }
-        thread::sleep(take_turn(&site.next, asked.delay));
+        wait_for_turn(&site.next, asked.delay, self.clock.as_ref());
         Ok(())
     }
 
@@ -140,14 +147,21 @@ impl SiteManners {
     }
 }
 
-/// How long a request must wait for its turn at a site whose next request may leave at `next`,
-/// which then moves `delay` past that turn.
-fn take_turn(next: &Mutex<Instant>, delay: Duration) -> Duration {
+/// Waits for the turn of a request to a site whose next request may leave at `next`, then counts
+/// it as leaving now: the next turn comes `delay` after the moment the request actually leaves,
+/// however late its thread woke, rather than after the turn it waited for. Waiting holds the
+/// site's turn, so requests to one site take their turns one at a time.
+fn wait_for_turn(next: &Mutex<Instant>, delay: Duration, clock: &dyn PaceClock) {
     let mut next = next.lock().unwrap_or_else(PoisonError::into_inner);
-    let now = Instant::now();
-    let turn = (*next).max(now);
-    *next = turn + delay;
-    turn - now
+    loop {
+        let now = clock.now();
+        if now >= *next {
+            *next = now + delay;
+            return;
+        }
+        // A wait may end early or late; the turn is checked again either way.
+        clock.sleep(*next - now);
+    }
 }
 
 /// The robots.txt rules of `origin` for this application, from its first half mebibyte: none
