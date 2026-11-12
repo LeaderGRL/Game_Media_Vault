@@ -274,9 +274,14 @@ impl ReqwestHttpTransport {
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| retry::parse_retry_after(value, SystemTime::now()));
+        let message = if retry::origin_is_down(status) {
+            format!("the server of {url} is down or unreachable behind its CDN (HTTP {status})")
+        } else {
+            format!("download returned HTTP {status} for {url}")
+        };
         Err(FailedRequest {
-            message: format!("download returned HTTP {status} for {url}"),
-            transient: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+            message,
+            transient: retry::may_pass_on_retry(status),
             // The server no longer has the resource: asking again cannot help.
             unavailable: matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE),
             retry_after,

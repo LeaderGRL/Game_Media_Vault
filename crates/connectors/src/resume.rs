@@ -12,7 +12,10 @@ use reqwest::{
     header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE, RETRY_AFTER},
 };
 
-use crate::{RetryPolicy, retry::parse_retry_after};
+use crate::{
+    RetryPolicy,
+    retry::{may_pass_on_retry, parse_retry_after},
+};
 
 /// A response body that, when the connection drops partway, asks the Source for the rest.
 ///
@@ -105,7 +108,7 @@ impl ResumingBody {
             Err(_) => return Resume::Refused,
         };
         let status = response.status();
-        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        if may_pass_on_retry(status) {
             let retry_after = response
                 .headers()
                 .get(RETRY_AFTER)

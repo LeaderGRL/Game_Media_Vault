@@ -6,6 +6,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use reqwest::StatusCode;
+
 /// How a transport retries transient failures: each retry waits for a backoff that doubles from
 /// `base_delay` up to `max_delay`, jittered so Sources failing together do not retry together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,18 @@ impl RetryPolicy {
         let requested = retry_after.unwrap_or_default().min(self.max_delay);
         jittered.max(requested)
     }
+}
+
+/// Whether a CDN answered `status` for an origin server that is down, unreachable or not
+/// answering connections (Cloudflare's 521, 522 and 523), which cannot recover between two
+/// retries.
+pub(crate) fn origin_is_down(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 521..=523)
+}
+
+/// Whether a request answered `status` may succeed when asked again shortly.
+pub(crate) fn may_pass_on_retry(status: StatusCode) -> bool {
+    (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) && !origin_is_down(status)
 }
 
 /// The wait a `Retry-After` header asks for, given in seconds or as an HTTP date (the IMF-fixdate
