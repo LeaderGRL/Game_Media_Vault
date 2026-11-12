@@ -1,7 +1,8 @@
 use std::{
+    collections::{HashMap, HashSet},
     io::Read,
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
     thread,
     time::{Duration, SystemTime},
 };
@@ -17,6 +18,7 @@ use game_media_vault_domain::{
 mod datafile;
 mod launchbox;
 mod libretro_database;
+mod libretro_listing;
 mod mame;
 mod naming;
 mod polite;
@@ -500,7 +502,13 @@ pub struct LibretroThumbnailsConnector<T = ReqwestHttpTransport> {
     transport: T,
     /// Repository catalog read once per connector, shared by plan checks and discovery.
     repositories: OnceLock<Vec<LibretroRepository>>,
+    /// The thumbnails each platform folder lists, read once per connector.
+    listings: Mutex<FolderListings>,
 }
+
+/// The thumbnails each platform folder lists, by platform and folder; `None` for a listing that
+/// could not be read.
+type FolderListings = HashMap<(String, &'static str), Option<Arc<HashSet<String>>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LibretroRepository {
@@ -526,6 +534,7 @@ impl<T> LibretroThumbnailsConnector<T> {
         Self {
             transport,
             repositories: OnceLock::new(),
+            listings: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -572,7 +581,7 @@ where
     }
 
     fn discover(&self, request: &AcquisitionRequest) -> Result<Vec<AssetCandidate>, PortError> {
-        let folders: Vec<(AssetType, &str)> = THUMBNAIL_FOLDERS
+        let folders: Vec<(AssetType, &'static str)> = THUMBNAIL_FOLDERS
             .iter()
             .copied()
             .filter(|(asset_type, _)| request.requests_asset_type(*asset_type))
@@ -600,6 +609,12 @@ where
             // region and edition of the release.
             let release = parse_release_name(&game_title);
             for (asset_type, folder) in &folders {
+                if self
+                    .listed_thumbnails(&platform, folder)
+                    .is_some_and(|listed| !listed.contains(&original_filename))
+                {
+                    continue;
+                }
                 candidates.push(AssetCandidate {
                     provider_candidate_id: Some(format!(
                         "{}/{folder}/{game_title}",
@@ -639,6 +654,26 @@ where
         })?;
         let repositories = parse_repository_catalog(manifest)?;
         Ok(self.repositories.get_or_init(|| repositories))
+    }
+
+    /// The thumbnails `thumbnails.libretro.com` lists in a platform folder, read once per
+    /// connector. A listing that cannot be read is `None`, and discovery then offers every name
+    /// as it would without listings: each missing thumbnail ends as an unavailable download
+    /// rather than the whole folder going undiscovered.
+    fn listed_thumbnails(
+        &self,
+        platform: &str,
+        folder: &'static str,
+    ) -> Option<Arc<HashSet<String>>> {
+        let mut listings = self.listings.lock().unwrap_or_else(PoisonError::into_inner);
+        listings
+            .entry((platform.to_owned(), folder))
+            .or_insert_with(|| {
+                let url = libretro_listing::listing_url(platform, folder).ok()?;
+                let page = self.transport.get_bytes(&url).ok()?;
+                libretro_listing::listed_files(std::str::from_utf8(&page).ok()?).map(Arc::new)
+            })
+            .clone()
     }
 }
 

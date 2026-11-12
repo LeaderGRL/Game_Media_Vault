@@ -9,6 +9,7 @@ game-media-vault-application.workspace = true
 game-media-vault-domain.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true
+percent-encoding.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true
 scraper.workspace = true

@@ -1574,6 +1574,7 @@ dependencies = [
  "game-media-vault-application",
  "game-media-vault-domain",
  "game-media-vault-infrastructure",
+ "percent-encoding",
  "quick-xml",
  "reqwest 0.12.28",
  "scraper",
