@@ -234,9 +234,12 @@ pub struct ScreenScraperConnector<T = ReqwestHttpTransport> {
 
 impl ScreenScraperConnector<ReqwestHttpTransport> {
     pub fn new(credentials: Arc<dyn CredentialStorePort>) -> Self {
+        let pace = shared_pace();
+        // The transport's own retries and resumed downloads keep to the pace as well.
+        let transport = ReqwestHttpTransport::default().pacing_retries_by(Arc::clone(&pace));
         Self {
-            pace: Some(shared_pace()),
-            ..Self::with_transport(ReqwestHttpTransport::default(), credentials)
+            pace: Some(pace),
+            ..Self::with_transport(transport, credentials)
         }
     }
 }
@@ -359,7 +362,7 @@ where
     }
 
     fn rate_limits(&self) -> Option<String> {
-        Some("Each account may send one request at a time, so many a minute (about 50 for a free account), and a daily quota of requests that free accounts keep low; requests are sent one at a time, whatever runs send them, at the per-minute pace each answer states, 1.2 s apart until one does. A discovery takes one search per requested game and ScreenScraper system, and one more per game found without its media; each media downloaded takes one more.".to_owned())
+        Some("Each account may send one request at a time, so many a minute (about 50 for a free account), and a daily quota of requests that free accounts keep low; requests are sent one at a time, whatever runs send them, at the per-minute pace each answer states, 1.2 s apart until one does, retries included. A discovery takes one search per requested game and ScreenScraper system, and one more per game found without its media; each media downloaded takes one more.".to_owned())
     }
 
     /// Checked without reaching ScreenScraper.
@@ -599,12 +602,12 @@ where
         url.query_pairs_mut()
             .extend_pairs([("softname", SOFTNAME), ("output", "json")])
             .extend_pairs(query);
-        let body = {
-            let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-            self.wait_for_turn();
-            self.transport
-                .get_with_query_keys(url.as_str(), &credentials.query())?
-        };
+        // The limit an answer states applies before the next request may take its turn.
+        let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        self.wait_for_turn();
+        let body = self
+            .transport
+            .get_with_query_keys(url.as_str(), &credentials.query())?;
         // The body may answer with the credentials it was asked with, so it is left unsaid.
         let answer: Value = serde_json::from_slice(&body).map_err(|error| {
             PortError::invalid_source_data(format!(

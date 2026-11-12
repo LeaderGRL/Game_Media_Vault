@@ -26,7 +26,7 @@ impl PaceClock for SystemClock {
 }
 
 /// Requests that leave at least `interval` apart, a figure the Source may restate.
-pub(crate) struct RequestPace {
+pub struct RequestPace {
     clock: Box<dyn PaceClock>,
     state: Mutex<PaceState>,
 }
@@ -38,7 +38,7 @@ struct PaceState {
 }
 
 impl RequestPace {
-    pub(crate) fn new(interval: Duration, clock: Box<dyn PaceClock>) -> Self {
+    pub fn new(interval: Duration, clock: Box<dyn PaceClock>) -> Self {
         Self {
             clock,
             state: Mutex::new(PaceState {
@@ -49,7 +49,7 @@ impl RequestPace {
     }
 
     /// Waits until a request may leave, and counts it as leaving then.
-    pub(crate) fn wait_for_turn(&self) {
+    pub fn wait_for_turn(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(last) = state.last {
             let turn = last + state.interval;
@@ -62,7 +62,7 @@ impl RequestPace {
     }
 
     /// Keeps the next requests `requests_per_minute` a minute, as the Source restated it.
-    pub(crate) fn allow_per_minute(&self, requests_per_minute: u64) {
+    pub fn allow_per_minute(&self, requests_per_minute: u64) {
         if requests_per_minute == 0 {
             return;
         }

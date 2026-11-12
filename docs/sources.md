@@ -156,10 +156,9 @@ only the one named; an API key is stored under the Source's id, any other creden
   request at a time, whatever runs send them, downloads included, and holds each media whole
   before the next request leaves. Requests leave at least a minute divided by the per-minute
   limit apart, as each answer states it (`ssuser.maxrequestspermin`), and 1.2 s apart until
-  one does. A discovery
-  takes one search per requested game and ScreenScraper system, which serves each of its
-  platforms, one more per game found without its media, and each media
-  downloaded one more. ScreenScraper refusing a request for too many at once (HTTP 429) is asked
+  one does, retries and resumed downloads included. A discovery takes one search per requested
+  game and ScreenScraper system, which serves each of its platforms, one more per game found
+  without its media, and each media downloaded one more. ScreenScraper refusing a request for too many at once (HTTP 429) is asked
   again later; a quota spent for the day (HTTP 430) fails until the next day. Without developer
   credentials it is left out of every plan, with the reason. It needs an explicit game selection,
   takes region filters it has a code for and refuses language filters. It serves the platforms

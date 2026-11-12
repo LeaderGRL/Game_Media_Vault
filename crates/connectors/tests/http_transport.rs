@@ -9,9 +9,11 @@ use std::{
     time::Duration,
 };
 
+use std::{sync::Mutex, time::Instant};
+
 use game_media_vault_application::ApiKey;
 use game_media_vault_connectors::{
-    Fetched, HttpTransport, ReqwestHttpTransport, RetryPolicy, Validators,
+    Fetched, HttpTransport, PaceClock, RequestPace, ReqwestHttpTransport, RetryPolicy, Validators,
 };
 
 /// Retries quickly, so the tests do not wait.
@@ -846,4 +848,84 @@ fn a_transport_following_no_redirect_still_retries() {
 
     assert!(error.message().contains("302"), "{}", error.message());
     assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+/// A clock whose time passes only while the pace waits, recording each wait.
+struct WaitingClock {
+    start: Instant,
+    waited: Mutex<Vec<Duration>>,
+}
+
+impl WaitingClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            start: Instant::now(),
+            waited: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn waits(&self) -> Vec<Duration> {
+        self.waited.lock().unwrap().clone()
+    }
+}
+
+impl PaceClock for WaitingClock {
+    fn now(&self) -> Instant {
+        self.start + self.waited.lock().unwrap().iter().sum::<Duration>()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.waited.lock().unwrap().push(duration);
+    }
+}
+
+/// A transport whose retries and resumes keep two seconds apart, and the pace its caller waits
+/// its turn with before each request.
+fn paced_transport(clock: &Arc<WaitingClock>) -> (ReqwestHttpTransport, Arc<RequestPace>) {
+    let pace = Arc::new(RequestPace::new(
+        Duration::from_secs(2),
+        Box::new(Arc::clone(clock)),
+    ));
+    let transport =
+        ReqwestHttpTransport::with_retry_policy(FAST_RETRIES).pacing_retries_by(Arc::clone(&pace));
+    (transport, pace)
+}
+
+#[test]
+fn a_retry_waits_its_turn_at_the_pace_the_source_keeps() {
+    let (url, served) = serve(vec!["HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK"]);
+    let clock = WaitingClock::new();
+    let (transport, pace) = paced_transport(&clock);
+
+    pace.wait_for_turn();
+    let body = fetch(&transport, &url).unwrap();
+
+    assert_eq!(body, "media");
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+    assert_eq!(clock.waits(), [Duration::from_secs(2)]);
+    // The retry counts as the latest request, so the caller's next one waits after it.
+    pace.wait_for_turn();
+    assert_eq!(
+        clock.waits(),
+        [Duration::from_secs(2), Duration::from_secs(2)]
+    );
+}
+
+#[test]
+fn a_resumed_download_waits_its_turn_at_the_pace_the_source_keeps() {
+    let (url, requests) = serve_cut_short(
+        "Accept-Ranges: bytes\r\nETag: \"v1\"",
+        b"0123456789",
+        4,
+        vec![resumed_tail],
+    );
+    let clock = WaitingClock::new();
+    let (transport, pace) = paced_transport(&clock);
+
+    pace.wait_for_turn();
+    let body = read_all(&transport, &url).unwrap();
+
+    assert_eq!(body, b"0123456789");
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(clock.waits(), [Duration::from_secs(2)]);
 }

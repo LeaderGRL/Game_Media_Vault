@@ -2,6 +2,7 @@
 
 use std::{
     io::{self, Read},
+    sync::Arc,
     thread,
     time::{Duration, SystemTime},
 };
@@ -12,7 +13,7 @@ use reqwest::{
     header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE, RETRY_AFTER},
 };
 
-use crate::{RetryPolicy, retry::parse_retry_after};
+use crate::{RetryPolicy, pace::RequestPace, retry::parse_retry_after};
 
 /// A response body that, when the connection drops partway, asks the Source for the rest.
 ///
@@ -24,6 +25,8 @@ use crate::{RetryPolicy, retry::parse_retry_after};
 pub(crate) struct ResumingBody {
     client: Client,
     retry: RetryPolicy,
+    /// The pace each resume keeps, if the Source sets one.
+    pace: Option<Arc<RequestPace>>,
     /// The resource the first response came from, after any redirect.
     url: Url,
     response: Response,
@@ -50,6 +53,7 @@ impl ResumingBody {
     pub(crate) fn new(
         client: Client,
         retry: RetryPolicy,
+        pace: Option<Arc<RequestPace>>,
         attempts: u32,
         response: Response,
     ) -> Self {
@@ -71,6 +75,7 @@ impl ResumingBody {
         Self {
             client,
             retry,
+            pace,
             url: response.url().clone(),
             response,
             received: 0,
@@ -143,6 +148,9 @@ impl ResumingBody {
                 return Err(error);
             }
             thread::sleep(self.retry.delay_before_retry(self.attempts, retry_after));
+            if let Some(pace) = &self.pace {
+                pace.wait_for_turn();
+            }
             self.attempts += 1;
             match self.resume() {
                 Resume::Resumed(response, total) => {
