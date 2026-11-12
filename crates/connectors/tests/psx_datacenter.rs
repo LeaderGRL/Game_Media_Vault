@@ -80,6 +80,8 @@ const FINAL_FANTASY_VII: &str = r#"<html><head><title>FINAL FANTASY VII - (NTSC-
 <img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-F-ALL.jpg"></a></td>
 <td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-B-ALL.html">
 <img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-B-ALL.jpg"></a></td>
+<td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-D-ALL.html">
+<img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-D-ALL.jpg"></a></td>
 <td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-I-1.html">
 <img border="0" src="../../../images/thumbs/U/F/SCUS-94163/SCUS-94163-I-1.jpg"></a></td>
 <td><a target="_blank" href="../../../images/hires/U/F/SCUS-94163/SCUS-94163-F-GH.html">
@@ -144,6 +146,7 @@ fn acquires_cover_scans_and_screenshots_of_playstation_games() {
         [
             AssetType::BoxFront,
             AssetType::BoxBack,
+            AssetType::Disc,
             AssetType::Screenshot
         ]
     );
@@ -212,6 +215,33 @@ fn discovers_the_hires_covers_of_a_game_its_region_list_names_exactly() {
             format!("{SITE}/ulist.html"),
             format!("{SITE}/games/U/F/SCUS-94163.html")
         ]
+    );
+}
+
+#[test]
+fn discovers_disc_scans_when_they_are_requested() {
+    let site = site();
+
+    let candidates = PsxDataCenterConnector::with_transport(&site)
+        .discover(&request(|draft| {
+            draft.asset_types = vec![AssetTypeSelector::Disc];
+        }))
+        .unwrap();
+
+    assert_eq!(
+        candidates,
+        [AssetCandidate {
+            provider_candidate_id: Some("U/F/SCUS-94163/SCUS-94163-D-ALL".to_owned()),
+            game_title: "Final Fantasy VII".to_owned(),
+            platform: PLAYSTATION.to_owned(),
+            region: "USA".to_owned(),
+            edition_name: "Unspecified".to_owned(),
+            asset_type: AssetType::Disc,
+            source_id: SourceId::from(PSX_DATACENTER_SOURCE_ID),
+            source_asset_label: Some("disc".to_owned()),
+            source_url: format!("{SITE}/images/hires/U/F/SCUS-94163/SCUS-94163-D-ALL.jpg"),
+            original_filename: "SCUS-94163-D-ALL.jpg".to_owned(),
+        }]
     );
 }
 
