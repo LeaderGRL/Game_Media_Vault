@@ -265,10 +265,14 @@ only the one named; an API key is stored under the Source's id, any other creden
 - **Reached at:** `archive.org`. The collection's list comes from its scrape API
   (`/services/search/v1/scrape`), 10,000 items a page, so its 19,076 items of 2026-11-12 take two
   requests. The list is read once for each connector, and so once a run. A download first reads
-  the item's file list (`/metadata/<identifier>`), then the PDF it names, under
-  `/download/<identifier>/`. The Archive serves that PDF from one of its data servers, so the
-  download follows its redirect, but only to a server of `archive.org`. Every request is made as
-  PSX DataCenter's are: only as its robots.txt allows, at least a second apart, each sent once.
+  the item's file list (`/metadata/<identifier>`), then the PDF it names, from the data server
+  and directory that list names, such as `ia801903.us.archive.org/9/items/<identifier>/`. It
+  asks that server directly rather than following the redirect of `/download/<identifier>/`, so
+  every request passes the polite transport. Only servers of `archive.org` are asked. Every
+  request is made as PSX DataCenter's are: only as the robots.txt of its server allows, which
+  costs one more request the first time a data server is asked, at least a second apart, each
+  sent once. A file list naming no data server, as when the item's servers are offline, defers
+  the download to a later execution.
 - **Configuration:** none.
 - **Limits:** only titles that follow one of two structured schemes are read. 3,552 manuals did
   on 2026-11-12:

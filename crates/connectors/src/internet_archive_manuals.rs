@@ -24,8 +24,6 @@ use crate::{
 
 pub const INTERNET_ARCHIVE_MANUALS_SOURCE_ID: &str = "internet-archive-manuals";
 
-/// The domain whose servers the Archive serves its files from.
-const ARCHIVE_DOMAIN: &str = "archive.org";
 const ARCHIVE: &str = "https://archive.org";
 const SCRAPE: &str = "https://archive.org/services/search/v1/scrape";
 const COLLECTION_QUERY: &str = "collection:consolemanuals";
@@ -112,7 +110,7 @@ pub struct InternetArchiveManualsConnector<T = PoliteTransport<ReqwestHttpTransp
 impl InternetArchiveManualsConnector<PoliteTransport<ReqwestHttpTransport>> {
     pub fn new() -> Self {
         Self::with_transport(PoliteTransport::new(
-            ReqwestHttpTransport::for_public_site_within(ARCHIVE_DOMAIN),
+            ReqwestHttpTransport::for_public_sites(),
         ))
     }
 }
@@ -233,8 +231,8 @@ where
         Ok(candidates)
     }
 
-    /// Reads the item's file list, then downloads the PDF it names: the original whose name
-    /// names a manual, or else its first original PDF.
+    /// Reads the item's file list, then downloads the PDF it names, the original whose name
+    /// names a manual or else its first original PDF, from the data server it names.
     fn download(
         &self,
         candidate: &AssetCandidate,
@@ -257,9 +255,8 @@ where
                 "the Internet Archive item {identifier} holds no PDF of its manual"
             )));
         };
-        let mut path = vec!["download", identifier];
-        path.extend(pdf.split('/'));
-        self.transport.get_stream(&archive_url(&path))
+        self.transport
+            .get_stream(&file_on_server(&item, identifier, pdf)?)
     }
 }
 
@@ -485,6 +482,62 @@ fn archive_url(segments: &[&str]) -> String {
     url.into()
 }
 
+/// Where the data server of an item serves its `file`: the server and directory its file list
+/// names. `archive.org/download` would redirect there too, but a redirect followed inside the
+/// HTTP client would reach that server unseen by the polite transport, its robots.txt unread and
+/// its pace unkept, so the server is asked directly. Only servers of the Archive's own domain are
+/// asked.
+fn file_on_server(item: &Value, identifier: &str, file: &str) -> Result<String, PortError> {
+    let (Some(server), Some(dir)) = (
+        item.get("server").and_then(Value::as_str),
+        item.get("dir").and_then(Value::as_str),
+    ) else {
+        // Its servers may all be offline for now: a later execution asks again.
+        return Err(PortError::new(format!(
+            "the Internet Archive names no data server for {identifier} at the moment"
+        )));
+    };
+    let directory: Option<Vec<&str>> = dir
+        .strip_prefix('/')
+        .map(|dir| dir.split('/').collect())
+        .filter(|segments: &Vec<&str>| segments.iter().all(|segment| is_path_segment(segment)));
+    let (true, Some(directory)) = (is_data_server(server), directory) else {
+        return Err(PortError::invalid_source_data(format!(
+            "the Internet Archive names {server}{dir}, no directory of its own data servers, for {identifier}"
+        )));
+    };
+    let mut location = Url::parse(&format!("https://{server}/")).map_err(|error| {
+        PortError::invalid_source_data(format!(
+            "the Internet Archive names the data server {server} for {identifier}: {error}"
+        ))
+    })?;
+    location
+        .path_segments_mut()
+        .expect("an HTTPS locator has a path")
+        .clear()
+        .extend(directory)
+        .extend(file.split('/'));
+    Ok(location.into())
+}
+
+/// Whether `server` is a host name of the Archive's own domain, such as
+/// `ia801903.us.archive.org`, with no port or anything else.
+fn is_data_server(server: &str) -> bool {
+    server.strip_suffix(".archive.org").is_some_and(|name| {
+        name.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
+    })
+}
+
+/// Whether `segment` is one segment of a path, neither empty nor moving up or staying put.
+fn is_path_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment != "." && segment != ".."
+}
+
 /// The identifier of the item `source_url`, a candidate's details page, shows.
 fn item_of(source_url: &str) -> Option<&str> {
     let rest = source_url
@@ -501,10 +554,7 @@ fn manual_pdf(files: &[Value]) -> Option<&str> {
         .filter(|file| file.get("source").and_then(Value::as_str) == Some("original"))
         .filter_map(|file| file.get("name")?.as_str())
         .filter(|name| name.to_ascii_lowercase().ends_with(".pdf"))
-        .filter(|name| {
-            name.split('/')
-                .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
-        })
+        .filter(|name| name.split('/').all(is_path_segment))
         .collect();
     pdfs.iter()
         .find(|name| name.to_ascii_lowercase().contains("manual"))

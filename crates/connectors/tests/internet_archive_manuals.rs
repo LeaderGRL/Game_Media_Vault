@@ -421,8 +421,22 @@ fn blodia() -> AssetCandidate {
 }
 
 /// The file list the Archive gives of an item holding `files`, each a name, its source and its
-/// format.
+/// format, on its data server `ia801903.us.archive.org`.
 fn metadata(files: &[(&str, &str, &str)]) -> Vec<u8> {
+    on_server(
+        serde_json::json!("ia801903.us.archive.org"),
+        serde_json::json!("/9/items/blodia-dmg-bla-gb-jp-manual-600-dpi"),
+        files,
+    )
+}
+
+/// The file list the Archive gives of an item holding `files` in the directory `dir` of its
+/// data server `server`.
+fn on_server(
+    server: serde_json::Value,
+    dir: serde_json::Value,
+    files: &[(&str, &str, &str)],
+) -> Vec<u8> {
     let files: Vec<serde_json::Value> = files
         .iter()
         .map(|(name, source, format)| {
@@ -430,6 +444,8 @@ fn metadata(files: &[(&str, &str, &str)]) -> Vec<u8> {
         })
         .collect();
     serde_json::to_vec(&serde_json::json!({
+        "server": server,
+        "dir": dir,
         "metadata": { "identifier": BLODIA.0, "title": BLODIA.1 },
         "files": files,
     }))
@@ -458,7 +474,9 @@ fn downloads_the_pdf_the_item_s_file_list_names() {
             "Image Container PDF",
         ),
     ]);
-    let pdf = "https://archive.org/download/blodia-dmg-bla-gb-jp-manual-600-dpi/Blodia%20[DMG-BLA](GB)(JP)%20-Manual(600DPI).pdf";
+    // Asked of the item's data server directly, rather than through a redirect from
+    // `archive.org/download` that the polite transport would not see.
+    let pdf = "https://ia801903.us.archive.org/9/items/blodia-dmg-bla-gb-jp-manual-600-dpi/Blodia%20[DMG-BLA](GB)(JP)%20-Manual(600DPI).pdf";
     let archive = Archive::with(&[(BLODIA_METADATA, &files), (pdf, b"%PDF-1.4 manual")]);
 
     let mut body = Vec::new();
@@ -509,4 +527,60 @@ fn downloads_only_items_of_the_archive() {
             .is_err()
     );
     assert!(archive.requested().is_empty());
+}
+
+#[test]
+fn downloads_only_from_a_data_server_of_the_archive() {
+    let pdf = [(
+        "Blodia [DMG-BLA](GB)(JP) -Manual(600DPI).pdf",
+        "original",
+        "Image Container PDF",
+    )];
+    for (server, dir) in [
+        (
+            serde_json::json!("elsewhere.example"),
+            serde_json::json!("/9/items/blodia"),
+        ),
+        (
+            serde_json::json!("archive.org.elsewhere.example"),
+            serde_json::json!("/9/items/blodia"),
+        ),
+        (
+            serde_json::json!("ia801903.us.archive.org"),
+            serde_json::json!("/9/../../blodia"),
+        ),
+        (
+            serde_json::json!("ia801903.us.archive.org:8080"),
+            serde_json::json!("/9/items/blodia"),
+        ),
+    ] {
+        let files = on_server(server.clone(), dir.clone(), &pdf);
+        let archive = Archive::with(&[(BLODIA_METADATA, &files)]);
+
+        let result = InternetArchiveManualsConnector::with_transport(&archive).download(&blodia());
+
+        assert!(result.is_err(), "{server} {dir}");
+        assert_eq!(archive.requested(), [BLODIA_METADATA]);
+    }
+}
+
+#[test]
+fn a_manual_whose_item_names_no_data_server_is_tried_again_later() {
+    let pdf = [(
+        "Blodia [DMG-BLA](GB)(JP) -Manual(600DPI).pdf",
+        "original",
+        "Image Container PDF",
+    )];
+    let files = on_server(serde_json::Value::Null, serde_json::Value::Null, &pdf);
+    let archive = Archive::with(&[(BLODIA_METADATA, &files)]);
+
+    let error = InternetArchiveManualsConnector::with_transport(&archive)
+        .download(&blodia())
+        .err()
+        .unwrap();
+
+    // Its servers may all be offline for now, which a later execution may find otherwise.
+    assert!(!error.is_unavailable(), "{error}");
+    assert!(!error.is_invalid_source_data(), "{error}");
+    assert_eq!(archive.requested(), [BLODIA_METADATA]);
 }

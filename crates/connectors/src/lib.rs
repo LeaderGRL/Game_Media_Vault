@@ -231,53 +231,6 @@ impl ReqwestHttpTransport {
         })
     }
 
-    /// A transport for a public website that serves its files from other servers of its own
-    /// domain, as the Internet Archive does from its data servers. It asks each thing once, as
-    /// `for_public_sites` does, but follows a redirect to `domain` or one of its subdomains, and
-    /// only there: a redirect elsewhere is a failure. A redirect from HTTPS never leads to plain
-    /// HTTP.
-    pub fn for_public_site_within(domain: &'static str) -> Self {
-        let within = reqwest::redirect::Policy::custom(move |attempt| {
-            let target = attempt.url();
-            let on_domain = target.host_str().is_some_and(|host| {
-                host.eq_ignore_ascii_case(domain)
-                    || host
-                        .to_ascii_lowercase()
-                        .ends_with(&format!(".{}", domain.to_ascii_lowercase()))
-            });
-            let secure = target.scheme() == "https"
-                || attempt
-                    .previous()
-                    .last()
-                    .is_some_and(|from| from.scheme() == target.scheme());
-            if !on_domain || !secure {
-                attempt.stop()
-            } else if attempt.previous().len() > 10 {
-                attempt.error("too many redirects")
-            } else {
-                attempt.follow()
-            }
-        });
-        let client = Client::builder()
-            .user_agent("game-media-vault/0.1")
-            .redirect(within)
-            .build()
-            .expect("failed to build the HTTP client");
-        Self {
-            client,
-            keyed_client: Client::builder()
-                .user_agent("game-media-vault/0.1")
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("failed to build the HTTP client"),
-            retry: RetryPolicy {
-                max_attempts: 1,
-                ..RetryPolicy::default()
-            },
-            pace: None,
-        }
-    }
-
     /// A transport that follows no redirect, which could lead to another server than the one a
     /// connector trusts its media from, while retrying transient failures as `retry` allows.
     pub fn following_no_redirect(retry: RetryPolicy) -> Self {
