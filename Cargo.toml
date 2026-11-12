@@ -25,7 +25,9 @@ dirs = "6"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
 imagesize = "0.15"
 lopdf = { version = "0.45", default-features = false }
-pdfium-render = "0.9"
+# Binds the pdfium API of the release scripts/fetch-pdfium.sh pins (ADR 0006), whatever API a
+# later pdfium-render calls its latest.
+pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_8125", "image_latest", "thread_safe"] }
 clap = { version = "4.5", features = ["derive"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
 quick-xml = "0.42"

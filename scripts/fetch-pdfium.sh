@@ -7,23 +7,23 @@
 set -euo pipefail
 
 # The pdfium-binaries release matching the pdfium API pdfium-render is built against
-# (its `pdfium_7881` feature).
-release=7881
+# (its `pdfium_8125` feature, which the workspace Cargo.toml enables).
+release=8125
 
 platform="${1:?usage: fetch-pdfium.sh <win-x64|linux-x64|mac-arm64> <directory>}"
 destination="${2:?usage: fetch-pdfium.sh <win-x64|linux-x64|mac-arm64> <directory>}"
 
 case "$platform" in
   win-x64)
-    sha256=73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08
+    sha256=9a964261760cff52570aabf038ab346d3a5034dd8b30d0d5fe8861235d356b8b
     library=bin/pdfium.dll
     ;;
   linux-x64)
-    sha256=1470e21b8b4a3b4ad7f85684e2da11d94f3b69a86d81dee11b9b6709d927ac1d
+    sha256=e1c3ce6e270cb5e0c20816b379ad9f2c1309972697c505f508de92bf5e7d6659
     library=lib/libpdfium.so
     ;;
   mac-arm64)
-    sha256=52e94ca5aa8847934330daf3f8150c190682c5ca93831468794f8b90d4392e40
+    sha256=4939bd935ac83ddc09a3a4f038bc43a19cea1660316a3667f26cb07a070e139d
     library=lib/libpdfium.dylib
     ;;
   *)
