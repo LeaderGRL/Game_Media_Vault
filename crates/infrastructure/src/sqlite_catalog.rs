@@ -93,9 +93,13 @@ impl SqliteCatalog {
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(sql_error)?;
         #[cfg(test)]
-        if let Some(handler) = self.busy_handler {
-            connection.busy_handler(Some(handler)).map_err(sql_error)?;
-        }
+        let connection = {
+            let mut connection = connection;
+            if let Some(handler) = self.busy_handler {
+                connection.busy_handler(Some(handler)).map_err(sql_error)?;
+            }
+            connection
+        };
         Ok(connection)
     }
 }
