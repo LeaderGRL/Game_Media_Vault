@@ -26,9 +26,12 @@ only the one named; an API key is stored under the Source's id, any other creden
 
 - **Provides:** Box Front, Screenshot and Title Screen, from the `Named_Boxarts`, `Named_Snaps`
   and `Named_Titles` folders of the `libretro-thumbnails` repositories.
-- **Reached at:** `raw.githubusercontent.com`. The repository list is read from the
-  `.gitmodules` file of `libretro-thumbnails/libretro-thumbnails`, and images from each
-  platform's repository.
+- **Reached at:** `raw.githubusercontent.com` and `thumbnails.libretro.com`. The repository
+  list is read from the `.gitmodules` file of `libretro-thumbnails/libretro-thumbnails`, and
+  images from each platform's repository. Discovery offers only the images that the platform
+  folder's directory listing on `thumbnails.libretro.com` names, read once per run (1.8 MB for
+  Game Boy Advance box arts), so images Libretro lacks cost no download. Discovery offers every
+  name as before when a listing cannot be read.
 - **Configuration:** none. A platform is served when a repository bears its name, such as
   `Nintendo - Nintendo Entertainment System`.
 - **Limits:** it holds one image per game and type, named after the release, so it refuses

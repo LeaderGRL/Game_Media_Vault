@@ -57,6 +57,87 @@ impl HttpTransport for &FixtureTransport {
     }
 }
 
+const NES_BOX_ARTS_LISTING_URL: &str = "https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%20Entertainment%20System/Named_Boxarts/";
+
+/// The Apache directory listing `thumbnails.libretro.com` serves for the NES box arts folder,
+/// linking to each of `hrefs`.
+fn nes_box_arts_listing(hrefs: &[&str]) -> String {
+    let rows: String = hrefs
+        .iter()
+        .map(|href| {
+            format!(
+                "<tr><td valign=\"top\"><img src=\"/icons/image2.gif\" alt=\"[IMG]\"></td><td><a href=\"{href}\">{href}</a></td><td align=\"right\">2025-04-09 11:54  </td><td align=\"right\">547K</td><td>&nbsp;</td></tr>\n"
+            )
+        })
+        .collect();
+    format!(
+        r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+ <head>
+  <title>Index of /Nintendo - Nintendo Entertainment System/Named_Boxarts</title>
+ </head>
+ <body>
+<h1>Index of /Nintendo - Nintendo Entertainment System/Named_Boxarts</h1>
+  <table>
+   <tr><th valign="top"><img src="/icons/blank.gif" alt="[ICO]"></th><th><a href="?C=N;O=D">Name</a></th><th><a href="?C=M;O=A">Last modified</a></th><th><a href="?C=S;O=A">Size</a></th><th><a href="?C=D;O=A">Description</a></th></tr>
+   <tr><th colspan="5"><hr></th></tr>
+<tr><td valign="top"><img src="/icons/back.gif" alt="[PARENTDIR]"></td><td><a href="/Nintendo%20-%20Nintendo%20Entertainment%20System/">Parent Directory</a></td><td>&nbsp;</td><td align="right">  - </td><td>&nbsp;</td></tr>
+{rows}   <tr><th colspan="5"><hr></th></tr>
+</table>
+</body></html>
+"#
+    )
+}
+
+/// Serves the repository list and the NES box arts folder's listing as `listing` answers it;
+/// every other request finds nothing.
+struct ListingTransport {
+    listing: Result<String, String>,
+    requests: Mutex<Vec<String>>,
+}
+
+impl ListingTransport {
+    fn answering(listing: Result<String, String>) -> Self {
+        Self {
+            listing,
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl HttpTransport for ListingTransport {
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
+        self.requests.lock().unwrap().push(url.to_owned());
+        if url.ends_with("/.gitmodules") {
+            Ok(GITMODULES_FIXTURE.as_bytes().to_vec())
+        } else if url == NES_BOX_ARTS_LISTING_URL {
+            self.listing
+                .clone()
+                .map(String::into_bytes)
+                .map_err(PortError::new)
+        } else {
+            Err(PortError::new(format!(
+                "download returned HTTP 404 Not Found for {url} "
+            )))
+        }
+    }
+
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        Ok(Box::new(Cursor::new(self.get_bytes(url)?)))
+    }
+}
+
+/// Lets a test keep the transport to count the listings a connector read.
+impl HttpTransport for &ListingTransport {
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, PortError> {
+        (**self).get_bytes(url)
+    }
+
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        (**self).get_stream(url)
+    }
+}
+
 fn request(asset_types: Vec<AssetTypeSelector>) -> AcquisitionRequest {
     AcquisitionRequest::try_from_draft(AcquisitionRequestDraft {
         sources: SourceSelection::Explicit(vec!["libretro-thumbnails".to_owned()]),
@@ -393,6 +474,127 @@ fn malformed_repository_metadata_is_invalid_source_data() {
         .unwrap_err();
 
     assert!(error.is_invalid_source_data(), "{error}");
+}
+
+#[test]
+fn discovers_only_the_thumbnails_the_folder_s_listing_names() {
+    let connector = LibretroThumbnailsConnector::with_transport(ListingTransport::answering(Ok(
+        nes_box_arts_listing(&[
+            "Rock_n%20Roll%20Racing.png",
+            "Super%20Mario%20Bros.%20(World).png",
+        ]),
+    )));
+    let request = request_with(|draft| {
+        draft.games = GameSelection::Explicit(vec![
+            "Super Mario Bros. (World)".to_owned(),
+            "Homebrew Collection".to_owned(),
+        ]);
+    });
+
+    let candidates = connector.discover(&request).unwrap();
+
+    let found: Vec<_> = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.original_filename.as_str(),
+                candidate.source_url.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![(
+            "Super Mario Bros. (World).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System/master/Named_Boxarts/Super%20Mario%20Bros.%20(World).png"
+        )]
+    );
+}
+
+#[test]
+fn reads_the_names_a_listing_escapes() {
+    // The server escapes brackets and percent signs in lowercase hexadecimal, and characters
+    // beyond ASCII byte by byte in UTF-8.
+    let connector = LibretroThumbnailsConnector::with_transport(ListingTransport::answering(Ok(
+        nes_box_arts_listing(&[
+            "Burning%20Heroes%20%5bEnglish%5d.png",
+            "Cotton%20100%25%20(Japan).png",
+            "Kirby%e2%80%99s%20Adventure%20(USA).png",
+        ]),
+    )));
+    let request = request_with(|draft| {
+        draft.games = GameSelection::Explicit(vec![
+            "Burning Heroes [English]".to_owned(),
+            "Cotton 100% (Japan)".to_owned(),
+            "Kirby\u{2019}s Adventure (USA)".to_owned(),
+        ]);
+    });
+
+    let candidates = connector.discover(&request).unwrap();
+
+    let found: Vec<_> = candidates
+        .iter()
+        .map(|candidate| candidate.original_filename.as_str())
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            "Burning Heroes [English].png",
+            "Cotton 100% (Japan).png",
+            "Kirby\u{2019}s Adventure (USA).png",
+        ]
+    );
+}
+
+#[test]
+fn reads_each_folder_s_listing_once_whatever_the_number_of_discoveries() {
+    let transport = ListingTransport::answering(Ok(nes_box_arts_listing(&[
+        "Super%20Mario%20Bros.%20(World).png",
+    ])));
+    let connector = LibretroThumbnailsConnector::with_transport(&transport);
+    let request = request(vec![AssetTypeSelector::BoxFront]);
+
+    let first = connector.discover(&request).unwrap();
+    let second = connector.discover(&request).unwrap();
+
+    assert_eq!(first.len(), 1);
+    assert_eq!(second, first);
+    let listing_reads = transport
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|url| url.as_str() == NES_BOX_ARTS_LISTING_URL)
+        .count();
+    assert_eq!(listing_reads, 1);
+}
+
+#[test]
+fn offers_every_name_when_a_folder_s_listing_cannot_be_read() {
+    for listing in [
+        Err("download returned HTTP 503 Service Unavailable".to_owned()),
+        Ok("<html><head><title>Maintenance</title></head><body><a href=\"Other%20Game.png\">Other Game.png</a></body></html>".to_owned()),
+    ] {
+        let connector =
+            LibretroThumbnailsConnector::with_transport(ListingTransport::answering(listing));
+        let request = request_with(|draft| {
+            draft.games = GameSelection::Explicit(vec![
+                "Super Mario Bros. (World)".to_owned(),
+                "Homebrew Collection".to_owned(),
+            ]);
+        });
+
+        let candidates = connector.discover(&request).unwrap();
+
+        let found: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate.original_filename.as_str())
+            .collect();
+        assert_eq!(
+            found,
+            vec!["Super Mario Bros. (World).png", "Homebrew Collection.png"]
+        );
+    }
 }
 
 #[test]

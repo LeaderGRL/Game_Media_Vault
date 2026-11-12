@@ -29,6 +29,11 @@ const GITMODULES_FIXTURE: &[u8] = br#"
     url = https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_Entertainment_System.git
     branch = master
 "#;
+const BOX_ARTS_LISTING_URL: &str = "https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%20Entertainment%20System/Named_Boxarts/";
+const BOX_ARTS_LISTING: &[u8] = br#"<html><head><title>Index of /Nintendo - Nintendo Entertainment System/Named_Boxarts</title></head>
+<body><table><tr><td><a href="/Nintendo%20-%20Nintendo%20Entertainment%20System/">Parent Directory</a></td></tr>
+<tr><td><a href="Super%20Mario%20Bros.%20(World).png">Super Mario Bros. (World).png</a></td></tr></table></body></html>
+"#;
 
 #[derive(Clone)]
 struct FixtureTransport {
@@ -43,6 +48,8 @@ impl HttpTransport for FixtureTransport {
         self.requested_urls.lock().unwrap().push(url.to_owned());
         if url.ends_with("/.gitmodules") {
             Ok(Box::new(Cursor::new(GITMODULES_FIXTURE.to_vec())))
+        } else if url == BOX_ARTS_LISTING_URL {
+            Ok(Box::new(Cursor::new(BOX_ARTS_LISTING.to_vec())))
         } else {
             Ok(Box::new(Cursor::new(BOX_FRONT_BYTES.to_vec())))
         }
@@ -167,6 +174,7 @@ fn acquires_and_persists_a_libretro_box_front_end_to_end_without_live_network() 
         requested_urls.lock().unwrap().as_slice(),
         &[
             "https://raw.githubusercontent.com/libretro-thumbnails/libretro-thumbnails/master/.gitmodules".to_owned(),
+            BOX_ARTS_LISTING_URL.to_owned(),
             asset.provenance[0].source_location.clone(),
         ]
     );
