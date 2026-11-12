@@ -29,6 +29,12 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Whether a retry may wait the `wait` a Source asked for, which is no longer than any
+    /// retry of this policy waits.
+    pub(crate) fn waits(&self, wait: Duration) -> bool {
+        wait <= self.max_delay
+    }
+
     /// How long to wait before retry number `retry` (1 for the first), at least what the Source
     /// asked for in `retry_after` within `max_delay`.
     pub(crate) fn delay_before_retry(&self, retry: u32, retry_after: Option<Duration>) -> Duration {

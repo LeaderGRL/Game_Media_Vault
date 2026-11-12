@@ -154,6 +154,8 @@ impl ResumingBody {
                     return Ok(());
                 }
                 Resume::Refused => return Err(error),
+                // Asking again sooner than the Source allows would be refused again.
+                Resume::Failed(Some(wait)) if !self.retry.waits(wait) => return Err(error),
                 Resume::Failed(requested) => retry_after = requested,
             }
         }

@@ -460,6 +460,18 @@ impl ReqwestHttpTransport {
         loop {
             match self.attempt(target, known, bearer) {
                 Ok(response) => return Ok((response, attempts)),
+                // Asking again sooner than the Source allows would be refused again.
+                Err(FailedRequest {
+                    message,
+                    transient: true,
+                    retry_after: Some(wait),
+                    ..
+                }) if !self.retry.waits(wait) => {
+                    return Err(PortError::new(format!(
+                        "{message} (the Source asks to wait {} s)",
+                        wait.as_secs()
+                    )));
+                }
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));
                     attempts += 1;

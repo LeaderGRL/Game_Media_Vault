@@ -139,6 +139,35 @@ fn a_source_whose_server_is_down_behind_its_cdn_is_reported_at_once() {
 }
 
 #[test]
+fn a_source_asking_to_wait_longer_than_retries_do_is_reported_at_once() {
+    for status_line in [
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600",
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 120",
+    ] {
+        let (url, served) = serve(vec![status_line, "HTTP/1.1 200 OK"]);
+
+        let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+            .get_stream(&url)
+            .err()
+            .unwrap();
+
+        // A later execution may be let through.
+        assert!(
+            !error.is_unavailable(),
+            "{status_line}: {}",
+            error.message()
+        );
+        let wait = status_line.rsplit(' ').next().unwrap();
+        assert!(
+            error.message().contains(&format!("asks to wait {wait} s")),
+            "{status_line}: {}",
+            error.message()
+        );
+        assert_eq!(served.load(Ordering::SeqCst), 1, "{status_line}");
+    }
+}
+
+#[test]
 fn requests_the_server_refuses_are_not_retried() {
     let (url, served) = serve(vec!["HTTP/1.1 403 Forbidden", "HTTP/1.1 200 OK"]);
 
@@ -312,6 +341,27 @@ fn a_resume_whose_server_went_down_is_not_tried_again() {
         4,
         vec![
             |_| b"HTTP/1.1 522 Connection Timed Out\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            resumed_tail,
+        ],
+    );
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_resume_the_source_asks_to_wait_longer_for_is_not_tried_again() {
+    let (url, requests) = serve_cut_short(
+        "Accept-Ranges: bytes\r\nETag: \"v1\"",
+        b"0123456789",
+        4,
+        vec![
+            |_| {
+                b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 120\r\nContent-Length: 0\r\n\r\n"
+                    .to_vec()
+            },
             resumed_tail,
         ],
     );
