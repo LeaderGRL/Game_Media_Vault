@@ -19,6 +19,7 @@ const FAST_RETRIES: RetryPolicy = RetryPolicy {
     max_attempts: 3,
     base_delay: Duration::from_millis(1),
     max_delay: Duration::from_millis(4),
+    retries_rate_limits: true,
 };
 
 /// Answers successive requests on a local port with `responses`, each a status line and its
@@ -107,6 +108,85 @@ fn retries_stop_after_the_attempts_the_policy_allows() {
         error.message()
     );
     assert_eq!(served.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_source_whose_server_is_down_behind_its_cdn_is_reported_at_once() {
+    for status_line in [
+        "HTTP/1.1 521 Web Server Is Down",
+        "HTTP/1.1 522 Connection Timed Out",
+        "HTTP/1.1 523 Origin Is Unreachable",
+    ] {
+        let (url, served) = serve(vec![status_line, "HTTP/1.1 200 OK"]);
+
+        let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+            .get_stream(&url)
+            .err()
+            .unwrap();
+
+        // A later execution may find the server back.
+        assert!(
+            !error.is_unavailable(),
+            "{status_line}: {}",
+            error.message()
+        );
+        assert!(
+            error.message().contains("is down or unreachable"),
+            "{status_line}: {}",
+            error.message()
+        );
+        assert_eq!(served.load(Ordering::SeqCst), 1, "{status_line}");
+    }
+}
+
+#[test]
+fn a_source_asking_to_wait_longer_than_retries_do_is_reported_at_once() {
+    for status_line in [
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600",
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 120",
+    ] {
+        let (url, served) = serve(vec![status_line, "HTTP/1.1 200 OK"]);
+
+        let error = ReqwestHttpTransport::with_retry_policy(FAST_RETRIES)
+            .get_stream(&url)
+            .err()
+            .unwrap();
+
+        // A later execution may be let through.
+        assert!(
+            !error.is_unavailable(),
+            "{status_line}: {}",
+            error.message()
+        );
+        let wait = status_line.rsplit(' ').next().unwrap();
+        assert!(
+            error.message().contains(&format!("asks to wait {wait} s")),
+            "{status_line}: {}",
+            error.message()
+        );
+        assert_eq!(served.load(Ordering::SeqCst), 1, "{status_line}");
+    }
+}
+
+#[test]
+fn a_policy_for_a_quota_that_renews_slowly_never_retries_a_rate_limit() {
+    let policy = RetryPolicy {
+        retries_rate_limits: false,
+        ..FAST_RETRIES
+    };
+    let (limited, limited_served) =
+        serve(vec!["HTTP/1.1 429 Too Many Requests", "HTTP/1.1 200 OK"]);
+    let (failing, failing_served) =
+        serve(vec!["HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK"]);
+    let transport = ReqwestHttpTransport::with_retry_policy(policy);
+
+    let error = transport.get_stream(&limited).err().unwrap();
+
+    assert!(error.message().contains("429"), "{}", error.message());
+    assert_eq!(limited_served.load(Ordering::SeqCst), 1);
+    // Other transient failures are still retried.
+    assert_eq!(fetch(&transport, &failing).unwrap(), "media");
+    assert_eq!(failing_served.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -273,6 +353,45 @@ fn a_resume_the_source_refuses_for_now_is_tried_again() {
 
     assert_eq!(body, b"0123456789");
     assert_eq!(requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn a_resume_whose_server_went_down_is_not_tried_again() {
+    let (url, requests) = serve_cut_short(
+        "Accept-Ranges: bytes\r\nETag: \"v1\"",
+        b"0123456789",
+        4,
+        vec![
+            |_| b"HTTP/1.1 522 Connection Timed Out\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            resumed_tail,
+        ],
+    );
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_resume_the_source_asks_to_wait_longer_for_is_not_tried_again() {
+    let (url, requests) = serve_cut_short(
+        "Accept-Ranges: bytes\r\nETag: \"v1\"",
+        b"0123456789",
+        4,
+        vec![
+            |_| {
+                b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 120\r\nContent-Length: 0\r\n\r\n"
+                    .to_vec()
+            },
+            resumed_tail,
+        ],
+    );
+
+    let result = read_all(&ReqwestHttpTransport::with_retry_policy(FAST_RETRIES), &url);
+
+    assert!(result.is_err());
+    assert_eq!(requests.lock().unwrap().len(), 2);
 }
 
 #[test]

@@ -105,7 +105,7 @@ impl ResumingBody {
             Err(_) => return Resume::Refused,
         };
         let status = response.status();
-        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        if self.retry.retries(status) {
             let retry_after = response
                 .headers()
                 .get(RETRY_AFTER)
@@ -151,6 +151,8 @@ impl ResumingBody {
                     return Ok(());
                 }
                 Resume::Refused => return Err(error),
+                // Asking again sooner than the Source allows would be refused again.
+                Resume::Failed(Some(wait)) if !self.retry.waits(wait) => return Err(error),
                 Resume::Failed(requested) => retry_after = requested,
             }
         }

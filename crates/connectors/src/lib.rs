@@ -274,14 +274,24 @@ impl ReqwestHttpTransport {
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| retry::parse_retry_after(value, SystemTime::now()));
+        let message = if retry::origin_is_down(status) {
+            format!("the server of {url} is down or unreachable behind its CDN (HTTP {status})")
+        } else {
+            format!("download returned HTTP {status} for {url}")
+        };
         Err(FailedRequest {
-            message: format!("download returned HTTP {status} for {url}"),
-            transient: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+            message,
+            transient: self.retry.retries(status),
             // The server no longer has the resource: asking again cannot help.
             unavailable: matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE),
             retry_after,
         })
     }
+}
+
+/// Whether `error` reports that a request was answered with `status`, as the transport words it.
+pub(crate) fn answered_with(error: &PortError, status: StatusCode) -> bool {
+    error.message().contains(&format!("HTTP {status} "))
 }
 
 /// The body of an API's `response` to the request errors name as `url`, refused once it grows
@@ -455,6 +465,18 @@ impl ReqwestHttpTransport {
         loop {
             match self.attempt(target, known, bearer) {
                 Ok(response) => return Ok((response, attempts)),
+                // Asking again sooner than the Source allows would be refused again.
+                Err(FailedRequest {
+                    message,
+                    transient: true,
+                    retry_after: Some(wait),
+                    ..
+                }) if !self.retry.waits(wait) => {
+                    return Err(PortError::new(format!(
+                        "{message} (the Source asks to wait {} s)",
+                        wait.as_secs()
+                    )));
+                }
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));
                     attempts += 1;
