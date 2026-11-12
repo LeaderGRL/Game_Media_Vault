@@ -19,6 +19,7 @@ const FAST_RETRIES: RetryPolicy = RetryPolicy {
     max_attempts: 3,
     base_delay: Duration::from_millis(1),
     max_delay: Duration::from_millis(4),
+    retries_rate_limits: true,
 };
 
 /// Answers successive requests on a local port with `responses`, each a status line and its
@@ -165,6 +166,27 @@ fn a_source_asking_to_wait_longer_than_retries_do_is_reported_at_once() {
         );
         assert_eq!(served.load(Ordering::SeqCst), 1, "{status_line}");
     }
+}
+
+#[test]
+fn a_policy_for_a_quota_that_renews_slowly_never_retries_a_rate_limit() {
+    let policy = RetryPolicy {
+        retries_rate_limits: false,
+        ..FAST_RETRIES
+    };
+    let (limited, limited_served) =
+        serve(vec!["HTTP/1.1 429 Too Many Requests", "HTTP/1.1 200 OK"]);
+    let (failing, failing_served) =
+        serve(vec!["HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK"]);
+    let transport = ReqwestHttpTransport::with_retry_policy(policy);
+
+    let error = transport.get_stream(&limited).err().unwrap();
+
+    assert!(error.message().contains("429"), "{}", error.message());
+    assert_eq!(limited_served.load(Ordering::SeqCst), 1);
+    // Other transient failures are still retried.
+    assert_eq!(fetch(&transport, &failing).unwrap(), "media");
+    assert_eq!(failing_served.load(Ordering::SeqCst), 2);
 }
 
 #[test]

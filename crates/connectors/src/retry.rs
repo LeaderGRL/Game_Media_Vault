@@ -16,6 +16,9 @@ pub struct RetryPolicy {
     pub max_attempts: u32,
     pub base_delay: Duration,
     pub max_delay: Duration,
+    /// Whether HTTP 429 Too Many Requests is retried: not for a Source whose limit is a quota
+    /// that renews only after hours or days, which no retry outlasts.
+    pub retries_rate_limits: bool,
 }
 
 impl Default for RetryPolicy {
@@ -24,11 +27,18 @@ impl Default for RetryPolicy {
             max_attempts: 4,
             base_delay: Duration::from_millis(500),
             max_delay: Duration::from_secs(8),
+            retries_rate_limits: true,
         }
     }
 }
 
 impl RetryPolicy {
+    /// Whether a request answered `status` may succeed when asked again shortly.
+    pub(crate) fn retries(&self, status: StatusCode) -> bool {
+        may_pass_on_retry(status)
+            && (self.retries_rate_limits || status != StatusCode::TOO_MANY_REQUESTS)
+    }
+
     /// Whether a retry may wait the `wait` a Source asked for, which is no longer than any
     /// retry of this policy waits.
     pub(crate) fn waits(&self, wait: Duration) -> bool {
@@ -62,8 +72,9 @@ pub(crate) fn origin_is_down(status: StatusCode) -> bool {
     matches!(status.as_u16(), 521..=523)
 }
 
-/// Whether a request answered `status` may succeed when asked again shortly.
-pub(crate) fn may_pass_on_retry(status: StatusCode) -> bool {
+/// Whether a request answered `status` may succeed when asked again shortly, whatever the
+/// Source's limits.
+fn may_pass_on_retry(status: StatusCode) -> bool {
     (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) && !origin_is_down(status)
 }
 
@@ -149,6 +160,7 @@ mod tests {
         max_attempts: 5,
         base_delay: Duration::from_millis(100),
         max_delay: Duration::from_millis(500),
+        retries_rate_limits: true,
     };
 
     #[test]

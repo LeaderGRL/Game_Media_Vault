@@ -281,12 +281,17 @@ impl ReqwestHttpTransport {
         };
         Err(FailedRequest {
             message,
-            transient: retry::may_pass_on_retry(status),
+            transient: self.retry.retries(status),
             // The server no longer has the resource: asking again cannot help.
             unavailable: matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE),
             retry_after,
         })
     }
+}
+
+/// Whether `error` reports that a request was answered with `status`, as the transport words it.
+pub(crate) fn answered_with(error: &PortError, status: StatusCode) -> bool {
+    error.message().contains(&format!("HTTP {status} "))
 }
 
 /// The body of an API's `response` to the request errors name as `url`, refused once it grows

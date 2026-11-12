@@ -10,11 +10,12 @@ use game_media_vault_application::{ApiKey, ConnectorPort, CredentialStorePort, P
 use game_media_vault_domain::{
     AcquisitionRequest, AssetCandidate, AssetType, ConnectorCapabilities, GameSelection, SourceId,
 };
+use reqwest::StatusCode;
 use serde_json::Value;
 use url::Url;
 
 use crate::{
-    HttpTransport, ReqwestHttpTransport,
+    HttpTransport, ReqwestHttpTransport, RetryPolicy, answered_with,
     selection::{name_key, wanted_games},
 };
 
@@ -85,8 +86,16 @@ pub struct TheGamesDbConnector<T = ReqwestHttpTransport> {
 }
 
 impl TheGamesDbConnector<ReqwestHttpTransport> {
+    /// Its requests are not retried when rate limited: TheGamesDB limits each key by a monthly
+    /// allowance, which no retry outlasts.
     pub fn new(credentials: Arc<dyn CredentialStorePort>) -> Self {
-        Self::with_transport(ReqwestHttpTransport::default(), credentials)
+        Self::with_transport(
+            ReqwestHttpTransport::with_retry_policy(RetryPolicy {
+                retries_rate_limits: false,
+                ..RetryPolicy::default()
+            }),
+            credentials,
+        )
     }
 }
 
@@ -381,7 +390,16 @@ where
         }
         let body = self
             .transport
-            .get_with_query_key(url.as_str(), "apikey", key)?;
+            .get_with_query_key(url.as_str(), "apikey", key)
+            .map_err(|error| {
+                if answered_with(&error, StatusCode::TOO_MANY_REQUESTS) {
+                    PortError::new(format!(
+                        "TheGamesDB refused {url} with HTTP 429 Too Many Requests: the monthly allowance of its API key is most likely spent, so the run can resume once it renews"
+                    ))
+                } else {
+                    error
+                }
+            })?;
         let answer: Value = serde_json::from_slice(&body).map_err(|error| {
             PortError::invalid_source_data(format!(
                 "TheGamesDB answered {url} with no JSON: {error}"

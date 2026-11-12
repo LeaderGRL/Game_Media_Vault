@@ -350,6 +350,48 @@ fn an_answer_that_is_not_the_api_s_is_invalid_source_data() {
     assert!(error.is_invalid_source_data(), "{}", error.message());
 }
 
+/// Refuses every request as the HTTP transport reports an answer of `status`.
+struct RefusingApi(&'static str);
+
+impl HttpTransport for RefusingApi {
+    fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>, PortError> {
+        Err(PortError::new(format!(
+            "download returned HTTP {} for {url}",
+            self.0
+        )))
+    }
+
+    fn get_with_query_key(
+        &self,
+        url: &str,
+        _parameter: &str,
+        _api_key: &ApiKey,
+    ) -> Result<Vec<u8>, PortError> {
+        Err(PortError::new(format!(
+            "download returned HTTP {} for {url}",
+            self.0
+        )))
+    }
+}
+
+#[test]
+fn a_rate_limited_request_says_the_key_s_allowance_is_likely_spent() {
+    let connector = TheGamesDbConnector::with_transport(
+        RefusingApi("429 Too Many Requests"),
+        Arc::new(KeyStore(Some("key"))),
+    );
+
+    let error = connector.discover(&request(|_| {})).unwrap_err();
+
+    assert!(
+        error.message().contains("monthly allowance") && error.message().contains(PLATFORMS_URL),
+        "{}",
+        error.message()
+    );
+    // A later execution may find the allowance renewed.
+    assert!(!error.is_unavailable());
+}
+
 #[test]
 fn an_answer_saying_it_failed_fails_the_discovery() {
     let api = FixtureApi::answering(&[(
