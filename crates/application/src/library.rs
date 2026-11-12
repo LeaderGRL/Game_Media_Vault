@@ -1,7 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use game_media_vault_domain::{
-    AssetTypeSelector, CoverageStatus, LibraryAsset, LibraryRelease, ReleaseAssertionField,
+    AssetTypeSelector, CoverageStatus, LibraryAsset, LibraryRelease, LibrarySummary,
+    ReleaseAssertionField, canonical_values, release_coverage_of_types,
 };
 use serde::{Deserialize, Serialize};
 
@@ -107,21 +108,18 @@ pub fn latest_media(
 /// Release Edition; a page resumes after its cursor's place in that order and, given the `as_of`
 /// of the first page, searches the same Release Editions in the same order, so releases added
 /// between two pages never repeat or shift later pages. Filters see the current state of each
-/// release, which can change between pages.
+/// release, which can change between pages. Releases are filtered and ordered by their summaries;
+/// only those of the page are projected whole.
 pub fn search_library(
     catalog: &dyn CatalogPort,
     reviews: &dyn ReviewRepositoryPort,
     query: &LibraryQuery,
 ) -> Result<LibraryPage, ApplicationError> {
-    let mut releases: Vec<LibraryRelease> = catalog
-        .list_library()?
-        .into_iter()
-        .map(LibraryRelease::from)
-        .collect();
+    let mut releases = catalog.list_library_summaries()?;
     let as_of = query.as_of.unwrap_or_else(|| {
         releases
             .iter()
-            .map(|release| release.entry.release_edition_id)
+            .map(|release| release.release_edition_id)
             .max()
             .unwrap_or(0)
     });
@@ -129,19 +127,19 @@ pub fn search_library(
     let mut spelled = BTreeSet::new();
     let platforms_with_media: Vec<String> = releases
         .iter()
-        .filter(|release| !release.entry.assets.is_empty())
-        .map(|release| release.entry.platform.trim().to_owned())
+        .filter(|release| !release.asset_types.is_empty())
+        .map(|release| release.platform.trim().to_owned())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .filter(|platform| spelled.insert(platform_key(platform)))
         .collect();
-    releases.retain(|release| release.entry.release_edition_id <= as_of);
+    releases.retain(|release| release.release_edition_id <= as_of);
     releases.sort_by_cached_key(sort_key);
     let start = match query.after {
         Some(after) => {
             releases
                 .iter()
-                .position(|release| release.entry.release_edition_id == after)
+                .position(|release| release.release_edition_id == after)
                 .ok_or(ApplicationError::ReleaseEditionMissing(after))?
                 + 1
         }
@@ -158,10 +156,10 @@ pub fn search_library(
     };
 
     let mut total = 0;
-    let mut page = Vec::new();
+    let mut page: Vec<i64> = Vec::new();
     let mut more = false;
-    for (index, release) in releases.into_iter().enumerate() {
-        if !matches(query, &release, &needing_review) {
+    for (index, release) in releases.iter().enumerate() {
+        if !matches(query, release, &needing_review) {
             continue;
         }
         total += 1;
@@ -169,16 +167,14 @@ pub fn search_library(
             continue;
         }
         if page.len() < limit {
-            page.push(release);
+            page.push(release.release_edition_id);
         } else {
             more = true;
         }
     }
-    let next_after = more
-        .then(|| page.last().map(|release| release.entry.release_edition_id))
-        .flatten();
+    let next_after = more.then(|| page.last().copied()).flatten();
     Ok(LibraryPage {
-        releases: page,
+        releases: project_page(catalog, &page)?,
         total,
         next_after,
         as_of,
@@ -186,14 +182,37 @@ pub fn search_library(
     })
 }
 
-fn sort_key(release: &LibraryRelease) -> (String, String, String, String, i64) {
-    let entry = &release.entry;
+/// Projects the releases of a page whole, in the page's order. Release Editions are never
+/// deleted, so each one the summaries listed is found again.
+fn project_page(
+    catalog: &dyn CatalogPort,
+    page: &[i64],
+) -> Result<Vec<LibraryRelease>, ApplicationError> {
+    if page.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut entries: HashMap<i64, _> = catalog
+        .library_entries_of(page)?
+        .into_iter()
+        .map(|entry| (entry.release_edition_id, entry))
+        .collect();
+    page.iter()
+        .map(|id| {
+            entries
+                .remove(id)
+                .map(LibraryRelease::from)
+                .ok_or(ApplicationError::ReleaseEditionMissing(*id))
+        })
+        .collect()
+}
+
+fn sort_key(release: &LibrarySummary) -> (String, String, String, String, i64) {
     (
-        entry.game_title.to_lowercase(),
-        entry.platform.to_lowercase(),
-        entry.region.to_lowercase(),
-        entry.edition_name.to_lowercase(),
-        entry.release_edition_id,
+        release.game_title.to_lowercase(),
+        release.platform.to_lowercase(),
+        release.region.to_lowercase(),
+        release.edition_name.to_lowercase(),
+        release.release_edition_id,
     )
 }
 
@@ -210,54 +229,53 @@ fn releases_needing_review(
         .collect())
 }
 
-fn matches(query: &LibraryQuery, release: &LibraryRelease, needing_review: &BTreeSet<i64>) -> bool {
-    let entry = &release.entry;
+fn matches(query: &LibraryQuery, release: &LibrarySummary, needing_review: &BTreeSet<i64>) -> bool {
     let text_matches = query.text.as_deref().map(str::trim).is_none_or(|text| {
         let text = text.to_lowercase();
-        entry.game_title.to_lowercase().contains(&text)
-            || release.canonical_values.iter().any(|canonical| {
-                canonical.field == ReleaseAssertionField::Title
-                    && canonical.value.to_lowercase().contains(&text)
-            })
+        release.game_title.to_lowercase().contains(&text)
+            || canonical_values(&release.title_assertions)
+                .iter()
+                .any(|canonical| {
+                    canonical.field == ReleaseAssertionField::Title
+                        && canonical.value.to_lowercase().contains(&text)
+                })
     });
+    // Coverage depends on the platform and the Asset Types retained alone.
+    let coverage_status = || {
+        release_coverage_of_types(&release.platform, &release.asset_types)
+            .map(|coverage| coverage.status)
+    };
     text_matches
         && any_or_all(&query.platforms, |platform| {
-            platform_key(platform) == platform_key(&entry.platform)
+            platform_key(platform) == platform_key(&release.platform)
         })
         // A release of several regions, such as `USA, Europe`, is of each.
         && any_or_all(&query.regions, |region| {
-            entry
+            release
                 .region
                 .split(',')
                 .any(|named| region.trim().eq_ignore_ascii_case(named.trim()))
         })
         && any_or_all(&query.sources, |source| {
-            entry.assets.iter().any(|asset| {
-                asset
-                    .provenance
-                    .iter()
-                    .any(|provenance| provenance.source_id.as_str() == source)
-            }) || entry
-                .assertions
+            release
+                .source_ids
                 .iter()
-                .any(|assertion| assertion.source_id.as_str() == source)
+                .any(|source_id| source_id.as_str() == source)
         })
         && any_or_all(&query.asset_types, |selector| {
-            entry
-                .assets
+            release
+                .asset_types
                 .iter()
-                .any(|asset| selector.selects(asset.asset_type))
+                .any(|asset_type| selector.selects(*asset_type))
         })
         && any_or_all(&query.statuses, |status| match status {
-            LibraryStatus::Complete => release
-                .coverage
-                .as_ref()
-                .is_some_and(|coverage| coverage.status != CoverageStatus::Partial),
-            LibraryStatus::Partial => release
-                .coverage
-                .as_ref()
-                .is_some_and(|coverage| coverage.status == CoverageStatus::Partial),
-            LibraryStatus::NeedsReview => needing_review.contains(&entry.release_edition_id),
+            LibraryStatus::Complete => {
+                coverage_status().is_some_and(|status| status != CoverageStatus::Partial)
+            }
+            LibraryStatus::Partial => {
+                coverage_status().is_some_and(|status| status == CoverageStatus::Partial)
+            }
+            LibraryStatus::NeedsReview => needing_review.contains(&release.release_edition_id),
         })
 }
 

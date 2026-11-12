@@ -2,10 +2,10 @@ use std::{io::Read, path::Path};
 
 use game_media_vault_domain::{
     AcquisitionRequest, AcquisitionRun, AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate,
-    ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, NewReviewItem,
-    Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord, ReferenceReviewEdition,
-    ReferenceReviewItem, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceFailure,
-    SourceFailureStage, StoredObject,
+    ConnectorCapabilities, ImportedAsset, ImportedReleaseEdition, LibraryEntry, LibrarySummary,
+    NewReviewItem, Outranked, PersistAsset, QualityShortfall, ReferenceReleaseRecord,
+    ReferenceReviewEdition, ReferenceReviewItem, RetentionPolicy, ReviewDecision, ReviewItem,
+    ReviewStatus, SourceFailure, SourceFailureStage, StoredObject,
 };
 use thiserror::Error;
 
@@ -85,6 +85,29 @@ pub trait CatalogPort {
     /// claim observed again comes after the claims recorded before), which
     /// Canonical Value selection relies on.
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError>;
+
+    /// Summarizes every Release Edition, in library order, for a Library search to filter and
+    /// order without the details of their Assets and assertions. They are derived from the whole
+    /// library by default; a catalog reads the summaries alone.
+    fn list_library_summaries(&self) -> Result<Vec<LibrarySummary>, PortError> {
+        Ok(self
+            .list_library()?
+            .iter()
+            .map(LibrarySummary::of)
+            .collect())
+    }
+
+    /// The entries of the Release Editions `release_edition_ids` names, as `list_library` lists
+    /// them and in its order; ids naming no Release Edition are left out. They are kept from the
+    /// whole library by default; a catalog reads them alone.
+    fn library_entries_of(
+        &self,
+        release_edition_ids: &[i64],
+    ) -> Result<Vec<LibraryEntry>, PortError> {
+        let mut entries = self.list_library()?;
+        entries.retain(|entry| release_edition_ids.contains(&entry.release_edition_id));
+        Ok(entries)
+    }
 
     /// The Release Editions holding the `limit` Assets retained last, each with those of its
     /// Assets alone and no assertions, in library order: Assets get larger ids as they are

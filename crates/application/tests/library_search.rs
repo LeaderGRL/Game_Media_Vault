@@ -69,6 +69,32 @@ fn ids(vault: &FakeVault, query: LibraryQuery) -> Vec<i64> {
 }
 
 #[test]
+fn a_page_reads_the_entries_of_its_own_releases_alone() {
+    let vault = FakeVault::with_library(library());
+
+    let page = search_library(
+        &vault,
+        &vault,
+        &LibraryQuery {
+            limit: 2,
+            ..LibraryQuery::default()
+        },
+    )
+    .unwrap();
+
+    let shown: Vec<i64> = page
+        .releases
+        .iter()
+        .map(|release| release.entry.release_edition_id)
+        .collect();
+    assert_eq!(shown, vec![3, 4]);
+    assert_eq!(page.total, 4);
+    // However large the library, a page projects its releases only.
+    assert_eq!(*vault.whole_library_reads.borrow(), 0);
+    assert_eq!(*vault.entries_read.borrow(), vec![shown]);
+}
+
+#[test]
 fn filters_narrow_across_kinds_and_widen_within_one() {
     let vault = FakeVault::with_library(library());
 

@@ -16,9 +16,9 @@ use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AcquisitionRun,
     AcquisitionRunStatus, AcquisitionWorkItem, AssetCandidate, AssetType, AssetTypeSelector,
     ConnectorCapabilities, GameSelection, ImportedAsset, LibraryAsset, LibraryEntry,
-    MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PersistAsset, QualityShortfall,
-    RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceDiscovery, SourceFailure,
-    SourceFailureStage, SourceId, SourceSelection, StoredObject, outranked_by,
+    LibrarySummary, MatchingPolicy, MediaInfo, NewReviewItem, Outranked, PersistAsset,
+    QualityShortfall, RetentionPolicy, ReviewDecision, ReviewItem, ReviewStatus, SourceDiscovery,
+    SourceFailure, SourceFailureStage, SourceId, SourceSelection, StoredObject, outranked_by,
 };
 
 pub const SOURCE_ID: &str = "libretro-thumbnails";
@@ -162,6 +162,10 @@ pub struct FakeVault {
     pub review_items: Shared<Vec<ReviewItem>>,
     pub records: Shared<Vec<PersistAsset>>,
     pub library: Shared<Vec<LibraryEntry>>,
+    /// How many times the whole library was listed.
+    pub whole_library_reads: Shared<usize>,
+    /// The Release Editions each read of library entries named, in reading order.
+    pub entries_read: Shared<Vec<Vec<i64>>>,
     /// Simulates Release Editions imported by another process right after the next library
     /// listing.
     pub library_added_after_next_listing: Shared<Vec<LibraryEntry>>,
@@ -1173,10 +1177,36 @@ impl CatalogPort for FakeVault {
     }
 
     fn list_library(&self) -> Result<Vec<LibraryEntry>, PortError> {
+        *self.whole_library_reads.borrow_mut() += 1;
         let listed = self.library.borrow().clone();
         let added = std::mem::take(&mut *self.library_added_after_next_listing.borrow_mut());
         self.library.borrow_mut().extend(added);
         Ok(listed)
+    }
+
+    fn list_library_summaries(&self) -> Result<Vec<LibrarySummary>, PortError> {
+        Ok(self
+            .library
+            .borrow()
+            .iter()
+            .map(LibrarySummary::of)
+            .collect())
+    }
+
+    fn library_entries_of(
+        &self,
+        release_edition_ids: &[i64],
+    ) -> Result<Vec<LibraryEntry>, PortError> {
+        self.entries_read
+            .borrow_mut()
+            .push(release_edition_ids.to_vec());
+        Ok(self
+            .library
+            .borrow()
+            .iter()
+            .filter(|entry| release_edition_ids.contains(&entry.release_edition_id))
+            .cloned()
+            .collect())
     }
 }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{AssetTypeSelector, LibraryAsset};
+use crate::{AssetType, AssetTypeSelector, LibraryAsset};
 
 /// How a Release Edition is packaged, which decides what its Coverage Profiles require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,12 +194,22 @@ fn profile_additions(
 /// Evaluates the Coverage Profiles of a release on `platform` against its retained Assets;
 /// `None` when the platform's packaging family is unknown, since no universal checklist fits.
 pub fn release_coverage(platform: &str, assets: &[LibraryAsset]) -> Option<ReleaseCoverage> {
+    let asset_types: Vec<AssetType> = assets.iter().map(|asset| asset.asset_type).collect();
+    release_coverage_of_types(platform, &asset_types)
+}
+
+/// Evaluates the Coverage Profiles of a release on `platform` retaining Assets of
+/// `asset_types`, which are all that coverage depends on; see [`release_coverage`].
+pub fn release_coverage_of_types(
+    platform: &str,
+    asset_types: &[AssetType],
+) -> Option<ReleaseCoverage> {
     let packaging_family = packaging_family(platform)?;
     // The front of a cartridge shows the cartridge itself, which the checklists require.
-    let present: Vec<AssetTypeSelector> = assets
+    let present: Vec<AssetTypeSelector> = asset_types
         .iter()
-        .flat_map(|asset| {
-            let selector = asset.asset_type.selector();
+        .flat_map(|asset_type| {
+            let selector = asset_type.selector();
             let shown = (selector == AssetTypeSelector::CartridgeFront)
                 .then_some(AssetTypeSelector::Cartridge);
             std::iter::once(selector).chain(shown)
