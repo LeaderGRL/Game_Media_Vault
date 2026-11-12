@@ -109,12 +109,40 @@ pub fn latest_media(
 /// of the first page, searches the same Release Editions in the same order, so releases added
 /// between two pages never repeat or shift later pages. Filters see the current state of each
 /// release, which can change between pages. Releases are filtered and ordered by their summaries;
-/// only those of the page are projected whole.
+/// only those of the page are projected whole, and a search whose page lost a release to a
+/// reference review merging it into another meanwhile is made again.
 pub fn search_library(
     catalog: &dyn CatalogPort,
     reviews: &dyn ReviewRepositoryPort,
     query: &LibraryQuery,
 ) -> Result<LibraryPage, ApplicationError> {
+    let mut attempt = 1;
+    loop {
+        match search_once(catalog, reviews, query)? {
+            Search::Page(page) => return Ok(page),
+            Search::Vanished(_) if attempt < SEARCH_ATTEMPTS => attempt += 1,
+            Search::Vanished(release_edition_id) => {
+                return Err(ApplicationError::ReleaseEditionMissing(release_edition_id));
+            }
+        }
+    }
+}
+
+/// How many times a search is made when releases of its page keep vanishing.
+const SEARCH_ATTEMPTS: usize = 3;
+
+/// What one search found.
+enum Search {
+    Page(LibraryPage),
+    /// A release the summaries chose for the page was gone once the page was read.
+    Vanished(i64),
+}
+
+fn search_once(
+    catalog: &dyn CatalogPort,
+    reviews: &dyn ReviewRepositoryPort,
+    query: &LibraryQuery,
+) -> Result<Search, ApplicationError> {
     let mut releases = catalog.list_library_summaries()?;
     let as_of = query.as_of.unwrap_or_else(|| {
         releases
@@ -173,37 +201,30 @@ pub fn search_library(
         }
     }
     let next_after = more.then(|| page.last().copied()).flatten();
-    Ok(LibraryPage {
-        releases: project_page(catalog, &page)?,
+    let mut entries: HashMap<i64, _> = if page.is_empty() {
+        HashMap::new()
+    } else {
+        catalog
+            .library_entries_of(&page)?
+            .into_iter()
+            .map(|entry| (entry.release_edition_id, entry))
+            .collect()
+    };
+    let mut projected = Vec::with_capacity(page.len());
+    for release_edition_id in page {
+        match entries.remove(&release_edition_id) {
+            Some(entry) => projected.push(LibraryRelease::from(entry)),
+            // A reference review merged it into another release after the summaries were read.
+            None => return Ok(Search::Vanished(release_edition_id)),
+        }
+    }
+    Ok(Search::Page(LibraryPage {
+        releases: projected,
         total,
         next_after,
         as_of,
         platforms_with_media,
-    })
-}
-
-/// Projects the releases of a page whole, in the page's order. Release Editions are never
-/// deleted, so each one the summaries listed is found again.
-fn project_page(
-    catalog: &dyn CatalogPort,
-    page: &[i64],
-) -> Result<Vec<LibraryRelease>, ApplicationError> {
-    if page.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut entries: HashMap<i64, _> = catalog
-        .library_entries_of(page)?
-        .into_iter()
-        .map(|entry| (entry.release_edition_id, entry))
-        .collect();
-    page.iter()
-        .map(|id| {
-            entries
-                .remove(id)
-                .map(LibraryRelease::from)
-                .ok_or(ApplicationError::ReleaseEditionMissing(*id))
-        })
-        .collect()
+    }))
 }
 
 fn sort_key(release: &LibrarySummary) -> (String, String, String, String, i64) {

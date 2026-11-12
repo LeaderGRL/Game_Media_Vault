@@ -169,6 +169,9 @@ pub struct FakeVault {
     /// Simulates Release Editions imported by another process right after the next library
     /// listing.
     pub library_added_after_next_listing: Shared<Vec<LibraryEntry>>,
+    /// Simulates Release Editions a reference review merges into others, deleting them, right
+    /// after the next listing of library summaries.
+    pub releases_merged_after_next_summaries: Shared<Vec<i64>>,
     /// Simulates a human decision committed right before the next automatic review write.
     pub human_decision_before_next_write: Shared<Option<ReviewDecision>>,
     /// Simulates a human decision on the first Review Item committed right before the run
@@ -1185,12 +1188,17 @@ impl CatalogPort for FakeVault {
     }
 
     fn list_library_summaries(&self) -> Result<Vec<LibrarySummary>, PortError> {
-        Ok(self
+        let summaries = self
             .library
             .borrow()
             .iter()
             .map(LibrarySummary::of)
-            .collect())
+            .collect();
+        let merged = std::mem::take(&mut *self.releases_merged_after_next_summaries.borrow_mut());
+        self.library
+            .borrow_mut()
+            .retain(|entry| !merged.contains(&entry.release_edition_id));
+        Ok(summaries)
     }
 
     fn library_entries_of(
