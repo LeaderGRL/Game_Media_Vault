@@ -19,6 +19,7 @@ mod launchbox;
 mod libretro_database;
 mod mame;
 mod naming;
+mod pace;
 mod polite;
 mod psx_datacenter;
 mod rawg;
@@ -33,6 +34,7 @@ mod xml;
 
 pub use libretro_database::LibretroDatabase;
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
+pub use pace::PaceClock;
 pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
 pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
 pub use rawg::{RAWG_SOURCE_ID, RawgConnector};

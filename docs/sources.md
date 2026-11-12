@@ -151,9 +151,12 @@ only the one named; an API key is stored under the Source's id, any other creden
      Or run `game-media-vault source key set screenscraper --field dev-id`, then with
      `--field dev-password`, `--field user-id` and `--field user-password`, pasting each and
      pressing Enter. The account is sent only once both its user name and password are stored.
-- **Limits:** an account may send one request at a time, and a daily quota of requests, which
-  free accounts keep low; the connector sends one request at a time, whatever runs send them,
-  downloads included, and holds each media whole before the next request leaves. A discovery
+- **Limits:** an account may send one request at a time, so many a minute (about 50 for a free
+  account), and a daily quota of requests, which free accounts keep low; the connector sends one
+  request at a time, whatever runs send them, downloads included, and holds each media whole
+  before the next request leaves. Requests leave at least a minute divided by the per-minute
+  limit apart, as each answer states it (`ssuser.maxrequestspermin`), and 1.2 s apart until
+  one does. A discovery
   takes one search per requested game and ScreenScraper system, which serves each of its
   platforms, one more per game found without its media, and each media
   downloaded one more. ScreenScraper refusing a request for too many at once (HTTP 429) is asked
