@@ -430,7 +430,7 @@ Every stage must be restartable from persisted state. Connector failures must no
 
 SQLite is the initial local catalog because the primary product is a single-user desktop/CLI tool. Database access must stay behind repository interfaces so a future server deployment can migrate to PostgreSQL without leaking SQL concerns into the domain.
 
-Catalog files are identified by a Game Media Vault SQLite application id and versioned with `user_version`. Opening a vault refuses foreign databases and catalogs written by a newer version without modifying them; older supported versions are upgraded through ordered, transactional migrations.
+Catalog files are identified by a Game Media Vault SQLite application id and versioned with `user_version`. Opening a vault refuses foreign databases and catalogs written by a newer version without modifying them; older supported versions are upgraded through ordered, transactional migrations. A catalog it accepts or creates is switched to SQLite's write-ahead log, which the file keeps: readers read their snapshot while a write commits and writes never wait for readers, so reading the whole Library, which takes seconds in a large vault, cannot make an executing run's writes fail with "database is locked"; only writes take turns. While the vault is in use, `catalog.sqlite3-wal` and `catalog.sqlite3-shm` beside the catalog hold its latest writes and belong to it, so a copy of a vault in use includes them.
 
 ### Media Objects
 

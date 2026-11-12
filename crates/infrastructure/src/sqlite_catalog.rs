@@ -49,13 +49,15 @@ impl SqliteCatalog {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
         initialize_new_catalog(&path, schema::create)?;
-        Ok(Self {
+        let catalog = Self {
             path,
             mode: CatalogOpenMode::ExistingOnly,
             executions: Mutex::new(HashMap::new()),
             #[cfg(test)]
             busy_handler: None,
-        })
+        };
+        use_write_ahead_log(&catalog.connect()?)?;
+        Ok(catalog)
     }
 
     pub fn open_existing(path: impl Into<PathBuf>) -> Result<Self, PortError> {
@@ -76,6 +78,8 @@ impl SqliteCatalog {
         };
         let mut connection = catalog.connect()?;
         schema::open(&mut connection, &catalog.path)?;
+        // Only a catalog verified as supported is switched, so a refused one stays unchanged.
+        use_write_ahead_log(&connection)?;
 
         Ok(catalog)
     }
@@ -93,6 +97,23 @@ impl SqliteCatalog {
             connection.busy_handler(Some(handler)).map_err(sql_error)?;
         }
         Ok(connection)
+    }
+}
+
+/// Switches the catalog to SQLite's write-ahead log, which the database file remembers: a reader
+/// then reads its snapshot while a write commits, and a write never waits for readers, so a long
+/// Library read cannot make an executing run's writes time out. A catalog already in that mode
+/// is left as it is.
+fn use_write_ahead_log(connection: &Connection) -> Result<(), PortError> {
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .map_err(sql_error)?;
+    if mode.eq_ignore_ascii_case("wal") {
+        Ok(())
+    } else {
+        Err(PortError::new(format!(
+            "the catalog could not use SQLite's write-ahead log (journal mode {mode})"
+        )))
     }
 }
 
