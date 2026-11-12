@@ -196,8 +196,8 @@ only the one named; an API key is stored under the Source's id, any other creden
 
 ### PSX DataCenter (`psx-datacenter`)
 
-- **Provides:** high-resolution scans of PlayStation box fronts and backs (Box Front, Box Back)
-  and screenshots. The side, and an edition other than the standard one, `GH` for Greatest Hits
+- **Provides:** high-resolution scans of PlayStation box fronts and backs and of their discs
+  (Box Front, Box Back, Disc) and screenshots. The side (`front`, `back` or `disc`), and an edition other than the standard one, `GH` for Greatest Hits
   or `P` for Platinum, is kept as the source label (`front: GH`), and the edition as the
   candidate's; a scan of an edition the site names otherwise is left out rather than taken for
   the standard one. Inlays and advertisements have no Asset Type yet and are not acquired. Every

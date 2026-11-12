@@ -92,6 +92,7 @@ where
             asset_types: vec![
                 AssetType::BoxFront,
                 AssetType::BoxBack,
+                AssetType::Disc,
                 AssetType::Screenshot,
             ],
             direct_media_download: true,
@@ -290,8 +291,8 @@ fn listed_title(text: &str) -> String {
     text.trim().trim_end_matches('-').trim().to_owned()
 }
 
-/// The high-resolution front and back scans of the game's own region, and the screenshots, of
-/// the kinds the request asks for.
+/// The high-resolution front, back and disc scans of the game's own region, and the
+/// screenshots, of the kinds the request asks for.
 fn game_media(
     html: &str,
     page_url: &Url,
@@ -330,6 +331,7 @@ fn game_media(
         let (asset_type, side_label) = match side {
             "F" => (AssetType::BoxFront, "front"),
             "B" => (AssetType::BoxBack, "back"),
+            "D" => (AssetType::Disc, "disc"),
             _ => continue,
         };
         if !game.request.requests_asset_type(asset_type) {
