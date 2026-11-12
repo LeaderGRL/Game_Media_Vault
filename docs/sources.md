@@ -50,7 +50,11 @@ only the one named; an API key is stored under the Source's id, any other creden
   LaunchBox republishes it.
 - **Configuration:** none. Platforms are mapped to LaunchBox's names, for every platform whose
   packaging family the coverage table knows except the Nintendo DSi, which LaunchBox does not
-  list; MAME and FBNeo releases are looked up under its `Arcade` platform.
+  list, and for every other console the desktop offers that LaunchBox lists under one platform
+  of its own (`Bandai - WonderSwan Color` as `WonderSwan Color`, `NEC - PC-98` as `NEC PC-9801`).
+  The Atari 8-bit family, which LaunchBox splits between `Atari 800` and `Atari XEGS`, the PC
+  Engine SuperGrafx, the Nintendo DSi and the Sufami Turbo have none. MAME and FBNeo releases
+  are looked up under its `Arcade` platform.
 - **Limits:** it refuses language filters and platforms it has no name for. The dataset is
   large, so the first discovery on a machine, and the first after LaunchBox republishes it,
   download it whole.

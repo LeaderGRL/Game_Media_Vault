@@ -659,6 +659,109 @@ fn acquires_arcade_cabinets_control_panels_and_circuit_boards_of_arcade_games() 
     }
 }
 
+/// Consoles the desktop offers that LaunchBox lists under one platform of its own.
+const CONSOLES_LAUNCHBOX_LISTS: [&str; 30] = [
+    "Atari - Jaguar",
+    "Atari - Jaguar CD",
+    "Atari - ST",
+    "Bandai - WonderSwan",
+    "Bandai - WonderSwan Color",
+    "Coleco - ColecoVision",
+    "Commodore - 64",
+    "Commodore - Amiga",
+    "Commodore - CD32",
+    "Commodore - CDTV",
+    "GCE - Vectrex",
+    "Magnavox - Odyssey2",
+    "Mattel - Intellivision",
+    "Microsoft - MSX",
+    "Microsoft - MSX2",
+    "NEC - PC-98",
+    "NEC - PC-FX",
+    "Nintendo - Family Computer Disk System",
+    "Nintendo - Nintendo 64DD",
+    "Nintendo - Pokemon Mini",
+    "Nintendo - Satellaview",
+    "SNK - Neo Geo Pocket",
+    "Sega - Naomi",
+    "Sega - Naomi 2",
+    "Sega - PICO",
+    "Sega - SG-1000",
+    "Sharp - X68000",
+    "Sinclair - ZX Spectrum +3",
+    "Tiger - Game.com",
+    "Watara - Supervision",
+];
+
+#[test]
+fn accepts_every_console_the_desktop_offers_that_launchbox_lists() {
+    let transport = FixtureTransport::new();
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let refused: Vec<String> = CONSOLES_LAUNCHBOX_LISTS
+        .iter()
+        .filter_map(|console| {
+            connector
+                .unsupported_request_reason(&request(|draft| {
+                    draft.platforms = vec![(*console).to_owned()];
+                    draft.games = GameSelection::All;
+                }))
+                .unwrap()
+        })
+        .collect();
+
+    assert!(refused.is_empty(), "{refused:#?}");
+    assert!(transport.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn discovers_a_console_s_games_under_the_platform_launchbox_names_it() {
+    let transport = FixtureTransport::serving(metadata_archive(&[
+        ("Platforms.xml", "<LaunchBox />"),
+        (
+            "Metadata.xml",
+            r#"<LaunchBox>
+  <Game>
+    <Name>Gunpey</Name>
+    <DatabaseID>901</DatabaseID>
+    <Platform>WonderSwan Color</Platform>
+  </Game>
+  <Game>
+    <Name>Gunpey</Name>
+    <DatabaseID>902</DatabaseID>
+    <Platform>WonderSwan</Platform>
+  </Game>
+  <GameImage>
+    <DatabaseID>901</DatabaseID>
+    <FileName>gunpey-color-front.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>Japan</Region>
+  </GameImage>
+  <GameImage>
+    <DatabaseID>902</DatabaseID>
+    <FileName>gunpey-front.jpg</FileName>
+    <Type>Box - Front</Type>
+    <Region>Japan</Region>
+  </GameImage>
+</LaunchBox>"#,
+        ),
+    ]));
+    let connector = LaunchBoxGamesDbConnector::with_transport(&transport);
+
+    let candidates = connector
+        .discover(&request(|draft| {
+            draft.platforms = vec!["Bandai - WonderSwan Color".to_owned()];
+            draft.games = GameSelection::All;
+        }))
+        .unwrap();
+
+    assert_eq!(
+        locators(&candidates),
+        ["https://images.launchbox-app.com/gunpey-color-front.jpg"]
+    );
+    assert_eq!(candidates[0].platform, "Bandai - WonderSwan Color");
+}
+
 #[test]
 fn accepts_every_platform_whose_packaging_the_coverage_knows() {
     let transport = FixtureTransport::new();
