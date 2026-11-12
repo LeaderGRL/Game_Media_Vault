@@ -5,7 +5,8 @@
 use std::{
     collections::{HashMap, HashSet},
     io::{Cursor, Read},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
+    time::Duration,
 };
 
 use game_media_vault_application::{
@@ -19,6 +20,7 @@ use url::Url;
 
 use crate::{
     HttpTransport, ReqwestHttpTransport,
+    pace::{PaceClock, RequestPace, SystemClock},
     selection::{name_key, platform_key, wanted_games},
 };
 
@@ -208,25 +210,69 @@ const NO_MEDIA_REPLIES: [&[u8]; 4] = [b"NOMEDIA", b"CRCOK", b"MD5OK", b"SHA1OK"]
 /// account from this machine's credential store.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
+/// How far apart requests leave until an answer states the account's own limit: a free account
+/// may send about 50 a minute, media downloads included.
+const FREE_ACCOUNT_PACE: Duration = Duration::from_millis(1200);
+
+/// The pace every ScreenScraper connector of the process keeps, as they share one account.
+fn shared_pace() -> Arc<RequestPace> {
+    static SHARED: OnceLock<Arc<RequestPace>> = OnceLock::new();
+    Arc::clone(
+        SHARED.get_or_init(|| Arc::new(RequestPace::new(FREE_ACCOUNT_PACE, Box::new(SystemClock)))),
+    )
+}
+
 /// Reads the credentials from this machine's credential store at each request, so credentials
 /// stored or cleared meanwhile take effect at once, and sends one request at a time, as a free
-/// account must.
+/// account must, at the pace the account's per-minute limit allows.
 pub struct ScreenScraperConnector<T = ReqwestHttpTransport> {
     transport: T,
     credentials: Arc<dyn CredentialStorePort>,
+    /// When its next request may leave; none sends requests as soon as their turn comes.
+    pace: Option<Arc<RequestPace>>,
 }
 
 impl ScreenScraperConnector<ReqwestHttpTransport> {
     pub fn new(credentials: Arc<dyn CredentialStorePort>) -> Self {
-        Self::with_transport(ReqwestHttpTransport::default(), credentials)
+        let pace = shared_pace();
+        // The transport's own retries and resumed downloads keep to the pace as well.
+        let transport = ReqwestHttpTransport::default().pacing_retries_by(Arc::clone(&pace));
+        Self {
+            pace: Some(pace),
+            ..Self::with_transport(transport, credentials)
+        }
     }
 }
 
 impl<T> ScreenScraperConnector<T> {
+    /// Sends its requests one at a time, at no pace.
     pub fn with_transport(transport: T, credentials: Arc<dyn CredentialStorePort>) -> Self {
         Self {
             transport,
             credentials,
+            pace: None,
+        }
+    }
+
+    /// Sends its requests one at a time, at the pace the account allows, kept by `clock`.
+    pub fn with_transport_and_clock(
+        transport: T,
+        credentials: Arc<dyn CredentialStorePort>,
+        clock: Arc<dyn PaceClock>,
+    ) -> Self {
+        Self {
+            pace: Some(Arc::new(RequestPace::new(
+                FREE_ACCOUNT_PACE,
+                Box::new(clock),
+            ))),
+            ..Self::with_transport(transport, credentials)
+        }
+    }
+
+    /// Waits until the pace lets the next request leave.
+    fn wait_for_turn(&self) {
+        if let Some(pace) = &self.pace {
+            pace.wait_for_turn();
         }
     }
 
@@ -316,7 +362,7 @@ where
     }
 
     fn rate_limits(&self) -> Option<String> {
-        Some("Each account may send one request at a time, and a daily quota of requests that free accounts keep low; requests are sent one at a time, whatever runs send them. A discovery takes one search per requested game and ScreenScraper system, and one more per game found without its media; each media downloaded takes one more.".to_owned())
+        Some("Each account may send one request at a time, so many a minute (about 50 for a free account), and a daily quota of requests that free accounts keep low; requests are sent one at a time, whatever runs send them, at the per-minute pace each answer states, 1.2 s apart until one does, retries included. A discovery takes one search per requested game and ScreenScraper system, and one more per game found without its media; each media downloaded takes one more.".to_owned())
     }
 
     /// Checked without reaching ScreenScraper.
@@ -444,6 +490,7 @@ where
         {
             // The whole media arrives before the next request leaves.
             let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+            self.wait_for_turn();
             self.transport
                 .get_stream_with_query_keys(url.as_str(), &credentials.query())?
                 .take(MAX_MEDIA_BYTES + 1)
@@ -555,17 +602,28 @@ where
         url.query_pairs_mut()
             .extend_pairs([("softname", SOFTNAME), ("output", "json")])
             .extend_pairs(query);
-        let body = {
-            let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-            self.transport
-                .get_with_query_keys(url.as_str(), &credentials.query())?
-        };
+        // The limit an answer states applies before the next request may take its turn.
+        let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        self.wait_for_turn();
+        let body = self
+            .transport
+            .get_with_query_keys(url.as_str(), &credentials.query())?;
         // The body may answer with the credentials it was asked with, so it is left unsaid.
-        serde_json::from_slice(&body).map_err(|error| {
+        let answer: Value = serde_json::from_slice(&body).map_err(|error| {
             PortError::invalid_source_data(format!(
                 "ScreenScraper answered {url} with no JSON: {error}"
             ))
-        })
+        })?;
+        // Every answer states the account's own limit, which the next requests keep to.
+        if let (Some(pace), Some(per_minute)) = (
+            &self.pace,
+            answer
+                .pointer("/response/ssuser/maxrequestspermin")
+                .and_then(number),
+        ) {
+            pace.allow_per_minute(per_minute);
+        }
+        Ok(answer)
     }
 }
 

@@ -6,11 +6,13 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use game_media_vault_application::{ApiKey, ConnectorPort, CredentialStorePort, PortError};
-use game_media_vault_connectors::{HttpTransport, SCREENSCRAPER_SOURCE_ID, ScreenScraperConnector};
+use game_media_vault_connectors::{
+    HttpTransport, PaceClock, SCREENSCRAPER_SOURCE_ID, ScreenScraperConnector,
+};
 use game_media_vault_domain::{
     AcquisitionLimits, AcquisitionRequest, AcquisitionRequestDraft, AssetCandidate, AssetType,
     AssetTypeSelector, GameSelection, RetentionPolicy, SourceSelection,
@@ -472,6 +474,96 @@ fn a_game_found_without_its_media_is_asked_for_them() {
             "box-2D (us)"
         )]
     );
+}
+
+/// A clock whose time passes only while the connector waits, recording each wait.
+struct WaitingClock {
+    start: Instant,
+    waited: Mutex<Vec<Duration>>,
+}
+
+impl WaitingClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            start: Instant::now(),
+            waited: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn waits(&self) -> Vec<Duration> {
+        self.waited.lock().unwrap().clone()
+    }
+}
+
+impl PaceClock for WaitingClock {
+    fn now(&self) -> Instant {
+        self.start + self.waited.lock().unwrap().iter().sum::<Duration>()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.waited.lock().unwrap().push(duration);
+    }
+}
+
+fn paced_connector<'a>(
+    api: &'a FixtureApi,
+    clock: &Arc<WaitingClock>,
+) -> ScreenScraperConnector<&'a FixtureApi> {
+    ScreenScraperConnector::with_transport_and_clock(
+        api,
+        Arc::new(KeyStore::holding(&DEVELOPER)),
+        Arc::clone(clock) as Arc<dyn PaceClock>,
+    )
+}
+
+#[test]
+fn requests_keep_to_the_per_minute_limit_the_account_s_answers_state() {
+    let limited = search().replace(
+        r#""maxthreads":"1""#,
+        r#""maxthreads":"1","maxrequestspermin":"30""#,
+    );
+    let api = FixtureApi::answering(&[(SEARCH_URL, &limited)]);
+    let clock = WaitingClock::new();
+    let connector = paced_connector(&api, &clock);
+
+    // Two searches, the second finding nothing, then a download.
+    connector
+        .discover(&request(|draft| {
+            draft.games = GameSelection::Explicit(vec![
+                "Ridge Racer (USA)".to_owned(),
+                "Tekken (USA)".to_owned(),
+            ]);
+        }))
+        .unwrap();
+    connector
+        .download(&candidate(
+            AssetType::BoxFront,
+            "box-2D(us)",
+            "USA",
+            "box-2D (us)",
+        ))
+        .unwrap();
+
+    // Thirty requests a minute leave two seconds apart, downloads included.
+    assert_eq!(api.requested().len(), 3);
+    assert_eq!(
+        clock.waits(),
+        [Duration::from_secs(2), Duration::from_secs(2)]
+    );
+}
+
+#[test]
+fn requests_keep_to_a_free_account_s_pace_until_an_answer_states_the_limit() {
+    let api = FixtureApi::answering(&[]);
+    let clock = WaitingClock::new();
+    let connector = paced_connector(&api, &clock);
+    let box_front = candidate(AssetType::BoxFront, "box-2D(us)", "USA", "box-2D (us)");
+
+    connector.download(&box_front).unwrap();
+    connector.download(&box_front).unwrap();
+
+    // Fifty requests a minute.
+    assert_eq!(clock.waits(), [Duration::from_millis(1200)]);
 }
 
 #[test]

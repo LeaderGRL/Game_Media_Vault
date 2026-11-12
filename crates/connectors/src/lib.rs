@@ -21,6 +21,7 @@ mod libretro_database;
 mod libretro_listing;
 mod mame;
 mod naming;
+mod pace;
 mod polite;
 mod psx_datacenter;
 mod rawg;
@@ -35,6 +36,7 @@ mod xml;
 
 pub use libretro_database::LibretroDatabase;
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
+pub use pace::{PaceClock, RequestPace};
 pub use polite::{DEFAULT_SITE_DELAY, PoliteTransport, ROBOTS_USER_AGENT, SiteManners};
 pub use psx_datacenter::{PSX_DATACENTER_SOURCE_ID, PsxDataCenterConnector};
 pub use rawg::{RAWG_SOURCE_ID, RawgConnector};
@@ -186,6 +188,8 @@ pub struct ReqwestHttpTransport {
     /// Follows no redirect, for requests whose URL carries an API key.
     keyed_client: Client,
     retry: RetryPolicy,
+    /// The pace each retry and each resumed download keeps, if a Source sets one.
+    pace: Option<Arc<RequestPace>>,
 }
 
 impl Default for ReqwestHttpTransport {
@@ -207,6 +211,7 @@ impl ReqwestHttpTransport {
                 .build()
                 .expect("failed to build the HTTP client"),
             retry,
+            pace: None,
         }
     }
 
@@ -233,7 +238,16 @@ impl ReqwestHttpTransport {
             client: client.clone(),
             keyed_client: client,
             retry,
+            pace: None,
         }
+    }
+
+    /// This transport, sending each retry and each resumed download no sooner than `pace`
+    /// allows, for a caller that waits its turn with `pace` before each request it sends: the
+    /// Source then sees every request it receives at that pace, retries included.
+    pub fn pacing_retries_by(mut self, pace: Arc<RequestPace>) -> Self {
+        self.pace = Some(pace);
+        self
     }
 
     /// Requests `target` once, asking for it only if it changed since `known`. A success, or a
@@ -436,6 +450,7 @@ impl ReqwestHttpTransport {
         Box::new(resume::ResumingBody::new(
             self.client.clone(),
             self.retry,
+            self.pace.clone(),
             attempts,
             response,
         ))
@@ -481,6 +496,9 @@ impl ReqwestHttpTransport {
                 }
                 Err(failure) if failure.transient && attempts < self.retry.max_attempts => {
                     thread::sleep(self.retry.delay_before_retry(attempts, failure.retry_after));
+                    if let Some(pace) = &self.pace {
+                        pace.wait_for_turn();
+                    }
                     attempts += 1;
                 }
                 Err(failure) if failure.unavailable => {
