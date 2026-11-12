@@ -101,6 +101,7 @@ export const KNOWN_SOURCES = [
   { value: "rawg", label: "RAWG" },
   { value: "psx-datacenter", label: "PSX DataCenter" },
   { value: "vgmaps", label: "VGMaps" },
+  { value: "internet-archive-manuals", label: "Internet Archive console manuals" },
 ];
 
 /** A Source whose terms ask for a link back to it wherever its data shows. */

@@ -255,6 +255,45 @@ only the one named; an API key is stored under the Source's id, any other creden
   table whose title adds one of them in parentheses, as `Prince Of Persia (Game Boy Color)`, serves
   that platform alone, and an unqualified one serves a platform without a table of its own.
 
+### Internet Archive console manuals (`internet-archive-manuals`)
+
+- **Provides:** scans of game manuals (Manual) as PDF documents, from the Internet Archive's
+  `consolemanuals` collection. Each item's title as the collection lists it is the source label,
+  such as `Sega Saturn Manual: 3D Baseball (1996)(Crystal Dynamics)(US)[T-15906H]`. Its region
+  code gives the candidate's region: `US` is USA, `JP` Japan, `EU` Europe, `GB` UK, and a country
+  is its own region. A title without a region code records none.
+- **Reached at:** `archive.org`. The collection's list comes from its scrape API
+  (`/services/search/v1/scrape`), 10,000 items a page, so its 19,076 items of 2026-11-12 take two
+  requests. The list is read once for each connector, and so once a run. A download first reads
+  the item's file list (`/metadata/<identifier>`), then the PDF it names, from the data server
+  and directory that list names, such as `ia801903.us.archive.org/9/items/<identifier>/`. It
+  asks that server directly rather than following the redirect of `/download/<identifier>/`, so
+  every request passes the polite transport. Only servers of `archive.org` are asked. Every
+  request is made as PSX DataCenter's are: only as the robots.txt of its server allows, which
+  costs one more request the first time a data server is asked, at least a second apart, each
+  sent once. A file list naming no data server, as when the item's servers are offline, defers
+  the download to a later execution.
+- **Configuration:** none.
+- **Limits:** only titles that follow one of two structured schemes are read. 3,552 manuals did
+  on 2026-11-12:
+  - `<platform> Manual: <title> (<year>)(<publisher>)(<region>)[<serial>]`, whose tags after the
+    title vary;
+  - `<title> [<serial>](<platform>)(<region>) -Manual(600DPI)`, which may name further scans
+    after the manual.
+
+  A free-form title, such as `Super Mario World SNES Manual`, is left out, and so is an item whose
+  scans include no manual. The platforms these titles name map to the consoles the desktop
+  offers: 3DO, Atari 2600, 5200, 7800 and Jaguar CD, ColecoVision, Famicom and Super Famicom (the
+  Japanese releases of the NES and SNES catalogs), Famicom Disk System, Game Boy and Game Boy
+  Color, Mega-CD, Neo Geo CD, Odyssey 2, PC Engine (whose manuals serve both the HuCard and the CD
+  catalogs, the requested title telling them apart), CD-i, Dreamcast, Genesis, Saturn, SG-1000
+  and Xbox. A request naming another platform, or a language filter, is refused. A manual is
+  offered for a requested game when the two titles match regardless of case, punctuation,
+  spacing, subtitle separator (`: ` or ` - `) and an article filed last. A request selecting
+  every game gets every manual of its platforms, titled as the collection lists them. A request
+  naming regions keeps the manuals of those regions only, not those that name none. An item
+  without an original PDF, or no longer listing its files, is unavailable, with the reason.
+
 ## Reference catalogs
 
 These give the vault its games, so that acquired media have releases to match.

@@ -16,6 +16,7 @@ use game_media_vault_domain::{
 };
 
 mod datafile;
+mod internet_archive_manuals;
 mod launchbox;
 mod libretro_database;
 mod libretro_listing;
@@ -34,6 +35,9 @@ mod thegamesdb;
 mod vgmaps;
 mod xml;
 
+pub use internet_archive_manuals::{
+    INTERNET_ARCHIVE_MANUALS_SOURCE_ID, InternetArchiveManualsConnector,
+};
 pub use libretro_database::LibretroDatabase;
 pub use mame::{MAME_SOFTWARE_LISTS_SOURCE_ID, MameSoftwareListCatalog};
 pub use pace::{PaceClock, RequestPace};
@@ -85,6 +89,7 @@ pub fn registered_connectors(
         Box::new(RawgConnector::new(credentials)),
         Box::new(PsxDataCenterConnector::new()),
         Box::new(VgMapsConnector::new()),
+        Box::new(InternetArchiveManualsConnector::new()),
     ]
 }
 

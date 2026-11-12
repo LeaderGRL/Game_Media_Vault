@@ -54,3 +54,40 @@ pub(crate) fn name_key(name: &str) -> String {
 pub(crate) fn platform_key(platform: &str) -> String {
     name_key(platform)
 }
+
+/// The platforms a request names, or else those of the games it binds.
+pub(crate) fn requested_platforms(request: &AcquisitionRequest) -> Vec<&str> {
+    match request.games() {
+        GameSelection::PlatformBound(games) | GameSelection::QueryResult(games)
+            if request.platforms().is_empty() =>
+        {
+            games.iter().map(|game| game.platform.as_str()).collect()
+        }
+        _ => request.platforms().iter().map(String::as_str).collect(),
+    }
+}
+
+/// The articles a title may file after its main title, as No-Intro does.
+pub(crate) const ARTICLES: [&str; 3] = ["the", "a", "an"];
+
+/// Compares titles regardless of case, spacing, subtitle separator (No-Intro writes " - ",
+/// LaunchBox ": ") and article placement: No-Intro moves a leading article after the main
+/// title ("Legend of Zelda, The - A Link to the Past").
+pub(crate) fn title_key(title: &str) -> String {
+    let words = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    words
+        .to_lowercase()
+        .replace(": ", " - ")
+        .split(" - ")
+        .map(|part| {
+            ARTICLES
+                .iter()
+                .find_map(|article| {
+                    part.strip_suffix(&format!(", {article}"))
+                        .map(|rest| format!("{article} {rest}"))
+                })
+                .unwrap_or_else(|| part.to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(": ")
+}
